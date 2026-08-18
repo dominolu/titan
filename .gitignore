@@ -1,0 +1,26 @@
+target/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Local data and artifacts
+data/
+artifacts/
+*.npz
+*.db
+*.csv
+*.log
+
+# IDE
+.vscode/
+.idea/
