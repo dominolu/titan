@@ -1,6 +1,6 @@
-===========
-HftBacktest
-===========
+=====
+Titan
+=====
 
 |rustc| |license|
 
@@ -14,23 +14,6 @@ HftBacktest
 本仓库是上游 `hftbacktest <https://github.com/nkaz001/hftbacktest>`_ 项目的精简版，并在
 持续扩展。非核心资产（notebook 示例、文档源、CI 工作流、社区文件）已被移除，代码库聚焦于
 核心引擎、实盘交易、数据采集与交易所连接器。
-
-.. contents:: 目录
-   :depth: 2
-
-为什么精确的回测很重要
-======================
-
-交易是一个竞争极其激烈的领域，通常只有微小的优势存在，但微小优势也能带来显著差异。因此，
-回测必须精确模拟真实市场环境：既不能采用过度悲观的假设，掩盖那些微小优势与盈利机会；也不
-能采用过度乐观的假设，通过不切实际的模拟夸大收益。至少，你应该清楚地知道回测与实盘的差异
-在哪里、差异有多大——因为有时受时间所限，完全精确的回测并不现实。
-
-这并非在讨论过拟合。在考虑过拟合之前，你首先需要确信回测真实反映了实际成交。例如，如果你
-在 2025 年 1 月运行一个实盘策略，那么同一时段回测的结果应当与实盘结果高度吻合。只有当你验证
-回测能够精确复现实盘结果之后，才能进一步开展深入研究、参数优化以及过拟合相关的工作。
-
-精确回测是一切的基础。没有它，后续所有分析——无论保守还是激进——都不可靠。
 
 核心特性
 ========
@@ -63,34 +46,6 @@ HftBacktest
 
 * 历史行情采集器（WebSocket）：支持 Binance（USD-M / COIN-M / Spot）、Bybit、Hyperliquid。
 * 统一的 NumPy 事件格式，回测与实盘回放共用。
-
-架构
-====
-
-本仓库是一个 Cargo workspace，成员如下：
-
-.. list-table::
-   :widths: 25 75
-   :header-rows: 1
-
-   * - Crate
-     - 职责
-   * - ``hftbacktest/``
-     - 核心引擎：事件驱动的逐笔回测、订单簿实现、延迟/队列/手续费模型、实盘机器人。
-   * - ``hftbacktest-derive/``
-     - 核心 crate 使用的过程宏（``build_asset``、``NpyDTyped``）。
-   * - ``py-hftbacktest/``
-     - PyO3 绑定与 Python 包（``hftbacktest``），包含数据工具与性能统计。
-   * - ``collector/``
-     - 历史行情采集器（WebSocket）：Binance、Bybit、Hyperliquid。
-   * - ``connector/``
-     - 实盘交易连接器进程：每个交易所实现统一 ``Connector``/``ConnectorBuilder`` 与
-       ``BrokerApi``，通过共享内存 IPC（iceoryx2）与机器人通信。
-
-端到端数据流::
-
-    collector ──► 原始行情 ──► 归一化 NumPy 事件 ──► hftbacktest（回测）
-                                                    └─► 实盘机器人（经 connector IPC）
 
 快速开始
 ========
@@ -282,28 +237,6 @@ HftBacktest
      - Bybit 线性合约
      - 🚧 开发中
      - 实盘框架已搭建；统一 API 尚未接线
-
-统一 Broker API
----------------
-
-连接器提供统一 API 层（``connector/src/api.rs``）：一个 ``BrokerApi`` trait + 一套统一的
-行情、订单管理与账户管理返回结构。同一套策略代码可以自由切换 broker：
-
-.. code-block:: rust
-
-    let api: Box<dyn BrokerApi> = match broker {
-        "binance"    => Box::new(BinanceFuturesClient::new(url, key, secret)),
-        "okx"        => Box::new(OkxClient::new(url, key, secret, passphrase)),
-        "hyperliquid"=> Box::new(HyperliquidClient::new(info_url, exchange_url)),
-        _ => unreachable!(),
-    };
-    let ticker = api.get_ticker("BTCUSDT").await?;
-    let book = api.get_order_book("BTCUSDT", 20).await?;
-    let funding = api.get_funding_rate("BTCUSDT").await?;
-
-各交易所统一 API 的覆盖情况（订单/持仓/账户/行情/订单簿/K 线/资金费/持仓量/成交/费率/
-杠杆/流水）见 ``connector/API_COVERAGE.md``；对照官方文档的全量差距分析见
-``connector/API_GAP_ANALYSIS.md``。
 
 测试
 ====
