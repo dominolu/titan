@@ -8,18 +8,21 @@ This module adds an optional callback layer on top of the same loop, keeping it 
 performance tier:
 
 * ``on_tick`` — called once per *frame* (default 1 ms). The handler is a ``@njit``
-  function ``on_tick(ctx)`` receiving a single context object; dispatch is a native
-  Numba-to-Numba call.
+  function ``on_tick(ctx)`` receiving the strategy's global context; dispatch is a
+  native Numba-to-Numba call.
 * ``on_bar`` — trade-bar aggregation (OHLCV); ``on_bar(ctx)`` is called natively when a
   bar closes.
 
 Constraints (by design, to stay at HFT speed):
 
 * Handlers must be ``@njit`` (nopython-compatible) functions; no Python closures.
+* Every strategy owns a **global context**: a ``@jitclass`` instance that persists for the
+  whole run and is passed to every callback. It carries the strategy's own state fields
+  plus the frame data the framework writes each frame.
+* Compose the context from :data:`FRAME_CTX_FIELDS` plus your own fields; the framework
+  fills ``ts``/``n``/``trades``/``bar_open_ts``/``o``/``h``/``l``/``c``/``v`` every frame.
 * The context's ``trades`` array is reused across frames — copy out anything you need to
   keep.
-* Mutable strategy state lives in ``ctx.state``, a preallocated ``float64`` array whose
-  size you choose.
 * Single asset (``asset_no = 0``) for now.
 * Bars are trade bars: empty intervals produce no bar.
 """
@@ -41,22 +44,47 @@ def _noop_bar(_ctx):
     return
 
 
-@jitclass(
-    [
-        ("ts", int64),
-        ("n", int64),
-        ("trades", numba.from_dtype(event_dtype)[:]),
-        ("bar_open_ts", int64),
-        ("o", float64),
-        ("h", float64),
-        ("l", float64),
-        ("c", float64),
-        ("v", float64),
-        ("state", float64[:]),
-    ]
-)
+# Framework-managed fields of the strategy context. Compose your own context by
+# extending this spec with your strategy fields:
+#
+#   @jitclass(FRAME_CTX_FIELDS + [("my_pos", float64), ("orders", int64[:])])
+#   class MyCtx:
+#       def __init__(self, orders):
+#           init_frame_fields(self)
+#           self.my_pos = 0.0
+#           self.orders = orders
+#
+# The engine overwrites ``ctx.trades`` with its own preallocated buffer at run start.
+FRAME_CTX_FIELDS = [
+    ("ts", int64),
+    ("n", int64),
+    ("trades", numba.from_dtype(event_dtype)[:]),
+    ("bar_open_ts", int64),
+    ("o", float64),
+    ("h", float64),
+    ("l", float64),
+    ("c", float64),
+    ("v", float64),
+]
+
+
+@njit
+def init_frame_fields(ctx):
+    """Initializes the framework-managed fields of a strategy context."""
+    ctx.ts = 0
+    ctx.n = 0
+    ctx.trades = np.empty(1, dtype=event_dtype)
+    ctx.bar_open_ts = 0
+    ctx.o = 0.0
+    ctx.h = 0.0
+    ctx.l = 0.0
+    ctx.c = 0.0
+    ctx.v = 0.0
+
+
+@jitclass(FRAME_CTX_FIELDS + [("state", float64[:])])
 class EventBotContext:
-    """Frame/bar data + strategy state, passed as the single argument to callbacks.
+    """Default strategy context: frame/bar data + a generic ``state`` array.
 
     Fields:
         ts: Current frame timestamp (nanoseconds; the last trade's exchange timestamp
@@ -71,15 +99,8 @@ class EventBotContext:
     """
 
     def __init__(self, state, trades):
-        self.ts = 0
-        self.n = 0
+        init_frame_fields(self)
         self.trades = trades
-        self.bar_open_ts = 0
-        self.o = 0.0
-        self.h = 0.0
-        self.l = 0.0
-        self.c = 0.0
-        self.v = 0.0
         self.state = state
 
 
@@ -93,6 +114,8 @@ def _run_frame_loop(hbt, on_tick, on_bar, ctx, frame_interval, bar_interval):
     """
     asset_no = 0
     bar_initialized = False
+    # Reused across frames: the engine owns the buffer, the context only references it.
+    ctx.trades = np.empty(MAX_FRAME_TRADES, dtype=event_dtype)
 
     while True:
         r = hbt.elapse(frame_interval)
@@ -158,6 +181,7 @@ def run_event_bot(
     hbt,
     on_tick,
     on_bar=None,
+    ctx=None,
     state=None,
     frame_interval=1_000_000,
     bar_interval=1_000_000_000,
@@ -172,8 +196,13 @@ def run_event_bot(
             ``ctx.trades[0..n)``.
         on_bar: Optional ``@njit`` handler ``on_bar(ctx)``, called natively when a
             trade bar closes. Read ``ctx.bar_open_ts``, ``ctx.o/h/l/c/v``.
+        ctx: The strategy's global context (any ``@jitclass`` instance composed from
+            :data:`FRAME_CTX_FIELDS` plus your own state fields). It persists for the
+            whole run and is passed to every callback. Defaults to an
+            :class:`EventBotContext` (frame fields + a generic ``state`` array).
         state: Preallocated ``float64`` array for strategy state (persists across
-            callbacks, exposed as ``ctx.state``). Defaults to a 64-element array.
+            callbacks, exposed as ``ctx.state``). Only used when ``ctx`` is not given;
+            defaults to a 64-element array.
         frame_interval: Frame duration in nanoseconds (default 1 ms).
         bar_interval: Trade-bar duration in nanoseconds (default 1 s).
 
@@ -187,10 +216,10 @@ def run_event_bot(
     if on_bar is not None and not isinstance(on_bar, Dispatcher):
         raise TypeError("on_bar must be a @njit function")
     on_bar = on_bar if on_bar is not None else _noop_bar
-    if state is None:
-        state = np.zeros(64)
-
-    ctx = EventBotContext(state, np.empty(MAX_FRAME_TRADES, dtype=event_dtype))
+    if ctx is None:
+        if state is None:
+            state = np.zeros(64)
+        ctx = EventBotContext(state, np.empty(1, dtype=event_dtype))
 
     return _run_frame_loop(
         hbt,
