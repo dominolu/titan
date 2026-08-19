@@ -22,8 +22,7 @@ use iceoryx2::{
 };
 use tokio::{
     runtime::Builder,
-    select,
-    signal,
+    select, signal,
     sync::{
         Notify,
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -38,14 +37,24 @@ use crate::{
     connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
 };
 
+#[cfg(feature = "hyperliquid")]
+use crate::hyperliquid::Hyperliquid;
+#[cfg(feature = "okx")]
+use crate::okx::Okx;
+
 #[cfg(feature = "binancefutures")]
 pub mod binancefutures;
 #[cfg(feature = "binancespot")]
 pub mod binancespot;
 #[cfg(feature = "bybit")]
 pub mod bybit;
+#[cfg(feature = "hyperliquid")]
+pub mod hyperliquid;
+#[cfg(feature = "okx")]
+pub mod okx;
 
 mod connector;
+mod api;
 //mod fuse;
 mod utils;
 
@@ -325,6 +334,8 @@ struct Args {
     /// Connector
     /// * binancefutures: Binance USD-m Futures
     /// * bybit: Bybit Linear Futures
+    /// * okx: OKX V5 Swap
+    /// * hyperliquid: Hyperliquid Perpetual
     connector: String,
 
     /// Connector's configuration file path.
@@ -403,6 +414,26 @@ async fn main() {
             let mut connector = BinanceSpot::build_from(&config)
                 .map_err(|error| {
                     error!(?error, "Couldn't build the Bybit connector.");
+                })
+                .unwrap();
+            connector.run(pub_tx.clone());
+            Box::new(connector)
+        }
+        #[cfg(feature = "okx")]
+        "okx" => {
+            let mut connector = Okx::build_from(&config)
+                .map_err(|error| {
+                    error!(?error, "Couldn't build the OKX connector.");
+                })
+                .unwrap();
+            connector.run(pub_tx.clone());
+            Box::new(connector)
+        }
+        #[cfg(feature = "hyperliquid")]
+        "hyperliquid" => {
+            let mut connector = Hyperliquid::build_from(&config)
+                .map_err(|error| {
+                    error!(?error, "Couldn't build the Hyperliquid connector.");
                 })
                 .unwrap();
             connector.run(pub_tx.clone());

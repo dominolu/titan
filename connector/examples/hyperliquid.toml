@@ -1,0 +1,27 @@
+# Hyperliquid Perpetual
+
+# Mainnet:
+#   Info:     https://api.hyperliquid.xyz/info
+#   Exchange: https://api.hyperliquid.xyz/exchange
+#   WS:       wss://api.hyperliquid.xyz/ws
+info_url = "https://api.hyperliquid.xyz/info"
+exchange_url = "https://api.hyperliquid.xyz/exchange"
+ws_url = "wss://api.hyperliquid.xyz/ws"
+
+# Signing key (secp256k1, 32 bytes hex, optional 0x prefix).
+#
+# Two setups are supported:
+#   1. Main-wallet direct signing: use your own wallet private key and leave
+#      account_address empty (it is derived from the key).
+#   2. API wallet (recommended): generate an API wallet at
+#      https://app.hyperliquid.xyz/API, approve it as an agent, then set
+#      private_key = the API wallet's key and account_address = your MAIN wallet
+#      address (the account whose orders/positions are tracked).
+private_key = ""
+
+# Leave empty to derive from the private key (setup 1).
+# For setup 2, set this to the main wallet address.
+account_address = ""
+
+# false for testnet (the signing source becomes "b").
+is_mainnet = true

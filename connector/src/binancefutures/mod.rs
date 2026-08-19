@@ -1,4 +1,5 @@
 mod market_data_stream;
+mod brokerapi;
 mod msg;
 mod ordermanager;
 mod rest;

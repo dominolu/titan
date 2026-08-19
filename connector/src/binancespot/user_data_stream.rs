@@ -21,14 +21,9 @@ use tracing::{debug, error, warn};
 
 use crate::{
     binancespot::{
-        BinanceSpotError,
-        SharedSymbolSet,
+        BinanceSpotError, SharedSymbolSet,
         msg::stream::{
-            SignParams,
-            SignRequest,
-            UserEventStream,
-            UserStream,
-            UserStreamSubscribeRequest,
+            SignParams, SignRequest, UserEventStream, UserStream, UserStreamSubscribeRequest,
         },
         ordermanager::SharedOrderManager,
         rest::BinanceSpotClient,

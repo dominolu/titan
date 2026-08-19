@@ -13,17 +13,14 @@ use tokio::{
     time,
 };
 use tokio_tungstenite::{
-    MaybeTlsStream,
-    WebSocketStream,
-    connect_async,
+    MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Bytes, Message, client::IntoClientRequest},
 };
 use tracing::{debug, error};
 
 use crate::{
     bybit::{
-        BybitError,
-        SharedSymbolSet,
+        BybitError, SharedSymbolSet,
         msg::{Op, PrivateStreamMsg, PrivateStreamTopicMsg},
         ordermanager::{OrderExt, SharedOrderManager},
         rest::BybitClient,

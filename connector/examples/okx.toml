@@ -1,0 +1,34 @@
+# OKX V5 (Swap)
+
+# Mainnet:
+#   REST:    https://www.okx.com
+#   Public:  wss://ws.okx.com:8443/ws/v5/public
+#   Private: wss://ws.okx.com:8443/ws/v5/private
+#
+# Demo trading (simulated): same REST host + `x-simulated-trading: 1` header (simulated = true),
+# WebSocket endpoints switch to:
+#   Public:  wss://wspap.okx.com:8443/ws/v5/public
+#   Private: wss://wspap.okx.com:8443/ws/v5/private
+# Use an API key created in demo-trading mode.
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://ws.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://ws.okx.com:8443/ws/v5/private"
+
+api_key = ""
+secret = ""
+passphrase = ""
+
+# Demo trading mode: true adds x-simulated-trading: 1 to every REST request.
+simulated = false
+
+# Optional proxy for REST requests, e.g. "socks5h://127.0.0.1:7897". Empty means direct.
+proxy = ""
+
+# cross | isolated
+td_mode = "cross"
+
+# Position side used when placing orders: "net", "long" or "short".
+# OKX requires posSide in long/short (hedge) mode; omit it in net mode.
+# pos_side = "net"
+
+order_prefix = ""

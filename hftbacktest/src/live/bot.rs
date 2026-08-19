@@ -275,6 +275,18 @@ where
                     .state
                     .position = qty;
             }
+            LiveEvent::Funding {
+                funding_rate,
+                next_funding_time,
+                ..
+            } => {
+                debug!(
+                    %inst_no,
+                    funding_rate,
+                    next_funding_time,
+                    "Event::Funding"
+                );
+            }
             LiveEvent::Error(error) => {
                 if let Some(handler) = self.error_handler.as_mut() {
                     handler(error)?;

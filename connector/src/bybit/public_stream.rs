@@ -3,15 +3,8 @@ use std::time::Duration;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::{
-    Event,
-    LOCAL_ASK_DEPTH_BBO_EVENT,
-    LOCAL_ASK_DEPTH_EVENT,
-    LOCAL_BID_DEPTH_BBO_EVENT,
-    LOCAL_BID_DEPTH_EVENT,
-    LOCAL_BUY_TRADE_EVENT,
-    LOCAL_SELL_TRADE_EVENT,
-    LiveEvent,
-    Side,
+    Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
+    LOCAL_BID_DEPTH_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent, Side,
 };
 use tokio::{
     select,
@@ -29,8 +22,7 @@ use tracing::{debug, error};
 
 use crate::{
     bybit::{
-        BybitError,
-        msg,
+        BybitError, msg,
         msg::{Op, OrderBook, PublicStreamMsg},
     },
     connector::PublishEvent,

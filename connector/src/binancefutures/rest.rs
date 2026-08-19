@@ -32,7 +32,7 @@ impl BinanceFuturesClient {
         }
     }
 
-    async fn get_noauth<T: for<'a> Deserialize<'a>>(
+    pub(crate) async fn get_noauth<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         query: String,
@@ -48,7 +48,7 @@ impl BinanceFuturesClient {
         Ok(resp)
     }
 
-    async fn get<T: for<'a> Deserialize<'a>>(
+    pub(crate) async fn get<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         mut query: String,
@@ -75,7 +75,7 @@ impl BinanceFuturesClient {
         Ok(resp)
     }
 
-    async fn put<T: for<'a> Deserialize<'a>>(
+    pub(crate) async fn put<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         body: String,
@@ -99,7 +99,7 @@ impl BinanceFuturesClient {
         Ok(resp)
     }
 
-    async fn post<T: for<'a> Deserialize<'a>>(
+    pub(crate) async fn post<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         body: String,
@@ -123,7 +123,7 @@ impl BinanceFuturesClient {
         Ok(resp)
     }
 
-    async fn delete<T: for<'a> Deserialize<'a>>(
+    pub(crate) async fn delete<T: for<'a> Deserialize<'a>>(
         &self,
         path: &str,
         body: String,

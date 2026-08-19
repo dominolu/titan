@@ -24,8 +24,7 @@ use crate::{
     binancefutures::{
         BinanceFuturesError,
         msg::{
-            rest,
-            stream,
+            rest, stream,
             stream::{EventStream, Stream},
         },
         rest::BinanceFuturesClient,
@@ -149,6 +148,16 @@ impl MarketDataStream {
                     }
                 }
             }
+            EventStream::MarkPriceUpdate(data) => {
+                self.ev_tx
+                    .send(PublishEvent::LiveEvent(LiveEvent::Funding {
+                        symbol: data.symbol,
+                        funding_rate: data.funding_rate,
+                        next_funding_time: data.next_funding_time * 1_000_000,
+                        exch_ts: data.event_time * 1_000_000,
+                    }))
+                    .unwrap();
+            }
             EventStream::Trade(data) => match parse_px_qty_tup(data.price, data.qty) {
                 Ok((px, qty)) => {
                     if data.type_ != "MARKET" {
@@ -180,6 +189,43 @@ impl MarketDataStream {
                     error!(error = ?e, "Couldn't parse trade stream.");
                 }
             },
+            EventStream::BookTicker(data) => {
+                let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
+                if data.bid_price > 0.0 {
+                    self.ev_tx
+                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                            symbol: data.symbol.clone(),
+                            event: Event {
+                                ev: LOCAL_BID_DEPTH_BBO_EVENT,
+                                exch_ts: data.transaction_time * 1_000_000,
+                                local_ts,
+                                order_id: 0,
+                                px: data.bid_price,
+                                qty: data.bid_qty,
+                                ival: 0,
+                                fval: 0.0,
+                            },
+                        }))
+                        .unwrap();
+                }
+                if data.ask_price > 0.0 {
+                    self.ev_tx
+                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                            symbol: data.symbol,
+                            event: Event {
+                                ev: LOCAL_ASK_DEPTH_BBO_EVENT,
+                                exch_ts: data.transaction_time * 1_000_000,
+                                local_ts,
+                                order_id: 0,
+                                px: data.ask_price,
+                                qty: data.ask_qty,
+                                ival: 0,
+                                fval: 0.0,
+                            },
+                        }))
+                        .unwrap();
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -287,7 +333,9 @@ impl MarketDataStream {
                             "method": "SUBSCRIBE",
                             "params": [
                                 "{symbol}@trade",
-                                "{symbol}@depth@0ms"
+                                "{symbol}@depth@0ms",
+                                "{symbol}@markPrice",
+                                "{symbol}@bookTicker"
                             ],
                             "id": "{id}"
                         }}"#).into())).await?;
@@ -334,5 +382,98 @@ impl MarketDataStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 实盘冒烟：连接 Binance USD-M 测试网 WS，订阅 btcusdt 的
+    /// trade/depth@0ms/markPrice/bookTicker，验证收到深度、成交、资金费与 BBO 事件。
+    /// 运行：`cargo test --all-features binancefutures::market_data_stream::tests::live_ws -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn live_ws() {
+        let client = BinanceFuturesClient::new(
+            "https://testnet.binancefuture.com",
+            "",
+            "",
+        );
+        let (ev_tx, mut ev_rx) = unbounded_channel::<PublishEvent>();
+        let (symbol_tx, _) = tokio::sync::broadcast::channel(16);
+        let mut stream = MarketDataStream::new(client, ev_tx, symbol_tx.subscribe());
+
+        let handle = tokio::spawn(async move {
+            let mut last_err = None;
+            for attempt in 0..3 {
+                match stream.connect("wss://fstream.binancefuture.com/ws").await {
+                    Ok(()) => return Ok::<(), BinanceFuturesError>(()),
+                    Err(e) => {
+                        eprintln!("connect attempt {attempt} failed: {e:?}; retrying");
+                        last_err = Some(e);
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
+            Err(last_err.unwrap())
+        });
+
+        // 注册标的，触发订阅
+        symbol_tx.send("btcusdt".to_string()).unwrap();
+
+        let mut feed_depth = 0usize;
+        let mut feed_bbo = 0usize;
+        let mut feed_trade = 0usize;
+        let mut funding = 0usize;
+        let mut batch = 0usize;
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(3), ev_rx.recv()).await {
+                Ok(Some(PublishEvent::LiveEvent(LiveEvent::Feed { symbol, event }))) => {
+                    assert_eq!(symbol, "btcusdt");
+                    if event.is(LOCAL_BID_DEPTH_EVENT) || event.is(LOCAL_ASK_DEPTH_EVENT) {
+                        feed_depth += 1;
+                    } else if event.is(LOCAL_BID_DEPTH_BBO_EVENT)
+                        || event.is(LOCAL_ASK_DEPTH_BBO_EVENT)
+                    {
+                        feed_bbo += 1;
+                    } else if event.is(LOCAL_BUY_TRADE_EVENT) || event.is(LOCAL_SELL_TRADE_EVENT) {
+                        feed_trade += 1;
+                    }
+                }
+                Ok(Some(PublishEvent::LiveEvent(LiveEvent::Funding {
+                    symbol,
+                    funding_rate,
+                    ..
+                }))) => {
+                    assert_eq!(symbol, "btcusdt");
+                    assert!(funding_rate.is_finite());
+                    funding += 1;
+                }
+                Ok(Some(PublishEvent::BatchStart(_))) | Ok(Some(PublishEvent::BatchEnd(_))) => {
+                    batch += 1;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    eprintln!(
+                        "no event for 3s (depth={feed_depth} bbo={feed_bbo} trade={feed_trade} funding={funding})"
+                    );
+                    if feed_depth > 0 || funding > 0 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        handle.abort();
+        println!(
+            "depth={feed_depth} bbo={feed_bbo} trade={feed_trade} funding={funding} batch={batch}"
+        );
+        assert!(feed_depth > 0, "no depth feed events received");
+        assert!(feed_trade > 0 || feed_bbo > 0, "no trade/BBO feed events received");
+        assert!(funding > 0, "no markPrice/funding events received");
     }
 }
