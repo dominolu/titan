@@ -13,10 +13,10 @@ import unittest
 
 import numba
 import numpy as np
-from numba import njit, int64
+from numba import float64, njit, int64
 from numba.experimental import jitclass
 
-from hftbacktest.eventbot import run_event_bot
+from hftbacktest.eventbot import FRAME_CTX_FIELDS, init_frame_fields, run_event_bot
 
 
 event_dtype = np.dtype(
@@ -147,6 +147,45 @@ class TestEventBot(unittest.TestCase):
         )
         self.assertEqual(stats[0], 3)
         self.assertEqual(stats[1], 5)
+
+    def test_custom_strategy_ctx(self):
+        """A user-defined global ctx keeps its own state across callbacks and frames,
+        and stays inspectable after the run."""
+        bot = build_mock_bot()
+
+        @jitclass(FRAME_CTX_FIELDS + [("pos", float64), ("num_orders", int64)])
+        class MyStrategyCtx:
+            def __init__(self):
+                init_frame_fields(self)
+                self.pos = 0.0
+                self.num_orders = 0
+
+        my_ctx = MyStrategyCtx()
+
+        @njit
+        def on_tick(ctx):
+            # 策略自己的字段，跨帧累计
+            ctx.num_orders += ctx.n
+            # 用框架字段做状态更新
+            ctx.pos += ctx.c - ctx.o
+
+        @njit
+        def on_bar(ctx):
+            ctx.pos += ctx.v
+
+        run_event_bot(
+            bot,
+            on_tick,
+            on_bar,
+            ctx=my_ctx,
+            frame_interval=500_000_000,
+            bar_interval=1_000_000_000,
+        )
+
+        # 全局 ctx 运行后仍可检查
+        self.assertEqual(my_ctx.num_orders, 5)
+        # pos = 帧内 (close-open) 累计 + 收盘 bar 的成交量
+        self.assertGreater(my_ctx.pos, 0.0)
 
 
 if __name__ == "__main__":
