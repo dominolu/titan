@@ -24,8 +24,7 @@ use crate::{
     binancespot::{
         BinanceSpotError,
         msg::{
-            rest,
-            stream,
+            rest, stream,
             stream::{MarketEventStream, MarketStream},
         },
         rest::BinanceSpotClient,

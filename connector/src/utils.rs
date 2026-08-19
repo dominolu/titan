@@ -1,3 +1,5 @@
+#[cfg(feature = "hyperliquid")]
+use std::sync::Mutex;
 use std::{
     fmt,
     fmt::{Debug, Write},
@@ -14,9 +16,7 @@ use hftbacktest::prelude::OrderId;
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use serde::{
-    Deserialize,
-    Deserializer,
-    de,
+    Deserialize, Deserializer, de,
     de::{Error, Visitor},
 };
 use sha2::Sha256;
@@ -149,6 +149,18 @@ pub fn sign_ed25519(private_key: &str, s: &str) -> String {
 
 pub fn get_timestamp() -> u64 {
     Utc::now().timestamp_millis() as u64
+}
+
+/// Returns a monotonically increasing nonce. The wall-clock millisecond is used as the base so
+/// the nonce stays loosely time-synchronized, while the counter guarantees uniqueness even for
+/// multiple actions issued within the same millisecond.
+#[cfg(feature = "hyperliquid")]
+pub fn next_nonce(counter: &Mutex<u64>) -> u64 {
+    let mut last = counter.lock().unwrap();
+    let now = Utc::now().timestamp_millis() as u64;
+    let nonce = now.max(*last + 1);
+    *last = nonce;
+    nonce
 }
 
 pub type PxQty = (f64, f64);
@@ -326,7 +338,13 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    #[cfg(feature = "hyperliquid")]
+    use std::sync::Mutex;
+
     use hashbrown::HashMap;
+
+    #[cfg(feature = "hyperliquid")]
+    use crate::utils::next_nonce;
 
     use crate::utils::{BackoffStrategy, ExponentialBackoff, RefSymbolOrderId, SymbolOrderId};
 
@@ -416,5 +434,23 @@ mod tests {
             }
         }
         panic!();
+    }
+
+    #[cfg(feature = "hyperliquid")]
+    #[test]
+    fn test_next_nonce_monotonic() {
+        let counter = Mutex::new(0);
+        let first = next_nonce(&counter);
+        let second = next_nonce(&counter);
+        assert!(second > first, "nonce must strictly increase");
+    }
+
+    #[cfg(feature = "hyperliquid")]
+    #[test]
+    fn test_next_nonce_clock_setback() {
+        // If the wall clock jumps backwards, the counter must still move forward.
+        let counter = Mutex::new(u64::MAX / 2);
+        let next = next_nonce(&counter);
+        assert_eq!(next, u64::MAX / 2 + 1);
     }
 }

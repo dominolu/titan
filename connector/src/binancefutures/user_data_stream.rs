@@ -21,8 +21,7 @@ use tracing::{debug, error, warn};
 
 use crate::{
     binancefutures::{
-        BinanceFuturesError,
-        SharedSymbolSet,
+        BinanceFuturesError, SharedSymbolSet,
         msg::stream::{EventStream, Stream},
         ordermanager::SharedOrderManager,
         rest::BinanceFuturesClient,
@@ -61,7 +60,12 @@ impl UserDataStream {
 
     fn process_message(&self, stream: EventStream) -> Result<(), BinanceFuturesError> {
         match stream {
-            EventStream::DepthUpdate(_) | EventStream::Trade(_) => unreachable!(),
+            EventStream::DepthUpdate(_)
+            | EventStream::Trade(_)
+            | EventStream::MarkPriceUpdate(_)
+            | EventStream::BookTicker(_) => {
+                unreachable!()
+            }
             EventStream::ListenKeyExpired(_) => {
                 return Err(BinanceFuturesError::ListenKeyExpired);
             }

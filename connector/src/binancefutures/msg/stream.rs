@@ -4,6 +4,28 @@ use serde::Deserialize;
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, to_lowercase};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_mark_price_update() {
+        let msg: Stream = serde_json::from_str(
+            r#"{"e":"markPriceUpdate","E":1562305380000,"s":"BTCUSDT","p":"11794.15000000","i":"11793.84535841","P":"11780.83846368","r":"-0.00038100","T":1562306400000}"#,
+        )
+        .unwrap();
+        match msg {
+            Stream::EventStream(EventStream::MarkPriceUpdate(update)) => {
+                assert_eq!(update.symbol, "btcusdt");
+                assert_eq!(update.funding_rate, -0.000381);
+                assert_eq!(update.next_funding_time, 1_562_306_400_000);
+                assert_eq!(update.event_time, 1_562_305_380_000);
+            }
+            _ => panic!("expected a markPriceUpdate message"),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Stream {
@@ -22,8 +44,12 @@ pub struct Result {
 pub enum EventStream {
     #[serde(rename = "depthUpdate")]
     DepthUpdate(Depth),
+    #[serde(rename = "markPriceUpdate")]
+    MarkPriceUpdate(MarkPriceUpdate),
     #[serde(rename = "trade")]
     Trade(Trade),
+    #[serde(rename = "bookTicker")]
+    BookTicker(BookTicker),
     #[serde(rename = "ORDER_TRADE_UPDATE")]
     OrderTradeUpdate(OrderTradeUpdate),
     #[serde(rename = "TRADE_LITE")]
@@ -56,6 +82,22 @@ pub struct Depth {
     pub bids: Vec<(String, String)>,
     #[serde(rename = "a")]
     pub asks: Vec<(String, String)>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MarkPriceUpdate {
+    #[serde(rename = "E")]
+    pub event_time: i64,
+    #[serde(rename = "s")]
+    #[serde(deserialize_with = "to_lowercase")]
+    pub symbol: String,
+    /// Funding rate of the upcoming settlement.
+    #[serde(rename = "r")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub funding_rate: f64,
+    /// Next funding settlement time (milliseconds).
+    #[serde(rename = "T")]
+    pub next_funding_time: i64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -285,4 +327,30 @@ pub struct ListenKeyStream {
     pub event_time: i64,
     #[serde(rename = "listenKey")]
     pub listen_key: String,
+}
+
+/// `<symbol>@bookTicker` 流。
+#[derive(Deserialize, Debug)]
+pub struct BookTicker {
+    #[serde(rename = "u")]
+    pub update_id: i64,
+    #[serde(rename = "s")]
+    #[serde(deserialize_with = "to_lowercase")]
+    pub symbol: String,
+    #[serde(rename = "b")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub bid_price: f64,
+    #[serde(rename = "B")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub bid_qty: f64,
+    #[serde(rename = "a")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub ask_price: f64,
+    #[serde(rename = "A")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub ask_qty: f64,
+    #[serde(rename = "T")]
+    pub transaction_time: i64,
+    #[serde(rename = "E")]
+    pub event_time: i64,
 }

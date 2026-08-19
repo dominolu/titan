@@ -141,6 +141,13 @@ pub enum LiveEvent {
         qty: f64,
         exch_ts: i64,
     },
+    Funding {
+        symbol: String,
+        funding_rate: f64,
+        /// Next settlement time in nanoseconds since the Unix epoch. 0 when unknown.
+        next_funding_time: i64,
+        exch_ts: i64,
+    },
     Error(LiveError),
 }
 

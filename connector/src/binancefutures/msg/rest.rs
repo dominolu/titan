@@ -4,6 +4,464 @@ use serde::Deserialize;
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
 
+// ------------------------------------------------------------------
+// 全量 REST 端点响应结构（对照官方文档）
+// ------------------------------------------------------------------
+
+/// GET /fapi/v1/ping 与 /fapi/v1/time 共用。
+#[derive(Deserialize, Debug, Default)]
+pub struct ServerTime {
+    pub server_time: i64,
+}
+
+/// GET /fapi/v1/exchangeInfo
+#[derive(Deserialize, Debug)]
+pub struct ExchangeInfo {
+    #[serde(default)]
+    pub symbols: Vec<SymbolInfo>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolInfo {
+    pub symbol: String,
+    #[serde(default)]
+    pub pair: String,
+    #[serde(default)]
+    pub contract_type: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub base_asset: String,
+    #[serde(default)]
+    pub quote_asset: String,
+    #[serde(default)]
+    pub margin_asset: String,
+    #[serde(default)]
+    pub price_precision: u32,
+    #[serde(default)]
+    pub quantity_precision: u32,
+    #[serde(default)]
+    pub contract_size: String,
+    #[serde(default)]
+    pub filters: Vec<SymbolFilter>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolFilter {
+    pub filter_type: String,
+    #[serde(default)]
+    pub tick_size: Option<String>,
+    #[serde(default)]
+    pub step_size: Option<String>,
+    #[serde(default)]
+    pub min_qty: Option<String>,
+    #[serde(default)]
+    pub min_notional: Option<String>,
+}
+
+/// GET /fapi/v1/ticker/24hr
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Ticker24h {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub price_change: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub price_change_percent: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub last_price: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub high_price: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub low_price: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub volume: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub quote_volume: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub open_price: f64,
+    #[serde(default)]
+    pub close_time: i64,
+    #[serde(default)]
+    pub count: i64,
+}
+
+/// GET /fapi/v1/premiumIndex
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PremiumIndex {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub mark_price: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub index_price: f64,
+    #[serde(default)]
+    pub last_funding_rate: Option<String>,
+    #[serde(default)]
+    pub next_funding_time: i64,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v1/ticker/price
+#[derive(Deserialize, Debug, Clone)]
+pub struct TickerPrice {
+    pub symbol: String,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub price: f64,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v1/ticker/bookTicker
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BookTicker {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub bid_price: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub bid_qty: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub ask_price: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub ask_qty: f64,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v1/trades 与 /fapi/v1/historicalTrades
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicTrade {
+    pub id: i64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub price: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub qty: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub quote_qty: f64,
+    pub time: i64,
+    pub is_buyer_maker: bool,
+}
+
+/// GET /fapi/v1/aggTrades
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AggTrade {
+    pub agg_id: i64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub price: f64,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub qty: f64,
+    #[serde(default)]
+    pub first_id: i64,
+    #[serde(default)]
+    pub last_id: i64,
+    pub time: i64,
+    pub is_buyer_maker: bool,
+}
+
+/// GET /fapi/v1/klines（数组格式）
+pub type KlineResponse = Vec<Vec<serde_json::Value>>;
+
+/// GET /fapi/v1/fundingRate
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingRateRecord {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub funding_rate: f64,
+    #[serde(default)]
+    pub funding_time: i64,
+    #[serde(default)]
+    pub mark_price: String,
+}
+
+/// GET /fapi/v1/fundingInfo
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingInfo {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub adjusted_funding_rate_cap: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub adjusted_funding_rate_floor: f64,
+    #[serde(default)]
+    pub funding_interval_hours: i64,
+}
+
+/// GET /fapi/v1/openInterest
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenInterest {
+    pub symbol: String,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub open_interest: f64,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v1/order、/fapi/v1/openOrders、/fapi/v1/allOrders、/fapi/v1/openOrder
+///
+/// 注意：状态/方向/类型字段保留原始字符串，统一映射在 brokerapi 层完成，
+/// 避免 REST 查询遇到 REJECTED 等状态时反序列化失败。
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Order {
+    #[serde(default)]
+    pub avg_price: String,
+    #[serde(default)]
+    pub client_order_id: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub cum_quote: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub executed_qty: f64,
+    #[serde(default)]
+    pub order_id: i64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub orig_qty: f64,
+    #[serde(default)]
+    pub orig_type: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub price: f64,
+    #[serde(default)]
+    pub reduce_only: bool,
+    #[serde(default)]
+    pub side: String,
+    #[serde(default)]
+    pub position_side: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub stop_price: f64,
+    #[serde(default)]
+    pub close_position: bool,
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub time: i64,
+    #[serde(default)]
+    pub time_in_force: String,
+    #[serde(rename = "type", default)]
+    pub ty: String,
+    #[serde(default)]
+    pub update_time: i64,
+    #[serde(default)]
+    pub working_type: String,
+    #[serde(default)]
+    pub price_protect: bool,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub leaves_qty: f64,
+}
+
+/// GET /fapi/v1/userTrades
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserTrade {
+    #[serde(default)]
+    pub buyer: bool,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub commission: f64,
+    #[serde(default)]
+    pub commission_asset: String,
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub maker: bool,
+    #[serde(default)]
+    pub order_id: i64,
+    #[serde(default)]
+    pub position_side: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub price: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub qty: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub quote_qty: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub realized_pnl: f64,
+    #[serde(deserialize_with = "from_str_to_side")]
+    pub side: Side,
+    #[serde(default, deserialize_with = "to_lowercase")]
+    pub symbol: String,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v2/balance 与 /fapi/v3/balance
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Balance {
+    pub account_alias: String,
+    pub asset: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub cross_wallet_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub cross_un_pnl: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub available_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub margin_available: f64,
+    #[serde(default)]
+    pub update_time: i64,
+}
+
+/// GET /fapi/v2/account 与 /fapi/v3/account
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Account {
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub total_wallet_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub total_unrealized_profit: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub total_margin_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub available_balance: f64,
+    #[serde(default)]
+    pub update_time: i64,
+    #[serde(default)]
+    pub assets: Vec<AccountAsset>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountAsset {
+    pub asset: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub wallet_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub unrealized_profit: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub margin_balance: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub available_balance: f64,
+    #[serde(default)]
+    pub update_time: i64,
+}
+
+/// GET /fapi/v1/income
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Income {
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub income_type: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub income: f64,
+    #[serde(default)]
+    pub asset: String,
+    #[serde(default)]
+    pub time: i64,
+}
+
+/// GET /fapi/v1/commissionRate
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CommissionRate {
+    pub symbol: String,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub maker_commission_rate: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub taker_commission_rate: f64,
+}
+
+/// GET /fapi/v1/leverageBracket
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LeverageBracket {
+    pub symbol: String,
+    #[serde(default)]
+    pub brackets: Vec<Bracket>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Bracket {
+    #[serde(default)]
+    pub bracket: i64,
+    #[serde(default)]
+    pub initial_leverage: i64,
+    #[serde(default)]
+    pub notional_cap: i64,
+    #[serde(default)]
+    pub notional_floor: i64,
+    #[serde(default)]
+    pub maint_margin_ratio: f64,
+    #[serde(default)]
+    pub cum: f64,
+}
+
+/// GET /fapi/v1/countdownCancelAll 响应
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CountdownCancelAll {
+    pub symbol: String,
+    pub countdown_time: i64,
+}
+
+/// GET /fapi/v1/positionSide/dual、/fapi/v1/multiAssetsMargin 共用结构
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BoolSetting {
+    pub dual_side_position: Option<bool>,
+    pub multi_assets_margin: Option<bool>,
+}
+
+/// GET /fapi/v1/adlQuantile
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AdlQuantile {
+    pub symbol: String,
+    #[serde(default)]
+    pub adl_quantile: serde_json::Value,
+}
+
+/// GET /futures/data/openInterestHist 等数据接口的通用行
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DataRow {
+    pub symbol: String,
+    #[serde(default)]
+    pub sum_open_interest: String,
+    #[serde(default)]
+    pub sum_open_interest_value: String,
+    #[serde(default)]
+    pub timestamp: i64,
+}
+
+/// GET /fapi/v1/income/asyn 与 /fapi/v1/order/asyn、/fapi/v1/trade/asyn
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AsyncDownloadId {
+    pub id: String,
+    #[serde(default)]
+    pub expired_timestamp: i64,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// GET /fapi/v1/income/asyn/id 等
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AsyncDownloadLink {
+    #[serde(default)]
+    pub download_id: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub notified: bool,
+    #[serde(default)]
+    pub expiration_timestamp: i64,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum OrderResponseResult {

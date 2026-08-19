@@ -4,106 +4,140 @@ HftBacktest
 
 |rustc| |license|
 
-High-Frequency Trading Backtesting Tool
-=======================================
+一个开源的、生产级的高频交易（HFT）**回测与实盘交易框架**，专注于加密货币永续合约，
+采用 Rust 核心 + Python 控制面，并提供统一的交易所连接器。
 
-This framework is designed for developing high frequency trading and market making strategies. It focuses on accounting for both feed and order latencies, as well as the order queue position for order fill simulation. The framework aims to provide more accurate market replay-based backtesting, based on full order book and trade tick feed data.
+框架基于全订单簿的行情回放进行模拟，并精确计入行情/下单延迟与订单队列位置，使回测结果
+能够真实还原实际成交环境。同一套策略代码在研究和实盘之间无需任何修改即可运行——
+「研究到实盘零差异」是框架的设计初衷。
 
-This repository is a trimmed and actively extended fork of the upstream `hftbacktest <https://github.com/nkaz001/hftbacktest>`_ project. Non-essential assets (notebook examples, documentation sources, CI workflows, and community files) have been removed so that the codebase concentrates on the core engine, live trading, data collection, and exchange connectors.
+本仓库是上游 `hftbacktest <https://github.com/nkaz001/hftbacktest>`_ 项目的精简版，并在
+持续扩展。非核心资产（notebook 示例、文档源、CI 工作流、社区文件）已被移除，代码库聚焦于
+核心引擎、实盘交易、数据采集与交易所连接器。
 
-Why Accurate Backtesting Matters — Not Just Conservative Approach
-=================================================================
+.. contents:: 目录
+   :depth: 2
 
-Trading is a highly competitive field where only the small edges usually exist, but they can still make a significant
-difference. Because of this, backtesting must accurately simulate real-world conditions: it should neither rely on an
-overly pessimistic approach that hides these small edges and profit opportunities, nor on an overly optimistic one that
-overstates them through unrealistic simulation. Or at the very least, you should clearly understand what differs from
-live trading and by how much, since sometimes fully accurate backtesting is not practical due to the time it requires.
+为什么精确的回测很重要
+======================
 
-This is not about overfitting at the start — before you even consider issues like overfitting, you need confidence that
-your backtesting truly reflects real-world execution. For example, if you run a live trading strategy in January 2025,
-the backtest for that exact period should produce results that closely align with the actual results. Once you’ve
-validated that your backtesting can accurately reproduce live trading results, then you can proceed to deeper research,
-optimization, and considerations around overfitting.
+交易是一个竞争极其激烈的领域，通常只有微小的优势存在，但微小优势也能带来显著差异。因此，
+回测必须精确模拟真实市场环境：既不能采用过度悲观的假设，掩盖那些微小优势与盈利机会；也不
+能采用过度乐观的假设，通过不切实际的模拟夸大收益。至少，你应该清楚地知道回测与实盘的差异
+在哪里、差异有多大——因为有时受时间所限，完全精确的回测并不现实。
 
-Accurate backtesting is the foundation. Without it, all further analysis — whether conservative or aggressive — becomes
-unreliable.
+这并非在讨论过拟合。在考虑过拟合之前，你首先需要确信回测真实反映了实际成交。例如，如果你
+在 2025 年 1 月运行一个实盘策略，那么同一时段回测的结果应当与实盘结果高度吻合。只有当你验证
+回测能够精确复现实盘结果之后，才能进一步开展深入研究、参数优化以及过拟合相关的工作。
 
-Key Features
-============
+精确回测是一切的基础。没有它，后续所有分析——无论保守还是激进——都不可靠。
 
-* Working in `Numba <https://numba.pydata.org/>`_ JIT function (Python).
-* Complete tick-by-tick simulation with a customizable time interval or based on the feed and order receipt.
-* Full order book reconstruction based on Level-2 Market-By-Price and Level-3 Market-By-Order feeds.
-* Backtest accounting for both feed and order latency, using provided models or your own custom model.
-* Order fill simulation that takes into account the order queue position, using provided models or your own custom model.
-* Backtesting of multi-asset and multi-exchange models.
-* Live trading with the same algorithm code for backtesting and live: Binance Futures, Binance Spot, and Bybit (available from both Rust and Python).
+核心特性
+========
 
-Documentation
-=============
+回测引擎
+--------
 
-The upstream project maintains `full documentation <https://hftbacktest.readthedocs.io/>`_, which is still largely applicable. Note that the local ``docs/`` sources have been removed from this repository.
+* 支持 `Numba <https://numba.pydata.org/>`_ JIT 函数（Python）。
+* 完整的逐笔（tick-by-tick）模拟，时间间隔可自定义，或基于行情/订单接收事件驱动。
+* 基于 Level-2 Market-By-Price 与 Level-3 Market-By-Order 行情的全订单簿重建。
+* 回测计入行情与下单延迟，支持内置模型或自定义模型。
+* 订单成交模拟计入订单队列位置，支持内置模型或自定义模型。
+* 支持多资产、多交易所联合回测。
 
-Repository Structure
-====================
+实盘交易
+--------
 
-This is a Cargo workspace with the following members:
+* **研究到实盘零差异**：同一套策略算法同时用于回测与实盘，Rust 与 Python 均可调用。
+* **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
+  （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
+  覆盖所有已支持的交易所——策略切换 broker 只需改一行代码。
+* **事件驱动连接器**：每个交易所实现 ``Connector``/``ConnectorBuilder`` trait，通过共享内存
+  IPC（iceoryx2）与机器人通信。
+* **统一资金费事件**：``LiveEvent::Funding`` 在 Binance（WS 推送）、OKX（WS 推送）、
+  Hyperliquid（WS 推送）三家一致。
+* **防失控安全网**：每家交易所均提供倒计时全撤 / 断线自动撤单 / 定时全撤。
 
-* ``hftbacktest/`` — Core engine: event-driven tick-by-tick backtesting, market depth implementations, latency/queue/fee models, and the live trading bot.
-* ``hftbacktest-derive/`` — Procedural macros used by the core crate (``build_asset``, ``NpyDTyped``).
-* ``py-hftbacktest/`` — PyO3 bindings and the Python package (``hftbacktest``), including data utilities and performance statistics.
-* ``collector/`` — Historical market data collector for Binance, Bybit, and Hyperliquid.
-* ``connector/`` — Live trading connector process: a unified ``Connector``/``ConnectorBuilder`` trait per exchange (currently Binance Futures, Binance Spot, and Bybit), communicating with bots over shared-memory IPC (iceoryx2).
+数据
+----
 
-Getting Started
-===============
+* 历史行情采集器（WebSocket）：支持 Binance（USD-M / COIN-M / Spot）、Bybit、Hyperliquid。
+* 统一的 NumPy 事件格式，回测与实盘回放共用。
 
-Build the Rust workspace:
+架构
+====
+
+本仓库是一个 Cargo workspace，成员如下：
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Crate
+     - 职责
+   * - ``hftbacktest/``
+     - 核心引擎：事件驱动的逐笔回测、订单簿实现、延迟/队列/手续费模型、实盘机器人。
+   * - ``hftbacktest-derive/``
+     - 核心 crate 使用的过程宏（``build_asset``、``NpyDTyped``）。
+   * - ``py-hftbacktest/``
+     - PyO3 绑定与 Python 包（``hftbacktest``），包含数据工具与性能统计。
+   * - ``collector/``
+     - 历史行情采集器（WebSocket）：Binance、Bybit、Hyperliquid。
+   * - ``connector/``
+     - 实盘交易连接器进程：每个交易所实现统一 ``Connector``/``ConnectorBuilder`` 与
+       ``BrokerApi``，通过共享内存 IPC（iceoryx2）与机器人通信。
+
+端到端数据流::
+
+    collector ──► 原始行情 ──► 归一化 NumPy 事件 ──► hftbacktest（回测）
+                                                    └─► 实盘机器人（经 connector IPC）
+
+快速开始
+========
+
+构建 Rust workspace：
 
 .. code-block:: console
 
- cargo build --release
+    cargo build --release
 
-Install the Python package (requires Python 3.11+):
-
-.. code-block:: console
-
- pip install ./py-hftbacktest
-
-Or, during development:
+安装 Python 包（需要 Python 3.11+）：
 
 .. code-block:: console
 
- cd py-hftbacktest
- maturin develop
+    pip install ./py-hftbacktest
 
-On macOS (aarch64), building the Python extension additionally requires the
-linker flags defined in ``.cargo/config.toml`` (``-undefined dynamic_lookup``).
+开发模式下：
 
-Data Format
------------
+.. code-block:: console
 
-``hftbacktest`` digests a NumPy structured array of events. Each event has 8 fields in the following order:
+    cd py-hftbacktest
+    maturin develop
 
-* ``ev`` (u64): Event flags (depth/trade/snapshot/BBO, buy/sell, local/exchange, and so on).
-* ``exch_ts`` (i64): Exchange timestamp — when the event occurred on the exchange.
-* ``local_ts`` (i64): Local timestamp — when the event was received locally.
-* ``px`` (f64): Price.
-* ``qty`` (f64): Quantity.
-* ``order_id`` (u64): Order ID, used only by Level-3 Market-By-Order feeds.
-* ``ival`` (i64): Reserved for an additional integer value.
-* ``faval`` (f64): Reserved for an additional float value.
+在 macOS（aarch64）上构建 Python 扩展还需要 ``.cargo/config.toml`` 中定义的链接参数
+（``-undefined dynamic_lookup``）。
 
-Raw exchange feeds can be collected with ``collector/`` and then converted to
-this normalized format using the utilities in
-``py-hftbacktest/hftbacktest/data/``. Timestamps should use nanoseconds
-consistently, since the live bot operates in nanoseconds.
+数据格式
+--------
 
-A Quick Example
----------------
+``hftbacktest`` 消费一个 NumPy 结构化数组，每个事件包含 8 个字段，顺序如下：
 
-Get a glimpse of what backtesting with hftbacktest looks like with these code snippets:
+* ``ev`` (u64)：事件标志（深度/成交/快照/BBO、买/卖、本地/交易所等）。
+* ``exch_ts`` (i64)：交易所时间戳——事件在交易所发生的时间。
+* ``local_ts`` (i64)：本地时间戳——本地收到事件的时间。
+* ``px`` (f64)：价格。
+* ``qty`` (f64)：数量。
+* ``order_id`` (u64)：订单 ID，仅 Level-3 Market-By-Order 行情使用。
+* ``ival`` (i64)：预留整数字段。
+* ``fval`` (f64)：预留浮点字段。
+
+原始交易所行情可用 ``collector/`` 采集，再通过 ``py-hftbacktest/hftbacktest/data/`` 中的
+工具转换为该归一化格式。时间戳应统一使用纳秒，因为实盘机器人以纳秒为单位运行。
+
+一个快速示例
+------------
+
+下面是使用 hftbacktest 进行回测的做市策略示例：
 
 .. code-block:: python
 
@@ -113,7 +147,7 @@ Get a glimpse of what backtesting with hftbacktest looks like with these code sn
         tick_size = hbt.depth(asset_no).tick_size
         lot_size = hbt.depth(asset_no).lot_size
 
-        # in nanoseconds
+        # 单位为纳秒
         while hbt.elapse(10_000_000) == 0:
             hbt.clear_inactive_orders(asset_no)
 
@@ -122,12 +156,11 @@ Get a glimpse of what backtesting with hftbacktest looks like with these code sn
             c = 1
             hs = 1
 
-            # Alpha, it can be a combination of several indicators.
+            # Alpha，可以是多个指标的组合。
             forecast = 0
-            # In HFT, it can be various measurements of short-term market movements,
-            # such as the high-low range in the last X minutes.
+            # HFT 中通常是短期市场波动的各种度量，如最近 X 分钟的高低区间。
             volatility = 0
-            # Delta risk, it can be a combination of several risks.
+            # Delta 风险，可以是多个风险的组合。
             position = hbt.position(asset_no)
             risk = (c + volatility) * position
             half_spread = (c + volatility) * hs
@@ -136,22 +169,20 @@ Get a glimpse of what backtesting with hftbacktest looks like with these code sn
             notional_qty = 100
 
             depth = hbt.depth(asset_no)
-
             mid_price = (depth.best_bid + depth.best_ask) / 2.0
 
-            # fair value pricing = mid_price + a * forecast
-            #                      or underlying(correlated asset) + adjustment(basis + cost + etc) + a * forecast
-            # risk skewing = -b * risk
+            # 公允价值 = mid_price + a * forecast
+            #          或 标的(相关资产) + 调整项(基差 + 成本 + 等) + a * forecast
+            # 风险倾斜 = -b * risk
             reservation_price = mid_price + a * forecast - b * risk
             new_bid = reservation_price - half_spread
             new_ask = reservation_price + half_spread
 
             new_bid_tick = min(np.round(new_bid / tick_size), depth.best_bid_tick)
             new_ask_tick = max(np.round(new_ask / tick_size), depth.best_ask_tick)
-
             order_qty = np.round(notional_qty / mid_price / lot_size) * lot_size
 
-            # Elapses a process time.
+            # 推进处理时间。
             if not hbt.elapse(1_000_000) != 0:
                 return False
 
@@ -177,34 +208,150 @@ Get a glimpse of what backtesting with hftbacktest looks like with these code sn
                         hbt.cancel(asset_no, order.order_id, False)
                         last_order_id = order.order_id
 
-            # It can be combined with a grid trading strategy by submitting multiple orders to capture better spreads and
-            # have queue position.
-            # This approach requires more sophisticated logic to efficiently manage resting orders in the order book.
             if update_bid:
-                # There is only one order at a given price, with new_bid_tick used as the order ID.
+                # 同一价格只挂一个单，以 new_bid_tick 作为订单 ID。
                 order_id = new_bid_tick
                 hbt.submit_buy_order(asset_no, order_id, new_bid_tick * tick_size, order_qty, GTX, LIMIT, False)
                 last_order_id = order_id
             if update_ask:
-                # There is only one order at a given price, with new_ask_tick used as the order ID.
                 order_id = new_ask_tick
                 hbt.submit_sell_order(asset_no, order_id, new_ask_tick * tick_size, order_qty, GTX, LIMIT, False)
                 last_order_id = order_id
 
-            # All order requests are considered to be requested at the same time.
-            # Waits until one of the order responses is received.
+            # 所有订单请求视为同一时刻发出。
+            # 等待收到其中任一订单的响应。
             if last_order_id >= 0:
-                # Waits for the order response for a maximum of 5 seconds.
+                # 最长等待 5 秒订单响应。
                 timeout = 5_000_000_000
                 if not hbt.wait_order_response(asset_no, last_order_id, timeout):
                     return False
 
         return True
 
+实盘交易
+========
+
+连接器
+------
+
+以独立进程运行连接器，通过共享内存 IPC（iceoryx2）向机器人发布归一化事件：
+
+.. code-block:: console
+
+    cargo run --release -p connector -- <名称> <连接器> <配置文件.toml>
+
+示例：
+
+.. code-block:: console
+
+    connector my-bf binancefutures binancefutures.toml
+    connector my-okx okx okx.toml
+    connector my-hl hyperliquid hyperliquid.toml
+
+配置模板位于 ``connector/examples/`` 中（每个文件均注释了主网/测试网地址与签名方式，
+例如 OKX 模拟盘、Hyperliquid API 钱包配置）。
+
+支持的交易所
+------------
+
+.. list-table::
+   :widths: 20 30 15 35
+   :header-rows: 1
+
+   * - 连接器
+     - 市场
+     - 状态
+     - 说明
+   * - ``binancefutures``
+     - Binance USD-M 永续合约
+     - ✅ 生产可用
+     - 测试网/主网；symbol 小写；统一 API 已接入并通过实盘冒烟
+   * - ``okx``
+     - OKX V5 SWAP
+     - ✅ 生产可用
+     - 实盘 + 模拟盘（``x-simulated-trading``）；统一 API 已接入并通过实盘冒烟
+   * - ``hyperliquid``
+     - Hyperliquid 永续合约
+     - ✅ 生产可用
+     - EIP-712 phantom-agent 签名；主网/测试网；统一 API 已接入并通过实盘冒烟
+   * - ``binancespot``
+     - Binance 现货
+     - 🚧 开发中
+     - 实盘框架已搭建；统一 API 尚未接线
+   * - ``bybit``
+     - Bybit 线性合约
+     - 🚧 开发中
+     - 实盘框架已搭建；统一 API 尚未接线
+
+统一 Broker API
+---------------
+
+连接器提供统一 API 层（``connector/src/api.rs``）：一个 ``BrokerApi`` trait + 一套统一的
+行情、订单管理与账户管理返回结构。同一套策略代码可以自由切换 broker：
+
+.. code-block:: rust
+
+    let api: Box<dyn BrokerApi> = match broker {
+        "binance"    => Box::new(BinanceFuturesClient::new(url, key, secret)),
+        "okx"        => Box::new(OkxClient::new(url, key, secret, passphrase)),
+        "hyperliquid"=> Box::new(HyperliquidClient::new(info_url, exchange_url)),
+        _ => unreachable!(),
+    };
+    let ticker = api.get_ticker("BTCUSDT").await?;
+    let book = api.get_order_book("BTCUSDT", 20).await?;
+    let funding = api.get_funding_rate("BTCUSDT").await?;
+
+各交易所统一 API 的覆盖情况（订单/持仓/账户/行情/订单簿/K 线/资金费/持仓量/成交/费率/
+杠杆/流水）见 ``connector/API_COVERAGE.md``；对照官方文档的全量差距分析见
+``connector/API_GAP_ANALYSIS.md``。
+
+测试
+====
+
+.. code-block:: console
+
+    cargo test --all-features
+
+测试套件共 164 个用例，覆盖每个已实现接口的「响应解析 → 统一结构映射」、请求体构建、
+WebSocket 消息解析，以及 Hyperliquid EIP-712 wire 序列化。
+
+实盘冒烟测试（需要网络，默认跳过）：
+
+.. code-block:: console
+
+    # Hyperliquid 公共行情
+    cargo test --all-features hyperliquid::brokerapi::tests::live -- --ignored --nocapture
+
+    # OKX 公共行情（如需要可走代理）
+    HTTPS_PROXY=127.0.0.1:7897 cargo test --all-features okx::brokerapi::tests::live -- --ignored --nocapture
+
+    # Binance USD-M 测试网行情（trade/depth/markPrice/bookTicker）
+    cargo test --all-features binancefutures::market_data_stream::tests::live_ws -- --ignored --nocapture
+
+    # Hyperliquid userFundings WebSocket 订阅
+    HYPERLIQUID_USER=0x... cargo test --all-features hyperliquid::ws::tests::live_user_fundings -- --ignored --nocapture
+
+文档
+====
+
+* 上游项目维护着完整的 `官方文档 <https://hftbacktest.readthedocs.io/>`_，大部分仍然适用。
+  注意本仓库已移除本地 ``docs/`` 文档源。
+* 连接器相关：`connector/README.md <connector/README.md>`_（架构与实现指南）、
+  `API 覆盖清单 <connector/API_COVERAGE.md>`_、
+  `API 差距分析 <connector/API_GAP_ANALYSIS.md>`_、
+  `连接器测试模板 <connector/TESTING_TEMPLATE.md>`_。
+
+路线图
+======
+
+* 为 ``binancespot`` 与 ``bybit`` 连接器接入统一 API。
+* 基于同一套 ``Connector`` + ``BrokerApi`` 模型扩展更多交易所连接器。
+
 License
 =======
 
-MIT. See ``LICENSE``. The original work is by nkaz001 (upstream `hftbacktest <https://github.com/nkaz001/hftbacktest>`_).
+MIT。见 ``LICENSE``。原始工作来自 nkaz001（上游
+`hftbacktest <https://github.com/nkaz001/hftbacktest>`_）。
 
 .. |license| image:: https://img.shields.io/badge/License-MIT-green.svg
     :alt: License
