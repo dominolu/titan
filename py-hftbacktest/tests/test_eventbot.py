@@ -91,23 +91,23 @@ class TestEventBot(unittest.TestCase):
         stats = np.zeros(6)  # tick_calls, tick_n_sum, first_px_sum, bar_calls, bar_open, bar_vol
 
         @njit
-        def on_tick(ts, trades, n, ctx):
-            ctx[0] += 1
-            ctx[1] += n
-            if n > 0:
-                ctx[2] += trades[0].px
+        def on_tick(ctx):
+            ctx.state[0] += 1
+            ctx.state[1] += ctx.n
+            if ctx.n > 0:
+                ctx.state[2] += ctx.trades[0].px
 
         @njit
-        def on_bar(open_ts, o, h, l, c, v, ctx):
-            ctx[3] += 1
-            ctx[4] = o
-            ctx[5] = v
+        def on_bar(ctx):
+            ctx.state[3] += 1
+            ctx.state[4] = ctx.o
+            ctx.state[5] = ctx.v
 
         ok = run_event_bot(
             bot,
             on_tick,
             on_bar,
-            ctx=stats,
+            state=stats,
             frame_interval=500_000_000,
             bar_interval=1_000_000_000,
         )
@@ -127,23 +127,23 @@ class TestEventBot(unittest.TestCase):
     def test_on_tick_requires_njit_handler(self):
         bot = build_mock_bot()
         with self.assertRaises(TypeError):
-            run_event_bot(bot, lambda ts, trades, n, ctx: None)
+            run_event_bot(bot, lambda ctx: None)
 
     def test_on_bar_optional(self):
         bot = build_mock_bot()
         stats = np.zeros(2)
 
         @njit
-        def on_tick(ts, trades, n, ctx):
-            ctx[0] += 1
-            ctx[1] += n
+        def on_tick(ctx):
+            ctx.state[0] += 1
+            ctx.state[1] += ctx.n
 
         run_event_bot(
             bot,
             on_tick,
             frame_interval=500_000_000,
             bar_interval=1_000_000_000,
-            ctx=stats,
+            state=stats,
         )
         self.assertEqual(stats[0], 3)
         self.assertEqual(stats[1], 5)
