@@ -1,9 +1,5 @@
 target/
 
-# Python extension build artifacts
-py-hftbacktest/hftbacktest/_hftbacktest*.so
-py-hftbacktest/hftbacktest/*.dylib
-py-hftbacktest/hftbacktest/*.dylib.dSYM/
 
 # macOS
 .DS_Store
