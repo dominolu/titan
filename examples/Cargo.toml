@@ -1,0 +1,12 @@
+[package]
+name = "titan-examples"
+version = "0.1.0"
+edition = "2024"
+description = "Runnable example strategies for the Titan HFT framework (backtest + live)."
+
+[dependencies]
+hftbacktest = { path = "../hftbacktest" }
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+tracing = "0.1.43"
+tracing-subscriber = "0.3.22"

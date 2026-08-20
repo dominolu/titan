@@ -466,6 +466,14 @@ impl AsRef<str> for OrdType {
 ///
 /// **Usage:**
 /// ```
+/// use std::any::Any;
+/// use hftbacktest::types::AnyClone;
+///
+/// #[derive(Clone)]
+/// struct QueuePos {
+///     pos: f64,
+/// }
+///
 /// impl AnyClone for QueuePos {
 ///     fn as_any(&self) -> &dyn Any {
 ///         self

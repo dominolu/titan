@@ -3,8 +3,9 @@ resolver = "2"
 members = [
   "hftbacktest",
   "hftbacktest-derive",
-  "collector"
-, "connector"]
+  "collector",
+  "connector",
+  "examples"]
 
 [profile.dev]
 opt-level = 0

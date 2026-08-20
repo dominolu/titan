@@ -86,9 +86,10 @@ unsafe impl POD for OrderLatencyRow {}
 /// rejection notification.
 ///
 /// **Example**
-/// ```
+/// ```no_run
 /// use hftbacktest::backtest::{DataSource, models::IntpOrderLatency};
 ///
+/// // Needs a real order-latency data file (npz, produced by the collector).
 /// let latency_model = IntpOrderLatency::new(
 ///     vec![DataSource::File("latency_20240215.npz".to_string())],
 ///     0

@@ -342,7 +342,52 @@ where
     MD: MarketDepth,
     S: Strategy<MD, E>,
 {
+    run_strategy_until(hbt, strategy, ctx, frame_interval, bar_interval, None)
+}
+
+/// Runs [`run_strategy`] for at most `max_duration_ns` of bot clock time.
+///
+/// In live mode `hbt.elapse()` never signals end-of-data (the connector keeps
+/// streaming), so a live driver needs a deadline to stop cleanly. The check happens
+/// at frame boundaries: the loop stops on the first frame whose timestamp is at
+/// least `start_ts + max_duration_ns`. In backtesting, `current_timestamp()` is data
+/// time, so the same function can bound a backtest run too.
+pub fn run_strategy_for<MD, E, S>(
+    hbt: &mut impl Bot<MD, Error = E>,
+    strategy: &mut S,
+    ctx: &mut StrategyCtx,
+    frame_interval: i64,
+    bar_interval: i64,
+    max_duration_ns: i64,
+) -> Result<(), E>
+where
+    MD: MarketDepth,
+    S: Strategy<MD, E>,
+{
+    run_strategy_until(
+        hbt,
+        strategy,
+        ctx,
+        frame_interval,
+        bar_interval,
+        Some(max_duration_ns),
+    )
+}
+
+fn run_strategy_until<MD, E, S>(
+    hbt: &mut impl Bot<MD, Error = E>,
+    strategy: &mut S,
+    ctx: &mut StrategyCtx,
+    frame_interval: i64,
+    bar_interval: i64,
+    max_duration_ns: Option<i64>,
+) -> Result<(), E>
+where
+    MD: MarketDepth,
+    S: Strategy<MD, E>,
+{
     let n_assets = hbt.num_assets();
+    let start_ts = hbt.current_timestamp();
     // asset_no -> (market_idx, instrument_idx)，由 ctx 结构推导，避免与 spec 脱节。
     let mut locs: Vec<(usize, usize)> = vec![(0, 0); n_assets];
     for (m, market) in ctx.markets.iter().enumerate() {
@@ -384,7 +429,13 @@ where
             hbt.clear_last_trades(Some(asset_no));
         }
 
-        if r != ElapseResult::Ok {
+        let expired = match max_duration_ns {
+            Some(max_duration_ns) => {
+                hbt.current_timestamp().saturating_sub(start_ts) >= max_duration_ns
+            }
+            None => false,
+        };
+        if r != ElapseResult::Ok || expired {
             break;
         }
     }
