@@ -68,6 +68,8 @@ impl Default for Bar {
 /// Per-instrument frame snapshot + persistent strategy state.
 #[derive(Debug, Clone)]
 pub struct InstrumentCtx {
+    /// The bot's flat asset number this instrument maps to.
+    pub asset_no: usize,
     pub symbol_id: i64,
     pub tick_size: f64,
     pub lot_size: f64,
@@ -99,6 +101,7 @@ pub struct InstrumentCtx {
 impl Default for InstrumentCtx {
     fn default() -> Self {
         Self {
+            asset_no: 0,
             symbol_id: 0,
             tick_size: 0.0,
             lot_size: 0.0,
@@ -128,8 +131,12 @@ impl Default for InstrumentCtx {
 impl InstrumentCtx {
     /// Zero-copy view of this frame's trades.
     ///
-    /// Safety contract: the pointer is valid only during the `on_tick`/`on_bar` callback
-    /// that filled this context; the driver clears the bot's trade buffer afterwards.
+    /// **Frame-scoped contract**: the returned slice is valid only during the
+    /// `on_tick`/`on_bar` callback that filled this context. The driver refreshes the
+    /// snapshot and clears the bot's trade buffer on every frame, so a `StrategyCtx`
+    /// cached across callbacks must not be used to read `trades()` later — it will
+    /// observe stale counts/pointers from the frame it was filled in. Snapshot scalars
+    /// (BBO, bar, position) are safe to cache; only the trades view is frame-scoped.
     pub fn trades(&self) -> &[Event] {
         if self.n == 0 {
             return &[];
@@ -166,8 +173,6 @@ pub struct StrategyCtx {
     pub next_bar_ts: i64,
     pub state_global: [f64; STATE_SIZE],
     pub markets: Vec<MarketCtx>,
-    /// asset_no -> (market_idx, instrument_idx).
-    locs: Vec<(usize, usize)>,
 }
 
 impl Default for StrategyCtx {
@@ -177,7 +182,6 @@ impl Default for StrategyCtx {
             next_bar_ts: 0,
             state_global: [0.0; STATE_SIZE],
             markets: Vec::new(),
-            locs: Vec::new(),
         }
     }
 }
@@ -199,14 +203,12 @@ impl StrategyCtx {
             ));
         }
 
-        // asset_no -> (market_idx, instrument_idx)
-        let mut locs: Vec<(usize, usize)> = vec![(0, 0); num_assets];
         let mut markets = Vec::with_capacity(spec.markets.len());
         for (m, assets) in spec.markets.iter().enumerate() {
             let mut instruments = Vec::with_capacity(assets.len());
             for (i, &asset_no) in assets.iter().enumerate() {
-                locs[asset_no] = (m, i);
                 instruments.push(InstrumentCtx {
+                    asset_no,
                     symbol_id: spec.symbol_ids[asset_no],
                     ..Default::default()
                 });
@@ -217,13 +219,10 @@ impl StrategyCtx {
                 ..Default::default()
             });
         }
-        let mut ctx = StrategyCtx {
+        Ok(StrategyCtx {
             markets,
             ..Default::default()
-        };
-        // 用 locs 构建 asset → (m, i) 映射，存进 ctx 以便 driver 使用。
-        ctx.locs = locs;
-        Ok(ctx)
+        })
     }
 }
 
@@ -231,6 +230,14 @@ impl StrategyCtx {
 ///
 /// `hbt` is passed so callbacks can place/cancel orders and query resting orders through
 /// the bot; `ctx` carries the two-level market snapshot and persistent state.
+///
+/// Context lifetime rules:
+/// * `ctx` is valid during the callback and is reused across frames — the strategy keeps
+///   its own state in the `state` slots, not by holding `ctx` between calls.
+/// * `ctx.instruments[..].trades()` is frame-scoped (see [`InstrumentCtx::trades`]).
+/// * State slot conventions: `state_global` for cross-market state, `market_state` for
+///   per-venue state, `instrument.state` for per-symbol state. Slot assignment should be
+///   documented per strategy (e.g. constants `SLOT_*`); no two meanings per slot.
 pub trait Strategy<MD: MarketDepth, E> {
     /// Called once per global frame.
     fn on_tick(&mut self, hbt: &mut impl Bot<MD, Error = E>, ctx: &mut StrategyCtx);
@@ -240,8 +247,8 @@ pub trait Strategy<MD: MarketDepth, E> {
 }
 
 /// Fills one instrument's frame snapshot directly from the bot.
-fn fill<MD: MarketDepth>(hbt: &impl Bot<MD>, asset_no: usize, inst: &mut InstrumentCtx) {
-    inst.frame_ts = hbt.current_timestamp();
+fn fill<MD: MarketDepth>(hbt: &impl Bot<MD>, asset_no: usize, frame_ts: i64, inst: &mut InstrumentCtx) {
+    inst.frame_ts = frame_ts;
 
     let depth = hbt.depth(asset_no);
     inst.bid = depth.best_bid();
@@ -336,7 +343,15 @@ where
     S: Strategy<MD, E>,
 {
     let n_assets = hbt.num_assets();
-    let locs = ctx.locs.clone();
+    // asset_no -> (market_idx, instrument_idx)，由 ctx 结构推导，避免与 spec 脱节。
+    let mut locs: Vec<(usize, usize)> = vec![(0, 0); n_assets];
+    for (m, market) in ctx.markets.iter().enumerate() {
+        for (i, inst) in market.instruments.iter().enumerate() {
+            if inst.asset_no < n_assets {
+                locs[inst.asset_no] = (m, i);
+            }
+        }
+    }
     loop {
         let r = hbt.elapse(frame_interval)?;
         let ts = hbt.current_timestamp();
@@ -345,7 +360,7 @@ where
         for asset_no in 0..n_assets {
             let (m, i) = locs[asset_no];
             let inst = &mut ctx.markets[m].instruments[i];
-            fill(hbt, asset_no, inst);
+            fill(hbt, asset_no, ts, inst);
         }
 
         strategy.on_tick(hbt, ctx);
@@ -397,7 +412,10 @@ mod tests {
             },
         },
         depth::HashMapMarketDepth,
-        types::{DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT},
+        types::{
+            DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT, OrdType,
+            TimeInForce,
+        },
     };
 
     fn event(ev: u64, ts: i64, px: f64, qty: f64) -> Event {
@@ -589,5 +607,140 @@ mod tests {
         assert_eq!(strategy.trades1, 3);
         assert_eq!(ctx.markets.len(), 1);
         assert_eq!(ctx.markets[0].instruments.len(), 2);
+    }
+
+    #[test]
+    fn test_order_placement_from_callback() {
+        // P1-1: 回调里通过 hbt 下单 → 后续成交 → 持仓更新。
+        let mut backtester = build_backtest();
+        let spec = StrategySpec {
+            markets: vec![vec![0]],
+            symbol_ids: vec![1],
+        };
+        let mut ctx = StrategyCtx::new(&spec, 1).unwrap();
+
+        struct OrderStrategy {
+            submitted: bool,
+            final_position: f64,
+        }
+
+        impl<MD: MarketDepth> Strategy<MD, BacktestError> for OrderStrategy {
+            fn on_tick(
+                &mut self,
+                hbt: &mut impl Bot<MD, Error = BacktestError>,
+                _ctx: &mut StrategyCtx,
+            ) {
+                if !self.submitted {
+                    // 买一挂在远高于盘口的价格，后续卖单会成交它。
+                    hbt.submit_buy_order(
+                        0,
+                        1,
+                        200.0,
+                        1.0,
+                        TimeInForce::GTC,
+                        OrdType::Limit,
+                        false,
+                    )
+                    .unwrap();
+                    self.submitted = true;
+                } else {
+                    self.final_position = hbt.position(0);
+                }
+            }
+        }
+
+        let mut strategy = OrderStrategy {
+            submitted: false,
+            final_position: 0.0,
+        };
+        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+
+        assert!(strategy.submitted);
+        assert!(
+            (strategy.final_position - 1.0).abs() < 1e-9,
+            "order should fill and set position, got {}",
+            strategy.final_position
+        );
+        assert!((backtester.position(0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_bar_reset_between_bars() {
+        // P1-2: on_bar 重置后，第二根 bar 的 OHLCV 必须独立正确。
+        let data = data_for(
+            &[(100.0, 1.0), (99.0, 2.0)],
+            &[(101.0, 1.0), (102.0, 2.0)],
+            &[
+                (1_100_000_000, 100.0, 1.0, false),
+                (1_200_000_000, 101.0, 2.0, true),
+                (1_400_000_000, 100.5, 1.0, false),
+                (1_700_000_000, 102.0, 1.0, true),
+                (2_200_000_000, 103.0, 2.0, true),
+                (2_400_000_000, 102.5, 1.0, false),
+            ],
+        );
+        let asset = L2AssetBuilder::default()
+            .data(vec![DataSource::Data(data)])
+            .latency_model(ConstantLatency::new(0, 0))
+            .asset_type(LinearAsset::new(1.0))
+            .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+            .queue_model(ProbQueueModel::new(PowerProbQueueFunc3::new(3.0)))
+            .exchange(NoPartialFillExchange)
+            .depth(|| HashMapMarketDepth::new(0.1, 0.001))
+            .last_trades_capacity(16)
+            .build()
+            .unwrap();
+        let mut backtester = Backtest::builder().add_asset(asset).build().unwrap();
+        let spec = StrategySpec {
+            markets: vec![vec![0]],
+            symbol_ids: vec![1],
+        };
+        let mut ctx = StrategyCtx::new(&spec, 1).unwrap();
+
+        struct BarStrategy {
+            bars: i64,
+            bar1: Bar,
+            bar2: Bar,
+        }
+
+        impl<MD: MarketDepth> Strategy<MD, BacktestError> for BarStrategy {
+            fn on_tick(
+                &mut self,
+                _hbt: &mut impl Bot<MD, Error = BacktestError>,
+                _ctx: &mut StrategyCtx,
+            ) {
+            }
+
+            fn on_bar(
+                &mut self,
+                _hbt: &mut impl Bot<MD, Error = BacktestError>,
+                ctx: &mut StrategyCtx,
+            ) {
+                self.bars += 1;
+                let bar = ctx.markets[0].instruments[0].bar;
+                match self.bars {
+                    1 => self.bar1 = bar,
+                    2 => self.bar2 = bar,
+                    _ => {}
+                }
+            }
+        }
+
+        let mut strategy = BarStrategy {
+            bars: 0,
+            bar1: Bar::default(),
+            bar2: Bar::default(),
+        };
+        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+
+        assert_eq!(strategy.bars, 2);
+        // bar1: trades 1.1/1.2/1.4
+        assert!((strategy.bar1.o - 100.0).abs() < 1e-9);
+        assert!((strategy.bar1.c - 100.5).abs() < 1e-9);
+        assert!((strategy.bar1.v - 4.0).abs() < 1e-9);
+        // bar2: trade 1.7（重置后独立聚合，不含 bar1 数据）
+        assert!((strategy.bar2.o - 102.0).abs() < 1e-9);
+        assert!((strategy.bar2.c - 102.0).abs() < 1e-9);
+        assert!((strategy.bar2.v - 1.0).abs() < 1e-9);
     }
 }
