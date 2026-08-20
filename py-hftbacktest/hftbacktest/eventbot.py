@@ -18,7 +18,7 @@ Every frame the loop calls a Rust fill function (``fill_strategy_ctx``) once per
 refresh the snapshot fields directly from the bot — zero-copy, no Python in the hot path.
 """
 
-from ctypes import CDLL, c_int32, c_uint64, c_void_p
+from ctypes import CDLL, POINTER, byref, c_int32, c_size_t, c_uint64, c_void_p
 
 import numba
 import numpy as np
@@ -101,6 +101,34 @@ _lib = CDLL(_hftbacktest.__file__)
 _fill_strategy_ctx = _lib.fill_strategy_ctx
 _fill_strategy_ctx.restype = None
 _fill_strategy_ctx.argtypes = [c_void_p, c_int32, c_uint64, c_uint64]
+
+_strategy_ctx_layout = _lib.strategy_ctx_layout
+_strategy_ctx_layout.restype = None
+_strategy_ctx_layout.argtypes = [
+    POINTER(c_size_t),
+    POINTER(c_size_t),
+    POINTER(c_size_t),
+]
+
+
+def _check_layout():
+    """Verifies the Python dtype mirrors exactly match the Rust structs."""
+    instr = c_size_t()
+    market = c_size_t()
+    strategy = c_size_t()
+    _strategy_ctx_layout(byref(instr), byref(market), byref(strategy))
+    assert instr.value == instrument_ctx_dtype.itemsize, (
+        f"InstrumentCtx layout mismatch: Rust={instr.value} Python={instrument_ctx_dtype.itemsize}"
+    )
+    assert market.value == market_ctx_dtype.itemsize, (
+        f"MarketCtx layout mismatch: Rust={market.value} Python={market_ctx_dtype.itemsize}"
+    )
+    assert strategy.value == strategy_ctx_dtype.itemsize, (
+        f"StrategyCtx layout mismatch: Rust={strategy.value} Python={strategy_ctx_dtype.itemsize}"
+    )
+
+
+_check_layout()
 
 
 @njit

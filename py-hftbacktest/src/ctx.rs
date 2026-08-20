@@ -211,3 +211,18 @@ pub extern "C" fn fill_strategy_ctx(
         _ => {}
     }
 }
+
+/// Exports the canonical struct sizes so Python can verify its mirrored dtypes match the
+/// Rust layout (protects against silent memory corruption when fields are added).
+#[unsafe(no_mangle)]
+pub extern "C" fn strategy_ctx_layout(
+    instr: *mut usize,
+    market: *mut usize,
+    strategy: *mut usize,
+) {
+    unsafe {
+        *instr = size_of::<InstrumentCtx>();
+        *market = size_of::<MarketCtx>();
+        *strategy = size_of::<StrategyCtx>();
+    }
+}
