@@ -9,8 +9,8 @@ use hftbacktest::{
     types::{OrdType, TimeInForce},
 };
 
-pub type HashMapMarketDepthLiveBot = LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth>;
-pub type ROIVectorMarketDepthLiveBot = LiveBot<IceoryxUnifiedChannel, ROIVectorMarketDepth>;
+pub(crate) type HashMapMarketDepthLiveBot = LiveBot<IceoryxUnifiedChannel, HashMapMarketDepth>;
+pub(crate) type ROIVectorMarketDepthLiveBot = LiveBot<IceoryxUnifiedChannel, ROIVectorMarketDepth>;
 
 fn handle_result(result: Result<ElapseResult, BotError>) -> i64 {
     match result {

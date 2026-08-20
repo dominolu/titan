@@ -9,8 +9,8 @@ use hftbacktest::{
     types::{OrdType, TimeInForce},
 };
 
-type HashMapMarketDepthBacktest = Backtest<HashMapMarketDepth>;
-type ROIVectorMarketDepthBacktest = Backtest<ROIVectorMarketDepth>;
+pub(crate) type HashMapMarketDepthBacktest = Backtest<HashMapMarketDepth>;
+pub(crate) type ROIVectorMarketDepthBacktest = Backtest<ROIVectorMarketDepth>;
 
 fn handle_result(result: Result<ElapseResult, BacktestError>) -> i64 {
     match result {

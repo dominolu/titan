@@ -56,6 +56,7 @@ use pyo3::{
 use crate::live::{HashMapMarketDepthLiveBot, ROIVectorMarketDepthLiveBot};
 
 mod backtest;
+mod ctx;
 mod depth;
 mod fuse;
 #[cfg(feature = "live")]
