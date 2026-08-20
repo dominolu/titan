@@ -56,22 +56,6 @@ Titan
 
     cargo build --release
 
-安装 Python 包（需要 Python 3.11+）：
-
-.. code-block:: console
-
-    pip install ./py-hftbacktest
-
-开发模式下：
-
-.. code-block:: console
-
-    cd py-hftbacktest
-    maturin develop
-
-在 macOS（aarch64）上构建 Python 扩展还需要 ``.cargo/config.toml`` 中定义的链接参数
-（``-undefined dynamic_lookup``）。
-
 数据格式
 --------
 
@@ -86,8 +70,8 @@ Titan
 * ``ival`` (i64)：预留整数字段。
 * ``fval`` (f64)：预留浮点字段。
 
-原始交易所行情可用 ``collector/`` 采集，再通过 ``py-hftbacktest/hftbacktest/data/`` 中的
-工具转换为该归一化格式。时间戳应统一使用纳秒，因为实盘机器人以纳秒为单位运行。
+原始交易所行情可用 ``collector/`` 采集，转换为该归一化格式后即可回测。
+时间戳应统一使用纳秒，因为实盘机器人以纳秒为单位运行。
 
 一个快速示例
 ------------
