@@ -169,6 +169,25 @@ Titan
 
         return True
 
+Rust 版做市示例策略
+-------------------
+
+同一套做市逻辑的 Rust 实现位于 ``examples/`` crate
+（`examples/src/market_making.rs <examples/src/market_making.rs>`_），通过
+``Strategy`` trait 的 ``on_tick``/``on_bar`` 回调驱动，回测与实盘共用一份代码：
+
+.. code-block:: console
+
+    # 回测（无数据文件时自动使用合成 demo 数据）
+    cargo run -p titan-examples --bin backtest
+
+    # 实盘：连接器进程 + LiveBot + 同一策略
+    cargo run -p connector --features okx -- --name my-okx --connector okx --config connector/examples/okx.toml
+    cargo run -p titan-examples --bin live -- --connector-name my-okx --symbol BTC-USDT-SWAP
+
+``on_tick``/``on_bar`` 的完整用法（两级 ctx、状态槽、下单接口）见
+`docs/rust_strategy.md <docs/rust_strategy.md>`_。
+
 实盘交易
 ========
 
@@ -254,7 +273,10 @@ WebSocket 消息解析，以及 Hyperliquid EIP-712 wire 序列化。
 ====
 
 * 上游项目维护着完整的 `官方文档 <https://hftbacktest.readthedocs.io/>`_，大部分仍然适用。
-  注意本仓库已移除本地 ``docs/`` 文档源。
+  注意本仓库已移除上游的 ``docs/`` 文档源，仅保留与当前代码对应的
+  ``docs/rust_strategy.md``。
+* Rust 策略（``Strategy`` trait）用法：`docs/rust_strategy.md <docs/rust_strategy.md>`_。
+* Rust 策略实盘端到端验证记录：`docs/live_e2e_record.md <docs/live_e2e_record.md>`_。
 * 连接器相关：`connector/README.md <connector/README.md>`_（架构与实现指南）、
   `API 覆盖清单 <connector/API_COVERAGE.md>`_、
   `API 差距分析 <connector/API_GAP_ANALYSIS.md>`_、

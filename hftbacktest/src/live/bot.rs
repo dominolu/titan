@@ -172,12 +172,15 @@ impl<MD> LiveBotBuilder<MD> {
 /// Provides the same interface as the backtesters in [`backtest`](`crate::backtest`).
 ///
 /// ```
-/// use hftbacktest::{live::{Instrument, LiveBot}, prelude::HashMapMarketDepth};
+/// use hftbacktest::{
+///     live::{Instrument, LiveBotBuilder, ipc::iceoryx::IceoryxUnifiedChannel},
+///     prelude::HashMapMarketDepth,
+/// };
 ///
 /// let tick_size = 0.1;
 /// let lot_size = 1.0;
 ///
-/// let mut hbt = LiveBot::builder()
+/// let mut hbt = LiveBotBuilder::new()
 ///     .register(Instrument::new(
 ///         "connector_name",
 ///         "symbol",
@@ -186,7 +189,7 @@ impl<MD> LiveBotBuilder<MD> {
 ///         HashMapMarketDepth::new(tick_size, lot_size),
 ///         0
 ///     ))
-///     .build()
+///     .build::<IceoryxUnifiedChannel>()
 ///     .unwrap();
 /// ```
 pub struct LiveBot<CH, MD> {
