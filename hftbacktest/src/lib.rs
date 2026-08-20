@@ -33,6 +33,9 @@ pub mod backtest;
 /// Provides market depth implementations.
 pub mod depth;
 
+/// Provides the Rust-native callback strategy interface and two-level strategy context.
+pub mod strategy;
+
 /// Provides live trading bot features.
 #[cfg(feature = "live")]
 pub mod live;

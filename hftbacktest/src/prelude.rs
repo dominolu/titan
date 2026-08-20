@@ -1,1 +1,1 @@
-pub use crate::{depth::*, types::*, utils::*};
+pub use crate::{depth::*, strategy::*, types::*, utils::*};

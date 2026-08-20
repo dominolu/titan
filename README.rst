@@ -32,6 +32,8 @@ Titan
 --------
 
 * **研究到实盘零差异**：同一套策略算法同时用于回测与实盘，Rust 与 Python 均可调用。
+* **Rust 原生回调策略**（``hftbacktest::strategy``）：``Strategy`` trait + 两级 ctx
+  （市场 → 品种），``on_tick``/``on_bar`` 全局帧驱动，与 ``elapse`` 同级性能。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
   （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
   覆盖所有已支持的交易所——策略切换 broker 只需改一行代码。
