@@ -1,13 +1,7 @@
 use std::collections::{BTreeMap, HashMap, hash_map::Entry};
 
 use super::{
-    ApplySnapshot,
-    INVALID_MAX,
-    INVALID_MIN,
-    L2MarketDepth,
-    L3MarketDepth,
-    L3Order,
-    MarketDepth,
+    ApplySnapshot, INVALID_MAX, INVALID_MIN, L2MarketDepth, L3MarketDepth, L3Order, MarketDepth,
 };
 use crate::{
     backtest::{BacktestError, data::Data},

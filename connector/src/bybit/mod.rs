@@ -281,6 +281,7 @@ impl ConnectorBuilder for Bybit {
     }
 }
 
+#[async_trait::async_trait]
 impl Connector for Bybit {
     fn register(&mut self, symbol: String) {
         let mut symbols = self.symbols.lock().unwrap();
@@ -348,6 +349,25 @@ impl Connector for Bybit {
                     ))))
                     .unwrap();
             }
+        }
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let mut errors = Vec::new();
+        for symbol in symbols {
+            if let Err(error) = self
+                .client
+                .cancel_all_orders(&self.config.category, &symbol)
+                .await
+            {
+                errors.push(format!("{symbol}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 }

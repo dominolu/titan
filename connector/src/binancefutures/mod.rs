@@ -1,5 +1,5 @@
-mod market_data_stream;
 mod brokerapi;
+mod market_data_stream;
 mod msg;
 mod ordermanager;
 mod rest;
@@ -95,6 +95,13 @@ pub struct Config {
     api_key: String,
     #[serde(default)]
     secret: String,
+    /// Exchange-side countdown cancel timeout. Zero disables the heartbeat.
+    #[serde(default = "default_safety_timeout_ms")]
+    safety_timeout_ms: u64,
+}
+
+fn default_safety_timeout_ms() -> u64 {
+    30_000
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
@@ -109,6 +116,28 @@ pub struct BinanceFutures {
 }
 
 impl BinanceFutures {
+    fn start_safety_heartbeat(&self) {
+        let timeout_ms = self.config.safety_timeout_ms;
+        if timeout_ms == 0 || self.config.api_key.is_empty() || self.config.secret.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let symbols = self.symbols.clone();
+        tokio::spawn(async move {
+            let refresh_ms = (timeout_ms / 3).max(1_000);
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(refresh_ms));
+            loop {
+                interval.tick().await;
+                let registered: Vec<String> = symbols.lock().unwrap().iter().cloned().collect();
+                for symbol in registered {
+                    if let Err(error) = client.countdown_cancel_all(&symbol, timeout_ms).await {
+                        error!(?error, %symbol, "failed to refresh countdown cancel safety net");
+                    }
+                }
+            }
+        });
+    }
+
     pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         let base_url = self.config.stream_url.clone();
         let client = self.client.clone();
@@ -208,6 +237,7 @@ impl ConnectorBuilder for BinanceFutures {
     }
 }
 
+#[async_trait::async_trait]
 impl Connector for BinanceFutures {
     fn register(&mut self, symbol: String) {
         // Binance futures symbols must be lowercase to subscribe to the WebSocket stream.
@@ -231,6 +261,7 @@ impl Connector for BinanceFutures {
         // Connects to the user stream only if the API key and secret are provided.
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
             self.connect_user_data_stream(ev_tx.clone());
+            self.start_safety_heartbeat();
         }
     }
 
@@ -365,5 +396,20 @@ impl Connector for BinanceFutures {
                 }
             }
         });
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let mut errors = Vec::new();
+        for symbol in symbols {
+            if let Err(error) = self.client.cancel_all_orders(&symbol).await {
+                errors.push(format!("{symbol}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }

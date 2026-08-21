@@ -5,7 +5,7 @@
 use super::*;
 use crate::okx::{
     msg::rest::{Books, CancelResult, Instrument, OrderResult, Position},
-    msg::stream::{DataMsg, OrderUpdate, StreamMsg, WsArg},
+    msg::stream::{OrderUpdate, StreamMsg},
     ordermanager::OrderManager,
     rest::{OkxClient, build_submit_body, check_cancel_result},
 };
@@ -495,7 +495,7 @@ fn test_gc_removes_stale_orders() {
 
     let mut fresh = test_order(2);
     fresh.status = Status::New;
-    let fresh_cid = manager
+    let _fresh_cid = manager
         .prepare_client_order_id("BTC-USDT-SWAP".to_string(), fresh)
         .unwrap();
 

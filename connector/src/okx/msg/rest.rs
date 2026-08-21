@@ -1,5 +1,5 @@
+use crate::utils::from_str_to_f64;
 use serde::{Deserialize, Serialize};
-use crate::utils::{from_str_to_f64, from_str_to_i64};
 
 /// OKX 统一响应包装：`{code, msg, data: [...]}`。
 ///

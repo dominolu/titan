@@ -128,6 +128,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
     }
-    // let _ = handle.await;
+    handle.abort();
     Ok(())
 }

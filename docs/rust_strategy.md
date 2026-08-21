@@ -55,7 +55,7 @@ StrategyCtx
         ├── bar: Bar           上一根 bar 的 OHLCV（on_bar 里读取）
         ├── position: f64
         ├── state: [f64; 64]   品种级策略状态槽
-        └── trades() -> &[Event]  本帧逐笔成交（零拷贝视图）
+        └── trades() -> &[Event]  本帧逐笔成交（上下文自有快照）
 ```
 
 读取方式（单市场、多市场写法一致）：
@@ -66,15 +66,15 @@ fn on_tick(&mut self, hbt: &mut impl Bot<MD, Error = E>, ctx: &mut StrategyCtx) 
         for inst in market.instruments.iter() {
             let mid = inst.mid;
             let position = inst.position;
-            let trades = inst.trades(); // 帧作用域：仅限本次回调内使用
+            let trades = inst.trades(); // 当前上下文所持有的安全快照
             // ...
         }
     }
 }
 ```
 
-`trades()` 返回的是指向机器人成交缓冲区的零拷贝切片，**只在当前回调内有效**。
-快照标量（BBO、bar、position）可以安全缓存，成交视图不行。
+`trades()` 返回上下文持有的成交快照。上下文会在下一帧复用其分配；如果确实要跨帧保存，
+克隆 `InstrumentCtx` 或复制所需字段即可，不依赖机器人的内部缓冲区生命周期。
 
 ## 状态槽：固定大小、按约定分配
 
@@ -123,6 +123,8 @@ hbt.clear_inactive_orders(Some(asset_no)); // 从本地订单表移除已成交/
 * 持仓由 `LiveEvent::Position` 回流更新，`ctx` 里每个品种的 `position` 就是实时值。
 * 撤单时先收集 `order_id` 再调用 `hbt.cancel(...)`，不要边遍历 `hbt.orders()` 边撤
   （Rust 借用规则）。
+* 实盘改单被明确禁用；`modify()` 返回 `UnsupportedOperation`。请先撤销原订单，收到撤单
+  确认后再提交替代订单。
 
 ## 实盘接线
 

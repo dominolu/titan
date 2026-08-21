@@ -14,6 +14,10 @@ Supported exchanges include:
   - The symbol should be in lowercase.
 * Bybit Futures (Under development)
   - The symbol should be in uppercase.
+* OKX V5 SWAP
+  - Enable the `okx` feature; live and simulated trading are supported.
+* Hyperliquid Perpetual
+  - Enable the `hyperliquid` feature; API-wallet signing is supported.
 
 ## Getting Started
 
@@ -39,6 +43,17 @@ Supported exchanges include:
     ```
 
 Note: Since Connector communicates with bots via shared memory, both Connector and the bots must run on the same machine.
+
+## Order safety
+
+Binance Futures, OKX and Hyperliquid refresh an exchange-side scheduled-cancel heartbeat while
+credentials are configured. `safety_timeout_ms` defaults to 30 seconds and may be set to zero only
+for non-trading/public-data sessions. On SIGINT or SIGTERM every connector waits for exchange
+cancel-all responses before exiting. A failed shutdown cancellation is logged as an error and must
+be treated as an operational incident.
+
+Live order modification is deliberately disabled in `LiveBot`: cancel the old order, wait for its
+response, and submit a replacement.
 
 ## Connector Implementation Guide
 If a connector adheres to the IPC protocol, it does not have to be implemented in the same manner as Connector.

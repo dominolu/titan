@@ -25,3 +25,6 @@ account_address = ""
 
 # false for testnet (the signing source becomes "b").
 is_mainnet = true
+
+# Exchange-side scheduleCancel timeout. Refreshed every timeout/3; 0 disables it.
+safety_timeout_ms = 30000

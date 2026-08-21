@@ -5,7 +5,7 @@ Titan
 |rustc| |license|
 
 一个开源的、生产级的高频交易（HFT）**回测与实盘交易框架**，专注于加密货币永续合约，
-采用 Rust 核心 + Python 控制面，并提供统一的交易所连接器。
+采用全 Rust 核心，并提供统一的交易所连接器。
 
 框架基于全订单簿的行情回放进行模拟，并精确计入行情/下单延迟与订单队列位置，使回测结果
 能够真实还原实际成交环境。同一套策略代码在研究和实盘之间无需任何修改即可运行——
@@ -21,7 +21,6 @@ Titan
 回测引擎
 --------
 
-* 支持 `Numba <https://numba.pydata.org/>`_ JIT 函数（Python）。
 * 完整的逐笔（tick-by-tick）模拟，时间间隔可自定义，或基于行情/订单接收事件驱动。
 * 基于 Level-2 Market-By-Price 与 Level-3 Market-By-Order 行情的全订单簿重建。
 * 回测计入行情与下单延迟，支持内置模型或自定义模型。
@@ -31,7 +30,7 @@ Titan
 实盘交易
 --------
 
-* **研究到实盘零差异**：同一套策略算法同时用于回测与实盘，Rust 与 Python 均可调用。
+* **研究到实盘零差异**：同一份 Rust 策略实现同时用于回测与实盘。
 * **Rust 原生回调策略**（``hftbacktest::strategy``）：``Strategy`` trait + 两级 ctx
   （市场 → 品种），``on_tick``/``on_bar`` 全局帧驱动，与 ``elapse`` 同级性能。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
@@ -41,7 +40,8 @@ Titan
   IPC（iceoryx2）与机器人通信。
 * **统一资金费事件**：``LiveEvent::Funding`` 在 Binance（WS 推送）、OKX（WS 推送）、
   Hyperliquid（WS 推送）三家一致。
-* **防失控安全网**：每家交易所均提供倒计时全撤 / 断线自动撤单 / 定时全撤。
+* **防失控安全网**：生产连接器定期刷新交易所侧倒计时全撤，并在 SIGINT/SIGTERM
+  退出时等待全撤完成。
 
 数据
 ----
@@ -75,10 +75,20 @@ Titan
 原始交易所行情可用 ``collector/`` 采集，转换为该归一化格式后即可回测。
 时间戳应统一使用纳秒，因为实盘机器人以纳秒为单位运行。
 
-一个快速示例
+采集器产生的 gzip JSON 日志可直接转换为 NPZ：
+
+.. code-block:: console
+
+    cargo run -p collector --bin normalize -- \
+      --exchange binance --input data/btcusdt_20260821.gz --output data/btcusdt_20260821.npz
+
+转换器支持 ``binance``、``bybit`` 和 ``hyperliquid``，输出 key 固定为 ``data``。
+
+上游算法参考
 ------------
 
-下面是使用 hftbacktest 进行回测的做市策略示例：
+下面的 Python 片段只用于解释做市算法；本 Rust-first 仓库不再包含 Python binding。
+可直接运行的实现见下一节的 Rust 示例。
 
 .. code-block:: python
 
@@ -248,10 +258,12 @@ Rust 版做市示例策略
 
 .. code-block:: console
 
-    cargo test --all-features
+    cargo test --workspace --all-features
 
-测试套件共 164 个用例，覆盖每个已实现接口的「响应解析 → 统一结构映射」、请求体构建、
-WebSocket 消息解析，以及 Hyperliquid EIP-712 wire 序列化。
+测试覆盖核心回测、策略回调、请求/响应映射、WebSocket 消息解析和 Hyperliquid EIP-712
+wire 序列化。准确数量以当前测试输出为准；网络冒烟测试默认忽略。
+
+项目固定使用 Rust 1.91.1，``rust-toolchain.toml`` 会让 rustup 自动选择对应工具链。
 
 实盘冒烟测试（需要网络，默认跳过）：
 

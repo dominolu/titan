@@ -11,14 +11,7 @@
 //! 盘口变化或风险越界时撤旧单、挂新单，全部使用 GTX（post-only）限价单。
 
 use hftbacktest::prelude::{
-    Bot,
-    InstrumentCtx,
-    MarketDepth,
-    OrdType,
-    Side,
-    Strategy,
-    StrategyCtx,
-    TimeInForce,
+    Bot, InstrumentCtx, MarketDepth, OrdType, Side, Strategy, StrategyCtx, TimeInForce,
 };
 
 /// Per-instrument state slot: EWMA of frame-to-frame mid volatility.
@@ -91,7 +84,7 @@ impl MarketMaking {
         let tick_size = depth.tick_size();
         let lot_size = depth.lot_size();
         let mid = inst.mid;
-        if !(mid > 0.0) {
+        if !mid.is_finite() || mid <= 0.0 {
             // 尚无完整双边盘口，跳过本帧。
             return;
         }

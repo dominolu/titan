@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! OKX V5 全量 REST 接口 + 统一 [`BrokerApi`] 实现。
 //!
 //! 对照官方文档补齐：
@@ -19,11 +18,7 @@ use crate::{
         LeverageInfo, OpenInterest, OrderBook, OrderInfo, PositionInfo, PriceLevel, Ticker, Trade,
         UnifiedOrderRequest,
     },
-    okx::{
-        OkxError,
-        msg::rest as m,
-        rest::OkxClient,
-    },
+    okx::{OkxError, msg::rest as m, rest::OkxClient},
 };
 
 impl From<OkxError> for ApiError {
@@ -226,8 +221,7 @@ impl OkxClient {
     // ---------------- 基础 ----------------
 
     pub async fn get_system_time(&self) -> Result<i64, OkxError> {
-        let resp: m::OkxResponse<m::SystemTime> =
-            self.get_noauth("/api/v5/public/time").await?;
+        let resp: m::OkxResponse<m::SystemTime> = self.get_noauth("/api/v5/public/time").await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp
             .data
@@ -254,8 +248,7 @@ impl OkxClient {
     // ---------------- 账户 ----------------
 
     pub async fn get_balance(&self) -> Result<m::AccountBalance, OkxError> {
-        let resp: m::OkxResponse<m::AccountBalance> =
-            self.get("/api/v5/account/balance").await?;
+        let resp: m::OkxResponse<m::AccountBalance> = self.get("/api/v5/account/balance").await?;
         Self::check_code(&resp.code, &resp.msg)?;
         resp.data
             .into_iter()
@@ -291,8 +284,7 @@ impl OkxClient {
     }
 
     pub async fn get_account_config(&self) -> Result<m::AccountConfig, OkxError> {
-        let resp: m::OkxResponse<m::AccountConfig> =
-            self.get("/api/v5/account/config").await?;
+        let resp: m::OkxResponse<m::AccountConfig> = self.get("/api/v5/account/config").await?;
         Self::check_code(&resp.code, &resp.msg)?;
         resp.data
             .into_iter()
@@ -331,9 +323,7 @@ impl OkxClient {
         inst_id: &str,
         mgn_mode: &str,
     ) -> Result<Vec<m::Leverage>, OkxError> {
-        let path = format!(
-            "/api/v5/account/leverage-info?instId={inst_id}&mgnMode={mgn_mode}"
-        );
+        let path = format!("/api/v5/account/leverage-info?instId={inst_id}&mgnMode={mgn_mode}");
         let resp: m::OkxResponse<m::Leverage> = self.get(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
@@ -369,12 +359,11 @@ impl OkxClient {
         pos_side: &str,
         amt: &str,
     ) -> Result<serde_json::Value, OkxError> {
-        let body = format!(
-            "{{\"instId\":\"{inst_id}\",\"posSide\":\"{pos_side}\",\"amt\":\"{amt}\"}}"
-        );
-        let resp: m::OkxResponse<serde_json::Value> =
-            self.post("/api/v5/account/position/margin-balance", body)
-                .await?;
+        let body =
+            format!("{{\"instId\":\"{inst_id}\",\"posSide\":\"{pos_side}\",\"amt\":\"{amt}\"}}");
+        let resp: m::OkxResponse<serde_json::Value> = self
+            .post("/api/v5/account/position/margin-balance", body)
+            .await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp
             .data
@@ -397,8 +386,7 @@ impl OkxClient {
     }
 
     pub async fn get_risk_state(&self) -> Result<Vec<m::RiskState>, OkxError> {
-        let resp: m::OkxResponse<m::RiskState> =
-            self.get("/api/v5/account/risk-state").await?;
+        let resp: m::OkxResponse<m::RiskState> = self.get("/api/v5/account/risk-state").await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
     }
@@ -410,20 +398,14 @@ impl OkxClient {
         Ok(resp.data)
     }
 
-    pub async fn get_account_position_risk(
-        &self,
-    ) -> Result<Vec<serde_json::Value>, OkxError> {
+    pub async fn get_account_position_risk(&self) -> Result<Vec<serde_json::Value>, OkxError> {
         let resp: m::OkxResponse<serde_json::Value> =
             self.get("/api/v5/account/account-position-risk").await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
     }
 
-    pub async fn set_isolated_mode(
-        &self,
-        iso_mode: &str,
-        acct_lv: &str,
-    ) -> Result<(), OkxError> {
+    pub async fn set_isolated_mode(&self, iso_mode: &str, acct_lv: &str) -> Result<(), OkxError> {
         let body = format!("{{\"isoMode\":\"{iso_mode}\",\"acctLv\":\"{acct_lv}\"}}");
         let resp: m::OkxResponse<serde_json::Value> =
             self.post("/api/v5/account/set-isolated-mode", body).await?;
@@ -531,10 +513,7 @@ impl OkxClient {
             .ok_or(OkxError::InvalidArg("empty order response"))
     }
 
-    pub async fn get_orders_pending(
-        &self,
-        inst_id: &str,
-    ) -> Result<Vec<m::Order>, OkxError> {
+    pub async fn get_orders_pending(&self, inst_id: &str) -> Result<Vec<m::Order>, OkxError> {
         let path = format!("/api/v5/trade/orders-pending?instId={inst_id}");
         let resp: m::OkxResponse<m::Order> = self.get(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
@@ -546,17 +525,14 @@ impl OkxClient {
         inst_id: &str,
         limit: u32,
     ) -> Result<Vec<m::Order>, OkxError> {
-        let path = format!("/api/v5/trade/orders-history?instType=SWAP&instId={inst_id}&limit={limit}");
+        let path =
+            format!("/api/v5/trade/orders-history?instType=SWAP&instId={inst_id}&limit={limit}");
         let resp: m::OkxResponse<m::Order> = self.get(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
     }
 
-    pub async fn get_fills(
-        &self,
-        inst_id: &str,
-        limit: u32,
-    ) -> Result<Vec<m::Fill>, OkxError> {
+    pub async fn get_fills(&self, inst_id: &str, limit: u32) -> Result<Vec<m::Fill>, OkxError> {
         let path = format!("/api/v5/trade/fills?instType=SWAP&instId={inst_id}&limit={limit}");
         let resp: m::OkxResponse<m::Fill> = self.get(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
@@ -587,10 +563,7 @@ impl OkxClient {
             .ok_or(OkxError::InvalidArg("empty cancel-all-after response"))
     }
 
-    pub async fn order_precheck(
-        &self,
-        body: String,
-    ) -> Result<serde_json::Value, OkxError> {
+    pub async fn order_precheck(&self, body: String) -> Result<serde_json::Value, OkxError> {
         let resp: m::OkxResponse<serde_json::Value> =
             self.post("/api/v5/trade/order-precheck", body).await?;
         Self::check_code(&resp.code, &resp.msg)?;
@@ -603,20 +576,14 @@ impl OkxClient {
 
     // ---------------- 算法单 ----------------
 
-    pub async fn place_algo_order(
-        &self,
-        body: String,
-    ) -> Result<Vec<m::AlgoOrder>, OkxError> {
+    pub async fn place_algo_order(&self, body: String) -> Result<Vec<m::AlgoOrder>, OkxError> {
         let resp: m::OkxResponse<m::AlgoOrder> =
             self.post("/api/v5/trade/order-algo", body).await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
     }
 
-    pub async fn cancel_algo_orders(
-        &self,
-        body: String,
-    ) -> Result<Vec<m::AlgoOrder>, OkxError> {
+    pub async fn cancel_algo_orders(&self, body: String) -> Result<Vec<m::AlgoOrder>, OkxError> {
         let resp: m::OkxResponse<m::AlgoOrder> =
             self.post("/api/v5/trade/cancel-algos", body).await?;
         Self::check_code(&resp.code, &resp.msg)?;
@@ -649,8 +616,9 @@ impl OkxClient {
     // ---------------- 行情 ----------------
 
     pub async fn get_tickers(&self) -> Result<Vec<m::Ticker>, OkxError> {
-        let resp: m::OkxResponse<m::Ticker> =
-            self.get_noauth("/api/v5/market/tickers?instType=SWAP").await?;
+        let resp: m::OkxResponse<m::Ticker> = self
+            .get_noauth("/api/v5/market/tickers?instType=SWAP")
+            .await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
     }
@@ -681,16 +649,10 @@ impl OkxClient {
         bar: &str,
         limit: u32,
     ) -> Result<m::CandleResponse, OkxError> {
-        let path = format!(
-            "/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
-        );
+        let path = format!("/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}");
         let resp: m::OkxResponse<m::CandleResponse> = self.get_noauth(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
-        Ok(resp
-            .data
-            .into_iter()
-            .next()
-            .unwrap_or_default())
+        Ok(resp.data.into_iter().next().unwrap_or_default())
     }
 
     pub async fn get_history_candles(
@@ -699,16 +661,11 @@ impl OkxClient {
         bar: &str,
         limit: u32,
     ) -> Result<m::CandleResponse, OkxError> {
-        let path = format!(
-            "/api/v5/market/history-candles?instId={inst_id}&bar={bar}&limit={limit}"
-        );
+        let path =
+            format!("/api/v5/market/history-candles?instId={inst_id}&bar={bar}&limit={limit}");
         let resp: m::OkxResponse<m::CandleResponse> = self.get_noauth(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
-        Ok(resp
-            .data
-            .into_iter()
-            .next()
-            .unwrap_or_default())
+        Ok(resp.data.into_iter().next().unwrap_or_default())
     }
 
     pub async fn get_public_trades(
@@ -748,9 +705,7 @@ impl OkxClient {
         inst_id: &str,
         limit: u32,
     ) -> Result<Vec<m::FundingRateHistory>, OkxError> {
-        let path = format!(
-            "/api/v5/public/funding-rate-history?instId={inst_id}&limit={limit}"
-        );
+        let path = format!("/api/v5/public/funding-rate-history?instId={inst_id}&limit={limit}");
         let resp: m::OkxResponse<m::FundingRateHistory> = self.get_noauth(&path).await?;
         Self::check_code(&resp.code, &resp.msg)?;
         Ok(resp.data)
@@ -913,7 +868,9 @@ impl BrokerApi for OkxClient {
         symbol: &str,
         limit: u32,
     ) -> Result<Vec<FundingRate>, ApiError> {
-        let records = self.get_funding_rate_history(symbol, limit.min(100)).await?;
+        let records = self
+            .get_funding_rate_history(symbol, limit.min(100))
+            .await?;
         Ok(records
             .iter()
             .map(|r| FundingRate {
@@ -1055,10 +1012,7 @@ impl BrokerApi for OkxClient {
         })
     }
 
-    async fn cancel_orders(
-        &self,
-        reqs: &[CancelOrderRequest],
-    ) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn cancel_orders(&self, reqs: &[CancelOrderRequest]) -> Result<Vec<OrderInfo>, ApiError> {
         if reqs.is_empty() || reqs.len() > 20 {
             return Err(ApiError::new(
                 "okx",
@@ -1170,7 +1124,11 @@ impl BrokerApi for OkxClient {
         Ok(orders.iter().map(order_info_from).collect())
     }
 
-    async fn get_order_history(&self, symbol: &str, limit: u32) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn get_order_history(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<OrderInfo>, ApiError> {
         let orders = self.get_orders_history(symbol, limit.min(100)).await?;
         Ok(orders.iter().map(order_info_from).collect())
     }
@@ -1225,7 +1183,12 @@ impl BrokerApi for OkxClient {
         let mgn_mode = self.td_mode().to_string();
         let pos_side = position_side.map(|s| s.as_str().to_lowercase());
         let results = self
-            .set_leverage_raw(symbol, &leverage.to_string(), &mgn_mode, pos_side.as_deref())
+            .set_leverage_raw(
+                symbol,
+                &leverage.to_string(),
+                &mgn_mode,
+                pos_side.as_deref(),
+            )
             .await?;
         let first = results
             .into_iter()
@@ -1362,10 +1325,7 @@ pub(crate) fn build_okx_order_body(req: &UnifiedOrderRequest, td_mode: &str) -> 
         );
     }
     if req.reduce_only {
-        body.insert(
-            "reduceOnly".to_string(),
-            serde_json::Value::Bool(true),
-        );
+        body.insert("reduceOnly".to_string(), serde_json::Value::Bool(true));
     }
     serde_json::Value::Object(body).to_string()
 }
@@ -1415,11 +1375,11 @@ pub(crate) fn build_okx_algo_body(req: &AlgoOrderRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::okx::msg::stream as s;
     use crate::api::{
         AlgoOrderRequest, ApiOrderStatus, ApiOrderType, ApiPositionSide, ApiSide, ApiTimeInForce,
         UnifiedOrderRequest,
     };
+    use crate::okx::msg::stream as s;
 
     fn limit_req() -> UnifiedOrderRequest {
         UnifiedOrderRequest {

@@ -21,6 +21,9 @@ passphrase = ""
 # Demo trading mode: true adds x-simulated-trading: 1 to every REST request.
 simulated = false
 
+# Exchange-side cancel-all-after timeout. Refreshed every timeout/3; 0 disables it.
+safety_timeout_ms = 30000
+
 # Optional proxy for REST requests, e.g. "socks5h://127.0.0.1:7897". Empty means direct.
 proxy = ""
 

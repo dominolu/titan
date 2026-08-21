@@ -6,7 +6,8 @@
 
 > 最后更新：2026-08-19
 >
-> 官方全量对照见 [API_GAP_ANALYSIS.md](API_GAP_ANALYSIS.md)
+> 本文件是接口状态的唯一事实来源；[API_GAP_ANALYSIS.md](API_GAP_ANALYSIS.md) 仅保留状态
+> 定义和维护规则。
 
 ## 统一 API 层（src/api.rs）
 
@@ -98,7 +99,7 @@
 
 ## 测试
 
-`cargo test --all-features`：162 个测试通过（lib + bin 各跑一遍）。
+运行 `cargo test --workspace --all-features` 验证完整 feature 集；准确数量以当前输出为准。
 
 - 统一层：枚举映射、统一结构序列化往返
 - Binance：请求体构建（限价/市价/条件单/批量）、exchangeInfo/ticker/order/position/account/fills 解析映射、bookTicker 流解析

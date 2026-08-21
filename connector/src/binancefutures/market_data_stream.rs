@@ -64,7 +64,7 @@ impl MarketDataStream {
     fn process_message(&mut self, stream: EventStream) {
         match stream {
             EventStream::DepthUpdate(data) => {
-                let mut prev_u_val = self.prev_u.get_mut(&data.symbol);
+                let prev_u_val = self.prev_u.get_mut(&data.symbol);
                 if prev_u_val.is_none()
                 /* fixme: || data.prev_update_id != **prev_u_val.as_ref().unwrap()*/
                 {
@@ -395,11 +395,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_ws() {
-        let client = BinanceFuturesClient::new(
-            "https://testnet.binancefuture.com",
-            "",
-            "",
-        );
+        let client = BinanceFuturesClient::new("https://testnet.binancefuture.com", "", "");
         let (ev_tx, mut ev_rx) = unbounded_channel::<PublishEvent>();
         let (symbol_tx, _) = tokio::sync::broadcast::channel(16);
         let mut stream = MarketDataStream::new(client, ev_tx, symbol_tx.subscribe());
@@ -473,7 +469,10 @@ mod tests {
             "depth={feed_depth} bbo={feed_bbo} trade={feed_trade} funding={funding} batch={batch}"
         );
         assert!(feed_depth > 0, "no depth feed events received");
-        assert!(feed_trade > 0 || feed_bbo > 0, "no trade/BBO feed events received");
+        assert!(
+            feed_trade > 0 || feed_bbo > 0,
+            "no trade/BBO feed events received"
+        );
         assert!(funding > 0, "no markPrice/funding events received");
     }
 }

@@ -12,3 +12,6 @@ api_url = "https://testnet.binancefuture.com"
 order_prefix = "test"
 api_key = ""
 secret = ""
+
+# Exchange-side countdownCancelAll timeout. Refreshed every timeout/3; 0 disables it.
+safety_timeout_ms = 30000

@@ -12,33 +12,18 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use hftbacktest::{
     backtest::{
-        Backtest,
-        DataSource,
+        Backtest, DataSource,
         ExchangeKind::NoPartialFillExchange,
         L2AssetBuilder,
         assettype::LinearAsset,
         data::{Data, read_npz_file},
         models::{
-            CommonFees,
-            ConstantLatency,
-            PowerProbQueueFunc3,
-            ProbQueueModel,
-            TradingValueFeeModel,
+            CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel, TradingValueFeeModel,
         },
     },
     prelude::{
-        Bot,
-        Event,
-        HashMapMarketDepth,
-        StrategyCtx,
-        StrategySpec,
-        BUY_EVENT,
-        DEPTH_SNAPSHOT_EVENT,
-        EXCH_EVENT,
-        LOCAL_EVENT,
-        SELL_EVENT,
-        TRADE_EVENT,
-        run_strategy,
+        BUY_EVENT, Bot, DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, Event, HashMapMarketDepth, LOCAL_EVENT,
+        SELL_EVENT, StrategyCtx, StrategySpec, TRADE_EVENT, run_strategy,
     },
 };
 use titan_examples::market_making::MarketMaking;
@@ -185,7 +170,13 @@ fn main() -> Result<()> {
     );
 
     // 10 ms 全局帧，1 s bar——与 README Python 示例一致。
-    run_strategy(&mut backtester, &mut strategy, &mut ctx, 10_000_000, 1_000_000_000)?;
+    run_strategy(
+        &mut backtester,
+        &mut strategy,
+        &mut ctx,
+        10_000_000,
+        1_000_000_000,
+    )?;
 
     let state = backtester.state_values(0);
     eprintln!(

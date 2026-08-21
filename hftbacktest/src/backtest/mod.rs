@@ -25,16 +25,8 @@ use crate::{
     },
     depth::{L2MarketDepth, L3MarketDepth, MarketDepth},
     prelude::{
-        Bot,
-        OrdType,
-        Order,
-        OrderId,
-        OrderRequest,
-        Side,
-        StateValues,
-        TimeInForce,
-        UNTIL_END_OF_DATA,
-        WaitOrderResponse,
+        Bot, OrdType, Order, OrderId, OrderRequest, Side, StateValues, TimeInForce,
+        UNTIL_END_OF_DATA, WaitOrderResponse,
     },
     types::{BuildError, ElapseResult, Event},
 };
@@ -1145,17 +1137,13 @@ mod test {
 
     use crate::{
         backtest::{
-            Backtest,
-            DataSource,
+            Backtest, DataSource,
             ExchangeKind::NoPartialFillExchange,
             L2AssetBuilder,
             assettype::LinearAsset,
             data::Data,
             models::{
-                CommonFees,
-                ConstantLatency,
-                PowerProbQueueFunc3,
-                ProbQueueModel,
+                CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel,
                 TradingValueFeeModel,
             },
         },

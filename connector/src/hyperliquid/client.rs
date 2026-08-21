@@ -1,5 +1,8 @@
 use serde::Serialize;
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::hyperliquid::{
     HyperliquidError,

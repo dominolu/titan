@@ -103,10 +103,17 @@ pub struct Config {
     proxy: String,
     #[serde(default)]
     order_prefix: String,
+    /// Exchange-side cancel-all-after timeout. Zero disables the heartbeat.
+    #[serde(default = "default_safety_timeout_ms")]
+    safety_timeout_ms: u64,
 }
 
 fn default_td_mode() -> String {
     "cross".to_string()
+}
+
+fn default_safety_timeout_ms() -> u64 {
+    30_000
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
@@ -145,6 +152,24 @@ pub struct Okx {
 }
 
 impl Okx {
+    fn start_safety_heartbeat(&self) {
+        let timeout_ms = self.config.safety_timeout_ms;
+        if timeout_ms == 0 || self.config.api_key.is_empty() || self.config.secret.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let refresh_ms = (timeout_ms / 3).max(1_000);
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(refresh_ms));
+            loop {
+                interval.tick().await;
+                if let Err(error) = client.cancel_all_after(timeout_ms).await {
+                    error!(?error, "failed to refresh cancel-all-after safety net");
+                }
+            }
+        });
+    }
+
     fn connect_public_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
         let public_url = self.config.public_ws_url.clone();
         let symbol_tx = self.symbol_tx.clone();
@@ -284,6 +309,7 @@ impl ConnectorBuilder for Okx {
     }
 }
 
+#[async_trait::async_trait]
 impl Connector for Okx {
     fn register(&mut self, symbol: String) {
         if symbol.to_uppercase() != symbol {
@@ -304,6 +330,7 @@ impl Connector for Okx {
         self.connect_public_stream(ev_tx.clone());
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
             self.connect_private_stream(ev_tx);
+            self.start_safety_heartbeat();
         }
     }
 
@@ -497,6 +524,29 @@ impl Connector for Okx {
                 }
             }
         });
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let mut errors = Vec::new();
+        for symbol in symbols {
+            if let Err(error) = self
+                .client
+                .cancel_all_orders(
+                    &symbol,
+                    &self.config.td_mode,
+                    self.config.pos_side.as_deref(),
+                )
+                .await
+            {
+                errors.push(format!("{symbol}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
