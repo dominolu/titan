@@ -16,7 +16,7 @@
 
 use crate::{
     depth::MarketDepth,
-    prelude::{Bot, ElapseResult, Event, BUY_EVENT},
+    prelude::{BUY_EVENT, Bot, ElapseResult, Event},
 };
 
 /// Number of `f64` slots per strategy state block.
@@ -79,8 +79,8 @@ pub struct InstrumentCtx {
     pub exch_ts: i64,
     /// Number of trades in this frame.
     pub n: usize,
-    /// Zero-copy pointer into the bot's last-trades buffer.
-    trades_ptr: *const Event,
+    /// Owned snapshot of this frame's trades.
+    trades: Vec<Event>,
     pub last_px: f64,
     pub last_qty: f64,
     pub bid: f64,
@@ -108,7 +108,7 @@ impl Default for InstrumentCtx {
             frame_ts: 0,
             exch_ts: 0,
             n: 0,
-            trades_ptr: std::ptr::null(),
+            trades: Vec::new(),
             last_px: 0.0,
             last_qty: 0.0,
             bid: 0.0,
@@ -129,22 +129,13 @@ impl Default for InstrumentCtx {
 }
 
 impl InstrumentCtx {
-    /// Zero-copy view of this frame's trades.
+    /// Returns the owned snapshot of this frame's trades.
     ///
-    /// **Frame-scoped contract**: the returned slice is valid only during the
-    /// `on_tick`/`on_bar` callback that filled this context. The driver refreshes the
-    /// snapshot and clears the bot's trade buffer on every frame, so a `StrategyCtx`
-    /// cached across callbacks must not be used to read `trades()` later — it will
-    /// observe stale counts/pointers from the frame it was filled in. Snapshot scalars
-    /// (BBO, bar, position) are safe to cache; only the trades view is frame-scoped.
+    /// The driver reuses the allocation on subsequent frames. Cloning the context also
+    /// clones this snapshot, so the returned slice never depends on the bot's internal
+    /// trade-buffer lifetime.
     pub fn trades(&self) -> &[Event] {
-        if self.n == 0 {
-            return &[];
-        }
-        // SAFETY: trades_ptr points into the bot's last-trades buffer which lives for the
-        // whole run; n was copied from the buffer length at fill time. Valid while the
-        // callback runs (documented above).
-        unsafe { std::slice::from_raw_parts(self.trades_ptr, self.n) }
+        &self.trades
     }
 }
 
@@ -206,7 +197,7 @@ impl StrategyCtx {
         let mut markets = Vec::with_capacity(spec.markets.len());
         for (m, assets) in spec.markets.iter().enumerate() {
             let mut instruments = Vec::with_capacity(assets.len());
-            for (i, &asset_no) in assets.iter().enumerate() {
+            for &asset_no in assets {
                 instruments.push(InstrumentCtx {
                     asset_no,
                     symbol_id: spec.symbol_ids[asset_no],
@@ -234,7 +225,7 @@ impl StrategyCtx {
 /// Context lifetime rules:
 /// * `ctx` is valid during the callback and is reused across frames — the strategy keeps
 ///   its own state in the `state` slots, not by holding `ctx` between calls.
-/// * `ctx.instruments[..].trades()` is frame-scoped (see [`InstrumentCtx::trades`]).
+/// * `ctx.instruments[..].trades()` is an owned per-frame snapshot.
 /// * State slot conventions: `state_global` for cross-market state, `market_state` for
 ///   per-venue state, `instrument.state` for per-symbol state. Slot assignment should be
 ///   documented per strategy (e.g. constants `SLOT_*`); no two meanings per slot.
@@ -247,7 +238,12 @@ pub trait Strategy<MD: MarketDepth, E> {
 }
 
 /// Fills one instrument's frame snapshot directly from the bot.
-fn fill<MD: MarketDepth>(hbt: &impl Bot<MD>, asset_no: usize, frame_ts: i64, inst: &mut InstrumentCtx) {
+fn fill<MD: MarketDepth>(
+    hbt: &impl Bot<MD>,
+    asset_no: usize,
+    frame_ts: i64,
+    inst: &mut InstrumentCtx,
+) {
     inst.frame_ts = frame_ts;
 
     let depth = hbt.depth(asset_no);
@@ -269,9 +265,10 @@ fn fill<MD: MarketDepth>(hbt: &impl Bot<MD>, asset_no: usize, frame_ts: i64, ins
     inst.tick_size = depth.tick_size();
     inst.lot_size = depth.lot_size();
 
-    let trades = hbt.last_trades(asset_no);
-    inst.n = trades.len();
-    inst.trades_ptr = trades.as_ptr();
+    inst.trades.clear();
+    inst.trades.extend_from_slice(hbt.last_trades(asset_no));
+    inst.n = inst.trades.len();
+    let trades = inst.trades.as_slice();
 
     let mut volume = 0.0f64;
     let mut buy_vol = 0.0f64;
@@ -402,8 +399,7 @@ where
         let ts = hbt.current_timestamp();
         ctx.frame_ts = ts;
 
-        for asset_no in 0..n_assets {
-            let (m, i) = locs[asset_no];
+        for (asset_no, &(m, i)) in locs.iter().enumerate() {
             let inst = &mut ctx.markets[m].instruments[i];
             fill(hbt, asset_no, ts, inst);
         }
@@ -447,27 +443,35 @@ mod tests {
     use super::*;
     use crate::{
         backtest::{
-            Backtest,
-            BacktestError,
-            DataSource,
+            Backtest, BacktestError, DataSource,
             ExchangeKind::NoPartialFillExchange,
             L2AssetBuilder,
             assettype::LinearAsset,
             data::Data,
             models::{
-                CommonFees,
-                ConstantLatency,
-                PowerProbQueueFunc3,
-                ProbQueueModel,
+                CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel,
                 TradingValueFeeModel,
             },
         },
         depth::HashMapMarketDepth,
         types::{
-            DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT, OrdType,
+            DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, LOCAL_EVENT, OrdType, SELL_EVENT, TRADE_EVENT,
             TimeInForce,
         },
     };
+
+    #[test]
+    fn cloned_trade_snapshot_does_not_borrow_bot_storage() {
+        let mut inst = InstrumentCtx::default();
+        inst.trades.push(event(TRADE_EVENT, 1, 100.0, 2.0));
+        inst.n = inst.trades.len();
+        let snapshot = inst.clone();
+        inst.trades.clear();
+        inst.n = 0;
+
+        assert_eq!(snapshot.trades().len(), 1);
+        assert_eq!(snapshot.trades()[0].px, 100.0);
+    }
 
     fn event(ev: u64, ts: i64, px: f64, qty: f64) -> Event {
         Event {
@@ -482,16 +486,33 @@ mod tests {
         }
     }
 
-    fn data_for(snap_bids: &[(f64, f64)], snap_asks: &[(f64, f64)], trades: &[(i64, f64, f64, bool)]) -> Data<Event> {
+    fn data_for(
+        snap_bids: &[(f64, f64)],
+        snap_asks: &[(f64, f64)],
+        trades: &[(i64, f64, f64, bool)],
+    ) -> Data<Event> {
         let mut rows = Vec::new();
         for (px, qty) in snap_bids {
-            rows.push(event(DEPTH_SNAPSHOT_EVENT | BUY_EVENT | EXCH_EVENT | LOCAL_EVENT, 1_000_000_000, *px, *qty));
+            rows.push(event(
+                DEPTH_SNAPSHOT_EVENT | BUY_EVENT | EXCH_EVENT | LOCAL_EVENT,
+                1_000_000_000,
+                *px,
+                *qty,
+            ));
         }
         for (px, qty) in snap_asks {
-            rows.push(event(DEPTH_SNAPSHOT_EVENT | SELL_EVENT | EXCH_EVENT | LOCAL_EVENT, 1_000_000_000, *px, *qty));
+            rows.push(event(
+                DEPTH_SNAPSHOT_EVENT | SELL_EVENT | EXCH_EVENT | LOCAL_EVENT,
+                1_000_000_000,
+                *px,
+                *qty,
+            ));
         }
         for (t, px, qty, side_buy) in trades {
-            let f = TRADE_EVENT | if *side_buy { BUY_EVENT } else { SELL_EVENT } | EXCH_EVENT | LOCAL_EVENT;
+            let f = TRADE_EVENT
+                | if *side_buy { BUY_EVENT } else { SELL_EVENT }
+                | EXCH_EVENT
+                | LOCAL_EVENT;
             rows.push(event(f, *t, *px, *qty));
         }
         Data::from_data(&rows)
@@ -510,7 +531,11 @@ mod tests {
     }
 
     impl<MD: MarketDepth> Strategy<MD, BacktestError> for TestStrategy {
-        fn on_tick(&mut self, _hbt: &mut impl Bot<MD, Error = BacktestError>, ctx: &mut StrategyCtx) {
+        fn on_tick(
+            &mut self,
+            _hbt: &mut impl Bot<MD, Error = BacktestError>,
+            ctx: &mut StrategyCtx,
+        ) {
             self.frames += 1;
             self.mid0_sum += ctx.markets[0].instruments[0].mid;
             self.mid1_sum += ctx.markets[1].instruments[0].mid;
@@ -519,7 +544,11 @@ mod tests {
             ctx.state_global[0] += 1.0;
         }
 
-        fn on_bar(&mut self, _hbt: &mut impl Bot<MD, Error = BacktestError>, ctx: &mut StrategyCtx) {
+        fn on_bar(
+            &mut self,
+            _hbt: &mut impl Bot<MD, Error = BacktestError>,
+            ctx: &mut StrategyCtx,
+        ) {
             self.bars += 1;
             if !self.bar_recorded {
                 let bar = ctx.markets[0].instruments[0].bar;
@@ -592,11 +621,26 @@ mod tests {
             bar_recorded: false,
         };
 
-        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+        run_strategy::<_, _, _>(
+            &mut backtester,
+            &mut strategy,
+            &mut ctx,
+            100_000_000,
+            500_000_000,
+        )
+        .unwrap();
 
         assert_eq!(strategy.frames, 7);
-        assert!((strategy.mid0_sum - 7.0 * 100.5).abs() < 1e-9, "mid0={}", strategy.mid0_sum);
-        assert!((strategy.mid1_sum - 7.0 * 10.5).abs() < 1e-9, "mid1={}", strategy.mid1_sum);
+        assert!(
+            (strategy.mid0_sum - 7.0 * 100.5).abs() < 1e-9,
+            "mid0={}",
+            strategy.mid0_sum
+        );
+        assert!(
+            (strategy.mid1_sum - 7.0 * 10.5).abs() < 1e-9,
+            "mid1={}",
+            strategy.mid1_sum
+        );
         assert_eq!(strategy.trades0, 4);
         assert_eq!(strategy.trades1, 3);
         assert!(strategy.bars >= 1);
@@ -652,7 +696,14 @@ mod tests {
             trades0: 0,
             trades1: 0,
         };
-        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+        run_strategy::<_, _, _>(
+            &mut backtester,
+            &mut strategy,
+            &mut ctx,
+            100_000_000,
+            500_000_000,
+        )
+        .unwrap();
         assert_eq!(strategy.frames, 7);
         assert_eq!(strategy.trades0, 4);
         assert_eq!(strategy.trades1, 3);
@@ -683,16 +734,8 @@ mod tests {
             ) {
                 if !self.submitted {
                     // 买一挂在远高于盘口的价格，后续卖单会成交它。
-                    hbt.submit_buy_order(
-                        0,
-                        1,
-                        200.0,
-                        1.0,
-                        TimeInForce::GTC,
-                        OrdType::Limit,
-                        false,
-                    )
-                    .unwrap();
+                    hbt.submit_buy_order(0, 1, 200.0, 1.0, TimeInForce::GTC, OrdType::Limit, false)
+                        .unwrap();
                     self.submitted = true;
                 } else {
                     self.final_position = hbt.position(0);
@@ -704,7 +747,14 @@ mod tests {
             submitted: false,
             final_position: 0.0,
         };
-        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+        run_strategy::<_, _, _>(
+            &mut backtester,
+            &mut strategy,
+            &mut ctx,
+            100_000_000,
+            500_000_000,
+        )
+        .unwrap();
 
         assert!(strategy.submitted);
         assert!(
@@ -782,7 +832,14 @@ mod tests {
             bar1: Bar::default(),
             bar2: Bar::default(),
         };
-        run_strategy::<_, _, _>(&mut backtester, &mut strategy, &mut ctx, 100_000_000, 500_000_000).unwrap();
+        run_strategy::<_, _, _>(
+            &mut backtester,
+            &mut strategy,
+            &mut ctx,
+            100_000_000,
+            500_000_000,
+        )
+        .unwrap();
 
         assert_eq!(strategy.bars, 2);
         // bar1: trades 1.1/1.2/1.4

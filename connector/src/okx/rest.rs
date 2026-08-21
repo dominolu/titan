@@ -111,10 +111,7 @@ impl OkxClient {
         Ok(resp)
     }
 
-    pub(crate) async fn get<T: for<'a> Deserialize<'a>>(
-        &self,
-        path: &str,
-    ) -> Result<T, OkxError> {
+    pub(crate) async fn get<T: for<'a> Deserialize<'a>>(&self, path: &str) -> Result<T, OkxError> {
         let timestamp = Self::timestamp();
         let signature = self.sign(&timestamp, "GET", path, "");
         let mut request = self

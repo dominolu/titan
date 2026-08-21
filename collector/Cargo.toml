@@ -21,3 +21,5 @@ hmac = "0.12.1"
 thiserror = "2.0.17"
 flate2 = "1.1.5"
 clap = { version = "4.5.53", features = ["derive"] }
+hftbacktest = { path = "../hftbacktest", default-features = false, features = ["backtest"] }
+zip = "6.0.0"

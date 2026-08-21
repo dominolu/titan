@@ -11,7 +11,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::Utc;
 use hftbacktest::{
     prelude::get_precision,
     types::{ErrorKind, LiveError, LiveEvent, OrdType, Order, Side, Status, TimeInForce, Value},
@@ -22,6 +21,7 @@ use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
 use tracing::{error, warn};
 
 use crate::{
+    api::BrokerApi,
     connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
     hyperliquid::{
         client::HyperliquidClient,
@@ -87,6 +87,13 @@ pub struct Config {
     account_address: String,
     #[serde(default)]
     is_mainnet: bool,
+    /// Exchange-side scheduled-cancel timeout. Zero disables the heartbeat.
+    #[serde(default = "default_safety_timeout_ms")]
+    safety_timeout_ms: u64,
+}
+
+fn default_safety_timeout_ms() -> u64 {
+    30_000
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +170,24 @@ async fn ensure_asset(
 }
 
 impl Hyperliquid {
+    fn start_safety_heartbeat(&self) {
+        let timeout_ms = self.config.safety_timeout_ms;
+        if timeout_ms == 0 {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let refresh_ms = (timeout_ms / 3).max(1_000);
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(refresh_ms));
+            loop {
+                interval.tick().await;
+                if let Err(error) = BrokerApi::cancel_all_after(&client, timeout_ms).await {
+                    error!(?error, "failed to refresh scheduled-cancel safety net");
+                }
+            }
+        });
+    }
+
     fn connect_ws(&self, ev_tx: UnboundedSender<PublishEvent>) {
         let ws_url = self.config.ws_url.clone();
         let order_manager = self.order_manager.clone();
@@ -241,7 +266,6 @@ impl Hyperliquid {
                 .await;
         });
     }
-
 }
 
 impl ConnectorBuilder for Hyperliquid {
@@ -273,8 +297,11 @@ impl ConnectorBuilder for Hyperliquid {
 
         let (symbol_tx, _) = broadcast::channel(500);
         let order_manager = Arc::new(Mutex::new(OrderManager::new()));
-        let client = HyperliquidClient::new(&config.info_url, &config.exchange_url)
-            .with_signer(private_key, account_address.clone(), config.is_mainnet);
+        let client = HyperliquidClient::new(&config.info_url, &config.exchange_url).with_signer(
+            private_key,
+            account_address.clone(),
+            config.is_mainnet,
+        );
         Ok(Hyperliquid {
             config,
             private_key,
@@ -289,6 +316,7 @@ impl ConnectorBuilder for Hyperliquid {
     }
 }
 
+#[async_trait::async_trait]
 impl Connector for Hyperliquid {
     fn register(&mut self, symbol: String) {
         if symbol.to_uppercase() != symbol {
@@ -308,6 +336,7 @@ impl Connector for Hyperliquid {
     fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
         self.connect_assets_loader();
         self.connect_ws(ev_tx);
+        self.start_safety_heartbeat();
     }
 
     fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
@@ -561,6 +590,21 @@ impl Connector for Hyperliquid {
                 }
             }
         });
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let mut errors = Vec::new();
+        for symbol in symbols {
+            if let Err(error) = BrokerApi::cancel_all_orders(&self.client, &symbol).await {
+                errors.push(format!("{symbol}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 

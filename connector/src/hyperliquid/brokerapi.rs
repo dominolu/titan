@@ -25,11 +25,7 @@ use crate::{
         LeverageInfo, OpenInterest, OrderBook, OrderInfo, PositionInfo, PriceLevel, Ticker, Trade,
         UnifiedOrderRequest,
     },
-    hyperliquid::{
-        HyperliquidError,
-        client::HyperliquidClient,
-        msg as m,
-    },
+    hyperliquid::{HyperliquidError, client::HyperliquidClient, msg as m},
 };
 
 impl From<HyperliquidError> for ApiError {
@@ -158,9 +154,8 @@ pub(crate) fn parse_meta_and_ctxs(
             .unwrap_or(serde_json::Value::Array(vec![])),
     )
     .map_err(|_| HyperliquidError::InvalidArg("metaAndAssetCtxs universe parse failed"))?;
-    let ctxs: Vec<m::AssetCtx> = serde_json::from_value(arr[1].clone()).map_err(|_| {
-        HyperliquidError::InvalidArg("metaAndAssetCtxs ctxs parse failed")
-    })?;
+    let ctxs: Vec<m::AssetCtx> = serde_json::from_value(arr[1].clone())
+        .map_err(|_| HyperliquidError::InvalidArg("metaAndAssetCtxs ctxs parse failed"))?;
     Ok((universe, ctxs))
 }
 
@@ -342,7 +337,8 @@ impl HyperliquidClient {
     }
 
     pub async fn get_all_mids(&self) -> Result<HashMap<String, String>, HyperliquidError> {
-        self.parse_info(serde_json::json!({"type": "allMids"})).await
+        self.parse_info(serde_json::json!({"type": "allMids"}))
+            .await
     }
 
     pub async fn get_frontend_open_orders(
@@ -376,7 +372,10 @@ impl HyperliquidClient {
         .await
     }
 
-    pub async fn get_user_rate_limit(&self, user: &str) -> Result<serde_json::Value, HyperliquidError> {
+    pub async fn get_user_rate_limit(
+        &self,
+        user: &str,
+    ) -> Result<serde_json::Value, HyperliquidError> {
         self.parse_info(serde_json::json!({"type": "userRateLimit", "user": user}))
             .await
     }
@@ -387,7 +386,10 @@ impl HyperliquidClient {
         cloid: Option<&str>,
     ) -> Result<m::OrderStatusResponse, HyperliquidError> {
         let mut body = serde_json::Map::new();
-        body.insert("type".to_string(), serde_json::Value::String("orderStatus".into()));
+        body.insert(
+            "type".to_string(),
+            serde_json::Value::String("orderStatus".into()),
+        );
         if let Some(oid) = oid {
             body.insert("oid".to_string(), serde_json::Value::Number(oid.into()));
         }
@@ -444,7 +446,10 @@ impl HyperliquidClient {
             .await
     }
 
-    pub async fn get_sub_accounts(&self, user: &str) -> Result<serde_json::Value, HyperliquidError> {
+    pub async fn get_sub_accounts(
+        &self,
+        user: &str,
+    ) -> Result<serde_json::Value, HyperliquidError> {
         self.parse_info(serde_json::json!({"type": "subAccounts", "user": user}))
             .await
     }
@@ -613,12 +618,13 @@ impl HyperliquidClient {
     }
 
     /// 从 order 响应中解析首个订单状态。
-    fn parse_order_response(
-        &self,
-        resp: &m::ExchangeResponse,
-    ) -> Result<OrderInfo, ApiError> {
+    fn parse_order_response(&self, resp: &m::ExchangeResponse) -> Result<OrderInfo, ApiError> {
         if resp.status != "ok" {
-            return Err(ApiError::new("hyperliquid", resp.status.clone(), "exchange error"));
+            return Err(ApiError::new(
+                "hyperliquid",
+                resp.status.clone(),
+                "exchange error",
+            ));
         }
         let data = resp
             .response
@@ -1029,10 +1035,13 @@ impl BrokerApi for HyperliquidClient {
             self.sign_and_post(&action).await?
         } else {
             let oid = match &req.order_id {
-                Some(id) => id.parse::<u64>().map_err(|_| {
-                    ApiError::new("hyperliquid", "INVALID", "bad order id")
-                })?,
-                None => self.resolve_oid(&req.symbol, &req.client_order_id, user).await?,
+                Some(id) => id
+                    .parse::<u64>()
+                    .map_err(|_| ApiError::new("hyperliquid", "INVALID", "bad order id"))?,
+                None => {
+                    self.resolve_oid(&req.symbol, &req.client_order_id, user)
+                        .await?
+                }
             };
             let action = ApiCancelAction {
                 type_: "cancel".to_string(),
@@ -1062,10 +1071,7 @@ impl BrokerApi for HyperliquidClient {
         })
     }
 
-    async fn cancel_orders(
-        &self,
-        reqs: &[CancelOrderRequest],
-    ) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn cancel_orders(&self, reqs: &[CancelOrderRequest]) -> Result<Vec<OrderInfo>, ApiError> {
         let mut infos = Vec::with_capacity(reqs.len());
         for req in reqs {
             infos.push(self.cancel_order(req).await?);
@@ -1110,7 +1116,10 @@ impl BrokerApi for HyperliquidClient {
             Some(id) => id
                 .parse::<u64>()
                 .map_err(|_| ApiError::new("hyperliquid", "INVALID", "bad order id"))?,
-            None => self.resolve_oid(&req.symbol, &req.client_order_id, user).await?,
+            None => {
+                self.resolve_oid(&req.symbol, &req.client_order_id, user)
+                    .await?
+            }
         };
         let price = req
             .new_price
@@ -1156,10 +1165,7 @@ impl BrokerApi for HyperliquidClient {
         client_order_id: Option<&str>,
     ) -> Result<OrderInfo, ApiError> {
         let resp = self
-            .get_order_status(
-                order_id.and_then(|id| id.parse().ok()),
-                client_order_id,
-            )
+            .get_order_status(order_id.and_then(|id| id.parse().ok()), client_order_id)
             .await?;
         if resp.status == "unknownOid" {
             return Err(ApiError::new(
@@ -1168,9 +1174,9 @@ impl BrokerApi for HyperliquidClient {
                 format!("unknown order: {}", resp.status),
             ));
         }
-        let order = resp.order.ok_or_else(|| {
-            ApiError::new("hyperliquid", "EMPTY", "missing order in response")
-        })?;
+        let order = resp
+            .order
+            .ok_or_else(|| ApiError::new("hyperliquid", "EMPTY", "missing order in response"))?;
         let mut info = order_info_from_historical(&order);
         info.symbol = symbol.to_lowercase();
         info.status = status_from_hl(&resp.status);
@@ -1205,7 +1211,11 @@ impl BrokerApi for HyperliquidClient {
             .collect())
     }
 
-    async fn get_order_history(&self, symbol: &str, limit: u32) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn get_order_history(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<OrderInfo>, ApiError> {
         let user = self.require_user()?;
         let orders = self.get_historical_orders(user).await?;
         Ok(orders
@@ -1224,18 +1234,42 @@ impl BrokerApi for HyperliquidClient {
             .filter(|f| f.get("coin").and_then(|c| c.as_str()) == Some(symbol))
             .take(limit.min(500) as usize)
             .map(|fill| Fill {
-                symbol: fill.get("coin").and_then(|c| c.as_str()).unwrap_or("").to_string(),
-                trade_id: fill.get("tid").and_then(|t| t.as_u64()).unwrap_or(0).to_string(),
-                order_id: fill.get("oid").and_then(|t| t.as_u64()).unwrap_or(0).to_string(),
+                symbol: fill
+                    .get("coin")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                trade_id: fill
+                    .get("tid")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(0)
+                    .to_string(),
+                order_id: fill
+                    .get("oid")
+                    .and_then(|t| t.as_u64())
+                    .unwrap_or(0)
+                    .to_string(),
                 client_order_id: String::new(),
-                price: fill.get("px").and_then(|p| p.as_str()).map(f).unwrap_or(0.0),
-                qty: fill.get("sz").and_then(|p| p.as_str()).map(f).unwrap_or(0.0),
+                price: fill
+                    .get("px")
+                    .and_then(|p| p.as_str())
+                    .map(f)
+                    .unwrap_or(0.0),
+                qty: fill
+                    .get("sz")
+                    .and_then(|p| p.as_str())
+                    .map(f)
+                    .unwrap_or(0.0),
                 side: fill
                     .get("side")
                     .and_then(|s| s.as_str())
                     .map(side_from_hl)
                     .unwrap_or(ApiSide::Unknown),
-                fee: fill.get("fee").and_then(|p| p.as_str()).map(f).unwrap_or(0.0),
+                fee: fill
+                    .get("fee")
+                    .and_then(|p| p.as_str())
+                    .map(f)
+                    .unwrap_or(0.0),
                 fee_asset: fill
                     .get("feeToken")
                     .and_then(|p| p.as_str())
@@ -1286,12 +1320,7 @@ impl BrokerApi for HyperliquidClient {
                 qty: f(&p.position.szi),
                 entry_price: f(&p.position.entry_px),
                 mark_price: 0.0,
-                liquidation_price: p
-                    .position
-                    .liquidation_px
-                    .as_deref()
-                    .map(f)
-                    .unwrap_or(0.0),
+                liquidation_price: p.position.liquidation_px.as_deref().map(f).unwrap_or(0.0),
                 leverage: p
                     .position
                     .leverage
@@ -1465,7 +1494,11 @@ impl HyperliquidClient {
         let cloid = client_order_id.as_deref();
         orders
             .iter()
-            .find(|o| cloid.map(|c| o.cloid.as_deref() == Some(c)).unwrap_or(false))
+            .find(|o| {
+                cloid
+                    .map(|c| o.cloid.as_deref() == Some(c))
+                    .unwrap_or(false)
+            })
             .map(|o| o.oid)
             .ok_or_else(|| ApiError::new("hyperliquid", "NOT_FOUND", "order not found"))
     }
@@ -1513,7 +1546,13 @@ pub(crate) fn build_wire_with_index(
                 ApiOrderType::StopLimit => (false, "sl"),
                 ApiOrderType::TakeProfitMarket => (true, "tp"),
                 ApiOrderType::TakeProfitLimit => (false, "tp"),
-                _ => return Err(ApiError::new("hyperliquid", "INVALID", "unsupported order type")),
+                _ => {
+                    return Err(ApiError::new(
+                        "hyperliquid",
+                        "INVALID",
+                        "unsupported order type",
+                    ));
+                }
             };
             let p = if is_market {
                 "0".to_string()
@@ -1564,7 +1603,13 @@ pub(crate) fn build_algo_wire_with_index(
         ApiOrderType::StopLimit => (false, "sl"),
         ApiOrderType::TakeProfitMarket => (true, "tp"),
         ApiOrderType::TakeProfitLimit => (false, "tp"),
-        _ => return Err(ApiError::new("hyperliquid", "INVALID", "unsupported algo type")),
+        _ => {
+            return Err(ApiError::new(
+                "hyperliquid",
+                "INVALID",
+                "unsupported algo type",
+            ));
+        }
     };
     let p = if is_market {
         "0".to_string()

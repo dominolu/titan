@@ -3,6 +3,7 @@ use std::{
     fs::read_to_string,
     panic,
     process::exit,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -53,8 +54,8 @@ pub mod hyperliquid;
 #[cfg(feature = "okx")]
 pub mod okx;
 
-mod connector;
 mod api;
+mod connector;
 //mod fuse;
 mod utils;
 
@@ -67,13 +68,14 @@ fn run_receive_task(
     name: &str,
     tx: UnboundedSender<PublishEvent>,
     connector: &mut Box<dyn Connector>,
+    shutting_down: &AtomicBool,
 ) -> Result<(), ChannelError> {
     let node = NodeBuilder::new()
         .signal_handling_mode(SignalHandlingMode::Disabled)
         .create::<ipc::Service>()
         .map_err(|error| ChannelError::BuildError(error.to_string()))?;
     let bot_rx = IceoryxBuilder::new(name).bot(false).receiver()?;
-    loop {
+    while !shutting_down.load(Ordering::Acquire) {
         let cycle_time = Duration::from_nanos(1000);
         match node.wait(cycle_time) {
             Ok(()) => {
@@ -357,7 +359,9 @@ async fn main() {
 
     // Listen for shut down signal and notify publish task.
     let shutdown_signal = Arc::new(Notify::new());
+    let shutting_down = Arc::new(AtomicBool::new(false));
     let shutdown_signal_ = shutdown_signal.clone();
+    let shutting_down_ = shutting_down.clone();
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -376,6 +380,7 @@ async fn main() {
                 error!(?error, "Couldn't listen for shutdown signal.");
             }
         }
+        shutting_down_.store(true, Ordering::Release);
         shutdown_signal_.notify_waiters();
     });
 
@@ -464,7 +469,7 @@ async fn main() {
     });
 
     let name = args.name;
-    run_receive_task(&name, pub_tx, &mut connector)
+    run_receive_task(&name, pub_tx, &mut connector, &shutting_down)
         .map_err(|error| {
             error!(
                 ?error,
@@ -472,5 +477,8 @@ async fn main() {
             );
         })
         .unwrap();
+    if let Err(error) = connector.shutdown().await {
+        error!(%error, "failed to cancel every open order during connector shutdown");
+    }
     let _ = handle.join();
 }

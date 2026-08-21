@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use async_trait::async_trait;
 use hftbacktest::types::{LiveEvent, Order};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -29,7 +30,8 @@ pub trait ConnectorBuilder {
 }
 
 /// Provides an interface for connecting with an exchange or broker for a live bot.
-pub trait Connector {
+#[async_trait]
+pub trait Connector: Send + Sync {
     /// Registers an instrument to be traded through this connector.
     fn register(&mut self, symbol: String);
 
@@ -51,6 +53,10 @@ pub trait Connector {
     /// through the channel using [`PublishEvent`]. The returned error should not be related to the
     /// exchange; instead, it should indicate a connector internal error.
     fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>);
+
+    /// Cancels every open order managed by this connector before process shutdown.
+    /// Implementations must wait for the exchange response before returning.
+    async fn shutdown(&self) -> Result<(), String>;
 }
 
 /// Provides `orders` method to get the current working orders.

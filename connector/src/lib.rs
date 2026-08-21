@@ -23,7 +23,7 @@ pub mod binancefutures;
 pub mod binancespot;
 #[cfg(feature = "bybit")]
 pub mod bybit;
-#[cfg(feature = "okx")]
-pub mod okx;
 #[cfg(feature = "hyperliquid")]
 pub mod hyperliquid;
+#[cfg(feature = "okx")]
+pub mod okx;

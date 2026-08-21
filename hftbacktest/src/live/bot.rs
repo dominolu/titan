@@ -6,32 +6,15 @@ use std::{
 use chrono::Utc;
 use rand::Rng;
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::{
     depth::{L2MarketDepth, MarketDepth},
     live::{Instrument, ipc::Channel},
     types::{
-        Bot,
-        BuildError,
-        ElapseResult,
-        Event,
-        LOCAL_ASK_DEPTH_EVENT,
-        LOCAL_BID_DEPTH_EVENT,
-        LOCAL_BUY_TRADE_EVENT,
-        LOCAL_SELL_TRADE_EVENT,
-        LiveError,
-        LiveEvent,
-        LiveRequest,
-        OrdType,
-        Order,
-        OrderId,
-        OrderRequest,
-        Side,
-        StateValues,
-        Status,
-        TimeInForce,
-        WaitOrderResponse,
+        Bot, BuildError, ElapseResult, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
+        LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, LiveRequest, OrdType,
+        Order, OrderId, OrderRequest, Side, StateValues, Status, TimeInForce, WaitOrderResponse,
     },
 };
 
@@ -49,6 +32,8 @@ pub enum BotError {
     Timeout,
     #[error("Interrupted")]
     Interrupted,
+    #[error("UnsupportedOperation: {0}")]
+    UnsupportedOperation(&'static str),
     #[error("Custom: {0}")]
     Custom(String),
 }
@@ -561,13 +546,15 @@ where
     #[inline]
     fn modify(
         &mut self,
-        asset_no: usize,
-        order_id: OrderId,
-        price: f64,
-        qty: f64,
-        wait: bool,
+        _asset_no: usize,
+        _order_id: OrderId,
+        _price: f64,
+        _qty: f64,
+        _wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        todo!();
+        Err(BotError::UnsupportedOperation(
+            "live order modification is disabled; cancel and submit a replacement order",
+        ))
     }
 
     #[inline]
@@ -667,5 +654,54 @@ where
 
     fn order_latency(&self, asset_no: usize) -> Option<(i64, i64, i64)> {
         self.instruments.get(asset_no).unwrap().last_order_latency
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{depth::HashMapMarketDepth, live::ipc::Channel};
+
+    struct TestChannel;
+
+    impl Channel for TestChannel {
+        fn build<MD>(_instruments: &[Instrument<MD>]) -> Result<Self, BuildError> {
+            Ok(Self)
+        }
+
+        fn recv_timeout(
+            &mut self,
+            _id: u64,
+            _timeout: Duration,
+        ) -> Result<(usize, LiveEvent), BotError> {
+            Err(BotError::Timeout)
+        }
+
+        fn send(
+            &mut self,
+            _id: u64,
+            _inst_no: usize,
+            _request: LiveRequest,
+        ) -> Result<(), BotError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn live_modify_is_explicitly_disabled() {
+        let mut bot = LiveBotBuilder::new()
+            .register(Instrument::new(
+                "test",
+                "BTC",
+                0.1,
+                0.001,
+                HashMapMarketDepth::new(0.1, 0.001),
+                16,
+            ))
+            .build::<TestChannel>()
+            .unwrap();
+
+        let error = bot.modify(0, 1, 100.0, 1.0, false).unwrap_err();
+        assert!(matches!(error, BotError::UnsupportedOperation(_)));
     }
 }

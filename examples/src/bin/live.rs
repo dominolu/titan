@@ -13,20 +13,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use hftbacktest::{
     live::{Instrument, LiveBotBuilder, ipc::iceoryx::IceoryxUnifiedChannel},
-    prelude::{
-        Bot,
-        HashMapMarketDepth,
-        StrategyCtx,
-        StrategySpec,
-        run_strategy,
-        run_strategy_for,
-    },
+    prelude::{Bot, HashMapMarketDepth, StrategyCtx, StrategySpec, run_strategy, run_strategy_for},
 };
 use titan_examples::market_making::MarketMaking;
 use tracing::{error, info, warn};
 
 #[derive(Parser, Debug)]
-#[command(name = "market-making-live", about = "Rust market-making strategy on a live connector")]
+#[command(
+    name = "market-making-live",
+    about = "Rust market-making strategy on a live connector"
+)]
 struct Args {
     /// Connector name; must match the `--name` of the running connector process.
     #[arg(long)]

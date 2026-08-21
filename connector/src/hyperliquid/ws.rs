@@ -202,11 +202,22 @@ impl HyperliquidWs {
             "userFundings" => {
                 self.handle_user_fundings(data).await?;
             }
-            "allMids" | "activeAssetCtx" | "candle" | "userFills"
-            | "userNonFundingLedgerUpdates" | "clearinghouseState" | "openOrders"
-            | "notification" | "spotState" | "twapStates" | "userTwapSliceFills"
-            | "userTwapHistory" | "outcomeMetaUpdates" | "fastAssetCtxs"
-            | "allDexsAssetCtxs" | "allDexsClearinghouseState" => {
+            "allMids"
+            | "activeAssetCtx"
+            | "candle"
+            | "userFills"
+            | "userNonFundingLedgerUpdates"
+            | "clearinghouseState"
+            | "openOrders"
+            | "notification"
+            | "spotState"
+            | "twapStates"
+            | "userTwapSliceFills"
+            | "userTwapHistory"
+            | "outcomeMetaUpdates"
+            | "fastAssetCtxs"
+            | "allDexsAssetCtxs"
+            | "allDexsClearinghouseState" => {
                 debug!(%channel, "Extra channel message received.");
             }
             _ => {
@@ -219,10 +230,7 @@ impl HyperliquidWs {
     /// 处理 `userFundings`：
     /// - 快照（isSnapshot=true）：每个已注册标的最多取一条最新记录，避免历史流水灌入引擎；
     /// - 流式（isSnapshot=false）：逐条发布（HL 每小时结算推送一次）。
-    async fn handle_user_fundings(
-        &self,
-        data: &serde_json::Value,
-    ) -> Result<(), HyperliquidError> {
+    async fn handle_user_fundings(&self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
         let msg: WsUserFundings = serde_json::from_value(data.clone())?;
         let symbols: HashSet<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         if msg.is_snapshot {

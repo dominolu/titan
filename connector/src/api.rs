@@ -28,7 +28,11 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    pub fn new(exchange: &'static str, code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(
+        exchange: &'static str,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             exchange,
             code: code.into(),
@@ -627,16 +631,14 @@ pub trait BrokerApi: Send + Sync {
     async fn submit_order(&self, req: &UnifiedOrderRequest) -> Result<OrderInfo, ApiError>;
 
     /// 批量下单。
-    async fn submit_orders(&self, reqs: &[UnifiedOrderRequest]) -> Result<Vec<OrderInfo>, ApiError>;
+    async fn submit_orders(&self, reqs: &[UnifiedOrderRequest])
+    -> Result<Vec<OrderInfo>, ApiError>;
 
     /// 撤单。
     async fn cancel_order(&self, req: &CancelOrderRequest) -> Result<OrderInfo, ApiError>;
 
     /// 批量撤单。
-    async fn cancel_orders(
-        &self,
-        reqs: &[CancelOrderRequest],
-    ) -> Result<Vec<OrderInfo>, ApiError>;
+    async fn cancel_orders(&self, reqs: &[CancelOrderRequest]) -> Result<Vec<OrderInfo>, ApiError>;
 
     /// 全部撤单（按标的）。
     async fn cancel_all_orders(&self, symbol: &str) -> Result<(), ApiError>;
@@ -659,7 +661,8 @@ pub trait BrokerApi: Send + Sync {
     async fn get_open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, ApiError>;
 
     /// 历史订单。
-    async fn get_order_history(&self, symbol: &str, limit: u32) -> Result<Vec<OrderInfo>, ApiError>;
+    async fn get_order_history(&self, symbol: &str, limit: u32)
+    -> Result<Vec<OrderInfo>, ApiError>;
 
     /// 成交明细。
     async fn get_fills(&self, symbol: &str, limit: u32) -> Result<Vec<Fill>, ApiError>;
@@ -716,8 +719,14 @@ mod tests {
     fn test_order_type_mapping() {
         assert_eq!(ApiOrderType::from_str("LIMIT"), ApiOrderType::Limit);
         assert_eq!(ApiOrderType::from_str("MARKET"), ApiOrderType::Market);
-        assert_eq!(ApiOrderType::from_str("STOP_MARKET"), ApiOrderType::StopMarket);
-        assert_eq!(ApiOrderType::from_str("stop_limit"), ApiOrderType::StopLimit);
+        assert_eq!(
+            ApiOrderType::from_str("STOP_MARKET"),
+            ApiOrderType::StopMarket
+        );
+        assert_eq!(
+            ApiOrderType::from_str("stop_limit"),
+            ApiOrderType::StopLimit
+        );
         assert_eq!(
             ApiOrderType::from_str("TAKE_PROFIT_MARKET"),
             ApiOrderType::TakeProfitMarket
@@ -726,7 +735,7 @@ mod tests {
             ApiOrderType::from_str("TRAILING_STOP_MARKET"),
             ApiOrderType::TrailingStopMarket
         );
-        assert_eq!(ApiOrderType::from_str("???") , ApiOrderType::Unknown);
+        assert_eq!(ApiOrderType::from_str("???"), ApiOrderType::Unknown);
     }
 
     #[test]
@@ -747,12 +756,27 @@ mod tests {
             ApiOrderStatus::PartiallyFilled
         );
         assert_eq!(ApiOrderStatus::from_str("FILLED"), ApiOrderStatus::Filled);
-        assert_eq!(ApiOrderStatus::from_str("CANCELED"), ApiOrderStatus::Canceled);
-        assert_eq!(ApiOrderStatus::from_str("cancelled"), ApiOrderStatus::Canceled);
-        assert_eq!(ApiOrderStatus::from_str("REJECTED"), ApiOrderStatus::Rejected);
+        assert_eq!(
+            ApiOrderStatus::from_str("CANCELED"),
+            ApiOrderStatus::Canceled
+        );
+        assert_eq!(
+            ApiOrderStatus::from_str("cancelled"),
+            ApiOrderStatus::Canceled
+        );
+        assert_eq!(
+            ApiOrderStatus::from_str("REJECTED"),
+            ApiOrderStatus::Rejected
+        );
         assert_eq!(ApiOrderStatus::from_str("EXPIRED"), ApiOrderStatus::Expired);
-        assert_eq!(ApiOrderStatus::from_str("UNTRIGGERED"), ApiOrderStatus::Untriggered);
-        assert_eq!(ApiOrderStatus::from_str("TRIGGERED"), ApiOrderStatus::Triggered);
+        assert_eq!(
+            ApiOrderStatus::from_str("UNTRIGGERED"),
+            ApiOrderStatus::Untriggered
+        );
+        assert_eq!(
+            ApiOrderStatus::from_str("TRIGGERED"),
+            ApiOrderStatus::Triggered
+        );
     }
 
     #[test]

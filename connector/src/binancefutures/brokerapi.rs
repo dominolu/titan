@@ -14,17 +14,12 @@
 
 use hftbacktest::types::{OrdType, Side, TimeInForce};
 
-use super::{
-    BinanceFuturesError,
-    msg::rest as m,
-    rest::BinanceFuturesClient,
-};
+use super::{BinanceFuturesError, msg::rest as m, rest::BinanceFuturesClient};
 use crate::api::{
     AccountInfo, AlgoOrderRequest, AmendOrderRequest, ApiError, ApiMarginType, ApiOrderStatus,
-    ApiOrderType, ApiPositionSide, ApiSide, ApiTimeInForce, Balance, BrokerApi,
-    CancelOrderRequest, FeeRate, Fill, FundingRate, IncomeRecord, InstrumentInfo, Kline, LeverageInfo,
-    OpenInterest, OrderBook, OrderInfo, PositionInfo, PriceLevel, Ticker, Trade,
-    UnifiedOrderRequest,
+    ApiOrderType, ApiPositionSide, ApiSide, ApiTimeInForce, Balance, BrokerApi, CancelOrderRequest,
+    FeeRate, Fill, FundingRate, IncomeRecord, InstrumentInfo, Kline, LeverageInfo, OpenInterest,
+    OrderBook, OrderInfo, PositionInfo, PriceLevel, Ticker, Trade, UnifiedOrderRequest,
 };
 
 impl From<BinanceFuturesError> for ApiError {
@@ -111,7 +106,11 @@ fn ticker_from(t24: &m::Ticker24h, p: Option<&m::PremiumIndex>) -> Ticker {
 fn order_info_from(o: &m::Order) -> OrderInfo {
     let executed = o.executed_qty;
     let qty = o.orig_qty;
-    let leaves = if o.leaves_qty > 0.0 { o.leaves_qty } else { qty - executed };
+    let leaves = if o.leaves_qty > 0.0 {
+        o.leaves_qty
+    } else {
+        qty - executed
+    };
     let pos_side = match o.position_side.to_uppercase().as_str() {
         "LONG" => ApiPositionSide::Long,
         "SHORT" => ApiPositionSide::Short,
@@ -238,7 +237,9 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_exchange_info(&self) -> Result<Vec<m::SymbolInfo>, BinanceFuturesError> {
-        let resp: m::ExchangeInfo = self.get_noauth("/fapi/v1/exchangeInfo", String::new()).await?;
+        let resp: m::ExchangeInfo = self
+            .get_noauth("/fapi/v1/exchangeInfo", String::new())
+            .await?;
         Ok(resp.symbols)
     }
 
@@ -248,9 +249,7 @@ impl BinanceFuturesClient {
         &self,
         symbol: Option<&str>,
     ) -> Result<Vec<m::Ticker24h>, BinanceFuturesError> {
-        let query = symbol
-            .map(|s| format!("symbol={s}"))
-            .unwrap_or_default();
+        let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
         Ok(self.get_noauth("/fapi/v1/ticker/24hr", query).await?)
     }
 
@@ -258,9 +257,7 @@ impl BinanceFuturesClient {
         &self,
         symbol: Option<&str>,
     ) -> Result<Vec<m::PremiumIndex>, BinanceFuturesError> {
-        let query = symbol
-            .map(|s| format!("symbol={s}"))
-            .unwrap_or_default();
+        let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
         Ok(self.get_noauth("/fapi/v1/premiumIndex", query).await?)
     }
 
@@ -268,9 +265,7 @@ impl BinanceFuturesClient {
         &self,
         symbol: Option<&str>,
     ) -> Result<Vec<m::TickerPrice>, BinanceFuturesError> {
-        let query = symbol
-            .map(|s| format!("symbol={s}"))
-            .unwrap_or_default();
+        let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
         Ok(self.get_noauth("/fapi/v1/ticker/price", query).await?)
     }
 
@@ -278,9 +273,7 @@ impl BinanceFuturesClient {
         &self,
         symbol: Option<&str>,
     ) -> Result<Vec<m::BookTicker>, BinanceFuturesError> {
-        let query = symbol
-            .map(|s| format!("symbol={s}"))
-            .unwrap_or_default();
+        let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
         Ok(self.get_noauth("/fapi/v1/ticker/bookTicker", query).await?)
     }
 
@@ -363,7 +356,9 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_funding_info(&self) -> Result<Vec<m::FundingInfo>, BinanceFuturesError> {
-        Ok(self.get_noauth("/fapi/v1/fundingInfo", String::new()).await?)
+        Ok(self
+            .get_noauth("/fapi/v1/fundingInfo", String::new())
+            .await?)
     }
 
     pub async fn get_open_interest(
@@ -384,9 +379,7 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_index_info(&self) -> Result<Vec<serde_json::Value>, BinanceFuturesError> {
-        Ok(self
-            .get_noauth("/fapi/v1/indexInfo", String::new())
-            .await?)
+        Ok(self.get_noauth("/fapi/v1/indexInfo", String::new()).await?)
     }
 
     pub async fn get_asset_index(
@@ -406,9 +399,7 @@ impl BinanceFuturesClient {
             .await?)
     }
 
-    pub async fn get_trading_schedule(
-        &self,
-    ) -> Result<serde_json::Value, BinanceFuturesError> {
+    pub async fn get_trading_schedule(&self) -> Result<serde_json::Value, BinanceFuturesError> {
         Ok(self
             .get_noauth("/fapi/v1/tradingSchedule", String::new())
             .await?)
@@ -562,10 +553,7 @@ impl BinanceFuturesClient {
         Ok(self.post("/fapi/v1/countdownCancelAll", body).await?)
     }
 
-    pub async fn submit_test_order(
-        &self,
-        body: String,
-    ) -> Result<(), BinanceFuturesError> {
+    pub async fn submit_test_order(&self, body: String) -> Result<(), BinanceFuturesError> {
         let _: serde_json::Value = self.post("/fapi/v1/order/test", body).await?;
         Ok(())
     }
@@ -589,7 +577,9 @@ impl BinanceFuturesClient {
     }
 
     pub async fn get_position_mode(&self) -> Result<bool, BinanceFuturesError> {
-        let resp: m::BoolSetting = self.get("/fapi/v1/positionSide/dual", String::new()).await?;
+        let resp: m::BoolSetting = self
+            .get("/fapi/v1/positionSide/dual", String::new())
+            .await?;
         Ok(resp.dual_side_position.unwrap_or(false))
     }
 
@@ -660,9 +650,7 @@ impl BinanceFuturesClient {
             .await?)
     }
 
-    pub async fn get_account_config(
-        &self,
-    ) -> Result<serde_json::Value, BinanceFuturesError> {
+    pub async fn get_account_config(&self) -> Result<serde_json::Value, BinanceFuturesError> {
         Ok(self.get("/fapi/v1/accountConfig", String::new()).await?)
     }
 
@@ -674,9 +662,7 @@ impl BinanceFuturesClient {
         Ok(self.get("/fapi/v1/symbolConfig", query).await?)
     }
 
-    pub async fn get_rate_limit_order(
-        &self,
-    ) -> Result<serde_json::Value, BinanceFuturesError> {
+    pub async fn get_rate_limit_order(&self) -> Result<serde_json::Value, BinanceFuturesError> {
         Ok(self.get("/fapi/v1/rateLimit/order", String::new()).await?)
     }
 
@@ -708,9 +694,7 @@ impl BinanceFuturesClient {
         Ok(self.get("/fapi/v1/income", query).await?)
     }
 
-    pub async fn get_api_trading_status(
-        &self,
-    ) -> Result<serde_json::Value, BinanceFuturesError> {
+    pub async fn get_api_trading_status(&self) -> Result<serde_json::Value, BinanceFuturesError> {
         Ok(self.get("/fapi/v1/apiTradingStatus", String::new()).await?)
     }
 
@@ -773,7 +757,9 @@ impl BinanceFuturesClient {
     }
 
     pub async fn cancel_all_algo_orders(&self) -> Result<serde_json::Value, BinanceFuturesError> {
-        Ok(self.delete("/fapi/v1/algoOpenOrders", String::new()).await?)
+        Ok(self
+            .delete("/fapi/v1/algoOpenOrders", String::new())
+            .await?)
     }
 
     pub async fn get_algo_order(
@@ -824,7 +810,11 @@ impl BrokerApi for BinanceFuturesClient {
             .into_iter()
             .next()
             .ok_or_else(|| ApiError::new("binance", "EMPTY", "ticker not found"))?;
-        let p = self.get_premium_index(Some(symbol)).await?.into_iter().next();
+        let p = self
+            .get_premium_index(Some(symbol))
+            .await?
+            .into_iter()
+            .next();
         Ok(ticker_from(&t24, p.as_ref()))
     }
 
@@ -840,7 +830,7 @@ impl BrokerApi for BinanceFuturesClient {
             .collect())
     }
 
-    async fn get_order_book(&self, symbol: &str, limit: u32) -> Result<OrderBook, ApiError> {
+    async fn get_order_book(&self, symbol: &str, _limit: u32) -> Result<OrderBook, ApiError> {
         let depth = self.get_depth(symbol).await?;
         Ok(OrderBook {
             symbol: symbol.to_lowercase(),
@@ -1009,10 +999,7 @@ impl BrokerApi for BinanceFuturesClient {
         }
     }
 
-    async fn cancel_orders(
-        &self,
-        reqs: &[CancelOrderRequest],
-    ) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn cancel_orders(&self, reqs: &[CancelOrderRequest]) -> Result<Vec<OrderInfo>, ApiError> {
         if reqs.is_empty() || reqs.len() > 10 {
             return Err(ApiError::new(
                 "binance",
@@ -1021,10 +1008,7 @@ impl BrokerApi for BinanceFuturesClient {
             ));
         }
         let symbol = &reqs[0].symbol;
-        let order_ids: Vec<String> = reqs
-            .iter()
-            .filter_map(|r| r.order_id.clone())
-            .collect();
+        let order_ids: Vec<String> = reqs.iter().filter_map(|r| r.order_id.clone()).collect();
         let client_ids: Vec<String> = reqs
             .iter()
             .filter_map(|r| r.client_order_id.clone())
@@ -1116,7 +1100,11 @@ impl BrokerApi for BinanceFuturesClient {
         Ok(orders.iter().map(order_info_from).collect())
     }
 
-    async fn get_order_history(&self, symbol: &str, limit: u32) -> Result<Vec<OrderInfo>, ApiError> {
+    async fn get_order_history(
+        &self,
+        symbol: &str,
+        limit: u32,
+    ) -> Result<Vec<OrderInfo>, ApiError> {
         let orders = self
             .get_all_orders(symbol, limit.min(1000), None, None, None)
             .await?;
@@ -1124,7 +1112,9 @@ impl BrokerApi for BinanceFuturesClient {
     }
 
     async fn get_fills(&self, symbol: &str, limit: u32) -> Result<Vec<Fill>, ApiError> {
-        let trades = self.get_user_trades(symbol, limit.min(1000), None, None, None).await?;
+        let trades = self
+            .get_user_trades(symbol, limit.min(1000), None, None, None)
+            .await?;
         Ok(trades
             .iter()
             .map(|t| Fill {
@@ -1134,7 +1124,7 @@ impl BrokerApi for BinanceFuturesClient {
                 client_order_id: String::new(),
                 price: t.price,
                 qty: t.qty,
-                side: ApiSide::from_str(&t.side.as_ref()),
+                side: ApiSide::from_str(t.side.as_ref()),
                 fee: t.commission,
                 fee_asset: t.commission_asset.clone(),
                 realized_pnl: t.realized_pnl,
@@ -1675,9 +1665,10 @@ mod tests {
         assert_eq!(fr.funding_rate, 0.0001);
         assert_eq!(fr.funding_time, 1_700_000_000_000);
 
-        let oi: m::OpenInterest =
-            serde_json::from_str(r#"{"symbol":"BTCUSDT","openInterest":"123.456","time":1700000000000}"#)
-                .unwrap();
+        let oi: m::OpenInterest = serde_json::from_str(
+            r#"{"symbol":"BTCUSDT","openInterest":"123.456","time":1700000000000}"#,
+        )
+        .unwrap();
         assert_eq!(oi.open_interest, 123.456);
     }
 
@@ -1694,8 +1685,7 @@ mod tests {
     #[test]
     fn test_book_ticker_stream_parse() {
         let msg = r#"{"e":"bookTicker","u":400900217,"E":1568014460893,"T":1568014460894,"s":"BTCUSDT","b":"50000.00","B":"0.500","a":"50001.00","A":"1.200"}"#;
-        let stream: crate::binancefutures::msg::stream::Stream =
-            serde_json::from_str(msg).unwrap();
+        let stream: crate::binancefutures::msg::stream::Stream = serde_json::from_str(msg).unwrap();
         match stream {
             crate::binancefutures::msg::stream::Stream::EventStream(
                 crate::binancefutures::msg::stream::EventStream::BookTicker(bt),

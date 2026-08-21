@@ -210,6 +210,7 @@ impl ConnectorBuilder for BinanceSpot {
     }
 }
 
+#[async_trait::async_trait]
 impl Connector for BinanceSpot {
     fn register(&mut self, symbol: String) {
         // Binance futures symbols must be lowercase to subscribe to the WebSocket stream.
@@ -368,5 +369,20 @@ impl Connector for BinanceSpot {
                 }
             }
         });
+    }
+
+    async fn shutdown(&self) -> Result<(), String> {
+        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
+        let mut errors = Vec::new();
+        for symbol in symbols {
+            if let Err(error) = self.client.cancel_all_orders(&symbol).await {
+                errors.push(format!("{symbol}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }

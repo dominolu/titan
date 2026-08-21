@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - name: Clippy
+        run: >-
+          cargo clippy --workspace --all-targets --all-features --
+          -D warnings
+          -A dead-code
+          -A clippy::should-implement-trait
+          -A clippy::large-enum-variant
+          -A clippy::type-complexity
+          -A clippy::too-many-arguments
+          -A clippy::unnecessary-filter-map
+          -A clippy::collapsible-if
+          -A clippy::ptr-arg
+          -A clippy::needless-question-mark
+          -A clippy::bool-assert-comparison
+          -A clippy::items-after-test-module
+          -A clippy::redundant-pattern-matching
+          -A clippy::upper-case-acronyms
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        command:
+          - cargo test --workspace
+          - cargo test --workspace --all-features
+          - cargo test -p connector --features okx
+          - cargo test -p connector --features hyperliquid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.91.1
+      - uses: Swatinem/rust-cache@v2
+      - run: ${{ matrix.command }}
