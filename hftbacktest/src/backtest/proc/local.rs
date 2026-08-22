@@ -86,8 +86,13 @@ where
             }
 
             // Processes receiving order response.
-            if order.status == Status::Filled {
+            if order.exec_qty > 0.0
+                && matches!(order.status, Status::PartiallyFilled | Status::Filled)
+            {
                 self.state.apply_fill(&order);
+            }
+            if USE_HANDLER {
+                handler(&order);
             }
             // Applies the received order response to the local orders.
             match self.orders.entry(order.order_id) {
@@ -105,16 +110,10 @@ where
                     } else {
                         local_order.update(&order);
                     }
-                    if USE_HANDLER {
-                        handler(&order);
-                    }
                 }
                 Entry::Vacant(entry) => {
                     if order.req != Status::Rejected {
-                        let order_ = entry.insert(order);
-                        if USE_HANDLER {
-                            handler(order_);
-                        }
+                        entry.insert(order);
                     }
                 }
             }
@@ -302,6 +301,15 @@ where
         wait_resp_order_id: Option<OrderId>,
     ) -> Result<bool, BacktestError> {
         self.process_recv_order_::<false, _>(timestamp, wait_resp_order_id, |_| {})
+    }
+
+    fn process_recv_order_with_handler(
+        &mut self,
+        timestamp: i64,
+        wait_resp_order_id: Option<OrderId>,
+        handler: &mut dyn FnMut(&Order),
+    ) -> Result<bool, BacktestError> {
+        self.process_recv_order_::<true, _>(timestamp, wait_resp_order_id, handler)
     }
 
     fn earliest_recv_order_timestamp(&self) -> i64 {

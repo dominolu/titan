@@ -30,9 +30,13 @@ Titan
 实盘交易
 --------
 
-* **研究到实盘零差异**：同一份 Rust 策略实现同时用于回测与实盘。
-* **Rust 原生回调策略**（``hftbacktest::strategy``）：``Strategy`` trait + 两级 ctx
-  （市场 → 品种），``on_tick``/``on_bar`` 全局帧驱动，与 ``elapse`` 同级性能。
+* **当前 Rust 回调实现**（``hftbacktest::strategy``）：``Strategy`` trait + 两级 ctx
+  （市场 → 品种），同一份 Rust 策略可以用于回测与实盘。
+* **Numba 事件策略接口**：面向策略作者的事件 API 固定为单参数
+  ``@njit def on_tick(s)`` / ``@njit def on_bar(s)``；``s`` 同时提供行情上下文、状态和
+  下单能力。Rust 拥有事件循环、时钟、行情状态与撮合；当前已连接 Tick 回测/实盘和
+  Bar-only 回测，Hybrid 在精确合并器完成前显式拒绝运行。完整设计与状态见
+  `docs/bar_tick_numba_strategy.md <docs/bar_tick_numba_strategy.md>`_。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
   （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
   覆盖所有已支持的交易所——策略切换 broker 只需改一行代码。
@@ -87,8 +91,11 @@ Titan
 上游算法参考
 ------------
 
-下面的 Python 片段只用于解释做市算法；本 Rust-first 仓库不再包含 Python binding。
-可直接运行的实现见下一节的 Rust 示例。
+下面的 Python 片段只用于解释做市算法；仓库已经恢复 Python/Numba binding。新事件策略
+接口不是这里展示的手写 ``while hbt.elapse``，而是 Numba 单参数
+``on_tick(s)`` / ``on_bar(s)`` 回调，详见
+`Bar/Tick 回测与实盘统一策略接口 <docs/bar_tick_numba_strategy.md>`_。当前可直接运行的
+实现见下一节的 Rust 示例。
 
 .. code-block:: python
 
@@ -198,6 +205,11 @@ Rust 版做市示例策略
 ``on_tick``/``on_bar`` 的完整用法（两级 ctx、状态槽、下单接口）见
 `docs/rust_strategy.md <docs/rust_strategy.md>`_。
 
+该 Rust trait 是内部实现和迁移期兼容入口，不是默认的 Python 策略 API。默认接口是
+Numba ``@njit def on_tick(s)`` / ``@njit def on_bar(s)``，并显式区分 Bar、Tick 和
+Hybrid 数据源；见
+`docs/bar_tick_numba_strategy.md <docs/bar_tick_numba_strategy.md>`_。
+
 实盘交易
 ========
 
@@ -263,7 +275,7 @@ Rust 版做市示例策略
 测试覆盖核心回测、策略回调、请求/响应映射、WebSocket 消息解析和 Hyperliquid EIP-712
 wire 序列化。准确数量以当前测试输出为准；网络冒烟测试默认忽略。
 
-项目固定使用 Rust 1.91.1，``rust-toolchain.toml`` 会让 rustup 自动选择对应工具链。
+项目固定使用 Rust 1.94.0，``rust-toolchain.toml`` 会让 rustup 自动选择对应工具链。
 
 实盘冒烟测试（需要网络，默认跳过）：
 
@@ -310,6 +322,6 @@ MIT。见 ``LICENSE``。原始工作来自 nkaz001（上游
     :alt: License
     :target: https://github.com/nkaz001/hftbacktest/blob/master/LICENSE
 
-.. |rustc| image:: https://shields.io/badge/rustc-1.91-blue
+.. |rustc| image:: https://shields.io/badge/rustc-1.94-blue
     :alt: Rust Version
     :target: https://www.rust-lang.org/

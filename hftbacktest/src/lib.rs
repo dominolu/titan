@@ -33,6 +33,12 @@ pub mod backtest;
 /// Provides market depth implementations.
 pub mod depth;
 
+/// Canonical Bar/Tick data types and deterministic bar construction.
+pub mod market_data;
+
+/// Rust-owned strategy event runtime and foreign callback ABI.
+pub mod runtime;
+
 /// Provides the Rust-native callback strategy interface and two-level strategy context.
 pub mod strategy;
 

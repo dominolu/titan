@@ -59,6 +59,65 @@ where
             last_order_latency: None,
         }
     }
+
+    pub fn process_recv_order_<const USE_HANDLER: bool, Handler>(
+        &mut self,
+        timestamp: i64,
+        wait_resp_order_id: Option<OrderId>,
+        mut handler: Handler,
+    ) -> Result<bool, BacktestError>
+    where
+        Handler: FnMut(&Order),
+    {
+        let mut wait_resp_order_received = false;
+        while let Some(order) = self.order_l2e.receive(timestamp) {
+            // Updates the order latency only if it has a valid exchange timestamp. When the
+            // order is rejected before it reaches the matching engine, it has no exchange
+            // timestamp. This situation occurs in crypto exchanges.
+            if order.exch_timestamp > 0 {
+                self.last_order_latency =
+                    Some((order.local_timestamp, order.exch_timestamp, timestamp));
+            }
+
+            if let Some(wait_resp_order_id) = wait_resp_order_id
+                && order.order_id == wait_resp_order_id
+            {
+                wait_resp_order_received = true;
+            }
+
+            if order.exec_qty > 0.0
+                && matches!(order.status, Status::PartiallyFilled | Status::Filled)
+            {
+                self.state.apply_fill(&order);
+            }
+            if USE_HANDLER {
+                handler(&order);
+            }
+            match self.orders.entry(order.order_id) {
+                Entry::Occupied(mut entry) => {
+                    let local_order = entry.get_mut();
+                    if order.req == Status::Rejected {
+                        if order.local_timestamp == local_order.local_timestamp {
+                            if local_order.req == Status::New {
+                                local_order.req = Status::None;
+                                local_order.status = Status::Expired;
+                            } else {
+                                local_order.req = Status::None;
+                            }
+                        }
+                    } else {
+                        local_order.update(&order);
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    if order.req != Status::Rejected {
+                        entry.insert(order);
+                    }
+                }
+            }
+        }
+        Ok(wait_resp_order_received)
+    }
 }
 
 impl<AT, LM, MD, FM> LocalProcessor<MD> for L3Local<AT, LM, MD, FM>
@@ -248,52 +307,16 @@ where
         timestamp: i64,
         wait_resp_order_id: Option<OrderId>,
     ) -> Result<bool, BacktestError> {
-        // Processes the order part.
-        let mut wait_resp_order_received = false;
-        while let Some(order) = self.order_l2e.receive(timestamp) {
-            // Updates the order latency only if it has a valid exchange timestamp. When the
-            // order is rejected before it reaches the matching engine, it has no exchange
-            // timestamp. This situation occurs in crypto exchanges.
-            if order.exch_timestamp > 0 {
-                self.last_order_latency =
-                    Some((order.local_timestamp, order.exch_timestamp, timestamp));
-            }
+        self.process_recv_order_::<false, _>(timestamp, wait_resp_order_id, |_| {})
+    }
 
-            if let Some(wait_resp_order_id) = wait_resp_order_id
-                && order.order_id == wait_resp_order_id
-            {
-                wait_resp_order_received = true;
-            }
-
-            // Processes receiving order response.
-            if order.status == Status::Filled {
-                self.state.apply_fill(&order);
-            }
-            // Applies the received order response to the local orders.
-            match self.orders.entry(order.order_id) {
-                Entry::Occupied(mut entry) => {
-                    let local_order = entry.get_mut();
-                    if order.req == Status::Rejected {
-                        if order.local_timestamp == local_order.local_timestamp {
-                            if local_order.req == Status::New {
-                                local_order.req = Status::None;
-                                local_order.status = Status::Expired;
-                            } else {
-                                local_order.req = Status::None;
-                            }
-                        }
-                    } else {
-                        local_order.update(&order);
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    if order.req != Status::Rejected {
-                        entry.insert(order);
-                    }
-                }
-            }
-        }
-        Ok(wait_resp_order_received)
+    fn process_recv_order_with_handler(
+        &mut self,
+        timestamp: i64,
+        wait_resp_order_id: Option<OrderId>,
+        handler: &mut dyn FnMut(&Order),
+    ) -> Result<bool, BacktestError> {
+        self.process_recv_order_::<true, _>(timestamp, wait_resp_order_id, handler)
     }
 
     fn earliest_recv_order_timestamp(&self) -> i64 {

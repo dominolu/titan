@@ -1,5 +1,11 @@
 # Rust 策略（Strategy trait）用法
 
+> 当前状态说明：本页描述当前已经可运行的 Rust 策略接口。最终面向策略作者的目标接口
+> 是 Numba Python 单参数回调 `@njit def on_tick(s)` / `@njit def on_bar(s)`，并显式
+> 支持 Bar、Tick 和 Hybrid 数据源。完整需求见
+> [Bar/Tick 回测与实盘统一策略接口](bar_tick_numba_strategy.md)。Rust trait 将作为核心
+> 内部接口、测试接口或迁移期兼容层保留，不应被视为最终 Python API。
+
 Rust 策略通过 `hftbacktest::strategy::Strategy` trait 编写，同一份实现直接跑回测
 （`Backtest`）和实盘（`LiveBot`）——这就是「研究到实盘零差异」的核心兑现方式。
 可运行的最小参考实现是 [examples](../examples/src/market_making.rs) crate 里的
