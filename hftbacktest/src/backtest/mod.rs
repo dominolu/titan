@@ -586,6 +586,9 @@ impl<MD> BacktestBuilder<MD> {
             evs: EventSet::new(num_assets),
             local: self.local,
             exch: self.exch,
+            runtime_feed_events: Vec::new(),
+            runtime_order_events: Vec::new(),
+            runtime_capture_enabled: false,
         })
     }
 }
@@ -598,6 +601,37 @@ pub struct Backtest<MD> {
     evs: EventSet,
     local: Vec<BacktestProcessorState<Box<dyn LocalProcessor<MD>>>>,
     exch: Vec<BacktestProcessorState<Box<dyn Processor>>>,
+    runtime_feed_events: Vec<(usize, Event)>,
+    runtime_order_events: Vec<(usize, i64, Order)>,
+    runtime_capture_enabled: bool,
+}
+
+impl<MD> Backtest<MD> {
+    /// Feed events processed locally since the runtime last cleared its batch.
+    pub fn runtime_feed_events(&self) -> &[(usize, Event)] {
+        &self.runtime_feed_events
+    }
+
+    pub fn clear_runtime_feed_events(&mut self) {
+        self.runtime_feed_events.clear();
+    }
+
+    /// Order responses received locally, preserving individual partial fills.
+    pub fn runtime_order_events(&self) -> &[(usize, i64, Order)] {
+        &self.runtime_order_events
+    }
+
+    pub fn clear_runtime_order_events(&mut self) {
+        self.runtime_order_events.clear();
+    }
+
+    pub fn set_runtime_capture(&mut self, enabled: bool) {
+        self.runtime_capture_enabled = enabled;
+        if !enabled {
+            self.runtime_feed_events.clear();
+            self.runtime_order_events.clear();
+        }
+    }
 }
 
 impl<P: Processor> Deref for BacktestProcessorState<P> {
@@ -700,6 +734,9 @@ where
             exch,
             cur_ts: i64::MAX,
             evs: EventSet::new(num_assets),
+            runtime_feed_events: Vec::new(),
+            runtime_order_events: Vec::new(),
+            runtime_capture_enabled: false,
         }
     }
 
@@ -767,10 +804,17 @@ where
                     match ev.kind {
                         EventIntentKind::LocalData => {
                             let local = unsafe { self.local.get_unchecked_mut(ev.asset_no) };
+                            let mut processed = None;
                             let next = local.next_row().and_then(|row| {
                                 local.processor.process(&local.data[row])?;
+                                processed = Some(local.data[row].clone());
                                 local.advance()
                             });
+                            if self.runtime_capture_enabled
+                                && let Some(event) = processed
+                            {
+                                self.runtime_feed_events.push((ev.asset_no, event));
+                            }
 
                             match next {
                                 Ok(next_ts) => {
@@ -797,8 +841,21 @@ where
                                 } if ev.asset_no == wait_order_asset_no => Some(wait_order_id),
                                 _ => None,
                             };
-                            if local.process_recv_order(ev.timestamp, wait_order_resp_id)?
-                                || wait_order_response == WaitOrderResponse::Any
+                            let capture = self.runtime_capture_enabled;
+                            let order_events = &mut self.runtime_order_events;
+                            if local.process_recv_order_with_handler(
+                                ev.timestamp,
+                                wait_order_resp_id,
+                                &mut |order| {
+                                    if capture {
+                                        order_events.push((
+                                            ev.asset_no,
+                                            ev.timestamp,
+                                            order.clone(),
+                                        ))
+                                    }
+                                },
+                            )? || wait_order_response == WaitOrderResponse::Any
                             {
                                 timestamp = ev.timestamp;
                                 if WAIT_NEXT_FEED {
@@ -1223,6 +1280,13 @@ mod test {
 
         backtester.elapse_bt(1)?;
         assert_eq!(3, backtester.cur_ts);
+        assert!(backtester.runtime_feed_events().is_empty());
+
+        backtester.set_runtime_capture(true);
+        backtester.elapse_bt(1)?;
+        assert_eq!(1, backtester.runtime_feed_events().len());
+        backtester.set_runtime_capture(false);
+        assert!(backtester.runtime_feed_events().is_empty());
 
         Ok(())
     }

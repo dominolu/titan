@@ -1,0 +1,49 @@
+[build-system]
+requires = ["maturin~=1.7"]
+build-backend = "maturin"
+
+[project]
+name = "hftbacktest"
+description = "A high-frequency trading and market-making backtesting tool accounts for limit orders, queue positions, and latencies, utilizing full tick data for trades and order books."
+readme = "README.rst"
+authors = [{ name = "nkaz001", email = "nkaz001@protonmail.com" }]
+license = { file = "LICENSE" }
+version = "2.4.4"
+requires-python = ">=3.11"
+dependencies = [
+ "numpy >=2.0, <2.3",
+ "numba ~= 0.61",
+ "polars",
+ "matplotlib",
+ "holoviews"
+]
+
+keywords = ["hft", "high-frequency trading", "trading", "market-making", "backtest"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Framework :: Jupyter",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Office/Business :: Financial :: Investment"
+]
+
+[project.urls]
+Repository = "https://github.com/nkaz001/hftbacktest"
+
+[project.optional-dependencies]
+databento = ["databento"]
+
+[tool.maturin]
+include = [{ path = "rust-toolchain.toml", format = "sdist" }]
+module-name = "hftbacktest._hftbacktest"

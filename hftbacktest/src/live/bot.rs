@@ -148,6 +148,9 @@ impl<MD> LiveBotBuilder<MD> {
             instruments: self.instruments,
             error_handler: self.error_handler,
             order_hook: self.order_hook,
+            runtime_feed_events: Vec::new(),
+            runtime_order_events: Vec::new(),
+            runtime_capture_enabled: false,
         })
     }
 }
@@ -183,6 +186,9 @@ pub struct LiveBot<CH, MD> {
     instruments: Vec<Instrument<MD>>,
     error_handler: Option<ErrorHandler>,
     order_hook: Option<OrderRecvHook>,
+    runtime_feed_events: Vec<(usize, Event)>,
+    runtime_order_events: Vec<(usize, i64, Order)>,
+    runtime_capture_enabled: bool,
 }
 
 impl<CH, MD> LiveBot<CH, MD>
@@ -190,6 +196,30 @@ where
     CH: Channel,
     MD: MarketDepth + L2MarketDepth,
 {
+    pub fn runtime_feed_events(&self) -> &[(usize, Event)] {
+        &self.runtime_feed_events
+    }
+
+    pub fn clear_runtime_feed_events(&mut self) {
+        self.runtime_feed_events.clear();
+    }
+
+    pub fn runtime_order_events(&self) -> &[(usize, i64, Order)] {
+        &self.runtime_order_events
+    }
+
+    pub fn clear_runtime_order_events(&mut self) {
+        self.runtime_order_events.clear();
+    }
+
+    pub fn set_runtime_capture(&mut self, enabled: bool) {
+        self.runtime_capture_enabled = enabled;
+        if !enabled {
+            self.runtime_feed_events.clear();
+            self.runtime_order_events.clear();
+        }
+    }
+
     fn process_event<const WAIT_NEXT_FEED: bool>(
         &mut self,
         inst_no: usize,
@@ -198,6 +228,9 @@ where
     ) -> Result<ElapseResult, BotError> {
         match ev {
             LiveEvent::Feed { event, .. } => {
+                if self.runtime_capture_enabled {
+                    self.runtime_feed_events.push((inst_no, event.clone()));
+                }
                 let instrument = unsafe { self.instruments.get_unchecked_mut(inst_no) };
                 instrument.last_feed_latency = Some((event.exch_ts, event.local_ts));
                 if event.is(LOCAL_BID_DEPTH_EVENT) {
@@ -219,6 +252,11 @@ where
             }
             LiveEvent::Order { order, .. } => {
                 debug!(%inst_no, ?order, "Event::Order");
+                let recv_ts = Utc::now().timestamp_nanos_opt().unwrap();
+                if self.runtime_capture_enabled {
+                    self.runtime_order_events
+                        .push((inst_no, recv_ts, order.clone()));
+                }
                 let received_order_resp = match wait_order_response {
                     WaitOrderResponse::Any => true,
                     WaitOrderResponse::Specified {
@@ -228,11 +266,8 @@ where
                     _ => false,
                 };
                 let instrument = unsafe { self.instruments.get_unchecked_mut(inst_no) };
-                instrument.last_order_latency = Some((
-                    order.local_timestamp,
-                    order.exch_timestamp,
-                    Utc::now().timestamp_nanos_opt().unwrap(),
-                ));
+                instrument.last_order_latency =
+                    Some((order.local_timestamp, order.exch_timestamp, recv_ts));
                 match instrument.orders.entry(order.order_id) {
                     Entry::Occupied(mut entry) => {
                         let ex_order = entry.get_mut();

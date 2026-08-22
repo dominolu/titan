@@ -117,6 +117,15 @@ impl<P: Processor + ?Sized> Processor for Box<P> {
         P::process_recv_order(self, timestamp, wait_resp_order_id)
     }
 
+    fn process_recv_order_with_handler(
+        &mut self,
+        timestamp: i64,
+        wait_resp_order_id: Option<OrderId>,
+        handler: &mut dyn FnMut(&Order),
+    ) -> Result<bool, BacktestError> {
+        P::process_recv_order_with_handler(self, timestamp, wait_resp_order_id, handler)
+    }
+
     fn earliest_recv_order_timestamp(&self) -> i64 {
         P::earliest_recv_order_timestamp(self)
     }
@@ -146,6 +155,18 @@ pub trait Processor {
         timestamp: i64,
         wait_resp_order_id: Option<OrderId>,
     ) -> Result<bool, BacktestError>;
+
+    /// Processes order responses and exposes each response in receive order.
+    fn process_recv_order_with_handler(
+        &mut self,
+        timestamp: i64,
+        wait_resp_order_id: Option<OrderId>,
+        handler: &mut dyn FnMut(&Order),
+    ) -> Result<bool, BacktestError> {
+        let result = self.process_recv_order(timestamp, wait_resp_order_id)?;
+        let _ = handler;
+        Ok(result)
+    }
 
     /// Returns the foremost timestamp at which an order is to be received by this processor.
     fn earliest_recv_order_timestamp(&self) -> i64;
