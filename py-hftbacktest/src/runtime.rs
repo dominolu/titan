@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     marker::PhantomData,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use hftbacktest::{
@@ -15,13 +16,104 @@ use hftbacktest::{
     prelude::{Bot, ElapseResult},
     runtime::{
         BarHistoryView, CallbackRegistry, FillEvent, MarketState, MaterializedBarSource,
-        ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand, OrderEvent, RuntimeEvent,
-        RuntimeEventSource, RuntimeFunding, RuntimePayload, RuntimeTimer, StrategyCallback,
-        StrategyEventKind, StrategyRuntimeContext, TickItem, TimedBarItem, project_order_response,
-        run_event_runtime,
+        OrderCommand, OrderEvent, RuntimeEvent, RuntimeEventSource, RuntimeFunding, RuntimePayload,
+        RuntimeTimer, StrategyCallback, StrategyEventKind, StrategyRuntimeContext, TickItem,
+        TimedBarItem, project_execution_report, project_order_response, run_event_runtime_scoped,
     },
-    types::{Event, OrdType, Order, Side, Status, TimeInForce},
+    types::{Event, Order, Side, Status},
 };
+
+static NEXT_RUNTIME_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_runtime_run_id() -> u64 {
+    NEXT_RUNTIME_RUN_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn structured_error_code(error: &hftbacktest::backtest::result::StructuredEngineError) -> i64 {
+    -(100 + error.code as i64)
+}
+
+fn validate_runtime_capabilities(
+    mode: hftbacktest::backtest::execution::Capability,
+    has_timers: bool,
+    has_funding: bool,
+) -> Result<(), hftbacktest::backtest::execution::CapabilityError> {
+    use hftbacktest::backtest::execution::{
+        Capability, CapabilitySet, ModelDescriptor, validate_capabilities,
+    };
+    let command_capabilities = CapabilitySet::empty()
+        .with(Capability::MarketOrder)
+        .with(Capability::LimitOrder)
+        .with(Capability::PostOnly)
+        .with(Capability::ReduceOnly)
+        .with(Capability::StopMarket)
+        .with(Capability::StopLimit)
+        .with(Capability::Gtd);
+    let execution = match mode {
+        Capability::TickExecution => ModelDescriptor::new(
+            "tick-l2-l3-runtime",
+            1,
+            CapabilitySet::empty()
+                .with(Capability::TickExecution)
+                .with(Capability::PartialFill),
+        ),
+        Capability::BarExecution => ModelDescriptor::new(
+            "bar-runtime",
+            1,
+            CapabilitySet::empty()
+                .with(Capability::BarExecution)
+                .with(Capability::PartialFill),
+        ),
+        Capability::HybridExecution => ModelDescriptor::new(
+            "hybrid-bar-signal-tick-execution",
+            1,
+            CapabilitySet::empty()
+                .with(Capability::HybridExecution)
+                .with(Capability::TickExecution)
+                .with(Capability::PartialFill),
+        ),
+        _ => ModelDescriptor::new("invalid-runtime-mode", 0, CapabilitySet::empty()),
+    };
+    let timer = ModelDescriptor::new(
+        "global-timer-queue",
+        1,
+        if has_timers {
+            CapabilitySet::empty().with(Capability::Timer)
+        } else {
+            CapabilitySet::empty()
+        },
+    );
+    let funding = ModelDescriptor::new(
+        "funding-engine",
+        1,
+        if has_funding {
+            CapabilitySet::empty().with(Capability::Funding)
+        } else {
+            CapabilitySet::empty()
+        },
+    );
+    let mut required = CapabilitySet::empty().with(mode);
+    if has_timers {
+        required = required.with(Capability::Timer);
+    }
+    if has_funding {
+        required = required.with(Capability::Funding);
+    }
+    validate_capabilities(
+        &[
+            ModelDescriptor::new("execution-command-decoder", 7, command_capabilities),
+            execution,
+            timer,
+            funding,
+            ModelDescriptor::new(
+                "execution-event-projector",
+                7,
+                CapabilitySet::empty().with(Capability::LiveProjection),
+            ),
+        ],
+        required,
+    )
+}
 
 use crate::backtest::{HashMapMarketDepthBacktest, ROIVectorMarketDepthBacktest};
 #[cfg(feature = "live")]
@@ -34,6 +126,7 @@ struct TickFrameSource<'a, B, MD> {
     ticks: Vec<TickItem>,
     fills: Vec<FillEvent>,
     order_events: Vec<OrderEvent>,
+    canonical_events: Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
     order_pending: bool,
     fill_pending: bool,
     position_pending: bool,
@@ -51,6 +144,7 @@ struct TickFrameSource<'a, B, MD> {
     suppressed_terminal: BTreeSet<(u64, u64)>,
     conditional_scratch: Vec<((u64, u64), OrderCommand)>,
     timers: hftbacktest::backtest::scheduler::TimerQueue,
+    timer_projector: hftbacktest::backtest::execution::ExecutionEventProjector,
     timer_scratch: Vec<hftbacktest::backtest::scheduler::TimerEvent>,
     current_timer: RuntimeTimer,
     funding: VecDeque<hftbacktest::backtest::execution::ScheduledFunding>,
@@ -76,6 +170,11 @@ trait RuntimeBotEvents {
     fn clear_runtime_feed_events(&mut self);
     fn runtime_order_events(&self) -> &[(usize, i64, Order)];
     fn clear_runtime_order_events(&mut self);
+    fn drain_runtime_projected_events(
+        &mut self,
+        _output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
+    ) {
+    }
     fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)];
     fn clear_runtime_funding_events(&mut self);
     fn settle_runtime_funding(
@@ -121,6 +220,12 @@ where
     fn clear_runtime_order_events(&mut self) {
         Backtest::clear_runtime_order_events(self);
     }
+    fn drain_runtime_projected_events(
+        &mut self,
+        output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
+    ) {
+        Backtest::drain_shared_projected_events(self, output);
+    }
     fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
         &[]
     }
@@ -158,6 +263,12 @@ impl RuntimeBotEvents for HashMapMarketDepthLiveBot {
     }
     fn clear_runtime_order_events(&mut self) {
         self.clear_runtime_order_events();
+    }
+    fn drain_runtime_projected_events(
+        &mut self,
+        output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
+    ) {
+        self.drain_runtime_projected_events(output);
     }
     fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
         self.runtime_funding_events()
@@ -198,6 +309,12 @@ impl RuntimeBotEvents for ROIVectorMarketDepthLiveBot {
     }
     fn clear_runtime_order_events(&mut self) {
         self.clear_runtime_order_events();
+    }
+    fn drain_runtime_projected_events(
+        &mut self,
+        output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
+    ) {
+        self.drain_runtime_projected_events(output);
     }
     fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
         self.runtime_funding_events()
@@ -243,13 +360,14 @@ where
         hbt.clear_runtime_feed_events();
         hbt.clear_runtime_order_events();
         hbt.clear_runtime_funding_events();
-        Self {
+        let mut source = Self {
             hbt,
             frame_interval,
             max_tick_batch,
             ticks: Vec::with_capacity(max_tick_batch.min(4096)),
             fills: Vec::new(),
             order_events: Vec::new(),
+            canonical_events: Vec::with_capacity(32),
             order_pending: false,
             fill_pending: false,
             position_pending: false,
@@ -267,6 +385,8 @@ where
             suppressed_terminal: BTreeSet::new(),
             conditional_scratch: Vec::with_capacity(16),
             timers: hftbacktest::backtest::scheduler::TimerQueue::default(),
+            timer_projector:
+                hftbacktest::backtest::execution::ExecutionEventProjector::with_capacity(0),
             timer_scratch: Vec::with_capacity(4),
             current_timer: RuntimeTimer {
                 deadline_ts: 0,
@@ -290,7 +410,12 @@ where
             next_funding_sequence: 0,
             current_funding: RuntimeFunding::default(),
             _depth: PhantomData,
-        }
+        };
+        source
+            .hbt
+            .drain_runtime_projected_events(&mut source.canonical_events);
+        source.canonical_events.clear();
+        source
     }
 
     fn configure_context(&mut self, ctx: &mut StrategyRuntimeContext) {
@@ -329,6 +454,7 @@ where
             self.timers.drain_due(deadline, &mut self.timer_scratch);
         }
         let event = self.timer_scratch.remove(0);
+        let event = self.timer_projector.project_timer(event)[0];
         self.current_timer = RuntimeTimer {
             deadline_ts: event.deadline_ts,
             owner_id: event.id.owner_id,
@@ -521,39 +647,26 @@ where
         }
     }
 
-    fn submit_to_bot(&mut self, command: OrderCommand) -> Result<(), TickRuntimeError<B::Error>> {
-        let side = match command.side {
-            1 => Side::Buy,
-            -1 => Side::Sell,
-            _ => return Err(TickRuntimeError::InvalidOrder),
-        };
-        let tif = match command.time_in_force {
-            0 => TimeInForce::GTC,
-            1 => TimeInForce::GTX,
-            2 => TimeInForce::FOK,
-            3 => TimeInForce::IOC,
-            _ => return Err(TickRuntimeError::InvalidOrder),
-        };
-        let order_type = match command.order_type {
-            0 => OrdType::Limit,
-            1 => OrdType::Market,
-            _ => return Err(TickRuntimeError::InvalidOrder),
-        };
+    fn submit_to_bot(
+        &mut self,
+        asset_no: usize,
+        request: hftbacktest::backtest::execution::ExecutionOrderRequest,
+    ) -> Result<(), TickRuntimeError<B::Error>> {
         self.hbt.register_runtime_order_extensions(
-            command.asset_no as usize,
-            command.order_id,
-            command._reserved[0] & 1 != 0,
+            asset_no,
+            request.client_order_id,
+            request.reduce_only,
         );
-        match side {
+        match request.side {
             Side::Buy => self
                 .hbt
                 .submit_buy_order(
-                    command.asset_no as usize,
-                    command.order_id,
-                    command.price,
-                    command.qty,
-                    tif,
-                    order_type,
+                    asset_no,
+                    request.client_order_id,
+                    request.price,
+                    request.qty,
+                    request.time_in_force,
+                    request.order_type,
                     false,
                 )
                 .map(|_| ())
@@ -561,12 +674,12 @@ where
             Side::Sell => self
                 .hbt
                 .submit_sell_order(
-                    command.asset_no as usize,
-                    command.order_id,
-                    command.price,
-                    command.qty,
-                    tif,
-                    order_type,
+                    asset_no,
+                    request.client_order_id,
+                    request.price,
+                    request.qty,
+                    request.time_in_force,
+                    request.order_type,
                     false,
                 )
                 .map(|_| ())
@@ -579,12 +692,17 @@ where
         self.synthetic_order_events.push_back(OrderEvent {
             asset_no: command.asset_no,
             order_id: command.order_id,
+            venue_order_id: 0,
             exch_ts: now,
             local_ts: now,
+            sequence: 0,
             price: command.price,
             qty: command.qty,
             exec_price: 0.0,
             exec_qty: 0.0,
+            venue_no: 0,
+            instrument_id: command.asset_no as u32 + 1,
+            reason: 0,
             side: command.side,
             status: status as u8,
             request: 0,
@@ -601,8 +719,15 @@ where
         let count = ctx.num_commands.min(self.commands.len());
         for index in 0..count {
             let command = self.commands[index];
-            match command.kind {
-                ORDER_COMMAND_SUBMIT => {
+            let decoded = command
+                .decode_execution(
+                    ctx.now,
+                    hftbacktest::backtest::execution::VenueId(0),
+                    hftbacktest::backtest::execution::InstrumentId(command.asset_no as u32 + 1),
+                )
+                .map_err(|_| TickRuntimeError::InvalidOrder)?;
+            match decoded {
+                Some(hftbacktest::backtest::execution::ExecutionCommand::Submit(request)) => {
                     if !allow_submit {
                         return Err(TickRuntimeError::InvalidOrder);
                     }
@@ -624,7 +749,7 @@ where
                         }
                         self.synthesize_order(command, ctx.now, Status::New);
                     } else {
-                        self.submit_to_bot(command)?;
+                        self.submit_to_bot(command.asset_no as usize, request)?;
                         if command.gtd_expiry_ts != 0 {
                             self.active_gtd.insert(
                                 (command.asset_no, command.order_id),
@@ -633,7 +758,8 @@ where
                         }
                     }
                 }
-                ORDER_COMMAND_CANCEL => {
+                Some(hftbacktest::backtest::execution::ExecutionCommand::Cancel(request)) => {
+                    debug_assert_eq!(request.client_order_id, command.order_id);
                     if let Some(original) = self
                         .conditional_orders
                         .remove(&(command.asset_no, command.order_id))
@@ -647,12 +773,74 @@ where
                             .map_err(TickRuntimeError::Bot)?;
                     }
                 }
-                0 => {}
-                _ => return Err(TickRuntimeError::InvalidOrder),
+                None => {}
             }
         }
         ctx.num_commands = 0;
         Ok(())
+    }
+
+    /// Drain execution responses already delivered to the strategy's local visibility boundary.
+    /// Shared backtests use canonical reports; legacy/live bots fall back to `Order` snapshots.
+    fn capture_execution_events(&mut self, clear_buffers: bool) {
+        if clear_buffers {
+            self.fills.clear();
+            self.order_events.clear();
+        }
+        self.canonical_events.clear();
+        self.hbt
+            .drain_runtime_projected_events(&mut self.canonical_events);
+        if !self.canonical_events.is_empty() {
+            for (asset_no, projected) in &self.canonical_events {
+                use hftbacktest::backtest::execution::ProjectedEventKind;
+                match projected.kind {
+                    ProjectedEventKind::Order => {
+                        let report = &projected.report;
+                        let key = (*asset_no as u64, report.order_id);
+                        if self.suppressed_terminal.remove(&key) {
+                            continue;
+                        }
+                        project_execution_report(
+                            report,
+                            0,
+                            &mut self.order_events,
+                            &mut self.fills,
+                        );
+                        if matches!(
+                            report.status,
+                            Status::Filled | Status::Canceled | Status::Expired | Status::Rejected
+                        ) {
+                            self.active_gtd.remove(&key);
+                        }
+                    }
+                    ProjectedEventKind::Position => self.position_pending = true,
+                    ProjectedEventKind::Filled => {}
+                }
+            }
+            // Canonical and legacy captures describe the same reports for shared Backtest.
+            self.hbt.clear_runtime_order_events();
+            return;
+        }
+        for (asset_no, recv_ts, order) in self.hbt.runtime_order_events() {
+            let key = (*asset_no as u64, order.order_id);
+            if self.suppressed_terminal.remove(&key) {
+                continue;
+            }
+            project_order_response(
+                *asset_no,
+                *recv_ts,
+                order,
+                &mut self.order_events,
+                &mut self.fills,
+            );
+            if matches!(
+                order.status,
+                Status::Filled | Status::Canceled | Status::Expired | Status::Rejected
+            ) {
+                self.active_gtd.remove(&key);
+            }
+        }
+        self.hbt.clear_runtime_order_events();
     }
 }
 
@@ -782,28 +970,7 @@ where
             });
         }
         self.hbt.clear_runtime_feed_events();
-        self.fills.clear();
-        self.order_events.clear();
-        for (asset_no, recv_ts, order) in self.hbt.runtime_order_events() {
-            let key = (*asset_no as u64, order.order_id);
-            if self.suppressed_terminal.remove(&key) {
-                continue;
-            }
-            project_order_response(
-                *asset_no,
-                *recv_ts,
-                order,
-                &mut self.order_events,
-                &mut self.fills,
-            );
-            if matches!(
-                order.status,
-                Status::Filled | Status::Canceled | Status::Expired | Status::Rejected
-            ) {
-                self.active_gtd.remove(&key);
-            }
-        }
-        self.hbt.clear_runtime_order_events();
+        self.capture_execution_events(true);
         for (_, event) in self.hbt.runtime_funding_events() {
             let index = self
                 .external_funding
@@ -862,13 +1029,23 @@ where
             let (key, mut command) = self.conditional_scratch[index];
             self.conditional_orders.remove(&key);
             command._reserved[1] = 0;
-            self.submit_to_bot(command)?;
+            let Some(hftbacktest::backtest::execution::ExecutionCommand::Submit(request)) = command
+                .decode_execution(
+                    now,
+                    hftbacktest::backtest::execution::VenueId(0),
+                    hftbacktest::backtest::execution::InstrumentId(command.asset_no as u32 + 1),
+                )
+                .map_err(|_| TickRuntimeError::InvalidOrder)?
+            else {
+                return Err(TickRuntimeError::InvalidOrder);
+            };
+            self.submit_to_bot(command.asset_no as usize, request)?;
             if command.gtd_expiry_ts != 0 {
                 self.active_gtd
                     .insert(key, (command.gtd_expiry_ts, command));
             }
         }
-        self.position_pending = self.refresh_positions();
+        self.position_pending |= self.refresh_positions();
         // Live connectors and legacy Python Backtest wrappers may not expose the shared local
         // portfolio through Bot::position. The canonical response itself is already at the local
         // visibility boundary, so use its independent fills as the compatibility projection.
@@ -894,10 +1071,18 @@ where
         kind: u32,
         ctx: &mut StrategyRuntimeContext,
     ) -> Result<(), Self::Error> {
+        let had_commands = ctx.num_commands != 0;
         self.process_commands(
             ctx,
             kind != StrategyEventKind::Error as u32 && kind != StrategyEventKind::Stop as u32,
         )?;
+        // Local validation/risk rejection is visible at the submit timestamp and must not wait
+        // for another market-data frame before on_order is dispatched.
+        if had_commands {
+            self.capture_execution_events(false);
+            self.order_pending |= !self.order_events.is_empty();
+            self.fill_pending |= !self.fills.is_empty();
+        }
         if kind == StrategyEventKind::Tick as u32 {
             self.hbt.clear_last_trades(None);
             if self.ended {
@@ -1217,6 +1402,16 @@ where
     if frame_interval <= 0 || max_tick_batch == 0 {
         return -2;
     }
+    if validate_runtime_capabilities(
+        hftbacktest::backtest::execution::Capability::TickExecution,
+        !timers.is_empty(),
+        !funding.is_empty(),
+    )
+    .is_err()
+    {
+        ctx.last_error = -6;
+        return -6;
+    }
     ctx.bot_ptr = (hbt as *mut B).cast();
     let callbacks = unsafe { callback_registry(callback_addresses, callback_count) };
     let mut source = TickFrameSource::new(hbt, frame_interval, max_tick_batch);
@@ -1227,11 +1422,13 @@ where
         source.schedule_funding(event);
     }
     source.configure_context(ctx);
-    match run_event_runtime(&mut source, &callbacks, ctx) {
-        Ok(()) => 0,
+    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+        Ok(_) => 0,
         Err(error) => {
+            let code = structured_error_code(&error);
+            ctx.last_error = code;
             eprintln!("strategy runtime failed: {error}");
-            -1
+            code
         }
     }
 }
@@ -1261,6 +1458,16 @@ where
     if frame_interval <= 0 || max_tick_batch == 0 {
         return -2;
     }
+    if validate_runtime_capabilities(
+        hftbacktest::backtest::execution::Capability::HybridExecution,
+        !timers.is_empty(),
+        !funding.is_empty(),
+    )
+    .is_err()
+    {
+        ctx.last_error = -6;
+        return -6;
+    }
     ctx.bot_ptr = (hbt as *mut B).cast();
     let callbacks = unsafe { callback_registry(callback_addresses, callback_count) };
     let mut source = match HybridFrameSource::new(
@@ -1283,11 +1490,13 @@ where
         source.tick.schedule_funding(event);
     }
     source.configure_context(ctx);
-    match run_event_runtime(&mut source, &callbacks, ctx) {
-        Ok(()) => 0,
+    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+        Ok(_) => 0,
         Err(error) => {
+            let code = structured_error_code(&error);
+            ctx.last_error = code;
             eprintln!("hybrid strategy runtime failed: {error}");
-            -1
+            code
         }
     }
 }
@@ -1603,13 +1812,25 @@ pub unsafe extern "C" fn run_materialized_bar_runtime(
     {
         return -5;
     }
+    if validate_runtime_capabilities(
+        hftbacktest::backtest::execution::Capability::BarExecution,
+        false,
+        false,
+    )
+    .is_err()
+    {
+        ctx.last_error = -6;
+        return -6;
+    }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime(&mut source, &callbacks, ctx) {
-        Ok(()) => 0,
+    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+        Ok(_) => 0,
         Err(error) => {
+            let code = structured_error_code(&error);
+            ctx.last_error = code;
             eprintln!("bar strategy runtime failed: {error}");
-            -1
+            code
         }
     }
 }
@@ -1664,13 +1885,25 @@ pub unsafe extern "C" fn run_scheduled_materialized_bar_runtime(
     {
         return -5;
     }
+    if validate_runtime_capabilities(
+        hftbacktest::backtest::execution::Capability::BarExecution,
+        !timers.is_empty(),
+        !funding.is_empty(),
+    )
+    .is_err()
+    {
+        ctx.last_error = -6;
+        return -6;
+    }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime(&mut source, &callbacks, ctx) {
-        Ok(()) => 0,
+    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+        Ok(_) => 0,
         Err(error) => {
+            let code = structured_error_code(&error);
+            ctx.last_error = code;
             eprintln!("scheduled bar strategy runtime failed: {error}");
-            -1
+            code
         }
     }
 }
@@ -1691,6 +1924,47 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime(
     history_capacity: usize,
     matching_mode: u32,
     volume_participation: f64,
+) -> i64 {
+    unsafe {
+        run_configured_materialized_bar_runtime_v2(
+            records_ptr,
+            record_count,
+            timers_ptr,
+            timer_count,
+            funding_ptr,
+            funding_count,
+            ctx_ptr,
+            callbacks,
+            callback_count,
+            history_capacity,
+            matching_mode,
+            volume_participation,
+            0,
+            0,
+            0,
+        )
+    }
+}
+
+/// Versioned configured Bar runtime. Latencies belong to the scheduler/transport envelope and
+/// never add an `available_ts` field to the Bar payload.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
+    records_ptr: *const TimedBarItem,
+    record_count: usize,
+    timers_ptr: *const RuntimeTimer,
+    timer_count: usize,
+    funding_ptr: *const RuntimeFunding,
+    funding_count: usize,
+    ctx_ptr: *mut StrategyRuntimeContext,
+    callbacks: *const usize,
+    callback_count: usize,
+    history_capacity: usize,
+    matching_mode: u32,
+    volume_participation: f64,
+    feed_latency_ns: i64,
+    entry_latency_ns: i64,
+    response_latency_ns: i64,
 ) -> i64 {
     if records_ptr.is_null()
         || ctx_ptr.is_null()
@@ -1717,6 +1991,13 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime(
             return -4;
         }
     };
+    if source.configure_feed_latency(feed_latency_ns).is_err()
+        || source
+            .configure_transport(entry_latency_ns, response_latency_ns)
+            .is_err()
+    {
+        return -4;
+    }
     let assumption = match matching_mode {
         0 => None,
         1 => Some(OhlcFillAssumption::Touch),
@@ -1742,13 +2023,25 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime(
     {
         return -5;
     }
+    if validate_runtime_capabilities(
+        hftbacktest::backtest::execution::Capability::BarExecution,
+        !timers.is_empty(),
+        !funding.is_empty(),
+    )
+    .is_err()
+    {
+        ctx.last_error = -6;
+        return -6;
+    }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime(&mut source, &callbacks, ctx) {
-        Ok(()) => 0,
+    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+        Ok(_) => 0,
         Err(error) => {
+            let code = structured_error_code(&error);
+            ctx.last_error = code;
             eprintln!("configured bar strategy runtime failed: {error}");
-            -1
+            code
         }
     }
 }
@@ -1818,4 +2111,23 @@ pub unsafe extern "C" fn strategy_runtime_layout(sizes: *mut usize, ctx_offsets:
         0,
         0,
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hftbacktest::backtest::execution::{Capability, CapabilityError};
+
+    #[test]
+    fn startup_capabilities_are_mode_specific_and_fail_closed() {
+        assert!(validate_runtime_capabilities(Capability::TickExecution, true, true).is_ok());
+        assert!(validate_runtime_capabilities(Capability::BarExecution, false, false).is_ok());
+        assert!(validate_runtime_capabilities(Capability::HybridExecution, true, false).is_ok());
+        assert_eq!(
+            validate_runtime_capabilities(Capability::Margin, false, false),
+            Err(CapabilityError::Unsupported {
+                capability: Capability::Margin
+            })
+        );
+    }
 }

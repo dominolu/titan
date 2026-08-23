@@ -42,11 +42,12 @@ pub use dense_account::{
     DenseAccountDelta, DenseAccountError, DenseCurrencyLedger, DenseVenueAccount,
 };
 pub use fee::{
-    ExecutionFeeModel, FeeCharge, FeeRoundingMode, FillFeeContext, LegacyExecutionFeeAdapter,
-    NoFee, RateFeeModel, RoundedFeeModel,
+    ExecutionFeeModel, FeeCharge, FeeRoundingMode, FillFeeContext, FixedFeeAssessment,
+    FixedFeeModel, LegacyExecutionFeeAdapter, NoFee, RateFeeModel, RoundedFeeModel,
 };
 pub use funding::{
-    FundingBoundary, FundingEngine, FundingError, FundingEvent, FundingReport, FundingRounding,
+    FundingBoundary, FundingConfig, FundingEngine, FundingError, FundingEvent, FundingFormula,
+    FundingPositionSnapshot, FundingPriceSource, FundingReport, FundingRounding,
     FundingRoundingMode, ScheduledFunding,
 };
 pub use instrument::{

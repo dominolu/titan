@@ -36,8 +36,9 @@ impl<I, R> VenueExecutionCore<I, R> {
     }
 }
 
-/// Engine-level ownership root shared by backtest modes. This is intentionally an orchestration
-/// skeleton: legacy Tick and Bar loops are attached through adapters in later migration phases.
+/// Engine-level ownership root shared by backtest modes. Tick and Bar retain specialized market
+/// loops, while their adapters attach to this ownership contract for scheduling, venue accounts,
+/// local portfolio visibility and event projection.
 pub struct SharedExecutionEngine<V, T> {
     pub scheduler: GlobalScheduler<T>,
     pub local_portfolio: PortfolioLedger,

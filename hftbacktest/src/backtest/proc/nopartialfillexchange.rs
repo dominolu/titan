@@ -549,6 +549,17 @@ where
     FM: FeeModel,
     O: ExecutionObserver,
 {
+    fn reset(&mut self) {
+        self.orders.borrow_mut().clear();
+        self.buy_orders.clear();
+        self.sell_orders.clear();
+        self.order_e2l.reset();
+        self.depth.clear_depth(Side::None, 0.0);
+        self._state.state_values = Default::default();
+        self.filled_orders.clear();
+        self.observer.reset();
+    }
+
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
         event.is(EXCH_EVENT).then_some(event.exch_ts)
     }

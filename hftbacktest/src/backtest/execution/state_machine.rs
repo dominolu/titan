@@ -87,6 +87,8 @@ pub enum OrderStateError {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionOrder {
     pub request: ExecutionOrderRequest,
+    /// Exchange-assigned identifier. `None` until the order is accepted by the venue.
+    pub venue_order_id: Option<u64>,
     pub state: OrderState,
     pub filled_qty: f64,
     pub leaves_qty: f64,
@@ -108,6 +110,7 @@ impl ExecutionOrder {
     ) -> Self {
         Self {
             request,
+            venue_order_id: None,
             state: OrderState::Initialized,
             filled_qty: 0.0,
             leaves_qty: request.qty,

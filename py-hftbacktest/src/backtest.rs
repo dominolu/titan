@@ -24,6 +24,7 @@ fn handle_result(result: Result<ElapseResult, BacktestError>) -> i64 {
         Err(BacktestError::InvalidOrderRequest) => 13,
         Err(BacktestError::InvalidOrderStatus) => 14,
         Err(BacktestError::EndOfData) => 15,
+        Err(BacktestError::UnsupportedOperation(_)) => 16,
         Err(BacktestError::DataError(error)) => {
             println!("BacktestError::DataError: {error:?}");
             100
@@ -84,6 +85,15 @@ pub extern "C" fn hashmapbt_position(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn hashmapbt_reset(hbt_ptr: *mut HashMapMarketDepthBacktest) -> i64 {
+    if hbt_ptr.is_null() {
+        return -3;
+    }
+    unsafe { &mut *hbt_ptr }.reset();
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn hashmapbt_close(hbt_ptr: *mut HashMapMarketDepthBacktest) -> i64 {
     let mut hbt = unsafe { Box::from_raw(hbt_ptr) };
     match hbt.close() {
@@ -94,6 +104,7 @@ pub extern "C" fn hashmapbt_close(hbt_ptr: *mut HashMapMarketDepthBacktest) -> i
         Err(BacktestError::InvalidOrderRequest) => 13,
         Err(BacktestError::InvalidOrderStatus) => 14,
         Err(BacktestError::EndOfData) => 15,
+        Err(BacktestError::UnsupportedOperation(_)) => 16,
         Err(BacktestError::DataError(_)) => 100,
         Err(BacktestError::SharedTickExecution(_)) => 101,
         Err(BacktestError::InvalidSharedTickSpec) => 102,
@@ -347,6 +358,15 @@ pub extern "C" fn roivecbt_position(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn roivecbt_reset(hbt_ptr: *mut ROIVectorMarketDepthBacktest) -> i64 {
+    if hbt_ptr.is_null() {
+        return -3;
+    }
+    unsafe { &mut *hbt_ptr }.reset();
+    0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn roivecbt_close(hbt_ptr: *mut ROIVectorMarketDepthBacktest) -> i64 {
     let mut hbt = unsafe { Box::from_raw(hbt_ptr) };
     match hbt.close() {
@@ -357,6 +377,7 @@ pub extern "C" fn roivecbt_close(hbt_ptr: *mut ROIVectorMarketDepthBacktest) -> 
         Err(BacktestError::InvalidOrderRequest) => 13,
         Err(BacktestError::InvalidOrderStatus) => 14,
         Err(BacktestError::EndOfData) => 15,
+        Err(BacktestError::UnsupportedOperation(_)) => 16,
         Err(BacktestError::DataError(_)) => 100,
         Err(BacktestError::SharedTickExecution(_)) => 101,
         Err(BacktestError::InvalidSharedTickSpec) => 102,

@@ -82,6 +82,31 @@ pub struct RunConfig {
     pub random_seed: u64,
 }
 
+impl RunConfig {
+    /// Hash actually persisted to reproducibility metadata. Seed and strategy identity are always
+    /// included, so callers cannot accidentally reuse a config hash after changing either.
+    pub fn effective_config_hash(&self) -> u64 {
+        let mut hash = self.config_hash ^ 0xcbf29ce484222325;
+        for byte in self
+            .random_seed
+            .to_le_bytes()
+            .into_iter()
+            .chain(self.strategy_id.bytes())
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    pub fn normalized(&self) -> Self {
+        Self {
+            config_hash: self.effective_config_hash(),
+            ..self.clone()
+        }
+    }
+}
+
 pub trait BatchTask {
     type Output;
     type Error;
@@ -104,7 +129,8 @@ impl<T: BatchTask> BatchNode<T> {
             if index > 0 {
                 self.task.reset()?;
             }
-            outputs.push(self.task.execute(config)?);
+            let normalized = config.normalized();
+            outputs.push(self.task.execute(&normalized)?);
         }
         Ok(outputs)
     }
@@ -428,6 +454,18 @@ mod tests {
         ];
         let mut node = BatchNode::new(SeedTask::default());
         assert_eq!(node.run_all(&configs).unwrap(), [7, 8]);
+        assert_ne!(
+            RunConfig {
+                random_seed: 7,
+                ..configs[0].clone()
+            }
+            .effective_config_hash(),
+            RunConfig {
+                random_seed: 8,
+                ..configs[0].clone()
+            }
+            .effective_config_hash()
+        );
 
         let key = EventKey {
             timestamp: 5,

@@ -8,6 +8,10 @@ use crate::types::OrderId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RiskReason {
+    InvalidInstrument,
+    InvalidPrice,
+    InvalidQuantity,
+    DuplicateOrderId,
     PositionLimit,
     NotionalLimit,
     InsufficientBalance,

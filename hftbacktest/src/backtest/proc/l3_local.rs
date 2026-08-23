@@ -142,6 +142,35 @@ where
     FM: FeeModel,
     BacktestError: From<<MD as L3MarketDepth>::Error>,
 {
+    fn reject_order(
+        &mut self,
+        order_id: OrderId,
+        side: Side,
+        price: f64,
+        qty: f64,
+        order_type: OrdType,
+        time_in_force: TimeInForce,
+        current_timestamp: i64,
+    ) -> Result<Order, BacktestError> {
+        if self.orders.contains_key(&order_id) {
+            return Err(BacktestError::OrderIdExist);
+        }
+        let mut order = Order::new(
+            order_id,
+            (price / self.depth.tick_size()).round() as i64,
+            self.depth.tick_size(),
+            qty,
+            side,
+            order_type,
+            time_in_force,
+        );
+        order.status = Status::Rejected;
+        order.local_timestamp = current_timestamp;
+        order.exch_timestamp = current_timestamp;
+        self.orders.insert(order_id, order.clone());
+        Ok(order)
+    }
+
     fn submit_order(
         &mut self,
         order_id: OrderId,
@@ -281,6 +310,16 @@ where
     FM: FeeModel,
     BacktestError: From<<MD as L3MarketDepth>::Error>,
 {
+    fn reset(&mut self) {
+        self.orders.clear();
+        self.order_l2e.reset();
+        self.depth.clear_orders(Side::None);
+        self.state.state_values = StateValues::default();
+        self.trades.clear();
+        self.last_feed_latency = None;
+        self.last_order_latency = None;
+    }
+
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
         event.is(LOCAL_EVENT).then_some(event.local_ts)
     }

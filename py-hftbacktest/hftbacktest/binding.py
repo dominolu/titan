@@ -561,6 +561,10 @@ hashmapbt_close = lib.hashmapbt_close
 hashmapbt_close.restype = c_int64
 hashmapbt_close.argtypes = [c_void_p]
 
+hashmapbt_reset = lib.hashmapbt_reset
+hashmapbt_reset.restype = c_int64
+hashmapbt_reset.argtypes = [c_void_p]
+
 hashmapbt_position = lib.hashmapbt_position
 hashmapbt_position.restype = c_double
 hashmapbt_position.argtypes = [c_void_p, c_uint64]
@@ -945,6 +949,10 @@ class HashMapMarketDepthBacktest:
         """
         return hashmapbt_close(self.ptr)
 
+    def reset(self) -> int64:
+        """Rewinds all Tick engine state while retaining immutable configuration and data."""
+        return hashmapbt_reset(self.ptr)
+
     def feed_latency(self, asset_no: uint64) -> Tuple[int64, int64] | None:
         """
         Args:
@@ -1007,6 +1015,10 @@ roivecbt_wait_next_feed.argtypes = [c_void_p, c_bool, c_int64]
 roivecbt_close = lib.roivecbt_close
 roivecbt_close.restype = c_int64
 roivecbt_close.argtypes = [c_void_p]
+
+roivecbt_reset = lib.roivecbt_reset
+roivecbt_reset.restype = c_int64
+roivecbt_reset.argtypes = [c_void_p]
 
 roivecbt_position = lib.roivecbt_position
 roivecbt_position.restype = c_double
@@ -1387,6 +1399,10 @@ class ROIVectorMarketDepthBacktest:
             * Otherwise, an error occurred.
         """
         return roivecbt_close(self.ptr)
+
+    def reset(self) -> int64:
+        """Rewinds all Tick engine state while retaining immutable configuration and data."""
+        return roivecbt_reset(self.ptr)
 
     def feed_latency(self, asset_no: uint64) -> Tuple[int64, int64] | None:
         """

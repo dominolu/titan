@@ -270,6 +270,63 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(touch[0], 1.0)
         self.assertEqual(conservative[0], 0.0)
 
+    def test_bar_latencies_are_scheduler_envelopes_not_payload_fields(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for index in range(2):
+            bars[index]["asset_no"] = 0
+            bars[index]["timeframe_ns"] = 10
+            bars[index]["bar"] = (
+                index * 10,
+                (index + 1) * 10,
+                100,
+                100,
+                100,
+                100,
+                1,
+                100,
+                0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            index = s.state_i64[0]
+            s.state_i64[index + 1] = s.now
+            if index == 0:
+                s.submit_buy_order(0, 301, 100.0, 1.0, 0, 1, False)
+            s.state_i64[0] += 1
+
+        @njit
+        def on_filled(s):
+            s.state_i64[3] = s.now
+
+        state_i64 = np.zeros(4, dtype=np.int64)
+        run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            on_filled=on_filled,
+            state_i64=state_i64,
+            feed_latency=5,
+            entry_latency=7,
+            response_latency=11,
+        )
+        self.assertEqual(tuple(state_i64[:3]), (2, 15, 25))
+        # Submitted at visible time 15, arrives at 22 (after the second open), and therefore
+        # cannot fill retroactively from that Bar.
+        self.assertEqual(state_i64[3], 0)
+
+    def test_bar_latency_validation_is_fail_closed(self):
+        bars = np.zeros(1, dtype=timed_bar_dtype)
+        bars[0]["asset_no"] = 0
+        bars[0]["timeframe_ns"] = 10
+        bars[0]["bar"] = (0, 10, 1, 1, 1, 1, 1, 1, 0, 1, BAR_COMPLETE)
+        with self.assertRaises(ValueError):
+            run_event_bot(data_mode="bar", bars=bars, feed_latency=-1)
+        with self.assertRaises(ValueError):
+            run_event_bot(make_bot(), feed_latency=1)
+
     def test_dual_ma_strategy_trades_only_on_crosses(self):
         closes = [3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0, 1.0]
         bars = np.zeros(len(closes), dtype=timed_bar_dtype)

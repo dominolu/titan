@@ -160,6 +160,52 @@ pub enum LiveEvent {
         currency: u32,
         exch_ts: i64,
     },
+    /// Canonical connector execution event. Unlike the legacy `Order` variant, this carries a
+    /// venue-stable event ID, complete identity/reason fields and the immutable account delta
+    /// required for reconnect deduplication and backtest/live projector equivalence. Appended to
+    /// preserve all existing encoded enum discriminants.
+    ExecutionReport {
+        symbol: String,
+        event_id: u128,
+        venue_no: u32,
+        instrument_id: u32,
+        asset_no: u32,
+        order_id: u64,
+        venue_order_id: u64,
+        exchange_ts: i64,
+        delivery_ts: i64,
+        sequence: u64,
+        /// 1 Accepted, 2 Rejected, 3 Canceled, 4 Expired, 5 PartiallyFilled, 6 Filled.
+        status: u32,
+        reason: u32,
+        side: i8,
+        order_price: f64,
+        order_qty: f64,
+        leaves_qty: f64,
+        exec_price: f64,
+        exec_qty: f64,
+        maker: bool,
+        local_submit_ts: i64,
+        time_in_force: u8,
+        order_type: u8,
+        request: u8,
+        account_delta: Option<LiveAccountDelta>,
+    },
+}
+
+/// Wire-safe immutable account mutation attached to a canonical live fill.
+#[derive(Clone, Copy, Debug, Decode, Encode)]
+pub struct LiveAccountDelta {
+    pub instrument_id: u32,
+    pub position_delta: f64,
+    pub trade_qty: f64,
+    pub trade_value: f64,
+    pub currency: u32,
+    pub cash_delta: f64,
+    pub fee: f64,
+    pub funding: f64,
+    pub execution_price: f64,
+    pub realized_pnl: f64,
 }
 
 /// Indicates a buy, with specific meaning that can vary depending on the situation. For example,

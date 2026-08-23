@@ -38,6 +38,7 @@ pub enum EngineComponent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum EngineErrorCode {
     InvalidConfiguration,
     InvalidData,
@@ -63,6 +64,7 @@ pub struct StructuredEngineError {
 pub struct ModelIdentity {
     pub id: String,
     pub version: u32,
+    pub config_hash: u64,
 }
 
 impl ModelIdentity {
@@ -70,7 +72,13 @@ impl ModelIdentity {
         Self {
             id: id.into(),
             version,
+            config_hash: 0,
         }
+    }
+
+    pub fn with_config_hash(mut self, config_hash: u64) -> Self {
+        self.config_hash = config_hash;
+        self
     }
 }
 
@@ -90,6 +98,61 @@ pub struct ReproducibilityMetadata {
     pub risk: ModelIdentity,
     pub execution_quality: ModelIdentity,
     pub random_seed: u64,
+}
+
+impl ReproducibilityMetadata {
+    /// Stable identity for result comparison. Every input/model/phase/seed field contributes.
+    pub fn run_fingerprint(&self) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        let mut mix = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        };
+        for value in [
+            u64::from(self.runtime_abi_version),
+            u64::from(self.phase_contract_version),
+            self.data_manifest_hash,
+            self.config_hash,
+            self.random_seed,
+        ] {
+            mix(&value.to_le_bytes());
+        }
+        for text in [
+            &self.engine_version,
+            &self.git_revision,
+            &self.strategy_id,
+            &self.strategy_version,
+            &self.matching.id,
+            &self.fee.id,
+            &self.latency.id,
+            &self.risk.id,
+            &self.execution_quality.id,
+        ] {
+            mix(text.as_bytes());
+            mix(&[0]);
+        }
+        for version in [
+            self.matching.version,
+            self.fee.version,
+            self.latency.version,
+            self.risk.version,
+            self.execution_quality.version,
+        ] {
+            mix(&version.to_le_bytes());
+        }
+        for config_hash in [
+            self.matching.config_hash,
+            self.fee.config_hash,
+            self.latency.config_hash,
+            self.risk.config_hash,
+            self.execution_quality.config_hash,
+        ] {
+            mix(&config_hash.to_le_bytes());
+        }
+        hash
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -368,6 +431,7 @@ impl AuditRecorder {
         if !self.enabled {
             return Ok(());
         }
+        sink.write_header(record.schema_version, record.run_id)?;
         if self.records.len() == self.capacity && self.capacity > 0 {
             sink.write_chunk(&self.records)?;
             self.records.clear();
@@ -561,7 +625,6 @@ mod tests {
         };
         let mut recorder = AuditRecorder::bounded(1);
         let mut sink = BinaryAuditSink::new(Vec::new());
-        sink.write_header(2, 4).unwrap();
         recorder.record_streaming(record, &mut sink).unwrap();
         recorder.record_streaming(record, &mut sink).unwrap();
         recorder.flush_to(2, 4, &mut sink).unwrap();
@@ -592,6 +655,22 @@ mod tests {
             random_seed: 7,
         };
         let mut result = BacktestResult::empty(metadata);
+        let baseline = result.metadata.run_fingerprint();
+        let mut changed = result.metadata.clone();
+        changed.random_seed += 1;
+        assert_ne!(baseline, changed.run_fingerprint());
+        changed = result.metadata.clone();
+        changed.phase_contract_version += 1;
+        assert_ne!(baseline, changed.run_fingerprint());
+        changed = result.metadata.clone();
+        changed.data_manifest_hash += 1;
+        assert_ne!(baseline, changed.run_fingerprint());
+        changed = result.metadata.clone();
+        changed.fee.version += 1;
+        assert_ne!(baseline, changed.run_fingerprint());
+        changed = result.metadata.clone();
+        changed.fee.config_hash = 99;
+        assert_ne!(baseline, changed.run_fingerprint());
         for (event_id, instrument_id, amount) in [(1, 2, -0.2), (2, 3, 0.1), (3, 2, -0.3)] {
             let event = FundingEvent {
                 event_id,

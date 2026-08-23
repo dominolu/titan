@@ -27,6 +27,7 @@ pub struct LiveExecutionEvent {
     pub instrument_id: InstrumentId,
     pub asset_no: u32,
     pub order_id: OrderId,
+    pub venue_order_id: u64,
     pub exchange_ts: i64,
     pub delivery_ts: i64,
     pub sequence: u64,
@@ -103,6 +104,7 @@ impl LiveExecutionAdapter {
             instrument_id: event.instrument_id,
             asset_no: event.asset_no,
             order_id: event.order_id,
+            venue_order_id: event.venue_order_id,
             exchange_ts: event.exchange_ts,
             delivery_ts: event.delivery_ts,
             sequence: event.sequence,
@@ -156,6 +158,7 @@ mod tests {
             instrument_id: InstrumentId(2),
             asset_no: 0,
             order_id: 3,
+            venue_order_id: 30,
             exchange_ts: 10,
             delivery_ts: 12,
             sequence,
@@ -246,5 +249,71 @@ mod tests {
         let projected = projector.project_funding(normalized, &mut local).unwrap();
         assert_eq!(projected[0].visible_funding, -0.2);
         assert_eq!(local.account().balance(CurrencyId(7)), -0.2);
+    }
+
+    #[test]
+    fn equivalent_backtest_and_live_reports_project_to_identical_abi_v7_bytes() {
+        let live_event = event(99, 7, 1.0);
+        let mut adapter = LiveExecutionAdapter::new(LIVE_EXECUTION_ABI_VERSION).unwrap();
+        let live_report = adapter.normalize(live_event).unwrap().unwrap();
+        let backtest_report = ExecutionReport {
+            kind: ExecutionReportKind::Fill,
+            reason: live_event.reason,
+            venue_id: live_event.venue_id,
+            instrument_id: live_event.instrument_id,
+            asset_no: live_event.asset_no,
+            order_id: live_event.order_id,
+            venue_order_id: live_event.venue_order_id,
+            exchange_ts: live_event.exchange_ts,
+            delivery_ts: live_event.delivery_ts,
+            sequence: live_event.sequence,
+            status: Status::PartiallyFilled,
+            side: live_event.side,
+            order_price: live_event.order_price,
+            order_qty: live_event.order_qty,
+            exec_price: live_event.exec_price,
+            exec_qty: live_event.exec_qty,
+            maker: live_event.maker,
+            account_delta: live_event.account_delta,
+        };
+        let mut backtest_orders = Vec::new();
+        let mut backtest_fills = Vec::new();
+        let mut live_orders = Vec::new();
+        let mut live_fills = Vec::new();
+        crate::runtime::project_execution_report(
+            &backtest_report,
+            0,
+            &mut backtest_orders,
+            &mut backtest_fills,
+        );
+        crate::runtime::project_execution_report(
+            &live_report,
+            0,
+            &mut live_orders,
+            &mut live_fills,
+        );
+        assert_eq!(backtest_orders, live_orders);
+        assert_eq!(backtest_fills, live_fills);
+        let bytes = |ptr: *const u8, len| unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_eq!(
+            bytes(
+                backtest_orders.as_ptr().cast(),
+                std::mem::size_of_val(backtest_orders.as_slice()),
+            ),
+            bytes(
+                live_orders.as_ptr().cast(),
+                std::mem::size_of_val(live_orders.as_slice()),
+            )
+        );
+        assert_eq!(
+            bytes(
+                backtest_fills.as_ptr().cast(),
+                std::mem::size_of_val(backtest_fills.as_slice()),
+            ),
+            bytes(
+                live_fills.as_ptr().cast(),
+                std::mem::size_of_val(live_fills.as_slice()),
+            )
+        );
     }
 }

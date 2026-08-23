@@ -20,7 +20,7 @@ from . import _hftbacktest
 from .intrinsic import address_as_void_pointer
 from .types import event_dtype
 
-ABI_VERSION = 6
+ABI_VERSION = 7
 EVENT_SLOT_COUNT = 32
 
 EVENT_START = 0
@@ -118,13 +118,18 @@ fill_dtype = np.dtype(
     [
         ("asset_no", "u8"),
         ("order_id", "u8"),
+        ("venue_order_id", "u8"),
         ("exch_ts", "i8"),
         ("local_ts", "i8"),
+        ("sequence", "u8"),
         ("price", "f8"),
         ("qty", "f8"),
+        ("venue_no", "u4"),
+        ("instrument_id", "u4"),
+        ("reason", "u4"),
         ("side", "i1"),
         ("maker", "u1"),
-        ("_reserved", "u1", (6,)),
+        ("_reserved", "u1", (2,)),
     ],
     align=True,
 )
@@ -133,12 +138,17 @@ order_event_dtype = np.dtype(
     [
         ("asset_no", "u8"),
         ("order_id", "u8"),
+        ("venue_order_id", "u8"),
         ("exch_ts", "i8"),
         ("local_ts", "i8"),
+        ("sequence", "u8"),
         ("price", "f8"),
         ("qty", "f8"),
         ("exec_price", "f8"),
         ("exec_qty", "f8"),
+        ("venue_no", "u4"),
+        ("instrument_id", "u4"),
+        ("reason", "u4"),
         ("side", "i1"),
         ("status", "u1"),
         ("request", "u1"),
@@ -762,7 +772,7 @@ def _scheduled_bar_runtime_function():
 
 
 def _configured_bar_runtime_function():
-    function = _lib.run_configured_materialized_bar_runtime
+    function = _lib.run_configured_materialized_bar_runtime_v2
     function.restype = c_int64
     function.argtypes = [
         c_void_p, c_size_t,  # bars
@@ -772,6 +782,7 @@ def _configured_bar_runtime_function():
         POINTER(c_uint64), c_size_t,  # callbacks
         c_size_t,  # history capacity
         c_uint32, c_double,  # matching model
+        c_int64, c_int64, c_int64,  # feed, entry and response latency
     ]
     return function
 
@@ -848,6 +859,9 @@ def run_event_bot(
     funding=None,
     bar_matching="next_open",
     volume_participation=1.0,
+    feed_latency=0,
+    entry_latency=0,
+    response_latency=0,
 ):
     """Runs callbacks under the Rust-owned event loop.
 
@@ -857,7 +871,10 @@ def run_event_bot(
     Tick mode waits for the next Rust feed/order-response boundary and delivers all assets at
     that timestamp as one global batch; ``frame_interval`` is the maximum wait duration, not a
     Python polling loop. Bar mode consumes an explicit ``timed_bar_dtype`` array, jumps directly
-    between closes, and uses conservative NextOpen execution. Hybrid deterministically merges
+    between scheduler boundaries and uses conservative NextOpen execution. ``feed_latency``
+    controls when a closed Bar becomes visible, while ``entry_latency`` and ``response_latency``
+    control exchange arrival and local execution-report delivery; all are nanoseconds and live
+    outside the Bar payload. Hybrid deterministically merges
     Bar signal batches into the Rust Tick clock and executes every order only through the Tick
     backend. Optional ``timer_dtype`` records remain active after market data ends in every mode.
     Backtests accept ``funding_dtype`` records, settled by the Rust account engine and delivered
@@ -873,6 +890,12 @@ def run_event_bot(
         )
     if not np.isfinite(volume_participation) or not 0.0 <= volume_participation <= 1.0:
         raise ValueError("volume_participation must be finite and in [0, 1]")
+    if any(latency < 0 for latency in (feed_latency, entry_latency, response_latency)):
+        raise ValueError("feed_latency, entry_latency and response_latency cannot be negative")
+    if data_mode != "bar" and any(
+        latency != 0 for latency in (feed_latency, entry_latency, response_latency)
+    ):
+        raise ValueError("explicit Bar latencies are only valid in data_mode='bar'")
     if data_mode != "bar" and bar_matching != "next_open":
         raise ValueError("OHLC matching is only valid when Bar is the execution source")
     if data_mode in ("tick", "hybrid") and (frame_interval <= 0 or max_tick_batch <= 0):
@@ -1015,6 +1038,9 @@ def run_event_bot(
             int(history_capacity),
             matching_modes[bar_matching],
             float(volume_participation),
+            int(feed_latency),
+            int(entry_latency),
+            int(response_latency),
         )
     if result != 0:
         raise RuntimeError(

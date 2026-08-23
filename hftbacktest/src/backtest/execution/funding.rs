@@ -17,10 +17,66 @@ pub enum FundingRoundingMode {
     Ceil,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FundingPriceSource {
+    Mark,
+    Index,
+    External(u32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FundingPositionSnapshot {
+    BeforeSettlementEvents,
+    AfterSettlementEvents,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FundingFormula {
+    /// Linear notional is `qty * contract_size * price`; inverse is
+    /// `qty * contract_size / price`.
+    InstrumentNotional,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FundingRounding {
     pub increment: f64,
     pub mode: FundingRoundingMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FundingConfig {
+    pub price_source: FundingPriceSource,
+    pub position_snapshot: FundingPositionSnapshot,
+    pub formula: FundingFormula,
+    pub currency: CurrencyId,
+    pub rounding: FundingRounding,
+    pub boundary: FundingBoundary,
+}
+
+impl FundingConfig {
+    pub fn stable_hash(self) -> u64 {
+        let mut hash = 0xcbf29ce484222325_u64;
+        for value in [
+            match self.price_source {
+                FundingPriceSource::Mark => 1,
+                FundingPriceSource::Index => 2,
+                FundingPriceSource::External(id) => 0x1_0000_0000 | u64::from(id),
+            },
+            match self.position_snapshot {
+                FundingPositionSnapshot::BeforeSettlementEvents => 1,
+                FundingPositionSnapshot::AfterSettlementEvents => 2,
+            },
+            self.formula as u64,
+            u64::from(self.currency.0),
+            self.rounding.increment.to_bits(),
+            self.rounding.mode as u64,
+            self.boundary as u64,
+        ] {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,18 +124,46 @@ pub enum FundingError {
 }
 
 pub struct FundingEngine {
-    rounding: FundingRounding,
+    config: FundingConfig,
+    enforce_config: bool,
     settled_count: u64,
     total: f64,
 }
 
 impl FundingEngine {
     pub fn new(rounding: FundingRounding) -> Result<Self, FundingError> {
+        let mut engine = Self::new_with_config(FundingConfig {
+            price_source: FundingPriceSource::Mark,
+            position_snapshot: FundingPositionSnapshot::BeforeSettlementEvents,
+            formula: FundingFormula::InstrumentNotional,
+            currency: CurrencyId(0),
+            rounding,
+            boundary: FundingBoundary::BeforeSettlementEvents,
+        })?;
+        engine.enforce_config = false;
+        Ok(engine)
+    }
+
+    pub fn new_with_config(config: FundingConfig) -> Result<Self, FundingError> {
+        let rounding = config.rounding;
         if !rounding.increment.is_finite() || rounding.increment <= 0.0 {
             return Err(FundingError::InvalidValue);
         }
+        if !matches!(
+            (config.position_snapshot, config.boundary),
+            (
+                FundingPositionSnapshot::BeforeSettlementEvents,
+                FundingBoundary::BeforeSettlementEvents
+            ) | (
+                FundingPositionSnapshot::AfterSettlementEvents,
+                FundingBoundary::AfterSettlementEvents
+            )
+        ) {
+            return Err(FundingError::InvalidValue);
+        }
         Ok(Self {
-            rounding,
+            config,
+            enforce_config: true,
             settled_count: 0,
             total: 0.0,
         })
@@ -106,6 +190,13 @@ impl FundingEngine {
         {
             return Err(FundingError::InstrumentMismatch);
         }
+        // CurrencyId(0) preserves the legacy constructor while explicit configurations freeze
+        // currency and boundary semantics before a run starts.
+        if self.enforce_config
+            && (event.currency != self.config.currency || event.boundary != self.config.boundary)
+        {
+            return Err(FundingError::InstrumentMismatch);
+        }
         if !event.rate.is_finite()
             || !event.mark_price.is_finite()
             || event.mark_price <= 0.0
@@ -124,14 +215,14 @@ impl FundingEngine {
             }
         };
         let raw = -notional * event.rate;
-        let units = raw / self.rounding.increment;
-        let rounded_units = match self.rounding.mode {
+        let units = raw / self.config.rounding.increment;
+        let rounded_units = match self.config.rounding.mode {
             FundingRoundingMode::Nearest => units.round(),
             FundingRoundingMode::TowardZero => units.trunc(),
             FundingRoundingMode::Floor => units.floor(),
             FundingRoundingMode::Ceil => units.ceil(),
         };
-        let amount = rounded_units * self.rounding.increment;
+        let amount = rounded_units * self.config.rounding.increment;
         let delta = AccountDelta {
             instrument_id: spec.instrument_id,
             position_delta: 0.0,
@@ -171,6 +262,10 @@ impl FundingEngine {
 
     pub fn settled_count(&self) -> u64 {
         self.settled_count
+    }
+
+    pub fn config(&self) -> FundingConfig {
+        self.config
     }
 
     pub fn reset(&mut self) {
@@ -240,5 +335,37 @@ mod tests {
         assert_eq!(local.account().funding(CurrencyId(7)), -0.2);
         engine.reset();
         assert_eq!((engine.settled_count(), engine.total()), (0, 0.0));
+    }
+
+    #[test]
+    fn explicit_configuration_freezes_sources_boundary_and_hash() {
+        let config = FundingConfig {
+            price_source: FundingPriceSource::Index,
+            position_snapshot: FundingPositionSnapshot::AfterSettlementEvents,
+            formula: FundingFormula::InstrumentNotional,
+            currency: CurrencyId(7),
+            rounding: FundingRounding {
+                increment: 0.01,
+                mode: FundingRoundingMode::Floor,
+            },
+            boundary: FundingBoundary::AfterSettlementEvents,
+        };
+        let engine = FundingEngine::new_with_config(config).unwrap();
+        assert_eq!(engine.config(), config);
+        assert_ne!(
+            config.stable_hash(),
+            FundingConfig {
+                price_source: FundingPriceSource::Mark,
+                ..config
+            }
+            .stable_hash()
+        );
+        assert!(
+            FundingEngine::new_with_config(FundingConfig {
+                position_snapshot: FundingPositionSnapshot::BeforeSettlementEvents,
+                ..config
+            })
+            .is_err()
+        );
     }
 }

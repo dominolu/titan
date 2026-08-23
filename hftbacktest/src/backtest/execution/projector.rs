@@ -44,6 +44,8 @@ pub struct ExecutionReport {
     pub instrument_id: InstrumentId,
     pub asset_no: u32,
     pub order_id: OrderId,
+    /// Exchange-assigned identifier, or zero before venue acceptance.
+    pub venue_order_id: u64,
     pub exchange_ts: i64,
     pub delivery_ts: i64,
     pub sequence: u64,
@@ -173,6 +175,31 @@ impl ExecutionEventProjector {
         Ok(&self.events)
     }
 
+    /// Projects a connector-normalized report when the connector already owns and updates the
+    /// strategy-visible account. This retains the exact callback classification/order without
+    /// reading exchange-only state or applying an account delta twice.
+    pub fn project_visible(
+        &mut self,
+        report: ExecutionReport,
+        visible_position: f64,
+        position_changed: bool,
+    ) -> &[ProjectedEvent] {
+        self.events.clear();
+        self.funding_events.clear();
+        self.timer_events.clear();
+        for kind in Self::visible_event_kinds(&report, position_changed)
+            .into_iter()
+            .flatten()
+        {
+            self.events.push(ProjectedEvent {
+                kind,
+                report,
+                visible_position,
+            });
+        }
+        &self.events
+    }
+
     pub fn reset(&mut self) {
         self.events.clear();
         self.funding_events.clear();
@@ -193,6 +220,7 @@ mod tests {
             instrument_id: InstrumentId(2),
             asset_no: 0,
             order_id: 3,
+            venue_order_id: 30,
             exchange_ts: 100,
             delivery_ts: 120,
             sequence: 0,

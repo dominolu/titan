@@ -6,7 +6,8 @@
 
 ## 1. 背景与问题
 
-当前有两条独立回测路径：
+以下内容是设计启动时冻结的问题快照；当前实现状态和逐项证据见
+[`shared_execution_layer_acceptance_report.md`](shared_execution_layer_acceptance_report.md)。设计启动时有两条独立回测路径：
 
 ### Tick/L2/L3 主引擎
 
@@ -22,7 +23,7 @@
 - FeeModel、AssetType 和 `StateValues`；
 - order/fill/position runtime 事件。
 
-### Materialized Bar runtime
+### Materialized Bar runtime（设计前快照）
 
 当前 `MaterializedBarSource` 同时承担：
 
@@ -34,9 +35,10 @@
 - position 更新；
 - fill 事件生成。
 
-它只保存 `OrderCommand`、`PendingBarOrder`、`FillEvent` 和 `positions: Vec<f64>`，没有复用
+当时它只保存 `OrderCommand`、`PendingBarOrder`、`FillEvent` 和 `positions: Vec<f64>`，没有复用
 Tick 引擎的订单、延迟、费用、账户和响应管线。因此当前 Bar 引擎只是时间语义正确的第一阶段
-实现，不是与 Tick 引擎同等级的专业执行引擎。
+实现，不是与 Tick 引擎同等级的专业执行引擎。该差距现已由共享 coordinator、Venue 账户、
+全局 Scheduler、Projector 和统一 Result/Audit 路径补齐。
 
 ## 2. 目标
 
@@ -915,7 +917,7 @@ pub struct BacktestResult {
 
 ### Phase 6：统一 runtime、Result 和 Reset
 
-- [ ] ABI v6；
+- [x] ABI v7（含 venue order ID、sequence、venue/instrument、reason）；
 - [ ] 统一 order/fill/position event projector；
 - [ ] account views；
 - [ ] BacktestResult；
@@ -977,7 +979,7 @@ shared_execution
 | 相同时间事件不稳定 | `(timestamp,priority,sequence)` 统一键 |
 | 抽象层过重 | 热路径泛型/inline，事件 buffer 预分配，不强制 trait object |
 | Partial fill 伪真实性 | 每个 Bar model 明确能力和时间语义，NextOpen 不宣称 partial |
-| ABI 错位 | ABI v6、Rust/Python offset 测试、旧 ABI fail-fast |
+| ABI 错位 | ABI v7、Rust/Python offset 测试、旧 ABI fail-fast |
 | 大规模重写难回退 | feature flag、adapter、一次只迁移一个职责 |
 
 ## 19. 验收定义
