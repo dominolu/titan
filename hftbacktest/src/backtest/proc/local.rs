@@ -33,6 +33,7 @@ where
     trades: Vec<Event>,
     last_feed_latency: Option<(i64, i64)>,
     last_order_latency: Option<(i64, i64, i64)>,
+    external_accounting: bool,
 }
 
 impl<AT, LM, MD, FM> Local<AT, LM, MD, FM>
@@ -57,7 +58,19 @@ where
             trades: Vec::with_capacity(last_trades_cap),
             last_feed_latency: None,
             last_order_latency: None,
+            external_accounting: false,
         }
+    }
+
+    pub fn new_external_accounting(
+        depth: MD,
+        state: State<AT, FM>,
+        last_trades_cap: usize,
+        order_l2e: LocalToExch<LM>,
+    ) -> Self {
+        let mut local = Self::new(depth, state, last_trades_cap, order_l2e);
+        local.external_accounting = true;
+        local
     }
 
     pub fn process_recv_order_<const USE_HANDLER: bool, Handler>(
@@ -86,7 +99,8 @@ where
             }
 
             // Processes receiving order response.
-            if order.exec_qty > 0.0
+            if !self.external_accounting
+                && order.exec_qty > 0.0
                 && matches!(order.status, Status::PartiallyFilled | Status::Filled)
             {
                 self.state.apply_fill(&order);

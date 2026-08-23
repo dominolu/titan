@@ -1,8 +1,8 @@
 # Bar/Tick 回测与实盘统一策略接口
 
-> 状态：第一阶段实现中。Rust 事件运行时、Numba 单参数回调、全局 TickBatch、显式 Bar
-> 输入、历史环、Bar `NextOpen` 撮合和 LiveBot Tick 适配已经落地；Hybrid 精确合并与交易所
-> Candle 断线补齐仍属于后续阶段，未实现的模式必须显式报错，禁止降级。
+> 状态：统一运行时已落地。Rust 事件循环、Numba 单参数回调、全局 TickBatch、显式 Bar、
+> 历史环、NextOpen/Touch/ConservativeOhlc/VolumeLimited、Hybrid、Timer、Funding，以及
+> native/canonical/recovery Live Bar 的去重与恢复组件均已实现；不受支持的能力组合 fail-fast。
 >
 > 当前仓库只保留 Rust `Strategy` trait；最终面向策略作者的接口必须是 Numba Python
 > 单参数回调。Rust trait 可以作为核心内部接口、测试接口或迁移期兼容层，但不是最终的
@@ -84,9 +84,9 @@ def on_bar(s):
 批同时间行情，批次包含成交、BBO、深度快照和深度增量，而不只是 `last_trades`。
 
 生命周期和交易事件使用稳定的数值事件 ID。当前已接线接口包括 `on_start(s)`、
-`on_stop(s)`、`on_order(s)`、`on_filled(s)`、`on_position(s)` 和 `on_error(s)`；
-`on_funding(s)`、`on_timer(s)` 在 Rust 事件源接线前会于启动阶段明确拒绝。预留固定事件
-槽位允许以后增加回调而不改变单参数 ABI。Rust 必须保证
+`on_stop(s)`、`on_order(s)`、`on_filled(s)`、`on_position(s)`、`on_funding(s)`、
+`on_timer(s)` 和 `on_error(s)`。预留固定事件槽位允许以后增加回调而不改变单参数 ABI。
+Rust 必须保证
 `on_stop(s)` 恰好调用一次，包括启动或中途回调失败的情况。
 
 ## Bar 数据模型与时间语义
@@ -158,10 +158,10 @@ Bar 时必须显式附加预处理 Bar Feed 或 `CanonicalBarBuilder`，不得�
 同一时间 `T` 的确定性顺序为：
 
 1. 处理 `event_ts < T` 的市场事件；
-2. 发布 `[T-period, T)` 的 Bar；
-3. 调用 `on_bar(s)`；
+2. 处理并投递逻辑时间恰为 `T` 的既有 Tick/订单回报；
+3. 发布 `[T-period, T)` 的 Bar 并调用 `on_bar(s)`；
 4. 接受策略在 `T` 发出的订单；
-5. 处理 `event_ts >= T` 的市场事件和后续成交。
+5. 后续成交只由 Tick execution source 决定。
 
 多品种同一周期、同一 `close_ts` 应组成一个批次，只调用一次 `on_bar(s)`。行情缺失不能
 把多个周期合并成一根 Bar。空 Bar 是生成显式空记录还是省略，必须由订阅配置确定。
@@ -272,15 +272,15 @@ NPZ 可以作为交换和归档格式；大规模回测应允许未压缩 NPY �
 上下文和内存布局校验，可以作为恢复绑定层的参考。提交 `7490201` 删除了 Python binding，
 因此不能把历史代码当作当前可用功能。
 
-迁移顺序：
+已完成的迁移顺序：
 
 1. 恢复一个最小 Python/Numba binding crate，并恢复 Rust/Python ABI 布局校验；
 2. 定义显式 `Bar`、`Tick`、`Hybrid` 数据源和能力校验；
 3. 从当前 `StrategyCtx::fill` 与帧循环中移除隐式 Bar 聚合；
 4. 实现 Bar-only 事件跳转和独立 Bar 撮合模型；
-5. 实现 Hybrid 事件合并；
-6. 实现 Rust `CanonicalBarBuilder` 的离线与实盘两种适配器；
-7. 将交易所确认 Candle 归一化为实盘 Bar 事件；
+5. 实现 Hybrid 事件合并，并在 Tick 数据提前结束时 fail-fast；
+6. 实现 Rust canonical live Bar builder 的 watermark/迟到/空 Bar 规则；
+7. 将交易所 Candle、canonical Bar 与 REST recovery 归一化并按显式优先级去重；
 8. 保留 Rust `Strategy` trait 作为内部测试或兼容入口，但文档默认示例改为 Numba
    `on_tick(s)` / `on_bar(s)`。
 

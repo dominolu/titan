@@ -5,13 +5,11 @@ configuration only. Each user handler is ``@njit`` and has exactly one argument 
 a Numba ``cfunc`` bridge lets Rust invoke it without returning to the Python interpreter.
 
 The implementation supports the Rust-owned global TickBatch loop for backtests and live
-bots, plus event-jump materialized Bar backtests with conservative NextOpen matching.
-Hybrid is rejected until its exact Rust merge source is connected; it never falls back to
-Python-owned aggregation.
+bots, event-jump materialized Bar backtests, and deterministic Bar-signal/Tick-execution Hybrid.
 """
 
 import inspect
-from ctypes import CDLL, POINTER, c_int64, c_size_t, c_uint64, c_void_p
+from ctypes import CDLL, POINTER, c_double, c_int64, c_size_t, c_uint32, c_uint64, c_void_p
 
 import numba
 import numpy as np
@@ -22,7 +20,7 @@ from . import _hftbacktest
 from .intrinsic import address_as_void_pointer
 from .types import event_dtype
 
-ABI_VERSION = 5
+ABI_VERSION = 6
 EVENT_SLOT_COUNT = 32
 
 EVENT_START = 0
@@ -78,6 +76,29 @@ bar_item_dtype = np.dtype(
 
 timed_bar_dtype = np.dtype(
     [("asset_no", "u8"), ("timeframe_ns", "i8"), ("bar", bar_dtype)],
+    align=True,
+)
+
+timer_dtype = np.dtype(
+    [("deadline_ts", "i8"), ("owner_id", "u8"), ("timer_id", "u8")], align=True
+)
+
+funding_dtype = np.dtype(
+    [
+        ("event_id", "u8"),
+        ("asset_no", "u4"),
+        ("venue_no", "u4"),
+        ("instrument_id", "u4"),
+        ("currency", "u4"),
+        ("publication_ts", "i8"),
+        ("effective_ts", "i8"),
+        ("settlement_ts", "i8"),
+        ("delivery_ts", "i8"),
+        ("rate", "f8"),
+        ("mark_price", "f8"),
+        ("position_qty", "f8"),
+        ("amount", "f8"),
+    ],
     align=True,
 )
 
@@ -150,6 +171,8 @@ order_command_dtype = np.dtype(
         ("order_id", "u8"),
         ("price", "f8"),
         ("qty", "f8"),
+        ("trigger_price", "f8"),
+        ("gtd_expiry_ts", "i8"),
     ],
     align=True,
 )
@@ -384,6 +407,16 @@ class Strategy:
             numba.uint8,
         )
 
+    def timer(self):
+        return carray(
+            address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]), 1, timer_dtype
+        )[0]
+
+    def funding(self):
+        return carray(
+            address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]), 1, funding_dtype
+        )[0]
+
     def position(self, asset_no):
         positions = carray(
             address_as_void_pointer(self.ctx_arr[0]["positions_ptr"]),
@@ -412,7 +445,21 @@ class Strategy:
     def best_ask_qty(self, asset_no):
         return self.market(asset_no)["best_ask_qty"]
 
-    def _submit(self, asset_no, order_id, price, qty, side, time_in_force, order_type, wait):
+    def _submit(
+        self,
+        asset_no,
+        order_id,
+        price,
+        qty,
+        side,
+        time_in_force,
+        order_type,
+        wait,
+        reduce_only=False,
+        trigger_price=0.0,
+        trigger_kind=0,
+        gtd_expiry_ts=0,
+    ):
         if wait:
             return -2
         if self.event_kind == EVENT_ERROR or self.event_kind == EVENT_STOP:
@@ -431,25 +478,125 @@ class Strategy:
         command["side"] = side
         command["time_in_force"] = time_in_force
         command["order_type"] = order_type
+        command["_reserved"][0] = 1 if reduce_only else 0
+        command["_reserved"][1] = trigger_kind
         command["asset_no"] = asset_no
         command["order_id"] = order_id
         command["price"] = price
         command["qty"] = qty
+        command["trigger_price"] = trigger_price
+        command["gtd_expiry_ts"] = gtd_expiry_ts
         self.ctx_arr[0]["num_commands"] = index + 1
         return 0
 
     def submit_buy_order(
-        self, asset_no, order_id, price, qty, time_in_force, order_type, wait
+        self,
+        asset_no,
+        order_id,
+        price,
+        qty,
+        time_in_force,
+        order_type,
+        wait,
+        reduce_only=False,
+        gtd_expiry_ts=0,
     ):
         return self._submit(
-            asset_no, order_id, price, qty, 1, time_in_force, order_type, wait
+            asset_no,
+            order_id,
+            price,
+            qty,
+            1,
+            time_in_force,
+            order_type,
+            wait,
+            reduce_only,
+            0.0,
+            0,
+            gtd_expiry_ts,
         )
 
     def submit_sell_order(
-        self, asset_no, order_id, price, qty, time_in_force, order_type, wait
+        self,
+        asset_no,
+        order_id,
+        price,
+        qty,
+        time_in_force,
+        order_type,
+        wait,
+        reduce_only=False,
+        gtd_expiry_ts=0,
     ):
         return self._submit(
-            asset_no, order_id, price, qty, -1, time_in_force, order_type, wait
+            asset_no,
+            order_id,
+            price,
+            qty,
+            -1,
+            time_in_force,
+            order_type,
+            wait,
+            reduce_only,
+            0.0,
+            0,
+            gtd_expiry_ts,
+        )
+
+    def submit_stop_buy_order(
+        self,
+        asset_no,
+        order_id,
+        trigger_price,
+        limit_price,
+        qty,
+        time_in_force,
+        stop_limit,
+        wait,
+        reduce_only=False,
+        gtd_expiry_ts=0,
+    ):
+        return self._submit(
+            asset_no,
+            order_id,
+            limit_price,
+            qty,
+            1,
+            time_in_force,
+            0 if stop_limit else 1,
+            wait,
+            reduce_only,
+            trigger_price,
+            2 if stop_limit else 1,
+            gtd_expiry_ts,
+        )
+
+    def submit_stop_sell_order(
+        self,
+        asset_no,
+        order_id,
+        trigger_price,
+        limit_price,
+        qty,
+        time_in_force,
+        stop_limit,
+        wait,
+        reduce_only=False,
+        gtd_expiry_ts=0,
+    ):
+        return self._submit(
+            asset_no,
+            order_id,
+            limit_price,
+            qty,
+            -1,
+            time_in_force,
+            0 if stop_limit else 1,
+            wait,
+            reduce_only,
+            trigger_price,
+            2 if stop_limit else 1,
+            gtd_expiry_ts,
         )
 
     def cancel(self, asset_no, order_id, wait):
@@ -565,16 +712,113 @@ def _tick_runtime_function(hbt):
     return function
 
 
+def _scheduled_tick_runtime_function(hbt):
+    name = type(hbt).__name__
+    supported = {
+        "HashMapMarketDepthBacktest": "hashmapbt_run_scheduled_tick_runtime",
+        "ROIVectorMarketDepthBacktest": "roivecbt_run_scheduled_tick_runtime",
+        "HashMapMarketDepthLiveBot": "hashmaplive_run_scheduled_tick_runtime",
+        "ROIVectorMarketDepthLiveBot": "roiveclive_run_scheduled_tick_runtime",
+    }
+    if name not in supported:
+        raise TypeError(f"scheduled timers are not supported by backend: {name}")
+    function = getattr(_lib, supported[name])
+    function.restype = c_int64
+    function.argtypes = [
+        c_void_p,  # backend
+        c_void_p, c_size_t,  # timers
+        c_void_p, c_size_t,  # funding
+        c_void_p,  # context
+        POINTER(c_uint64), c_size_t,  # callbacks
+        c_int64, c_size_t,  # tick batching
+    ]
+    return function
+
+
 def _bar_runtime_function():
     function = _lib.run_materialized_bar_runtime
     function.restype = c_int64
     function.argtypes = [
+        c_void_p, c_size_t,  # bars
+        c_void_p,  # context
+        POINTER(c_uint64), c_size_t,  # callbacks
+        c_size_t,  # history capacity
+    ]
+    return function
+
+
+def _scheduled_bar_runtime_function():
+    function = _lib.run_scheduled_materialized_bar_runtime
+    function.restype = c_int64
+    function.argtypes = [
+        c_void_p, c_size_t,  # bars
+        c_void_p, c_size_t,  # timers
+        c_void_p, c_size_t,  # funding
+        c_void_p,  # context
+        POINTER(c_uint64), c_size_t,  # callbacks
+        c_size_t,  # history capacity
+    ]
+    return function
+
+
+def _configured_bar_runtime_function():
+    function = _lib.run_configured_materialized_bar_runtime
+    function.restype = c_int64
+    function.argtypes = [
+        c_void_p, c_size_t,  # bars
+        c_void_p, c_size_t,  # timers
+        c_void_p, c_size_t,  # funding
+        c_void_p,  # context
+        POINTER(c_uint64), c_size_t,  # callbacks
+        c_size_t,  # history capacity
+        c_uint32, c_double,  # matching model
+    ]
+    return function
+
+
+def _hybrid_runtime_function(hbt):
+    name = type(hbt).__name__
+    supported = {
+        "HashMapMarketDepthBacktest": "hashmapbt_run_hybrid_runtime",
+        "ROIVectorMarketDepthBacktest": "roivecbt_run_hybrid_runtime",
+    }
+    if name not in supported:
+        raise TypeError(f"unsupported Rust hybrid backend: {name}")
+    function = getattr(_lib, supported[name])
+    function.restype = c_int64
+    function.argtypes = [
+        c_void_p,
         c_void_p,
         c_size_t,
         c_void_p,
         POINTER(c_uint64),
         c_size_t,
         c_size_t,
+        c_int64,
+        c_size_t,
+    ]
+    return function
+
+
+def _scheduled_hybrid_runtime_function(hbt):
+    name = type(hbt).__name__
+    supported = {
+        "HashMapMarketDepthBacktest": "hashmapbt_run_scheduled_hybrid_runtime",
+        "ROIVectorMarketDepthBacktest": "roivecbt_run_scheduled_hybrid_runtime",
+    }
+    if name not in supported:
+        raise TypeError(f"scheduled hybrid backend is unsupported: {name}")
+    function = getattr(_lib, supported[name])
+    function.restype = c_int64
+    function.argtypes = [
+        c_void_p,  # backend
+        c_void_p, c_size_t,  # bars
+        c_void_p, c_size_t,  # timers
+        c_void_p, c_size_t,  # funding
+        c_void_p,  # context
+        POINTER(c_uint64), c_size_t,  # callbacks
+        c_size_t,  # history capacity
+        c_int64, c_size_t,  # tick batching
     ]
     return function
 
@@ -600,6 +844,10 @@ def run_event_bot(
     history_capacity=1024,
     state=None,
     state_i64=None,
+    timers=None,
+    funding=None,
+    bar_matching="next_open",
+    volume_participation=1.0,
 ):
     """Runs callbacks under the Rust-owned event loop.
 
@@ -609,39 +857,51 @@ def run_event_bot(
     Tick mode waits for the next Rust feed/order-response boundary and delivers all assets at
     that timestamp as one global batch; ``frame_interval`` is the maximum wait duration, not a
     Python polling loop. Bar mode consumes an explicit ``timed_bar_dtype`` array, jumps directly
-    between closes, and uses conservative NextOpen execution. Hybrid is rejected until the
-    deterministic Rust merge source is connected. Funding and timer callbacks are likewise
-    rejected until their Rust sources are connected.
+    between closes, and uses conservative NextOpen execution. Hybrid deterministically merges
+    Bar signal batches into the Rust Tick clock and executes every order only through the Tick
+    backend. Optional ``timer_dtype`` records remain active after market data ends in every mode.
+    Backtests accept ``funding_dtype`` records, settled by the Rust account engine and delivered
+    through ``on_funding(s)`` after their configured report latency.
     """
 
     if data_mode not in ("tick", "bar", "hybrid"):
         raise ValueError("data_mode must be 'tick', 'bar' or 'hybrid'")
-    if data_mode == "hybrid":
-        raise NotImplementedError(
-            "Hybrid Rust event source is not connected yet; implicit aggregation is disabled"
+    matching_modes = {"next_open": 0, "touch": 1, "conservative_ohlc": 2}
+    if bar_matching not in matching_modes:
+        raise ValueError(
+            "bar_matching must be 'next_open', 'touch' or 'conservative_ohlc'"
         )
-    if data_mode == "tick" and (frame_interval <= 0 or max_tick_batch <= 0):
+    if not np.isfinite(volume_participation) or not 0.0 <= volume_participation <= 1.0:
+        raise ValueError("volume_participation must be finite and in [0, 1]")
+    if data_mode != "bar" and bar_matching != "next_open":
+        raise ValueError("OHLC matching is only valid when Bar is the execution source")
+    if data_mode in ("tick", "hybrid") and (frame_interval <= 0 or max_tick_batch <= 0):
         raise ValueError("frame_interval and max_tick_batch must be positive")
-    if data_mode == "tick" and hbt is None:
-        raise ValueError("tick mode requires hbt")
-    if data_mode == "bar":
+    if data_mode in ("tick", "hybrid") and hbt is None:
+        raise ValueError(f"{data_mode} mode requires hbt")
+    if data_mode in ("bar", "hybrid"):
         if bars is None:
-            raise ValueError("bar mode requires bars")
+            raise ValueError(f"{data_mode} mode requires bars")
         bars = np.ascontiguousarray(bars, dtype=timed_bar_dtype)
         if history_capacity < 0:
             raise ValueError("history_capacity cannot be negative")
-    unsupported = [
-        name
-        for name, handler in (("on_funding", on_funding), ("on_timer", on_timer))
-        if handler is not None
-    ]
+    if timers is not None:
+        timers = np.ascontiguousarray(timers, dtype=timer_dtype)
+    if funding is not None:
+        funding = np.ascontiguousarray(funding, dtype=funding_dtype)
+        if hbt is not None and type(hbt).__name__.endswith("LiveBot"):
+            raise NotImplementedError(
+                "scheduled backtest funding cannot be injected into a live backend; "
+                "live connector funding must enter through LiveExecutionAdapter"
+            )
+    unsupported = []
+    if on_funding is not None and funding is None:
+        unsupported.append("on_funding")
+    if on_timer is not None and timers is None:
+        unsupported.append("on_timer")
     if unsupported:
         raise NotImplementedError(
             f"callbacks not connected to a Rust event source yet: {', '.join(unsupported)}"
-        )
-    if data_mode == "bar" and (on_order is not None or on_position is not None):
-        raise NotImplementedError(
-            "bar mode currently supports on_filled but not on_order/on_position"
         )
 
     handlers = {
@@ -685,24 +945,76 @@ def run_event_bot(
     ctx[0]["state_i64_len"] = len(state_i64)
 
     if data_mode == "tick":
-        function = _tick_runtime_function(hbt)
-        result = function(
-            int(hbt.ptr),
-            ctx.ctypes.data,
-            addresses.ctypes.data_as(POINTER(c_uint64)),
-            len(addresses),
-            int(frame_interval),
-            int(max_tick_batch),
-        )
+        if timers is None and funding is None:
+            function = _tick_runtime_function(hbt)
+            result = function(
+                int(hbt.ptr),
+                ctx.ctypes.data,
+                addresses.ctypes.data_as(POINTER(c_uint64)),
+                len(addresses),
+                int(frame_interval),
+                int(max_tick_batch),
+            )
+        else:
+            function = _scheduled_tick_runtime_function(hbt)
+            result = function(
+                int(hbt.ptr),
+                0 if timers is None else timers.ctypes.data,
+                0 if timers is None else len(timers),
+                0 if funding is None else funding.ctypes.data,
+                0 if funding is None else len(funding),
+                ctx.ctypes.data,
+                addresses.ctypes.data_as(POINTER(c_uint64)),
+                len(addresses),
+                int(frame_interval),
+                int(max_tick_batch),
+            )
+    elif data_mode == "hybrid":
+        if timers is None and funding is None:
+            function = _hybrid_runtime_function(hbt)
+            result = function(
+                int(hbt.ptr),
+                bars.ctypes.data,
+                len(bars),
+                ctx.ctypes.data,
+                addresses.ctypes.data_as(POINTER(c_uint64)),
+                len(addresses),
+                int(history_capacity),
+                int(frame_interval),
+                int(max_tick_batch),
+            )
+        else:
+            function = _scheduled_hybrid_runtime_function(hbt)
+            result = function(
+                int(hbt.ptr),
+                bars.ctypes.data,
+                len(bars),
+                0 if timers is None else timers.ctypes.data,
+                0 if timers is None else len(timers),
+                0 if funding is None else funding.ctypes.data,
+                0 if funding is None else len(funding),
+                ctx.ctypes.data,
+                addresses.ctypes.data_as(POINTER(c_uint64)),
+                len(addresses),
+                int(history_capacity),
+                int(frame_interval),
+                int(max_tick_batch),
+            )
     else:
-        function = _bar_runtime_function()
+        function = _configured_bar_runtime_function()
         result = function(
             bars.ctypes.data,
             len(bars),
+            0 if timers is None else timers.ctypes.data,
+            0 if timers is None else len(timers),
+            0 if funding is None else funding.ctypes.data,
+            0 if funding is None else len(funding),
             ctx.ctypes.data,
             addresses.ctypes.data_as(POINTER(c_uint64)),
             len(addresses),
             int(history_capacity),
+            matching_modes[bar_matching],
+            float(volume_participation),
         )
     if result != 0:
         raise RuntimeError(

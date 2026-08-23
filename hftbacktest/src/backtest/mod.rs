@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     io::Error as IoError,
     ops::{Deref, DerefMut},
 };
@@ -18,6 +18,14 @@ use crate::{
         assettype::AssetType,
         data::{Data, FeedLatencyAdjustment, NpyDTyped},
         evs::{EventIntentKind, EventSet},
+        execution::{
+            AccountError, CurrencyId, ExchangePortfolio, ExecutionEventProjector,
+            ExecutionOrderRequest, ExecutionReason, ExecutionReport, FundingEngine, FundingError,
+            FundingReport, InstrumentId, InstrumentSpec, LegacyExecutionFeeAdapter, NoFee,
+            ObservedOutcome, OrderOrigin, OutcomeBus, PortfolioLedger, ProjectedEvent, RiskAction,
+            RiskActionSink, RiskDecision, RiskReason, ScheduledFunding, SharedTickExecutionConfig,
+            TickCoordinatorError, TickOutcomeCoordinator, VenueId, VenueRisk,
+        },
         models::{LatencyModel, QueueModel},
         order::order_bus,
         proc::{Local, LocalProcessor, NoPartialFillExchange, PartialFillExchange, Processor},
@@ -25,7 +33,7 @@ use crate::{
     },
     depth::{L2MarketDepth, L3MarketDepth, MarketDepth},
     prelude::{
-        Bot, OrdType, Order, OrderId, OrderRequest, Side, StateValues, TimeInForce,
+        Bot, OrdType, Order, OrderId, OrderRequest, Side, StateValues, Status, TimeInForce,
         UNTIL_END_OF_DATA, WaitOrderResponse,
     },
     types::{BuildError, ElapseResult, Event},
@@ -35,6 +43,14 @@ use crate::{
 pub mod assettype;
 
 pub mod models;
+
+pub mod bar;
+
+pub mod hybrid;
+
+pub mod live_bar;
+
+pub mod platform;
 
 /// OrderBus implementation
 pub mod order;
@@ -47,9 +63,16 @@ pub mod state;
 
 /// Recorder for a bot's trading statistics.
 pub mod recorder;
+pub mod result;
 
 pub mod data;
 mod evs;
+
+/// Shared execution domain used by Tick, Bar, Hybrid and live event adapters.
+pub mod execution;
+
+/// Deterministic global event scheduling primitives.
+pub mod scheduler;
 
 /// Errors that can occur during backtesting.
 #[derive(Error, Debug)]
@@ -68,6 +91,26 @@ pub enum BacktestError {
     EndOfData,
     #[error("data error: {0:?}")]
     DataError(#[from] IoError),
+    #[error("shared Tick execution error: {0}")]
+    SharedTickExecution(#[from] TickCoordinatorError),
+    #[error("shared Tick InstrumentSpec asset_no is out of range or duplicated")]
+    InvalidSharedTickSpec,
+    #[error("shared local account error: {0}")]
+    SharedAccount(#[from] AccountError),
+    #[error("shared Funding error: {0}")]
+    SharedFunding(#[from] FundingError),
+}
+
+fn execution_reason_from_risk(reason: RiskReason) -> ExecutionReason {
+    match reason {
+        RiskReason::PositionLimit => ExecutionReason::PositionLimit,
+        RiskReason::NotionalLimit => ExecutionReason::NotionalLimit,
+        RiskReason::InsufficientBalance => ExecutionReason::InsufficientBalance,
+        RiskReason::InsufficientMargin => ExecutionReason::InsufficientMargin,
+        RiskReason::ReduceOnlyViolation => ExecutionReason::ReduceOnlyViolation,
+        RiskReason::MarketClosed => ExecutionReason::MarketClosed,
+        RiskReason::Custom(code) => ExecutionReason::Unknown(code),
+    }
 }
 
 /// Backtesting Asset
@@ -75,6 +118,8 @@ pub struct Asset<L: ?Sized, E: ?Sized, D: NpyDTyped + Clone /* todo: ugly bounds
     pub local: Box<L>,
     pub exch: Box<E>,
     pub reader: Reader<D>,
+    pub outcome_bus: Option<OutcomeBus>,
+    pub shared_execution: Option<SharedTickExecutionConfig>,
 }
 
 impl<L, E, D: NpyDTyped + Clone> Asset<L, E, D> {
@@ -85,6 +130,8 @@ impl<L, E, D: NpyDTyped + Clone> Asset<L, E, D> {
             local: Box::new(local),
             exch: Box::new(exch),
             reader,
+            outcome_bus: None,
+            shared_execution: None,
         }
     }
 
@@ -114,6 +161,39 @@ impl<L, E, D: NpyDTyped + Clone> Asset<L, E, D> {
     }
 }
 
+fn default_shared_execution<AT, FM, MD>(
+    asset_type: &AT,
+    fee_model: FM,
+    depth: &MD,
+) -> SharedTickExecutionConfig
+where
+    AT: AssetType,
+    FM: FeeModel + 'static,
+    MD: MarketDepth,
+{
+    let currency = CurrencyId(0);
+    SharedTickExecutionConfig::new(
+        InstrumentSpec {
+            instrument_id: InstrumentId(0),
+            asset_no: 0,
+            venue_id: VenueId(0),
+            tick_size: depth.tick_size(),
+            lot_size: depth.lot_size(),
+            min_qty: depth.lot_size(),
+            max_qty: f64::MAX,
+            min_notional: 0.0,
+            contract_size: asset_type.contract_size_hint(),
+            price_currency: currency,
+            settlement_currency: currency,
+            margin_currency: currency,
+            instrument_type: asset_type.execution_instrument_type(),
+            cash_flow_mode: execution::CashFlowMode::LegacyNotional,
+            version: 1,
+        },
+        LegacyExecutionFeeAdapter::new(fee_model, currency),
+    )
+}
+
 /// Exchange model kind.
 pub enum ExchangeKind {
     /// Uses [NoPartialFillExchange](`NoPartialFillExchange`).
@@ -134,6 +214,7 @@ pub struct L2AssetBuilder<LM, AT, QM, MD, FM> {
     last_trades_cap: usize,
     queue_model: Option<QM>,
     depth_builder: Option<Box<dyn Fn() -> MD>>,
+    execution_reality: Option<Box<dyn execution::TickExecutionReality>>,
 }
 
 impl<LM, AT, QM, MD, FM> L2AssetBuilder<LM, AT, QM, MD, FM>
@@ -157,6 +238,7 @@ where
             last_trades_cap: 0,
             queue_model: None,
             depth_builder: None,
+            execution_reality: None,
         }
     }
 
@@ -212,6 +294,19 @@ where
     /// Sets an exchange model. The default value is [`NoPartialFillExchange`].
     pub fn exchange(self, exch_kind: ExchangeKind) -> Self {
         Self { exch_kind, ..self }
+    }
+
+    /// Installs historical-liquidity/execution-quality adjustment for PartialFillExchange.
+    /// NoPartialFillExchange rejects this configuration because it cannot preserve partial
+    /// liquidity semantics.
+    pub fn execution_reality<R>(self, model: R) -> Self
+    where
+        R: execution::TickExecutionReality + 'static,
+    {
+        Self {
+            execution_reality: Some(Box::new(model)),
+            ..self
+        }
     }
 
     /// Sets the initial capacity of the vector storing the last market trades.
@@ -278,8 +373,11 @@ where
 
         let (order_e2l, order_l2e) = order_bus(order_latency);
 
-        let local = Local::new(
-            create_depth(),
+        let local_depth = create_depth();
+        let shared_execution =
+            default_shared_execution(&asset_type, fee_model.clone(), &local_depth);
+        let local = Local::new_external_accounting(
+            local_depth,
             State::new(asset_type, fee_model),
             self.last_trades_cap,
             order_l2e,
@@ -299,31 +397,47 @@ where
 
         match self.exch_kind {
             ExchangeKind::NoPartialFillExchange => {
-                let exch = NoPartialFillExchange::new(
+                if self.execution_reality.is_some() {
+                    return Err(BuildError::InvalidArgument(
+                        "execution_reality requires PartialFillExchange",
+                    ));
+                }
+                let outcome_bus = OutcomeBus::new();
+                let exch = NoPartialFillExchange::new_with_observer(
                     create_depth(),
                     State::new(asset_type, fee_model),
                     queue_model,
                     order_e2l,
+                    outcome_bus.clone(),
                 );
 
                 Ok(Asset {
                     local: Box::new(local),
                     exch: Box::new(exch),
                     reader,
+                    outcome_bus: Some(outcome_bus),
+                    shared_execution: Some(shared_execution),
                 })
             }
             ExchangeKind::PartialFillExchange => {
-                let exch = PartialFillExchange::new(
+                let outcome_bus = OutcomeBus::new();
+                let mut exch = PartialFillExchange::new_with_observer(
                     create_depth(),
                     State::new(asset_type, fee_model),
                     queue_model,
                     order_e2l,
+                    outcome_bus.clone(),
                 );
+                if let Some(model) = self.execution_reality {
+                    exch.set_execution_reality(model);
+                }
 
                 Ok(Asset {
                     local: Box::new(local),
                     exch: Box::new(exch),
                     reader,
+                    outcome_bus: Some(outcome_bus),
+                    shared_execution: Some(shared_execution),
                 })
             }
         }
@@ -500,8 +614,11 @@ where
 
         let (order_e2l, order_l2e) = order_bus(order_latency);
 
-        let local = L3Local::new(
-            create_depth(),
+        let local_depth = create_depth();
+        let shared_execution =
+            default_shared_execution(&asset_type, fee_model.clone(), &local_depth);
+        let local = L3Local::new_external_accounting(
+            local_depth,
             State::new(asset_type, fee_model),
             self.last_trades_cap,
             order_l2e,
@@ -521,22 +638,26 @@ where
 
         match self.exch_kind {
             ExchangeKind::NoPartialFillExchange => {
-                let exch = L3NoPartialFillExchange::new(
+                let outcome_bus = OutcomeBus::new();
+                let exch = L3NoPartialFillExchange::new_with_observer(
                     create_depth(),
                     State::new(asset_type, fee_model),
                     queue_model,
                     order_e2l,
+                    outcome_bus.clone(),
                 );
 
                 Ok(Asset {
                     local: Box::new(local),
                     exch: Box::new(exch),
                     reader,
+                    outcome_bus: Some(outcome_bus),
+                    shared_execution: Some(shared_execution),
                 })
             }
-            ExchangeKind::PartialFillExchange => {
-                unimplemented!();
-            }
+            ExchangeKind::PartialFillExchange => Err(BuildError::InvalidArgument(
+                "L3 PartialFillExchange is not supported; choose NoPartialFillExchange",
+            )),
         }
     }
 }
@@ -559,12 +680,22 @@ where
 pub struct BacktestBuilder<MD> {
     local: Vec<BacktestProcessorState<Box<dyn LocalProcessor<MD>>>>,
     exch: Vec<BacktestProcessorState<Box<dyn Processor>>>,
+    outcome_buses: Vec<Option<OutcomeBus>>,
+    shared_execution: Vec<Option<SharedTickExecutionConfig>>,
 }
 
 impl<MD> BacktestBuilder<MD> {
     /// Adds [`Asset`], which will undergo simulation within the backtester.
     pub fn add_asset(self, asset: Asset<dyn LocalProcessor<MD>, dyn Processor, Event>) -> Self {
         let mut self_ = Self { ..self };
+        let asset_no = self_.local.len();
+        let mut shared_execution = asset.shared_execution;
+        if let Some(config) = shared_execution.as_mut() {
+            config.spec.asset_no = asset_no as u32;
+            if config.spec.instrument_id == InstrumentId(0) {
+                config.spec.instrument_id = InstrumentId(asset_no as u32 + 1);
+            }
+        }
         self_.local.push(BacktestProcessorState::new(
             asset.local,
             asset.reader.clone(),
@@ -572,6 +703,8 @@ impl<MD> BacktestBuilder<MD> {
         self_
             .exch
             .push(BacktestProcessorState::new(asset.exch, asset.reader));
+        self_.outcome_buses.push(asset.outcome_bus);
+        self_.shared_execution.push(shared_execution);
         self_
     }
 
@@ -581,13 +714,37 @@ impl<MD> BacktestBuilder<MD> {
         if self.local.len() != num_assets || self.exch.len() != num_assets {
             panic!();
         }
+        let mut shared_tick_coordinators: Vec<_> = (0..num_assets).map(|_| None).collect();
+        for config in self.shared_execution.into_iter().flatten() {
+            let asset_no = config.spec.asset_no as usize;
+            shared_tick_coordinators[asset_no] =
+                Some(TickOutcomeCoordinator::new(config.spec, config.fee_model));
+        }
         Ok(Backtest {
             cur_ts: i64::MAX,
             evs: EventSet::new(num_assets),
             local: self.local,
             exch: self.exch,
+            outcome_buses: self.outcome_buses,
             runtime_feed_events: Vec::new(),
             runtime_order_events: Vec::new(),
+            runtime_match_outcomes: Vec::new(),
+            shared_tick_coordinators,
+            shared_exchange_reports: Vec::new(),
+            shared_report_scratch: Vec::with_capacity(2),
+            shared_pending_reports: VecDeque::with_capacity(64),
+            shared_exchange_portfolio: ExchangePortfolio::default(),
+            shared_venue_risks: HashMap::new(),
+            shared_risk_actions: RiskActionSink::with_capacity(4),
+            runtime_reduce_only: HashMap::new(),
+            next_risk_order_id: u64::MAX,
+            pending_liquidations: HashSet::new(),
+            risk_order_instruments: HashMap::new(),
+            shared_local_portfolio: PortfolioLedger::default(),
+            shared_projector: ExecutionEventProjector::with_capacity(3),
+            shared_projected_events: Vec::new(),
+            shared_delivery_scratch: Vec::with_capacity(4),
+            shared_state_values: vec![StateValues::default(); num_assets],
             runtime_capture_enabled: false,
         })
     }
@@ -601,12 +758,34 @@ pub struct Backtest<MD> {
     evs: EventSet,
     local: Vec<BacktestProcessorState<Box<dyn LocalProcessor<MD>>>>,
     exch: Vec<BacktestProcessorState<Box<dyn Processor>>>,
+    outcome_buses: Vec<Option<OutcomeBus>>,
     runtime_feed_events: Vec<(usize, Event)>,
     runtime_order_events: Vec<(usize, i64, Order)>,
+    runtime_match_outcomes: Vec<(usize, ObservedOutcome)>,
+    shared_tick_coordinators:
+        Vec<Option<TickOutcomeCoordinator<Box<dyn execution::ExecutionFeeModel>>>>,
+    shared_exchange_reports: Vec<(usize, ExecutionReport)>,
+    shared_report_scratch: Vec<ExecutionReport>,
+    shared_pending_reports: VecDeque<(usize, ExecutionReport)>,
+    shared_exchange_portfolio: ExchangePortfolio,
+    shared_venue_risks: HashMap<VenueId, Box<dyn VenueRisk>>,
+    shared_risk_actions: RiskActionSink,
+    runtime_reduce_only: HashMap<(usize, OrderId), bool>,
+    next_risk_order_id: OrderId,
+    pending_liquidations: HashSet<(VenueId, InstrumentId)>,
+    risk_order_instruments: HashMap<OrderId, (VenueId, InstrumentId)>,
+    shared_local_portfolio: PortfolioLedger,
+    shared_projector: ExecutionEventProjector,
+    shared_projected_events: Vec<(usize, ProjectedEvent)>,
+    shared_delivery_scratch: Vec<(OrderId, i64)>,
+    shared_state_values: Vec<StateValues>,
     runtime_capture_enabled: bool,
 }
 
-impl<MD> Backtest<MD> {
+impl<MD> Backtest<MD>
+where
+    MD: MarketDepth,
+{
     /// Feed events processed locally since the runtime last cleared its batch.
     pub fn runtime_feed_events(&self) -> &[(usize, Event)] {
         &self.runtime_feed_events
@@ -625,12 +804,401 @@ impl<MD> Backtest<MD> {
         self.runtime_order_events.clear();
     }
 
+    /// Exchange-time normalized outcomes since the runtime last cleared its batch.
+    pub fn runtime_match_outcomes(&self) -> &[(usize, ObservedOutcome)] {
+        &self.runtime_match_outcomes
+    }
+
+    pub fn clear_runtime_match_outcomes(&mut self) {
+        self.runtime_match_outcomes.clear();
+    }
+
+    /// Enables exchange-time shared state/account coordination for the configured Tick assets.
+    /// The legacy local processor remains the strategy-visible state until B06 delivery migration.
+    pub fn configure_shared_tick_execution(
+        &mut self,
+        specs: impl IntoIterator<Item = InstrumentSpec>,
+    ) -> Result<(), BacktestError> {
+        self.shared_tick_coordinators
+            .iter_mut()
+            .for_each(|slot| *slot = None);
+        for spec in specs {
+            let asset_no = spec.asset_no as usize;
+            let Some(slot) = self.shared_tick_coordinators.get_mut(asset_no) else {
+                return Err(BacktestError::InvalidSharedTickSpec);
+            };
+            if slot.is_some() {
+                return Err(BacktestError::InvalidSharedTickSpec);
+            }
+            let currency = spec.settlement_currency;
+            *slot = Some(TickOutcomeCoordinator::new(
+                spec,
+                Box::new(NoFee { currency }) as Box<dyn execution::ExecutionFeeModel>,
+            ));
+        }
+        self.shared_exchange_reports.clear();
+        self.shared_pending_reports.clear();
+        self.shared_exchange_portfolio.reset();
+        self.shared_local_portfolio.reset();
+        self.shared_projected_events.clear();
+        self.shared_state_values.fill(StateValues::default());
+        self.shared_venue_risks
+            .values_mut()
+            .for_each(|risk| risk.reset_all());
+        self.shared_risk_actions.clear();
+        self.runtime_reduce_only.clear();
+        self.next_risk_order_id = u64::MAX;
+        self.pending_liquidations.clear();
+        self.risk_order_instruments.clear();
+        Ok(())
+    }
+
+    pub fn configure_shared_tick_execution_with_fees(
+        &mut self,
+        configs: impl IntoIterator<Item = SharedTickExecutionConfig>,
+    ) -> Result<(), BacktestError> {
+        self.shared_tick_coordinators
+            .iter_mut()
+            .for_each(|slot| *slot = None);
+        for config in configs {
+            let asset_no = config.spec.asset_no as usize;
+            let Some(slot) = self.shared_tick_coordinators.get_mut(asset_no) else {
+                return Err(BacktestError::InvalidSharedTickSpec);
+            };
+            if slot.is_some() {
+                return Err(BacktestError::InvalidSharedTickSpec);
+            }
+            *slot = Some(TickOutcomeCoordinator::new(config.spec, config.fee_model));
+        }
+        self.shared_exchange_reports.clear();
+        self.shared_pending_reports.clear();
+        self.shared_exchange_portfolio.reset();
+        self.shared_local_portfolio.reset();
+        self.shared_projected_events.clear();
+        self.shared_state_values.fill(StateValues::default());
+        self.shared_venue_risks
+            .values_mut()
+            .for_each(|risk| risk.reset_all());
+        self.shared_risk_actions.clear();
+        self.runtime_reduce_only.clear();
+        self.next_risk_order_id = u64::MAX;
+        self.pending_liquidations.clear();
+        self.risk_order_instruments.clear();
+        Ok(())
+    }
+
+    pub fn shared_exchange_reports(&self) -> &[(usize, ExecutionReport)] {
+        &self.shared_exchange_reports
+    }
+
+    pub fn clear_shared_exchange_reports(&mut self) {
+        self.shared_exchange_reports.clear();
+    }
+
+    pub fn shared_local_portfolio(&self) -> &PortfolioLedger {
+        &self.shared_local_portfolio
+    }
+
+    pub fn shared_exchange_portfolio(&self) -> &ExchangePortfolio {
+        &self.shared_exchange_portfolio
+    }
+
+    /// Installs the venue-scoped exchange-arrival and post-trade risk model used by Tick matching.
+    pub fn configure_shared_tick_venue_risk<R>(&mut self, venue_id: VenueId, risk: R)
+    where
+        R: VenueRisk + 'static,
+    {
+        self.shared_venue_risks.insert(venue_id, Box::new(risk));
+    }
+
+    /// Seeds authoritative exchange collateral before the first order arrives.
+    pub fn set_shared_exchange_balance(
+        &mut self,
+        venue_id: VenueId,
+        currency: CurrencyId,
+        balance: f64,
+    ) -> Result<(), BacktestError> {
+        self.shared_exchange_portfolio
+            .venue_mut_or_insert(venue_id)
+            .account_mut()
+            .set_balance(currency, balance)?;
+        Ok(())
+    }
+
+    /// Records execution-domain flags absent from the legacy monomorphized Order ABI.
+    pub fn register_runtime_order_extensions(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        reduce_only: bool,
+    ) {
+        if reduce_only {
+            self.runtime_reduce_only.insert((asset_no, order_id), true);
+        } else {
+            self.runtime_reduce_only.remove(&(asset_no, order_id));
+        }
+    }
+
+    pub fn shared_risk_actions(&self) -> &[RiskAction] {
+        self.shared_risk_actions.as_slice()
+    }
+
+    pub fn clear_shared_risk_actions(&mut self) {
+        self.shared_risk_actions.clear();
+    }
+
+    pub fn settle_runtime_funding(
+        &mut self,
+        scheduled: ScheduledFunding,
+        engine: &mut FundingEngine,
+        sequence: u64,
+    ) -> Result<FundingReport, BacktestError> {
+        let asset_no = scheduled.asset_no as usize;
+        let coordinator = self
+            .shared_tick_coordinators
+            .get(asset_no)
+            .and_then(Option::as_ref)
+            .ok_or(BacktestError::InvalidSharedTickSpec)?;
+        let position = coordinator.exchange_position();
+        let spec = coordinator.spec().clone();
+        let exchange = self
+            .shared_exchange_portfolio
+            .venue_mut_or_insert(scheduled.event.venue_id);
+        engine
+            .settle(
+                scheduled.event,
+                position,
+                &spec,
+                exchange,
+                scheduled.delivery_ts,
+                sequence,
+            )
+            .map_err(BacktestError::from)
+    }
+
+    pub fn deliver_runtime_funding(&mut self, report: FundingReport) -> Result<(), BacktestError> {
+        self.shared_projector.project_funding(
+            report,
+            self.shared_local_portfolio
+                .venue_mut_or_insert(report.event.venue_id),
+        )?;
+        Ok(())
+    }
+
+    pub fn shared_projected_events(&self) -> &[(usize, ProjectedEvent)] {
+        &self.shared_projected_events
+    }
+
+    pub fn clear_shared_projected_events(&mut self) {
+        self.shared_projected_events.clear();
+    }
+
     pub fn set_runtime_capture(&mut self, enabled: bool) {
         self.runtime_capture_enabled = enabled;
         if !enabled {
             self.runtime_feed_events.clear();
             self.runtime_order_events.clear();
+            self.runtime_match_outcomes.clear();
         }
+    }
+
+    #[inline]
+    fn drain_exchange_outcomes(&mut self, asset_no: usize) -> Result<(), BacktestError> {
+        let Some(bus) = self
+            .outcome_buses
+            .get_mut(asset_no)
+            .and_then(Option::as_mut)
+        else {
+            return Ok(());
+        };
+        // Market events overwhelmingly produce no order outcome. Avoid taking the mutable
+        // VecDeque path on every Tick; this branch is highly predictable and keeps the disabled
+        // matching hot path close to the zero-sized observer baseline.
+        if bus.is_empty() {
+            return Ok(());
+        }
+        let mut generated_risk_actions = Vec::new();
+        while let Some(outcome) = bus.pop_front() {
+            if let Some(coordinator) = self
+                .shared_tick_coordinators
+                .get_mut(asset_no)
+                .and_then(Option::as_mut)
+            {
+                let exchange_ts = match outcome.outcome {
+                    execution::MatchOutcome::Accepted { exchange_ts }
+                    | execution::MatchOutcome::Rejected { exchange_ts, .. }
+                    | execution::MatchOutcome::Canceled { exchange_ts }
+                    | execution::MatchOutcome::Expired { exchange_ts } => exchange_ts,
+                    execution::MatchOutcome::Fill(fill) => fill.exchange_ts,
+                };
+                coordinator.apply(outcome, exchange_ts, &mut self.shared_report_scratch)?;
+                for report in &self.shared_report_scratch {
+                    if let Some(delta) = report.account_delta {
+                        self.shared_exchange_portfolio
+                            .apply(report.venue_id, delta)?;
+                        if self
+                            .shared_exchange_portfolio
+                            .venue(report.venue_id)
+                            .is_some_and(|account| {
+                                account.account().position(delta.instrument_id).qty == 0.0
+                            })
+                        {
+                            self.pending_liquidations
+                                .remove(&(report.venue_id, delta.instrument_id));
+                        }
+                        if let (Some(risk), Some(account)) = (
+                            self.shared_venue_risks.get_mut(&report.venue_id),
+                            self.shared_exchange_portfolio.venue(report.venue_id),
+                        ) {
+                            let mut sink = RiskActionSink::with_capacity(2);
+                            risk.on_account_change(account, &mut sink);
+                            generated_risk_actions.extend_from_slice(sink.as_slice());
+                        }
+                    }
+                    if matches!(
+                        report.kind,
+                        execution::ExecutionReportKind::Canceled
+                            | execution::ExecutionReportKind::Rejected
+                            | execution::ExecutionReportKind::Expired
+                    ) {
+                        self.runtime_reduce_only
+                            .remove(&(asset_no, report.order_id));
+                        if let Some(key) = self.risk_order_instruments.remove(&report.order_id) {
+                            self.pending_liquidations.remove(&key);
+                        }
+                    }
+                }
+                self.shared_exchange_reports
+                    .extend(self.shared_report_scratch.drain(..).map(|report| {
+                        self.shared_pending_reports.push_back((asset_no, report));
+                        (asset_no, report)
+                    }));
+            }
+            if self.runtime_capture_enabled {
+                self.runtime_match_outcomes.push((asset_no, outcome));
+            }
+        }
+        for action in generated_risk_actions {
+            self.shared_risk_actions.push(action);
+            match action {
+                RiskAction::Cancel {
+                    instrument_id,
+                    order_id,
+                    ..
+                } => {
+                    if let Some(action_asset) = self.asset_for_instrument(instrument_id) {
+                        self.exch[action_asset].cancel_from_risk(self.cur_ts, order_id)?;
+                        self.evs.update_local_order(
+                            action_asset,
+                            self.exch[action_asset].earliest_send_order_timestamp(),
+                        );
+                    }
+                }
+                RiskAction::Liquidate {
+                    venue_id,
+                    instrument_id,
+                    ..
+                } => {
+                    let Some(action_asset) = self.asset_for_instrument(instrument_id) else {
+                        continue;
+                    };
+                    let qty = self
+                        .shared_exchange_portfolio
+                        .venue(venue_id)
+                        .map(|account| account.account().position(instrument_id).qty)
+                        .unwrap_or(0.0);
+                    if qty == 0.0 {
+                        continue;
+                    }
+                    if !self.pending_liquidations.insert((venue_id, instrument_id)) {
+                        continue;
+                    }
+                    let order_id = self.next_risk_order_id;
+                    self.next_risk_order_id = self.next_risk_order_id.saturating_sub(1);
+                    self.risk_order_instruments
+                        .insert(order_id, (venue_id, instrument_id));
+                    let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
+                    self.register_runtime_order_extensions(action_asset, order_id, true);
+                    self.local[action_asset].submit_order(
+                        order_id,
+                        side,
+                        0.0,
+                        qty.abs(),
+                        OrdType::Market,
+                        TimeInForce::IOC,
+                        self.cur_ts,
+                    )?;
+                    self.evs.update_exch_order(
+                        action_asset,
+                        self.exch[action_asset].earliest_recv_order_timestamp(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn asset_for_instrument(&self, instrument_id: InstrumentId) -> Option<usize> {
+        self.shared_tick_coordinators
+            .iter()
+            .position(|coordinator| {
+                coordinator
+                    .as_ref()
+                    .is_some_and(|coordinator| coordinator.spec().instrument_id == instrument_id)
+            })
+    }
+
+    fn deliver_shared_reports(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        exchange_ts: i64,
+        delivery_ts: i64,
+    ) -> Result<(), BacktestError> {
+        let pending_len = self.shared_pending_reports.len();
+        for _ in 0..pending_len {
+            let (pending_asset, mut report) = self.shared_pending_reports.pop_front().unwrap();
+            if pending_asset == asset_no
+                && report.order_id == order_id
+                && report.exchange_ts <= exchange_ts
+            {
+                report.delivery_ts = delivery_ts;
+                let local = self
+                    .shared_local_portfolio
+                    .venue_mut_or_insert(report.venue_id);
+                let projected = self.shared_projector.project(report, local)?;
+                if self.runtime_capture_enabled {
+                    self.shared_projected_events
+                        .extend(projected.iter().copied().map(|event| (asset_no, event)));
+                }
+                let spec = self.shared_tick_coordinators[asset_no]
+                    .as_ref()
+                    .unwrap()
+                    .spec();
+                let account = self
+                    .shared_local_portfolio
+                    .venue(spec.venue_id)
+                    .unwrap()
+                    .account();
+                let position = account.position(spec.instrument_id);
+                let fee = account.fee(spec.settlement_currency);
+                let funding = account.funding(spec.settlement_currency);
+                self.shared_state_values[asset_no] = StateValues {
+                    position: position.qty,
+                    // Preserve the legacy ABI's gross-cash definition while canonical account
+                    // balance remains net of fee/funding.
+                    balance: account.balance(spec.settlement_currency) + fee - funding,
+                    fee,
+                    num_trades: position.num_trades as i64,
+                    trading_volume: position.trading_volume,
+                    trading_value: position.trading_value,
+                };
+            } else {
+                self.shared_pending_reports
+                    .push_back((pending_asset, report));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -705,6 +1273,8 @@ where
         BacktestBuilder {
             local: vec![],
             exch: vec![],
+            outcome_buses: vec![],
+            shared_execution: vec![],
         }
     }
 
@@ -732,10 +1302,28 @@ where
         Self {
             local,
             exch,
+            outcome_buses: (0..num_assets).map(|_| None).collect(),
             cur_ts: i64::MAX,
             evs: EventSet::new(num_assets),
             runtime_feed_events: Vec::new(),
             runtime_order_events: Vec::new(),
+            runtime_match_outcomes: Vec::new(),
+            shared_tick_coordinators: (0..num_assets).map(|_| None).collect(),
+            shared_exchange_reports: Vec::new(),
+            shared_report_scratch: Vec::with_capacity(2),
+            shared_pending_reports: VecDeque::with_capacity(64),
+            shared_exchange_portfolio: ExchangePortfolio::default(),
+            shared_venue_risks: HashMap::new(),
+            shared_risk_actions: RiskActionSink::with_capacity(4),
+            runtime_reduce_only: HashMap::new(),
+            next_risk_order_id: u64::MAX,
+            pending_liquidations: HashSet::new(),
+            risk_order_instruments: HashMap::new(),
+            shared_local_portfolio: PortfolioLedger::default(),
+            shared_projector: ExecutionEventProjector::with_capacity(3),
+            shared_projected_events: Vec::new(),
+            shared_delivery_scratch: Vec::with_capacity(4),
+            shared_state_values: vec![StateValues::default(); num_assets],
             runtime_capture_enabled: false,
         }
     }
@@ -842,7 +1430,11 @@ where
                                 _ => None,
                             };
                             let capture = self.runtime_capture_enabled;
+                            let shared_enabled =
+                                self.shared_tick_coordinators[ev.asset_no].is_some();
                             let order_events = &mut self.runtime_order_events;
+                            let delivery_keys = &mut self.shared_delivery_scratch;
+                            delivery_keys.clear();
                             if local.process_recv_order_with_handler(
                                 ev.timestamp,
                                 wait_order_resp_id,
@@ -854,6 +1446,9 @@ where
                                             order.clone(),
                                         ))
                                     }
+                                    if shared_enabled {
+                                        delivery_keys.push((order.order_id, order.exch_timestamp));
+                                    }
                                 },
                             )? || wait_order_response == WaitOrderResponse::Any
                             {
@@ -862,10 +1457,19 @@ where
                                     result = ElapseResult::OrderResponse;
                                 }
                             }
-                            self.evs.update_local_order(
-                                ev.asset_no,
-                                local.earliest_recv_order_timestamp(),
-                            );
+                            let next_local_order_ts = local.earliest_recv_order_timestamp();
+                            while let Some((order_id, exchange_ts)) =
+                                self.shared_delivery_scratch.pop()
+                            {
+                                self.deliver_shared_reports(
+                                    ev.asset_no,
+                                    order_id,
+                                    exchange_ts,
+                                    ev.timestamp,
+                                )?;
+                            }
+                            self.evs
+                                .update_local_order(ev.asset_no, next_local_order_ts);
                         }
                         EventIntentKind::ExchData => {
                             let exch = unsafe { self.exch.get_unchecked_mut(ev.asset_no) };
@@ -889,10 +1493,71 @@ where
                                 ev.asset_no,
                                 exch.earliest_send_order_timestamp(),
                             );
+                            self.drain_exchange_outcomes(ev.asset_no)?;
                         }
                         EventIntentKind::ExchOrder => {
+                            let arriving_order_id = self.exch[ev.asset_no]
+                                .peek_recv_order(ev.timestamp)
+                                .filter(|order| order.req == Status::New)
+                                .map(|order| order.order_id);
+                            let risk_rejection = self.exch[ev.asset_no]
+                                .peek_recv_order(ev.timestamp)
+                                .filter(|order| order.req == Status::New)
+                                .and_then(|order| {
+                                    let coordinator = self
+                                        .shared_tick_coordinators
+                                        .get(ev.asset_no)
+                                        .and_then(Option::as_ref)?;
+                                    let spec = coordinator.spec();
+                                    let request = ExecutionOrderRequest {
+                                        client_order_id: order.order_id,
+                                        venue_id: spec.venue_id,
+                                        instrument_id: spec.instrument_id,
+                                        price: order.price(),
+                                        qty: order.qty,
+                                        side: order.side,
+                                        time_in_force: order.time_in_force,
+                                        order_type: order.order_type,
+                                        reduce_only: self
+                                            .runtime_reduce_only
+                                            .get(&(ev.asset_no, order.order_id))
+                                            .copied()
+                                            .unwrap_or(false),
+                                        origin: OrderOrigin::Strategy,
+                                        local_submit_ts: order.local_timestamp,
+                                    };
+                                    if request.reduce_only {
+                                        let signed_qty = match request.side {
+                                            Side::Buy => request.qty,
+                                            Side::Sell => -request.qty,
+                                            _ => return Some(ExecutionReason::ReduceOnlyViolation),
+                                        };
+                                        let old_qty = coordinator.exchange_position();
+                                        let new_qty = old_qty + signed_qty;
+                                        if old_qty == 0.0 || new_qty.abs() >= old_qty.abs() {
+                                            return Some(ExecutionReason::ReduceOnlyViolation);
+                                        }
+                                    }
+                                    let risk = self.shared_venue_risks.get_mut(&spec.venue_id)?;
+                                    let account = self
+                                        .shared_exchange_portfolio
+                                        .venue_mut_or_insert(spec.venue_id);
+                                    match risk.check_arrival(&request, account) {
+                                        RiskDecision::Allow => None,
+                                        RiskDecision::Reject { reason } => {
+                                            Some(execution_reason_from_risk(reason))
+                                        }
+                                    }
+                                });
                             let exch = unsafe { self.exch.get_unchecked_mut(ev.asset_no) };
-                            let _ = exch.process_recv_order(ev.timestamp, None)?;
+                            if let Some(reason) = risk_rejection {
+                                let _ = exch.reject_recv_order(ev.timestamp, reason)?;
+                            } else {
+                                let _ = exch.process_recv_order(ev.timestamp, None)?;
+                            }
+                            if let Some(order_id) = arriving_order_id {
+                                self.runtime_reduce_only.remove(&(ev.asset_no, order_id));
+                            }
                             self.evs.update_exch_order(
                                 ev.asset_no,
                                 exch.earliest_recv_order_timestamp(),
@@ -901,6 +1566,7 @@ where
                                 ev.asset_no,
                                 exch.earliest_send_order_timestamp(),
                             );
+                            self.drain_exchange_outcomes(ev.asset_no)?;
                         }
                     }
                 }
@@ -930,12 +1596,20 @@ where
 
     #[inline]
     fn position(&self, asset_no: usize) -> f64 {
-        self.local.get(asset_no).unwrap().position()
+        if self.shared_tick_coordinators[asset_no].is_some() {
+            self.shared_state_values[asset_no].position
+        } else {
+            self.local.get(asset_no).unwrap().position()
+        }
     }
 
     #[inline]
     fn state_values(&self, asset_no: usize) -> &StateValues {
-        self.local.get(asset_no).unwrap().state_values()
+        if self.shared_tick_coordinators[asset_no].is_some() {
+            &self.shared_state_values[asset_no]
+        } else {
+            self.local.get(asset_no).unwrap().state_values()
+        }
     }
 
     fn depth(&self, asset_no: usize) -> &MD {
@@ -1195,19 +1869,66 @@ mod test {
     use crate::{
         backtest::{
             Backtest, DataSource,
-            ExchangeKind::NoPartialFillExchange,
-            L2AssetBuilder,
+            ExchangeKind::{NoPartialFillExchange, PartialFillExchange},
+            L2AssetBuilder, L3AssetBuilder,
             assettype::LinearAsset,
             data::Data,
+            execution::{
+                CashFlowMode, CrossMarginRisk, CurrencyId, ExchangeAccountState, ExchangeRisk,
+                ExecutionOrderRequest, ExecutionReason, ExecutionReportKind, InstrumentId,
+                InstrumentSpec, InstrumentType, MarginParameters, MatchOutcome, PostTradeRisk,
+                RateFeeModel, RiskAction, RiskActionSink, RiskDecision, RiskReason,
+                SharedTickExecutionConfig, VenueId,
+            },
             models::{
-                CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel,
-                TradingValueFeeModel,
+                CommonFees, ConstantLatency, L3FIFOQueueModel, PowerProbQueueFunc3, ProbQueueModel,
+                RiskAdverseQueueModel, TradingValueFeeModel,
             },
         },
         depth::HashMapMarketDepth,
-        prelude::{Bot, Event},
-        types::{EXCH_EVENT, LOCAL_EVENT},
+        prelude::{Bot, Event, OrdType, Status, TimeInForce},
+        types::{
+            ADD_ORDER_EVENT, BUY_EVENT, EXCH_ASK_DEPTH_EVENT, EXCH_BID_DEPTH_EVENT, EXCH_EVENT,
+            EXCH_SELL_TRADE_EVENT, FILL_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
+            LOCAL_EVENT, LOCAL_SELL_TRADE_EVENT, SELL_EVENT,
+        },
     };
+
+    struct LiquidateAfterFill {
+        venue_id: VenueId,
+        instrument_id: InstrumentId,
+        cancel_order_id: Option<u64>,
+    }
+
+    impl ExchangeRisk for LiquidateAfterFill {
+        fn check_arrival(
+            &mut self,
+            _request: &ExecutionOrderRequest,
+            _account: &ExchangeAccountState,
+        ) -> RiskDecision {
+            RiskDecision::Allow
+        }
+    }
+
+    impl PostTradeRisk for LiquidateAfterFill {
+        fn on_account_change(&mut self, account: &ExchangeAccountState, out: &mut RiskActionSink) {
+            if account.account().position(self.instrument_id).qty > 0.0 {
+                if let Some(order_id) = self.cancel_order_id {
+                    out.push(RiskAction::Cancel {
+                        venue_id: self.venue_id,
+                        instrument_id: self.instrument_id,
+                        order_id,
+                        reason: RiskReason::Custom(98),
+                    });
+                }
+                out.push(RiskAction::Liquidate {
+                    venue_id: self.venue_id,
+                    instrument_id: self.instrument_id,
+                    reason: RiskReason::Custom(99),
+                });
+            }
+        }
+    }
 
     #[test]
     fn skips_unseen_events() -> Result<(), Box<dyn Error>> {
@@ -1288,6 +2009,785 @@ mod test {
         backtester.set_runtime_capture(false);
         assert!(backtester.runtime_feed_events().is_empty());
 
+        Ok(())
+    }
+
+    /// Characterizes the legacy Tick path before shared-execution adapters are connected.
+    /// Keep the exact timestamps and account values stable during P0-B migration.
+    #[test]
+    fn legacy_tick_market_fill_latency_and_account_golden() -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            // Keeps the legacy event loop open beyond the order response horizon.
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.001)))
+                    .queue_model(ProbQueueModel::new(PowerProbQueueFunc3::new(3.0)))
+                    .exchange(NoPartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+
+        backtester.configure_shared_tick_execution_with_fees([SharedTickExecutionConfig::new(
+            InstrumentSpec {
+                instrument_id: InstrumentId(1),
+                asset_no: 0,
+                venue_id: VenueId(1),
+                tick_size: 1.0,
+                lot_size: 1.0,
+                min_qty: 1.0,
+                max_qty: 1_000_000.0,
+                min_notional: 0.0,
+                contract_size: 1.0,
+                price_currency: CurrencyId(1),
+                settlement_currency: CurrencyId(1),
+                margin_currency: CurrencyId(1),
+                instrument_type: InstrumentType::LinearPerpetual,
+                cash_flow_mode: crate::backtest::execution::CashFlowMode::LegacyNotional,
+                version: 1,
+            },
+            RateFeeModel {
+                maker_rate: 0.0,
+                taker_rate: 0.001,
+                currency: CurrencyId(1),
+            },
+        )])?;
+
+        backtester.elapse_bt(6)?;
+        assert_eq!(backtester.current_timestamp(), 106);
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 42, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+
+        // Entry reaches exchange at 116, but the strategy-visible account cannot change yet.
+        backtester.elapse_bt(10)?;
+        assert_eq!(backtester.current_timestamp(), 116);
+        assert_eq!(backtester.position(0), 0.0);
+        assert!(backtester.runtime_order_events().is_empty());
+        assert_eq!(backtester.runtime_match_outcomes().len(), 1);
+        assert_eq!(backtester.runtime_match_outcomes()[0].0, 0);
+        assert_eq!(backtester.runtime_match_outcomes()[0].1.order_id, 42);
+        assert!(matches!(
+            backtester.runtime_match_outcomes()[0].1.outcome,
+            MatchOutcome::Fill(fill)
+                if fill.exchange_ts == 116 && fill.price == 101.0 && fill.qty == 1.0
+        ));
+        assert_eq!(backtester.shared_exchange_reports().len(), 2);
+        assert_eq!(backtester.shared_exchange_reports()[0].1.exchange_ts, 116);
+        assert_eq!(backtester.shared_exchange_reports()[1].1.exec_qty, 1.0);
+        assert_eq!(
+            backtester.shared_exchange_reports()[1]
+                .1
+                .account_delta
+                .unwrap()
+                .fee,
+            0.101
+        );
+        assert!(
+            backtester
+                .shared_local_portfolio()
+                .venue(VenueId(1))
+                .is_none()
+        );
+
+        // Response arrives at 136 and applies the one immutable fill to local state.
+        backtester.elapse_bt(20)?;
+        assert_eq!(backtester.current_timestamp(), 136);
+        assert_eq!(backtester.position(0), 1.0);
+        let state = backtester.state_values(0);
+        assert_eq!(state.balance, -101.0);
+        assert!((state.fee - 0.101).abs() < 1e-12);
+        assert_eq!(state.num_trades, 1);
+        assert_eq!(state.trading_volume, 1.0);
+        assert_eq!(state.trading_value, 101.0);
+        let shared_local = backtester
+            .shared_local_portfolio()
+            .venue(VenueId(1))
+            .unwrap()
+            .account();
+        assert_eq!(shared_local.position(InstrumentId(1)).qty, 1.0);
+        assert!((shared_local.balance(CurrencyId(1)) + 101.101).abs() < 1e-12);
+        assert_eq!(
+            shared_local.position(InstrumentId(1)).num_trades,
+            state.num_trades as u64
+        );
+        assert_eq!(
+            shared_local.position(InstrumentId(1)).trading_volume,
+            state.trading_volume
+        );
+        assert_eq!(
+            shared_local.position(InstrumentId(1)).trading_value,
+            state.trading_value
+        );
+        assert_eq!(shared_local.fee(CurrencyId(1)), state.fee);
+        // Legacy balance is gross cash flow with fee reported separately; the canonical ledger
+        // stores net cash while retaining the same fee audit field.
+        assert!((shared_local.balance(CurrencyId(1)) + state.fee - state.balance).abs() < 1e-12);
+        assert_eq!(backtester.shared_projected_events().len(), 4);
+        assert!(
+            backtester
+                .shared_projected_events()
+                .iter()
+                .all(|(_, event)| event.report.delivery_ts == 136)
+        );
+        let mut golden_hash = 0xcbf29ce484222325_u64;
+        for (_, report) in backtester.shared_exchange_reports() {
+            for value in [
+                report.order_id,
+                report.exchange_ts as u64,
+                report.sequence,
+                report.exec_price.to_bits(),
+                report.exec_qty.to_bits(),
+                report.account_delta.map_or(0, |delta| delta.fee.to_bits()),
+            ] {
+                for byte in value.to_le_bytes() {
+                    golden_hash ^= u64::from(byte);
+                    golden_hash = golden_hash.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        assert_eq!(golden_hash, 14_703_535_995_109_120_096);
+        assert_eq!(backtester.order_latency(0), Some((106, 116, 136)));
+
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, 0);
+        assert_eq!(events[0].1, 136);
+        assert_eq!(events[0].2.order_id, 42);
+        assert_eq!(events[0].2.status, Status::Filled);
+        assert_eq!(events[0].2.exch_timestamp, 116);
+        // Legacy Order keeps local submit time; the capture tuple carries response delivery time.
+        assert_eq!(events[0].2.local_timestamp, 106);
+        assert_eq!(events[0].2.exec_price(), 101.0);
+        assert_eq!(events[0].2.exec_qty, 1.0);
+        assert!(!events[0].2.maker);
+
+        Ok(())
+    }
+
+    #[test]
+    fn partial_ioc_delivers_every_fill_and_terminal_expiry() -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 3.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 102.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(ProbQueueModel::new(PowerProbQueueFunc3::new(3.0)))
+                    .exchange(PartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+
+        backtester.elapse_bt(6)?;
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 77, 102.0, 7.0, TimeInForce::IOC, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].2.status, Status::PartiallyFilled);
+        assert_eq!(events[0].2.exec_price(), 101.0);
+        assert_eq!(events[0].2.exec_qty, 3.0);
+        assert_eq!(events[0].2.leaves_qty, 4.0);
+        assert_eq!(events[1].2.status, Status::PartiallyFilled);
+        assert_eq!(events[1].2.exec_price(), 102.0);
+        assert_eq!(events[1].2.exec_qty, 2.0);
+        assert_eq!(events[1].2.leaves_qty, 2.0);
+        assert_eq!(events[2].2.status, Status::Expired);
+        assert_eq!(events[2].2.leaves_qty, 2.0);
+        assert!(events.iter().all(|event| event.1 == 136));
+
+        assert_eq!(backtester.position(0), 5.0);
+        let state = backtester.state_values(0);
+        assert_eq!(state.balance, -507.0);
+        assert_eq!(state.num_trades, 2);
+        assert_eq!(state.trading_volume, 5.0);
+        assert_eq!(state.trading_value, 507.0);
+        assert_eq!(backtester.orders(0)[&77].status, Status::Expired);
+        assert_eq!(backtester.shared_exchange_reports().len(), 4);
+        let shared = backtester
+            .shared_local_portfolio()
+            .venue(VenueId(0))
+            .unwrap()
+            .account();
+        assert_eq!(shared.position(InstrumentId(1)).qty, state.position);
+        assert_eq!(shared.position(InstrumentId(1)).num_trades, 2);
+        assert_eq!(shared.position(InstrumentId(1)).trading_value, 507.0);
+
+        backtester.clear_runtime_order_events();
+        backtester.submit_buy_order(0, 78, 102.0, 5.0, TimeInForce::FOK, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].2.status, Status::PartiallyFilled);
+        assert_eq!(events[0].2.exec_qty, 3.0);
+        assert_eq!(events[1].2.status, Status::Filled);
+        assert_eq!(events[1].2.exec_qty, 2.0);
+        assert_eq!(backtester.position(0), 10.0);
+        assert_eq!(backtester.state_values(0).num_trades, 4);
+        assert_eq!(backtester.state_values(0).trading_value, 1_014.0);
+        assert_eq!(backtester.shared_exchange_reports().len(), 7);
+        assert_eq!(
+            backtester
+                .shared_local_portfolio()
+                .venue(VenueId(0))
+                .unwrap()
+                .account()
+                .position(InstrumentId(1))
+                .qty,
+            10.0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_tick_same_time_fill_precedes_cancel_arrival() -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_SELL_TRADE_EVENT | LOCAL_SELL_TRADE_EVENT,
+                exch_ts: 150,
+                local_ts: 155,
+                px: 98.0,
+                qty: 1.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(ProbQueueModel::new(PowerProbQueueFunc3::new(3.0)))
+                    .exchange(NoPartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+
+        backtester.elapse_bt(6)?;
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 90, 99.0, 1.0, TimeInForce::GTC, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+        assert_eq!(backtester.current_timestamp(), 136);
+        assert_eq!(backtester.orders(0)[&90].status, Status::New);
+        backtester.clear_runtime_order_events();
+
+        backtester.elapse_bt(4)?;
+        assert_eq!(backtester.current_timestamp(), 140);
+        backtester.cancel(0, 90, false)?;
+        backtester.elapse_bt(30)?;
+
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].1, 170);
+        assert_eq!(events[0].2.status, Status::Filled);
+        assert_eq!(events[0].2.exec_price(), 99.0);
+        assert_eq!(events[1].1, 170);
+        assert_eq!(events[1].2.status, Status::New);
+        assert_eq!(events[1].2.req, Status::Rejected);
+        assert_eq!(backtester.position(0), 1.0);
+        assert_eq!(backtester.orders(0)[&90].status, Status::Filled);
+        assert_eq!(backtester.orders(0)[&90].req, Status::None);
+
+        backtester.clear_runtime_order_events();
+        backtester.submit_buy_order(0, 91, 101.0, 1.0, TimeInForce::GTX, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].2.order_id, 91);
+        assert_eq!(events[0].2.status, Status::Expired);
+        assert_eq!(events[0].2.exec_qty, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_l3_fifo_full_order_lifecycle() -> Result<(), Box<dyn Error>> {
+        let both = EXCH_EVENT | LOCAL_EVENT;
+        let data = Data::from_data(&[
+            Event {
+                ev: both | BUY_EVENT | ADD_ORDER_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 1.0,
+                order_id: 1_000,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: both | SELL_EVENT | ADD_ORDER_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 1.0,
+                order_id: 2_000,
+                ival: 0,
+                fval: 0.0,
+            },
+            // Arrives after the backtest order and is therefore behind it in FIFO.
+            Event {
+                ev: both | BUY_EVENT | ADD_ORDER_EVENT,
+                exch_ts: 130,
+                local_ts: 135,
+                px: 99.0,
+                qty: 1.0,
+                order_id: 1_001,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: both | BUY_EVENT | FILL_EVENT,
+                exch_ts: 140,
+                local_ts: 145,
+                px: 99.0,
+                qty: 1.0,
+                order_id: 1_000,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: both | BUY_EVENT | FILL_EVENT,
+                exch_ts: 150,
+                local_ts: 155,
+                px: 99.0,
+                qty: 1.0,
+                order_id: 1_001,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: both | BUY_EVENT | ADD_ORDER_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 98.0,
+                qty: 1.0,
+                order_id: 1_002,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L3AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(L3FIFOQueueModel::new())
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+
+        backtester.elapse_bt(6)?;
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 92, 99.0, 1.0, TimeInForce::GTC, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+        assert_eq!(backtester.orders(0)[&92].status, Status::New);
+        backtester.clear_runtime_order_events();
+        backtester.elapse_bt(34)?;
+
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].1, 170);
+        assert_eq!(events[0].2.status, Status::Filled);
+        assert_eq!(events[0].2.exec_price(), 99.0);
+        assert!(events[0].2.maker);
+        assert_eq!(backtester.position(0), 1.0);
+        assert_eq!(backtester.shared_exchange_reports().len(), 2);
+        let shared = backtester
+            .shared_local_portfolio()
+            .venue(VenueId(0))
+            .unwrap()
+            .account();
+        assert_eq!(shared.position(InstrumentId(1)).qty, 1.0);
+        assert_eq!(shared.position(InstrumentId(1)).num_trades, 1);
+        assert_eq!(shared.position(InstrumentId(1)).trading_value, 99.0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_l2_queue_advances_only_after_ahead_quantity_trades() -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_SELL_TRADE_EVENT | LOCAL_SELL_TRADE_EVENT,
+                exch_ts: 140,
+                local_ts: 145,
+                px: 99.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_SELL_TRADE_EVENT | LOCAL_SELL_TRADE_EVENT,
+                exch_ts: 150,
+                local_ts: 155,
+                px: 99.0,
+                qty: 1.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 99.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(RiskAdverseQueueModel::new())
+                    .exchange(PartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+
+        backtester.elapse_bt(6)?;
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 93, 99.0, 1.0, TimeInForce::GTC, OrdType::Limit, false)?;
+        backtester.elapse_bt(30)?;
+        backtester.clear_runtime_order_events();
+        backtester.elapse_bt(24)?;
+        assert_eq!(backtester.current_timestamp(), 160);
+        assert_eq!(backtester.position(0), 0.0);
+        assert!(backtester.runtime_order_events().is_empty());
+        backtester.elapse_bt(10)?;
+        assert_eq!(backtester.position(0), 1.0);
+        let events = backtester.runtime_order_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].2.status, Status::Filled);
+        assert_eq!(events[0].2.exec_price(), 99.0);
+        assert!(events[0].2.maker);
+        Ok(())
+    }
+
+    #[test]
+    fn tick_exchange_risk_checks_each_same_time_order_against_authoritative_account()
+    -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 100.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_005,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let spec = InstrumentSpec {
+            instrument_id: InstrumentId(1),
+            asset_no: 0,
+            venue_id: VenueId(7),
+            tick_size: 1.0,
+            lot_size: 1.0,
+            min_qty: 1.0,
+            max_qty: 1_000.0,
+            min_notional: 0.0,
+            contract_size: 1.0,
+            price_currency: CurrencyId(1),
+            settlement_currency: CurrencyId(1),
+            margin_currency: CurrencyId(1),
+            instrument_type: InstrumentType::LinearPerpetual,
+            cash_flow_mode: CashFlowMode::DerivativePnl,
+            version: 1,
+        };
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 20))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(RiskAdverseQueueModel::new())
+                    .exchange(NoPartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(1.0, 1.0))
+                    .build()?,
+            )
+            .build()?;
+        backtester.configure_shared_tick_execution([spec.clone()])?;
+        let mut risk = CrossMarginRisk::new(VenueId(7), CurrencyId(1));
+        risk.register(
+            spec,
+            MarginParameters {
+                initial_margin_rate: 0.6,
+                maintenance_margin_rate: 0.3,
+                max_leverage: 2.0,
+            },
+            100.0,
+        )
+        .unwrap();
+        backtester.configure_shared_tick_venue_risk(VenueId(7), risk);
+        backtester.set_shared_exchange_balance(VenueId(7), CurrencyId(1), 100.0)?;
+
+        backtester.elapse_bt(6)?;
+        backtester.set_runtime_capture(true);
+        backtester.submit_buy_order(0, 501, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+        backtester.submit_buy_order(0, 502, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+        backtester.elapse_bt(40)?;
+
+        assert_eq!(
+            backtester
+                .shared_exchange_portfolio()
+                .venue(VenueId(7))
+                .unwrap()
+                .account()
+                .position(InstrumentId(1))
+                .qty,
+            1.0
+        );
+        assert!(
+            backtester
+                .shared_exchange_reports()
+                .iter()
+                .any(|(_, report)| {
+                    report.order_id == 502 && report.reason == ExecutionReason::InsufficientMargin
+                })
+        );
+        assert_eq!(backtester.orders(0)[&501].status, Status::Filled);
+        assert_eq!(backtester.orders(0)[&502].status, Status::Rejected);
+
+        // reduce-only is evaluated against the exchange position, not the delayed local view.
+        backtester.register_runtime_order_extensions(0, 503, true);
+        backtester.submit_buy_order(0, 503, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+        backtester.register_runtime_order_extensions(0, 504, true);
+        backtester.submit_sell_order(0, 504, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+        backtester.elapse_bt(40)?;
+        assert_eq!(backtester.orders(0)[&503].status, Status::Rejected);
+        assert_eq!(backtester.orders(0)[&504].status, Status::Filled);
+        assert!(
+            backtester
+                .shared_exchange_reports()
+                .iter()
+                .any(|(_, report)| {
+                    report.order_id == 503 && report.reason == ExecutionReason::ReduceOnlyViolation
+                })
+        );
+        assert_eq!(
+            backtester
+                .shared_exchange_portfolio()
+                .venue(VenueId(7))
+                .unwrap()
+                .account()
+                .position(InstrumentId(1))
+                .qty,
+            0.0
+        );
+
+        backtester.configure_shared_tick_venue_risk(
+            VenueId(7),
+            LiquidateAfterFill {
+                venue_id: VenueId(7),
+                instrument_id: InstrumentId(1),
+                cancel_order_id: Some(506),
+            },
+        );
+        backtester.submit_sell_order(
+            0,
+            506,
+            110.0,
+            1.0,
+            TimeInForce::GTC,
+            OrdType::Limit,
+            false,
+        )?;
+        backtester.elapse_bt(40)?;
+        assert_eq!(backtester.orders(0)[&506].status, Status::New);
+        backtester.submit_buy_order(0, 505, 0.0, 1.0, TimeInForce::IOC, OrdType::Market, false)?;
+        backtester.elapse_bt(80)?;
+        assert!(matches!(
+            backtester.shared_risk_actions().last(),
+            Some(RiskAction::Liquidate {
+                reason: RiskReason::Custom(99),
+                ..
+            })
+        ));
+        assert_eq!(backtester.orders(0)[&506].status, Status::Canceled);
+        assert_eq!(
+            backtester
+                .shared_exchange_portfolio()
+                .venue(VenueId(7))
+                .unwrap()
+                .account()
+                .position(InstrumentId(1))
+                .qty,
+            0.0
+        );
+        assert!(
+            backtester
+                .shared_exchange_reports()
+                .iter()
+                .any(|(_, report)| {
+                    report.order_id == u64::MAX && report.kind == ExecutionReportKind::Fill
+                })
+        );
         Ok(())
     }
 }

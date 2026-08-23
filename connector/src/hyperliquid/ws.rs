@@ -262,11 +262,14 @@ impl HyperliquidWs {
 
     fn emit_funding(&self, f: &WsUserFunding) {
         self.ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Funding {
+            .send(PublishEvent::LiveEvent(LiveEvent::FundingSettlement {
                 symbol: f.coin.clone(),
+                event_id: f.time,
+                amount: f.usdc.parse().unwrap_or(0.0),
+                position_qty: f.szi.parse().unwrap_or(0.0),
                 funding_rate: f.funding_rate.parse().unwrap_or(0.0),
-                // HL 每小时结算，推送即结算完成，下一次结算时间未知。
-                next_funding_time: 0,
+                mark_price: 0.0,
+                currency: 0,
                 exch_ts: (f.time * 1_000_000) as i64,
             }))
             .unwrap();

@@ -34,8 +34,8 @@ Titan
   （市场 → 品种），同一份 Rust 策略可以用于回测与实盘。
 * **Numba 事件策略接口**：面向策略作者的事件 API 固定为单参数
   ``@njit def on_tick(s)`` / ``@njit def on_bar(s)``；``s`` 同时提供行情上下文、状态和
-  下单能力。Rust 拥有事件循环、时钟、行情状态与撮合；当前已连接 Tick 回测/实盘和
-  Bar-only 回测，Hybrid 在精确合并器完成前显式拒绝运行。完整设计与状态见
+  下单能力。Rust 拥有事件循环、时钟、行情状态与撮合；当前已连接 Tick、Bar 与
+  Bar-signal/Tick-execution Hybrid，并支持 Timer、Funding 和显式 OHLC Bar 撮合配置。完整设计见
   `docs/bar_tick_numba_strategy.md <docs/bar_tick_numba_strategy.md>`_。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
   （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
@@ -87,6 +87,44 @@ Titan
       --exchange binance --input data/btcusdt_20260821.gz --output data/btcusdt_20260821.npz
 
 转换器支持 ``binance``、``bybit`` 和 ``hyperliquid``，输出 key 固定为 ``data``。
+
+Rust 回测入口也支持 materialized Bar Parquet。Bar 文件必须包含
+``ts/open/high/low/close/volume/vwap/transaction_count/source/is_final``；``ts`` 表示
+Bar 开始时间。包含多个来源且时间重叠的文件必须通过 ``--bar-source`` 显式选择来源：
+
+.. code-block:: console
+
+    cargo run -p titan-examples --bin backtest --release -- \
+      --data-kind bar \
+      --data data/AAPL_1m_all_sources.parquet \
+      --bar-source polygon_s3
+
+Bar 由 Rust 直接读取并按关闭时间跳转，不会转换成伪 Tick。默认周期为 60 秒，亦可通过
+``--bar-timeframe-ns`` 调整；默认只接收 ``is_final=true`` 的记录。
+
+Numba 单参数 ``on_bar(s)`` 双均线策略示例：
+
+.. code-block:: console
+
+    python examples/dual_ma_bar_backtest.py \
+      --data data/AAPL_1m_all_sources.parquet \
+      --source polygon_s3 \
+      --short-period 20 --long-period 50 --quantity 1
+
+重复性能测试前可先转换成 Rust 可直接读取的扁平 NPY，避免每次解析 Parquet：
+
+.. code-block:: console
+
+    python examples/convert_bar_parquet.py \
+      --input data/AAPL_1m_all_sources.parquet \
+      --output data/AAPL_1m_polygon_s3.timed_bar.npy \
+      --source polygon_s3
+
+    cargo build -p titan-examples --bin backtest --release
+    target/release/backtest \
+      --data-kind bar \
+      --data data/AAPL_1m_polygon_s3.timed_bar.npy \
+      --runs 100
 
 上游算法参考
 ------------

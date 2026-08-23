@@ -16,7 +16,7 @@ pub use l3_local::L3Local;
 pub use l3_nopartialfillexchange::L3NoPartialFillExchange;
 
 use crate::{
-    backtest::BacktestError,
+    backtest::{BacktestError, execution::ExecutionReason},
     depth::MarketDepth,
     prelude::{Event, OrdType, Order, OrderId, Side, StateValues, TimeInForce},
 };
@@ -126,6 +126,26 @@ impl<P: Processor + ?Sized> Processor for Box<P> {
         P::process_recv_order_with_handler(self, timestamp, wait_resp_order_id, handler)
     }
 
+    fn peek_recv_order(&self, timestamp: i64) -> Option<Order> {
+        P::peek_recv_order(self, timestamp)
+    }
+
+    fn reject_recv_order(
+        &mut self,
+        timestamp: i64,
+        reason: ExecutionReason,
+    ) -> Result<bool, BacktestError> {
+        P::reject_recv_order(self, timestamp, reason)
+    }
+
+    fn cancel_from_risk(
+        &mut self,
+        timestamp: i64,
+        order_id: OrderId,
+    ) -> Result<bool, BacktestError> {
+        P::cancel_from_risk(self, timestamp, order_id)
+    }
+
     fn earliest_recv_order_timestamp(&self) -> i64 {
         P::earliest_recv_order_timestamp(self)
     }
@@ -166,6 +186,27 @@ pub trait Processor {
         let result = self.process_recv_order(timestamp, wait_resp_order_id)?;
         let _ = handler;
         Ok(result)
+    }
+
+    fn peek_recv_order(&self, _timestamp: i64) -> Option<Order> {
+        None
+    }
+
+    fn reject_recv_order(
+        &mut self,
+        _timestamp: i64,
+        _reason: ExecutionReason,
+    ) -> Result<bool, BacktestError> {
+        Err(BacktestError::InvalidOrderRequest)
+    }
+
+    /// Executes a venue-originated risk cancel and sends its response through normal latency.
+    fn cancel_from_risk(
+        &mut self,
+        _timestamp: i64,
+        _order_id: OrderId,
+    ) -> Result<bool, BacktestError> {
+        Ok(false)
     }
 
     /// Returns the foremost timestamp at which an order is to be received by this processor.

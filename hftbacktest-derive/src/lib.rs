@@ -270,6 +270,27 @@ pub fn build_asset(input: TokenStream) -> TokenStream {
                             let asset_type = #at_ident::new(#(#at_args.clone()),*);
                             let latency_model = #lm_ident::new(#(#lm_args.clone()),*);
                             let fee_model = #fm_ident::new(#(#fm_args.clone()),*);
+                            let currency = CurrencyId(0);
+                            let shared_execution = SharedTickExecutionConfig::new(
+                                InstrumentSpec {
+                                    instrument_id: InstrumentId(0),
+                                    asset_no: 0,
+                                    venue_id: VenueId(0),
+                                    tick_size: #asset.tick_size,
+                                    lot_size: #asset.lot_size,
+                                    min_qty: #asset.lot_size,
+                                    max_qty: f64::MAX,
+                                    min_notional: 0.0,
+                                    contract_size: asset_type.contract_size_hint(),
+                                    price_currency: currency,
+                                    settlement_currency: currency,
+                                    margin_currency: currency,
+                                    instrument_type: asset_type.execution_instrument_type(),
+                                    cash_flow_mode: hftbacktest::backtest::execution::CashFlowMode::LegacyNotional,
+                                    version: 1,
+                                },
+                                LegacyExecutionFeeAdapter::new(fee_model.clone(), currency),
+                            );
 
                             let (order_e2l, order_l2e) = order_bus(latency_model);
 
@@ -285,7 +306,7 @@ pub fn build_asset(input: TokenStream) -> TokenStream {
                                 None => {}
                             }
 
-                            let local: Box<dyn LocalProcessor<#marketdepth>> = Box::new(#local_ident::new(
+                            let local: Box<dyn LocalProcessor<#marketdepth>> = Box::new(#local_ident::new_external_accounting(
                                 market_depth,
                                 State::new(asset_type.clone(), fee_model.clone()),
                                 #asset.last_trades_cap,
@@ -306,17 +327,21 @@ pub fn build_asset(input: TokenStream) -> TokenStream {
 
                             let queue_model = #qm_construct;
 
-                            let exch: Box<dyn Processor> = Box::new(#exch_ident::new(
+                            let outcome_bus = OutcomeBus::new();
+                            let exch: Box<dyn Processor> = Box::new(#exch_ident::new_with_observer(
                                 market_depth,
                                 State::new(asset_type, fee_model.clone()),
                                 queue_model,
                                 order_e2l,
+                                outcome_bus.clone(),
                             ));
 
                             Asset {
                                 local,
                                 exch,
-                                reader
+                                reader,
+                                outcome_bus: Some(outcome_bus),
+                                shared_execution: Some(shared_execution),
                             }
                         },
                     });

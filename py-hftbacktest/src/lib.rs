@@ -8,8 +8,12 @@ use hftbacktest::live::{Instrument, LiveBotBuilder};
 use hftbacktest::{
     backtest::{
         Asset, Backtest, DataSource,
-        assettype::{InverseAsset, LinearAsset},
+        assettype::{AssetType as AssetTypeTrait, InverseAsset, LinearAsset},
         data::{Data, DataPtr, FeedLatencyAdjustment, Reader, read_npz_file},
+        execution::{
+            CurrencyId, InstrumentId, InstrumentSpec, LegacyExecutionFeeAdapter, OutcomeBus,
+            SharedTickExecutionConfig, VenueId,
+        },
         models::{
             CommonFees, ConstantLatency, FlatPerTradeFeeModel, IntpOrderLatency, L3FIFOQueueModel,
             LogProbQueueFunc, LogProbQueueFunc2, OrderLatencyRow, PowerProbQueueFunc,
@@ -497,9 +501,7 @@ type PowerProbQueueModel3Func = PowerProbQueueFunc3;
 
 #[pyfunction]
 pub fn build_hashmap_backtest(assets: Vec<PyRefMut<BacktestAsset>>) -> PyResult<usize> {
-    let mut local = Vec::new();
-    let mut exch = Vec::new();
-    let mut readers = Vec::new();
+    let mut builder = Backtest::<HashMapMarketDepth>::builder();
     for asset in assets {
         if let (QueueModel::L3FIFOQueueModel {}, ExchangeKind::PartialFillExchange {}) =
             (&asset.queue_model, &asset.exch_kind)
@@ -542,20 +544,18 @@ pub fn build_hashmap_backtest(assets: Vec<PyRefMut<BacktestAsset>>) -> PyResult<
                 FlatPerTradeFeeModel { fees },
             ]
         );
-        local.push(asst.local);
-        exch.push(asst.exch);
-        readers.push(asst.reader);
+        builder = builder.add_asset(asst);
     }
 
-    let hbt = Backtest::new(local, exch, readers);
+    let hbt = builder
+        .build()
+        .map_err(|error| PyErr::new::<PyValueError, _>(error.to_string()))?;
     Ok(Box::into_raw(Box::new(hbt)) as *mut c_void as usize)
 }
 
 #[pyfunction]
 pub fn build_roivec_backtest(assets: Vec<PyRefMut<BacktestAsset>>) -> PyResult<usize> {
-    let mut local = Vec::new();
-    let mut exch = Vec::new();
-    let mut readers = Vec::new();
+    let mut builder = Backtest::<ROIVectorMarketDepth>::builder();
 
     for asset in assets {
         if let (QueueModel::L3FIFOQueueModel {}, ExchangeKind::PartialFillExchange {}) =
@@ -599,12 +599,12 @@ pub fn build_roivec_backtest(assets: Vec<PyRefMut<BacktestAsset>>) -> PyResult<u
                 FlatPerTradeFeeModel { fees },
             ]
         );
-        local.push(asst.local);
-        exch.push(asst.exch);
-        readers.push(asst.reader);
+        builder = builder.add_asset(asst);
     }
 
-    let hbt = Backtest::new(local, exch, readers);
+    let hbt = builder
+        .build()
+        .map_err(|error| PyErr::new::<PyValueError, _>(error.to_string()))?;
     Ok(Box::into_raw(Box::new(hbt)) as *mut c_void as usize)
 }
 

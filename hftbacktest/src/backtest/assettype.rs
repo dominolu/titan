@@ -1,3 +1,5 @@
+use super::execution::InstrumentType;
+
 /// Calculates the value amount and the equity according to the asset type.
 pub trait AssetType {
     /// Calculates the value amount.
@@ -5,6 +7,14 @@ pub trait AssetType {
 
     /// Calculates the equity.
     fn equity(&self, price: f64, balance: f64, position: f64, fee: f64) -> f64;
+
+    fn execution_instrument_type(&self) -> InstrumentType {
+        InstrumentType::LinearPerpetual
+    }
+
+    fn contract_size_hint(&self) -> f64 {
+        1.0
+    }
 }
 
 /// The common type of asset where the contract's notional value is linear to the quote currency.
@@ -28,6 +38,10 @@ impl AssetType for LinearAsset {
     fn equity(&self, price: f64, balance: f64, position: f64, fee: f64) -> f64 {
         balance + self.contract_size * position * price - fee
     }
+
+    fn contract_size_hint(&self) -> f64 {
+        self.contract_size
+    }
 }
 
 /// The contract’s notional value is denominated in the quote currency.
@@ -50,5 +64,13 @@ impl AssetType for InverseAsset {
 
     fn equity(&self, price: f64, balance: f64, position: f64, fee: f64) -> f64 {
         -balance - self.contract_size * position / price - fee
+    }
+
+    fn execution_instrument_type(&self) -> InstrumentType {
+        InstrumentType::InversePerpetual
+    }
+
+    fn contract_size_hint(&self) -> f64 {
+        self.contract_size
     }
 }

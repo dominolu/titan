@@ -147,6 +147,19 @@ pub enum LiveEvent {
         exch_ts: i64,
     },
     Error(LiveError),
+    /// Account funding settlement. Unlike `Funding`, this carries the actual cash amount and is
+    /// projected to the strategy's `on_funding` callback exactly once. Appended to preserve the
+    /// encoded discriminants of existing IPC variants.
+    FundingSettlement {
+        symbol: String,
+        event_id: u64,
+        amount: f64,
+        position_qty: f64,
+        funding_rate: f64,
+        mark_price: f64,
+        currency: u32,
+        exch_ts: i64,
+    },
 }
 
 /// Indicates a buy, with specific meaning that can vary depending on the situation. For example,

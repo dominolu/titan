@@ -13,6 +13,7 @@ requires-python = ">=3.11"
 dependencies = [
  "numpy >=2.0, <2.3",
  "numba ~= 0.61",
+ "ta-numba ~= 0.4.0",
  "polars",
  "matplotlib",
  "holoviews"
