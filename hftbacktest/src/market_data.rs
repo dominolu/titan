@@ -330,6 +330,11 @@ impl BarHistory {
         self.len = (self.len + 1).min(self.capacity);
     }
 
+    pub fn reset(&mut self) {
+        self.next = 0;
+        self.len = 0;
+    }
+
     /// Python-style negative indexing over closed history: `-1` is the latest committed
     /// bar, `-2` the one before it. Non-negative indices count from the oldest retained bar.
     pub fn get(&self, index: isize) -> Option<&Bar> {

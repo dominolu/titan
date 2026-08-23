@@ -28,6 +28,19 @@ fn handle_result(result: Result<ElapseResult, BacktestError>) -> i64 {
             println!("BacktestError::DataError: {error:?}");
             100
         }
+        Err(BacktestError::SharedTickExecution(error)) => {
+            println!("BacktestError::SharedTickExecution: {error:?}");
+            101
+        }
+        Err(BacktestError::InvalidSharedTickSpec) => 102,
+        Err(BacktestError::SharedAccount(error)) => {
+            println!("BacktestError::SharedAccount: {error:?}");
+            103
+        }
+        Err(BacktestError::SharedFunding(error)) => {
+            println!("BacktestError::SharedFunding: {error:?}");
+            104
+        }
     }
 }
 
@@ -82,6 +95,10 @@ pub extern "C" fn hashmapbt_close(hbt_ptr: *mut HashMapMarketDepthBacktest) -> i
         Err(BacktestError::InvalidOrderStatus) => 14,
         Err(BacktestError::EndOfData) => 15,
         Err(BacktestError::DataError(_)) => 100,
+        Err(BacktestError::SharedTickExecution(_)) => 101,
+        Err(BacktestError::InvalidSharedTickSpec) => 102,
+        Err(BacktestError::SharedAccount(_)) => 103,
+        Err(BacktestError::SharedFunding(_)) => 104,
     }
 }
 
@@ -341,6 +358,10 @@ pub extern "C" fn roivecbt_close(hbt_ptr: *mut ROIVectorMarketDepthBacktest) -> 
         Err(BacktestError::InvalidOrderStatus) => 14,
         Err(BacktestError::EndOfData) => 15,
         Err(BacktestError::DataError(_)) => 100,
+        Err(BacktestError::SharedTickExecution(_)) => 101,
+        Err(BacktestError::InvalidSharedTickSpec) => 102,
+        Err(BacktestError::SharedAccount(_)) => 103,
+        Err(BacktestError::SharedFunding(_)) => 104,
     }
 }
 

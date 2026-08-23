@@ -47,6 +47,29 @@ impl DirectionalFees {
 pub trait FeeModel {
     /// Calculates the fee amount.
     fn amount(&self, order: &Order, amount: f64) -> f64;
+
+    /// Allocation-free field adapter used by the shared execution coordinator. Custom fee models
+    /// keep source compatibility through the default implementation; built-ins override it.
+    fn amount_fields(&self, side: Side, maker: bool, exec_qty: f64, trade_value: f64) -> f64 {
+        let price = if exec_qty > 0.0 {
+            trade_value / exec_qty
+        } else {
+            0.0
+        };
+        let mut order = Order::new(
+            0,
+            price.round() as i64,
+            1.0,
+            exec_qty,
+            side,
+            crate::types::OrdType::Market,
+            crate::types::TimeInForce::IOC,
+        );
+        order.exec_qty = exec_qty;
+        order.exec_price_tick = price.round() as i64;
+        order.maker = maker;
+        self.amount(&order, trade_value)
+    }
 }
 
 /// Fee based on the transaction value,
@@ -71,6 +94,14 @@ impl FeeModel for TradingValueFeeModel<CommonFees> {
             self.fees.taker_fee * amount
         }
     }
+
+    fn amount_fields(&self, _side: Side, maker: bool, _qty: f64, value: f64) -> f64 {
+        (if maker {
+            self.fees.maker_fee
+        } else {
+            self.fees.taker_fee
+        }) * value
+    }
 }
 
 impl FeeModel for TradingValueFeeModel<DirectionalFees> {
@@ -84,6 +115,20 @@ impl FeeModel for TradingValueFeeModel<DirectionalFees> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn amount_fields(&self, side: Side, maker: bool, _qty: f64, value: f64) -> f64 {
+        let common = if maker {
+            self.fees.common_fees.maker_fee
+        } else {
+            self.fees.common_fees.taker_fee
+        };
+        let directional = if side == Side::Buy {
+            self.fees.buyer_fee
+        } else {
+            self.fees.seller_fee
+        };
+        (common + directional) * value
     }
 }
 
@@ -108,6 +153,14 @@ impl FeeModel for TradingQtyFeeModel<CommonFees> {
             self.fees.taker_fee * order.exec_qty
         }
     }
+
+    fn amount_fields(&self, _side: Side, maker: bool, qty: f64, _value: f64) -> f64 {
+        (if maker {
+            self.fees.maker_fee
+        } else {
+            self.fees.taker_fee
+        }) * qty
+    }
 }
 
 impl FeeModel for TradingQtyFeeModel<DirectionalFees> {
@@ -128,6 +181,20 @@ impl FeeModel for TradingQtyFeeModel<DirectionalFees> {
             _ => unreachable!(),
         }
     }
+
+    fn amount_fields(&self, side: Side, maker: bool, qty: f64, value: f64) -> f64 {
+        let common = if maker {
+            self.fees.common_fees.maker_fee
+        } else {
+            self.fees.common_fees.taker_fee
+        };
+        let directional = if side == Side::Buy {
+            self.fees.buyer_fee
+        } else {
+            self.fees.seller_fee
+        };
+        common * qty + directional * value
+    }
 }
 
 /// Flat fee per trade
@@ -145,6 +212,14 @@ impl<Fees> FlatPerTradeFeeModel<Fees> {
 impl FeeModel for FlatPerTradeFeeModel<CommonFees> {
     fn amount(&self, order: &Order, _amount: f64) -> f64 {
         if order.maker {
+            self.fees.maker_fee
+        } else {
+            self.fees.taker_fee
+        }
+    }
+
+    fn amount_fields(&self, _side: Side, maker: bool, _qty: f64, _value: f64) -> f64 {
+        if maker {
             self.fees.maker_fee
         } else {
             self.fees.taker_fee

@@ -9,6 +9,10 @@ use crate::{
     backtest::{
         BacktestError,
         assettype::AssetType,
+        execution::{
+            ExecutionObserver, ExecutionReason, MatchOutcome, NoopExecutionObserver, ProposedFill,
+            TickExecutionReality,
+        },
         models::{FeeModel, LatencyModel, QueueModel},
         order::ExchToLocal,
         proc::Processor,
@@ -63,13 +67,14 @@ use crate::{
 /// results.
 /// (more comment will be added...)
 ///
-pub struct PartialFillExchange<AT, LM, QM, MD, FM>
+pub struct PartialFillExchange<AT, LM, QM, MD, FM, O = NoopExecutionObserver>
 where
     AT: AssetType,
     LM: LatencyModel,
     QM: QueueModel<MD>,
     MD: MarketDepth,
     FM: FeeModel,
+    O: ExecutionObserver,
 {
     // key: order_id, value: Order
     orders: Rc<RefCell<HashMap<OrderId, Order>>>,
@@ -80,13 +85,16 @@ where
     order_e2l: ExchToLocal<LM>,
 
     depth: MD,
-    state: State<AT, FM>,
+    _state: State<AT, FM>,
     queue_model: QM,
 
     filled_orders: Vec<OrderId>,
+    observer: O,
+    execution_reality: Option<Box<dyn TickExecutionReality>>,
+    market_event_id: u64,
 }
 
-impl<AT, LM, QM, MD, FM> PartialFillExchange<AT, LM, QM, MD, FM>
+impl<AT, LM, QM, MD, FM> PartialFillExchange<AT, LM, QM, MD, FM, NoopExecutionObserver>
 where
     AT: AssetType,
     LM: LatencyModel,
@@ -101,16 +109,60 @@ where
         queue_model: QM,
         order_e2l: ExchToLocal<LM>,
     ) -> Self {
+        Self::new_with_observer(depth, state, queue_model, order_e2l, NoopExecutionObserver)
+    }
+}
+
+impl<AT, LM, QM, MD, FM, O> PartialFillExchange<AT, LM, QM, MD, FM, O>
+where
+    AT: AssetType,
+    LM: LatencyModel,
+    QM: QueueModel<MD>,
+    MD: MarketDepth,
+    FM: FeeModel,
+    O: ExecutionObserver,
+{
+    pub fn new_with_observer(
+        depth: MD,
+        state: State<AT, FM>,
+        queue_model: QM,
+        order_e2l: ExchToLocal<LM>,
+        observer: O,
+    ) -> Self {
         Self {
             orders: Default::default(),
             buy_orders: Default::default(),
             sell_orders: Default::default(),
             order_e2l,
             depth,
-            state,
+            _state: state,
             queue_model,
             filled_orders: Default::default(),
+            observer,
+            execution_reality: None,
+            market_event_id: 0,
         }
+    }
+
+    pub fn observer(&self) -> &O {
+        &self.observer
+    }
+
+    pub fn observer_mut(&mut self) -> &mut O {
+        &mut self.observer
+    }
+
+    /// Enables optional historical-liquidity and execution-quality adjustment. Disabled by
+    /// default, leaving only one predictable `Option::None` branch in the matcher hot path.
+    pub fn set_execution_reality(&mut self, model: Box<dyn TickExecutionReality>) {
+        self.execution_reality = Some(model);
+    }
+
+    pub fn reset_execution_reality(&mut self) {
+        if let Some(model) = self.execution_reality.as_mut() {
+            model.reset();
+        }
+        self.market_event_id = 0;
     }
 
     fn check_if_sell_filled(
@@ -208,15 +260,41 @@ where
             return Err(BacktestError::InvalidOrderStatus);
         }
 
-        order.maker = maker;
-        if maker {
-            order.exec_price_tick = order.price_tick;
+        let proposed_price_tick = if maker {
+            order.price_tick
         } else {
-            order.exec_price_tick = exec_price_tick;
+            exec_price_tick
+        };
+        if order.time_in_force != TimeInForce::FOK
+            && let Some(model) = self.execution_reality.as_mut()
+        {
+            let proposed = ProposedFill {
+                exchange_ts: timestamp,
+                price: proposed_price_tick as f64 * order.tick_size,
+                qty: exec_qty,
+                maker,
+            };
+            let Some(adjusted) = model.adjust(self.market_event_id, order, exec_qty, proposed)
+            else {
+                self.filled_orders
+                    .retain(|order_id| *order_id != order.order_id);
+                return Ok(());
+            };
+            let adjusted_qty = adjusted.qty.min(exec_qty).min(order.leaves_qty);
+            if adjusted_qty <= 0.0 {
+                self.filled_orders
+                    .retain(|order_id| *order_id != order.order_id);
+                return Ok(());
+            }
+            order.exec_price_tick = (adjusted.price / order.tick_size).round() as i64;
+            order.exec_qty = adjusted_qty;
+        } else {
+            order.exec_price_tick = proposed_price_tick;
+            order.exec_qty = exec_qty;
         }
+        order.maker = maker;
 
-        order.exec_qty = exec_qty;
-        order.leaves_qty -= exec_qty;
+        order.leaves_qty -= order.exec_qty;
         if (order.leaves_qty / self.depth.lot_size()).round() > 0f64 {
             order.status = Status::PartiallyFilled;
         } else {
@@ -224,7 +302,15 @@ where
         }
         order.exch_timestamp = timestamp;
 
-        self.state.apply_fill(order);
+        self.observer.on_order_outcome(
+            order,
+            MatchOutcome::Fill(ProposedFill {
+                exchange_ts: timestamp,
+                price: order.exec_price(),
+                qty: order.exec_qty,
+                maker,
+            }),
+        );
 
         if MAKE_RESPONSE {
             self.order_e2l.respond(order.clone());
@@ -407,7 +493,7 @@ where
                                         let qty = self.depth.ask_qty_at_tick(t);
                                         if qty > 0.0 {
                                             let exec_qty = qty.min(order.leaves_qty);
-                                            self.fill::<false>(
+                                            self.fill::<true>(
                                                 order, timestamp, false, t, exec_qty,
                                             )?;
                                             if order.status == Status::Filled {
@@ -428,7 +514,7 @@ where
                                     let qty = self.depth.ask_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                                        self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
                                         return Ok(());
@@ -444,7 +530,7 @@ where
                                     let qty = self.depth.ask_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                                        self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
                                         return Ok(());
@@ -456,7 +542,7 @@ where
                                 // though it simulates partial fill, if the order size is not small enough,
                                 // it introduces unreality.
                                 let (price_tick, leaves_qty) = (order.price_tick, order.leaves_qty);
-                                self.fill::<false>(order, timestamp, false, price_tick, leaves_qty)
+                                self.fill::<true>(order, timestamp, false, price_tick, leaves_qty)
                             }
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
@@ -493,7 +579,7 @@ where
                         let qty = self.depth.ask_qty_at_tick(t);
                         if qty > 0.0 {
                             let exec_qty = qty.min(order.leaves_qty);
-                            self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                            self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                         }
                         if order.status == Status::Filled {
                             return Ok(());
@@ -535,7 +621,7 @@ where
                                         let qty = self.depth.bid_qty_at_tick(t);
                                         if qty > 0.0 {
                                             let exec_qty = qty.min(order.leaves_qty);
-                                            self.fill::<false>(
+                                            self.fill::<true>(
                                                 order, timestamp, false, t, exec_qty,
                                             )?;
                                             if order.status == Status::Filled {
@@ -556,7 +642,7 @@ where
                                     let qty = self.depth.bid_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                                        self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
                                         return Ok(());
@@ -572,7 +658,7 @@ where
                                     let qty = self.depth.bid_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                                        self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
                                         return Ok(());
@@ -584,7 +670,7 @@ where
                                 // though it simulates partial fill, if the order size is not small enough,
                                 // it introduces unreality.
                                 let (price_tick, leaves_qty) = (order.price_tick, order.leaves_qty);
-                                self.fill::<false>(order, timestamp, false, price_tick, leaves_qty)
+                                self.fill::<true>(order, timestamp, false, price_tick, leaves_qty)
                             }
                             _ => {
                                 unreachable!();
@@ -624,7 +710,7 @@ where
                         let qty = self.depth.bid_qty_at_tick(t);
                         if qty > 0.0 {
                             let exec_qty = qty.min(order.leaves_qty);
-                            self.fill::<false>(order, timestamp, false, t, exec_qty)?;
+                            self.fill::<true>(order, timestamp, false, t, exec_qty)?;
                         }
                         if order.status == Status::Filled {
                             return Ok(());
@@ -720,19 +806,160 @@ where
     }
 }
 
-impl<AT, LM, QM, MD, FM> Processor for PartialFillExchange<AT, LM, QM, MD, FM>
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backtest::{
+            assettype::LinearAsset,
+            execution::{
+                BufferedExecutionObserver, CashFlowMode, CurrencyId,
+                HistoricalLiquidityConsumption, IdentityExecutionQuality,
+                InstrumentExecutionReality, InstrumentId, InstrumentSpec, InstrumentType, VenueId,
+            },
+            models::{CommonFees, ConstantLatency, RiskAdverseQueueModel, TradingValueFeeModel},
+            order::order_bus,
+        },
+        depth::HashMapMarketDepth,
+        types::{EXCH_ASK_DEPTH_EVENT, OrdType, TimeInForce},
+    };
+
+    #[test]
+    fn emits_fill_outcome_at_exchange_time() {
+        let latency = ConstantLatency::new(0, 20);
+        let (exchange_bus, mut local_bus) = order_bus(latency);
+        let mut exchange = PartialFillExchange::new_with_observer(
+            HashMapMarketDepth::new(1.0, 1.0),
+            State::new(
+                LinearAsset::new(1.0),
+                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
+            ),
+            RiskAdverseQueueModel::new(),
+            exchange_bus,
+            BufferedExecutionObserver::with_capacity(2),
+        );
+        exchange
+            .process(&Event {
+                ev: EXCH_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            })
+            .unwrap();
+        let mut order = Order::new(7, 0, 1.0, 1.0, Side::Buy, OrdType::Market, TimeInForce::IOC);
+        order.req = Status::New;
+        order.local_timestamp = 100;
+        local_bus.request(order, |_| unreachable!());
+        exchange.process_recv_order(100, None).unwrap();
+
+        let observed = exchange.observer().as_slice();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].order_id, 7);
+        assert_eq!(observed[0].order.unwrap().side, Side::Buy);
+        assert_eq!(
+            observed[0].outcome,
+            MatchOutcome::Fill(ProposedFill {
+                exchange_ts: 100,
+                price: 101.0,
+                qty: 1.0,
+                maker: false,
+            })
+        );
+    }
+
+    #[test]
+    fn configured_tick_reality_prevents_reusing_historical_depth() {
+        let latency = ConstantLatency::new(0, 0);
+        let (exchange_bus, mut local_bus) = order_bus(latency);
+        let mut exchange = PartialFillExchange::new_with_observer(
+            HashMapMarketDepth::new(1.0, 1.0),
+            State::new(
+                LinearAsset::new(1.0),
+                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
+            ),
+            RiskAdverseQueueModel::new(),
+            exchange_bus,
+            BufferedExecutionObserver::with_capacity(4),
+        );
+        exchange.set_execution_reality(Box::new(InstrumentExecutionReality::new(
+            InstrumentSpec {
+                instrument_id: InstrumentId(1),
+                asset_no: 0,
+                venue_id: VenueId(1),
+                tick_size: 1.0,
+                lot_size: 1.0,
+                min_qty: 1.0,
+                max_qty: 100.0,
+                min_notional: 0.0,
+                contract_size: 1.0,
+                price_currency: CurrencyId(1),
+                settlement_currency: CurrencyId(1),
+                margin_currency: CurrencyId(1),
+                instrument_type: InstrumentType::LinearPerpetual,
+                cash_flow_mode: CashFlowMode::DerivativePnl,
+                version: 1,
+            },
+            HistoricalLiquidityConsumption::default(),
+            IdentityExecutionQuality,
+        )));
+        exchange
+            .process(&Event {
+                ev: EXCH_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 100,
+                px: 101.0,
+                qty: 1.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            })
+            .unwrap();
+        for order_id in [11, 12] {
+            let mut order = Order::new(
+                order_id,
+                0,
+                1.0,
+                1.0,
+                Side::Buy,
+                OrdType::Market,
+                TimeInForce::IOC,
+            );
+            order.req = Status::New;
+            local_bus.request(order, |_| unreachable!());
+        }
+        exchange.process_recv_order(0, None).unwrap();
+        exchange.process_recv_order(0, None).unwrap();
+
+        let observed = exchange.observer().as_slice();
+        assert!(observed.iter().any(|item| {
+            item.order_id == 11
+                && matches!(item.outcome, MatchOutcome::Fill(fill) if fill.qty == 1.0)
+        }));
+        assert!(observed.iter().any(|item| {
+            item.order_id == 12 && matches!(item.outcome, MatchOutcome::Expired { .. })
+        }));
+    }
+}
+
+impl<AT, LM, QM, MD, FM, O> Processor for PartialFillExchange<AT, LM, QM, MD, FM, O>
 where
     AT: AssetType,
     LM: LatencyModel,
     QM: QueueModel<MD>,
     MD: MarketDepth + L2MarketDepth,
     FM: FeeModel,
+    O: ExecutionObserver,
 {
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
         event.is(EXCH_EVENT).then_some(event.exch_ts)
     }
 
     fn process(&mut self, event: &Event) -> Result<(), BacktestError> {
+        self.market_event_id = self.market_event_id.wrapping_add(1);
         if event.is(EXCH_BID_DEPTH_CLEAR_EVENT) {
             self.depth.clear_depth(Side::Buy, event.px);
         } else if event.is(EXCH_ASK_DEPTH_CLEAR_EVENT) {
@@ -817,16 +1044,54 @@ where
         timestamp: i64,
         _wait_resp_order_id: Option<OrderId>,
     ) -> Result<bool, BacktestError> {
-        while let Some(mut order) = self.order_e2l.receive(timestamp) {
+        if let Some(mut order) = self.order_e2l.receive(timestamp) {
             // Processes a new order.
             if order.req == Status::New {
                 order.req = Status::None;
                 self.ack_new(&mut order, timestamp)?;
+                match order.status {
+                    Status::New => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Accepted {
+                            exchange_ts: timestamp,
+                        },
+                    ),
+                    Status::Expired => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Expired {
+                            exchange_ts: timestamp,
+                        },
+                    ),
+                    Status::Filled | Status::PartiallyFilled => {}
+                    _ => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Rejected {
+                            exchange_ts: timestamp,
+                            reason: ExecutionReason::Unknown(0),
+                        },
+                    ),
+                }
             }
             // Processes a cancel order.
             else if order.req == Status::Canceled {
                 order.req = Status::None;
                 self.ack_cancel(&mut order, timestamp)?;
+                if order.req == Status::Rejected {
+                    self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Rejected {
+                            exchange_ts: timestamp,
+                            reason: ExecutionReason::Unknown(0),
+                        },
+                    );
+                } else {
+                    self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Canceled {
+                            exchange_ts: timestamp,
+                        },
+                    );
+                }
             }
             // Processes a modify order.
             else if order.req == Status::Replaced {
@@ -835,10 +1100,62 @@ where
             } else {
                 return Err(BacktestError::InvalidOrderRequest);
             }
-            // Makes the response.
-            self.order_e2l.respond(order);
+            // Immediate executions already emitted one response per fill. A terminal Filled
+            // snapshot would duplicate the last fill, while Expired after IOC partial fills still
+            // needs its own terminal response for the remaining quantity.
+            if order.status != Status::Filled || order.exec_qty == 0.0 {
+                self.order_e2l.respond(order);
+            }
         }
         Ok(false)
+    }
+
+    fn peek_recv_order(&self, timestamp: i64) -> Option<Order> {
+        self.order_e2l.peek_receive(timestamp)
+    }
+
+    fn reject_recv_order(
+        &mut self,
+        timestamp: i64,
+        reason: ExecutionReason,
+    ) -> Result<bool, BacktestError> {
+        let Some(mut order) = self.order_e2l.receive(timestamp) else {
+            return Ok(false);
+        };
+        order.req = Status::None;
+        order.status = Status::Rejected;
+        order.exch_timestamp = timestamp;
+        self.observer.on_order_outcome(
+            &order,
+            MatchOutcome::Rejected {
+                exchange_ts: timestamp,
+                reason,
+            },
+        );
+        self.order_e2l.respond(order);
+        Ok(false)
+    }
+
+    fn cancel_from_risk(
+        &mut self,
+        timestamp: i64,
+        order_id: OrderId,
+    ) -> Result<bool, BacktestError> {
+        let Some(mut order) = self.orders.borrow().get(&order_id).cloned() else {
+            return Ok(false);
+        };
+        if !order.active() {
+            return Ok(false);
+        }
+        self.ack_cancel(&mut order, timestamp)?;
+        self.observer.on_order_outcome(
+            &order,
+            MatchOutcome::Canceled {
+                exchange_ts: timestamp,
+            },
+        );
+        self.order_e2l.respond(order);
+        Ok(true)
     }
 
     fn earliest_recv_order_timestamp(&self) -> i64 {

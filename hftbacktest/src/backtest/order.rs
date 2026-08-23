@@ -109,6 +109,13 @@ where
             None
         }
     }
+
+    pub fn peek_receive(&self, receipt_timestamp: i64) -> Option<Order> {
+        unsafe { &*self.to_exch.order_list.get() }
+            .front()
+            .filter(|(_, timestamp)| *timestamp == receipt_timestamp)
+            .map(|(order, _)| order.clone())
+    }
 }
 
 /// Provides a bidirectional order bus connecting the local to the exchange.

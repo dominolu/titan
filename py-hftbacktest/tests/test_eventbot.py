@@ -4,7 +4,15 @@ import numpy as np
 from numba import njit
 
 from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest
-from hftbacktest.eventbot import BAR_COMPLETE, BAR_EMPTY, run_event_bot, timed_bar_dtype
+from hftbacktest.eventbot import (
+    BAR_COMPLETE,
+    BAR_EMPTY,
+    run_event_bot,
+    timed_bar_dtype,
+    timer_dtype,
+    funding_dtype,
+)
+from hftbacktest.strategies import create_dual_ma_strategy
 from hftbacktest.types import (
     BUY_EVENT,
     DEPTH_SNAPSHOT_EVENT,
@@ -65,6 +73,252 @@ def make_bot():
 
 
 class TestRustOwnedEventBot(unittest.TestCase):
+    def test_funding_updates_at_settlement_and_delivers_typed_callback_later(self):
+        bars = np.zeros(3, dtype=timed_bar_dtype)
+        for index in range(3):
+            bars[index]["asset_no"] = 0
+            bars[index]["timeframe_ns"] = 60
+            bars[index]["bar"] = (
+                index * 60,
+                (index + 1) * 60,
+                100,
+                100,
+                100,
+                100,
+                10,
+                1000,
+                0,
+                1,
+                BAR_COMPLETE,
+            )
+        funding = np.zeros(1, dtype=funding_dtype)
+        funding[0] = (1, 0, 0, 1, 0, 80, 100, 120, 130, 0.001, 100, 0, 0)
+
+        @njit
+        def on_bar(s):
+            if s.state_i64[0] == 0:
+                s.submit_buy_order(0, 1, 100.0, 1.0, 0, 1, False)
+                s.state_i64[0] = 1
+
+        @njit
+        def on_funding(s):
+            event = s.funding()
+            s.state[0] = event["amount"]
+            s.state[1] = event["position_qty"]
+            s.state_i64[1] = s.now
+
+        state = np.zeros(3)
+        state_i64 = np.zeros(3, dtype=np.int64)
+        run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            funding=funding,
+            on_bar=on_bar,
+            on_funding=on_funding,
+            state=state,
+            state_i64=state_i64,
+        )
+        self.assertAlmostEqual(state[0], -0.1)
+        self.assertEqual(state[1], 1.0)
+        self.assertEqual(state_i64[1], 130)
+
+    def test_timer_advances_after_bar_data_and_exposes_typed_payload(self):
+        bars = np.zeros(1, dtype=timed_bar_dtype)
+        bars[0]["asset_no"] = 0
+        bars[0]["timeframe_ns"] = 60
+        bars[0]["bar"] = (0, 60, 1, 1, 1, 1, 1, 1, 0, 1, BAR_COMPLETE)
+        timers = np.zeros(1, dtype=timer_dtype)
+        timers[0] = (100, 7, 9)
+
+        @njit
+        def on_timer(s):
+            timer = s.timer()
+            s.state_i64[0] = s.now
+            s.state_i64[1] = timer["owner_id"]
+            s.state_i64[2] = timer["timer_id"]
+
+        state_i64 = np.zeros(3, dtype=np.int64)
+        run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            timers=timers,
+            on_timer=on_timer,
+            state_i64=state_i64,
+        )
+        self.assertEqual(tuple(state_i64), (100, 7, 9))
+
+    def test_tick_timer_advances_after_tick_data_end(self):
+        timers = np.zeros(1, dtype=timer_dtype)
+        timers[0] = (500, 12, 13)
+
+        @njit
+        def on_timer(s):
+            timer = s.timer()
+            s.state_i64[0] = s.now
+            s.state_i64[1] = timer["owner_id"]
+            s.state_i64[2] = timer["timer_id"]
+
+        state_i64 = np.zeros(3, dtype=np.int64)
+        run_event_bot(
+            make_bot(),
+            timers=timers,
+            on_timer=on_timer,
+            state_i64=state_i64,
+        )
+        self.assertEqual(tuple(state_i64), (500, 12, 13))
+
+    def test_tick_timer_without_market_event_submits_through_normal_transport(self):
+        timers = np.zeros(1, dtype=timer_dtype)
+        timers[0] = (125, 21, 22)
+
+        @njit
+        def on_timer(s):
+            s.state_i64[0] = s.now
+            s.submit_buy_order(0, 90, 200.0, 1.0, 0, 0, False)
+
+        @njit
+        def on_filled(s):
+            s.state[0] += 1
+            s.state_i64[1] = s.now
+
+        state_i64 = np.zeros(2, dtype=np.int64)
+        state = run_event_bot(
+            make_bot(),
+            timers=timers,
+            on_timer=on_timer,
+            on_filled=on_filled,
+            state_i64=state_i64,
+            frame_interval=100,
+        )
+        self.assertEqual(state[0], 1.0)
+        self.assertEqual(tuple(state_i64), (125, 125))
+
+    def test_tick_funding_settles_exchange_then_projects_after_report_latency(self):
+        funding = np.zeros(1, dtype=funding_dtype)
+        funding[0] = (2, 0, 0, 1, 0, 160, 180, 200, 220, 0.001, 100.0, 0.0, 0.0)
+
+        @njit
+        def on_tick(s):
+            if s.state_i64[0] == 0 and s.now == 100:
+                s.submit_buy_order(0, 91, 200.0, 1.0, 0, 0, False)
+                s.state_i64[0] = 1
+
+        @njit
+        def on_funding(s):
+            event = s.funding()
+            s.state[0] = event["amount"]
+            s.state[1] = event["position_qty"]
+            s.state_i64[1] = s.now
+
+        @njit
+        def on_filled(s):
+            s.state[2] += 1
+            s.state_i64[2] = s.now
+
+        state = np.zeros(3)
+        state_i64 = np.zeros(3, dtype=np.int64)
+        run_event_bot(
+            make_bot(),
+            on_tick=on_tick,
+            funding=funding,
+            on_funding=on_funding,
+            on_filled=on_filled,
+            state=state,
+            state_i64=state_i64,
+            frame_interval=100,
+        )
+        self.assertAlmostEqual(state[0], -0.1)
+        self.assertEqual(state[1], 1.0)
+        self.assertEqual(state[2], 1.0)
+        self.assertEqual(state_i64[1], 220)
+
+    def test_bar_matching_mode_is_explicit_and_volume_limited(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        bars[0]["asset_no"] = 0
+        bars[0]["timeframe_ns"] = 60
+        bars[0]["bar"] = (0, 60, 100, 101, 99, 100, 2, 0, 0, 1, BAR_COMPLETE)
+        bars[1]["asset_no"] = 0
+        bars[1]["timeframe_ns"] = 60
+        bars[1]["bar"] = (60, 120, 100, 101, 90, 100, 2, 0, 0, 1, BAR_COMPLETE)
+
+        @njit
+        def on_bar(s):
+            if s.state_i64[0] == 0:
+                s.submit_buy_order(0, 92, 95.0, 2.0, 0, 0, False)
+                s.state_i64[0] = 1
+
+        @njit
+        def on_filled(s):
+            s.state[0] += s.fills()[0]["qty"]
+
+        touch = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            on_filled=on_filled,
+            bar_matching="touch",
+            volume_participation=0.5,
+        )
+        conservative = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            on_filled=on_filled,
+            bar_matching="conservative_ohlc",
+            volume_participation=0.5,
+        )
+        self.assertEqual(touch[0], 1.0)
+        self.assertEqual(conservative[0], 0.0)
+
+    def test_dual_ma_strategy_trades_only_on_crosses(self):
+        closes = [3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0, 1.0]
+        bars = np.zeros(len(closes), dtype=timed_bar_dtype)
+        for index, close in enumerate(closes):
+            bars[index]["asset_no"] = 0
+            bars[index]["timeframe_ns"] = 60
+            bars[index]["bar"] = (
+                index * 60,
+                (index + 1) * 60,
+                close,
+                close,
+                close,
+                close,
+                1.0,
+                close,
+                0.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        strategy = create_dual_ma_strategy(
+            closes=np.asarray(closes),
+            short_period=2,
+            long_period=3,
+            timeframe_ns=60,
+            quantity=1.0,
+        )
+        state = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            history_capacity=4,
+            on_bar=strategy.on_bar,
+            on_filled=strategy.on_filled,
+            on_stop=strategy.on_stop,
+            state=strategy.state,
+            state_i64=strategy.state_i64,
+        )
+
+        self.assertEqual(state[2], 1)
+        self.assertEqual(state[3], 1)
+        self.assertEqual(state[4], 2)
+        self.assertEqual(state[6], 0)
+        self.assertEqual(strategy.state_i64[2], 1)
+        self.assertEqual(strategy.state_i64[3], 1)
+        self.assertEqual(strategy.state_i64[1], 0)
+        self.assertEqual(strategy.state_i64[4], len(closes))
+        self.assertAlmostEqual(strategy.short_ma[-1], 1.0)
+        self.assertAlmostEqual(strategy.long_ma[-1], 4.0 / 3.0)
+
     def test_lifecycle_and_global_tick_batch(self):
         @njit
         def on_start(s):
@@ -532,9 +786,157 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[1], 120)
         self.assertEqual(state[2], 12)
 
-    def test_unconnected_hybrid_fails_explicitly(self):
-        with self.assertRaises(NotImplementedError):
-            run_event_bot(make_bot(), data_mode="hybrid")
+    def test_stop_market_triggers_on_completed_range_and_fills_next_open(self):
+        bars = np.zeros(4, dtype=timed_bar_dtype)
+        highs = [101.0, 106.0, 104.0, 104.0]
+        opens = [100.0, 101.0, 103.0, 104.0]
+        for row in range(4):
+            bars[row]["asset_no"] = 0
+            bars[row]["timeframe_ns"] = 60
+            bars[row]["bar"] = (
+                row * 60,
+                (row + 1) * 60,
+                opens[row],
+                highs[row],
+                99.0,
+                opens[row],
+                10.0,
+                0.0,
+                0.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            if s.bar_close_ts == 60:
+                s.submit_stop_buy_order(0, 81, 105.0, 0.0, 1.0, 3, False, False)
+
+        @njit
+        def on_filled(s):
+            s.state[0] += 1
+            s.state[1] = s.fills()[0]["price"]
+            s.state_i64[0] = s.now
+
+        state_i64 = np.zeros(2, dtype=np.int64)
+        state = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            on_filled=on_filled,
+            state_i64=state_i64,
+        )
+        self.assertEqual(state[0], 1)
+        self.assertEqual(state[1], 103.0)
+        self.assertEqual(state_i64[0], 120)
+
+    def test_tick_stop_market_uses_tick_trigger_and_tick_matcher(self):
+        @njit
+        def on_start(s):
+            s.submit_stop_buy_order(0, 83, 101.0, 0.0, 1.0, 3, False, False)
+
+        @njit
+        def on_filled(s):
+            s.state[0] += 1
+            s.state[1] = s.fills()[0]["price"]
+
+        state = run_event_bot(make_bot(), on_start=on_start, on_filled=on_filled)
+        self.assertEqual(state[0], 1)
+        self.assertEqual(state[1], 101.0)
+
+    def test_gtd_expires_at_deadline_without_waiting_for_market_data(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for row in range(2):
+            bars[row]["asset_no"] = 0
+            bars[row]["timeframe_ns"] = 60
+            bars[row]["bar"] = (
+                row * 120,
+                row * 120 + 60,
+                100.0,
+                101.0,
+                99.0,
+                100.0,
+                10.0,
+                0.0,
+                0.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            if s.bar_close_ts == 60:
+                s.submit_buy_order(0, 82, 50.0, 1.0, 0, 0, False, False, 90)
+
+        @njit
+        def on_order(s):
+            if s.now == 90:
+                s.state[0] += 1
+                s.state_i64[0] = s.now
+
+        state_i64 = np.zeros(2, dtype=np.int64)
+        state = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            on_order=on_order,
+            state_i64=state_i64,
+        )
+        self.assertEqual(state[0], 1)
+        self.assertEqual(state_i64[0], 90)
+
+    def test_hybrid_merges_bar_signals_but_executes_only_on_tick_backend(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for row in range(2):
+            bars[row]["asset_no"] = 0
+            bars[row]["timeframe_ns"] = 100
+            bars[row]["bar"] = (
+                100 + row * 100,
+                200 + row * 100,
+                90.0,
+                200.0,
+                1.0,
+                90.0,
+                1000.0,
+                0.0,
+                0.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_tick(s):
+            s.state_i64[0] += 1
+
+        @njit
+        def on_bar(s):
+            s.state_i64[1] += 1
+            if s.bar_close_ts == 200:
+                s.submit_buy_order(0, 90, 0.0, 1.0, 3, 1, False)
+            else:
+                s.state[2] = s.open(0, 100)[-1]
+
+        @njit
+        def on_filled(s):
+            s.state[0] += 1
+            s.state[1] = s.fills()[0]["price"]
+
+        state_i64 = np.zeros(3, dtype=np.int64)
+        state = run_event_bot(
+            make_bot(),
+            data_mode="hybrid",
+            bars=bars,
+            frame_interval=100,
+            on_tick=on_tick,
+            on_bar=on_bar,
+            on_filled=on_filled,
+            state_i64=state_i64,
+        )
+        self.assertGreater(state_i64[0], 0)
+        self.assertEqual(state_i64[1], 2)
+        self.assertEqual(state[0], 1)
+        self.assertEqual(state[1], 101.0)
+        self.assertEqual(state[2], 90.0)
 
     def test_tick_batch_overflow_fails_instead_of_growing_unbounded(self):
         with self.assertRaises(RuntimeError):

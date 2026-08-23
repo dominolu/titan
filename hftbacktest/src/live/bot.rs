@@ -11,6 +11,7 @@ use tracing::{debug, info};
 use crate::{
     depth::{L2MarketDepth, MarketDepth},
     live::{Instrument, ipc::Channel},
+    runtime::RuntimeFunding,
     types::{
         Bot, BuildError, ElapseResult, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
         LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, LiveRequest, OrdType,
@@ -150,6 +151,7 @@ impl<MD> LiveBotBuilder<MD> {
             order_hook: self.order_hook,
             runtime_feed_events: Vec::new(),
             runtime_order_events: Vec::new(),
+            runtime_funding_events: Vec::new(),
             runtime_capture_enabled: false,
         })
     }
@@ -188,6 +190,7 @@ pub struct LiveBot<CH, MD> {
     order_hook: Option<OrderRecvHook>,
     runtime_feed_events: Vec<(usize, Event)>,
     runtime_order_events: Vec<(usize, i64, Order)>,
+    runtime_funding_events: Vec<(usize, RuntimeFunding)>,
     runtime_capture_enabled: bool,
 }
 
@@ -212,11 +215,20 @@ where
         self.runtime_order_events.clear();
     }
 
+    pub fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
+        &self.runtime_funding_events
+    }
+
+    pub fn clear_runtime_funding_events(&mut self) {
+        self.runtime_funding_events.clear();
+    }
+
     pub fn set_runtime_capture(&mut self, enabled: bool) {
         self.runtime_capture_enabled = enabled;
         if !enabled {
             self.runtime_feed_events.clear();
             self.runtime_order_events.clear();
+            self.runtime_funding_events.clear();
         }
     }
 
@@ -309,6 +321,40 @@ where
                     next_funding_time,
                     "Event::Funding"
                 );
+            }
+            LiveEvent::FundingSettlement {
+                event_id,
+                amount,
+                position_qty,
+                funding_rate,
+                mark_price,
+                currency,
+                exch_ts,
+                ..
+            } => {
+                if self.runtime_capture_enabled {
+                    self.runtime_funding_events.push((
+                        inst_no,
+                        RuntimeFunding {
+                            event_id,
+                            asset_no: inst_no as u32,
+                            venue_no: 0,
+                            instrument_id: inst_no as u32 + 1,
+                            currency,
+                            publication_ts: exch_ts,
+                            effective_ts: exch_ts,
+                            settlement_ts: exch_ts,
+                            delivery_ts: exch_ts,
+                            rate: funding_rate,
+                            mark_price,
+                            position_qty,
+                            amount,
+                        },
+                    ));
+                }
+                if WAIT_NEXT_FEED {
+                    return Ok(ElapseResult::MarketFeed);
+                }
             }
             LiveEvent::Error(error) => {
                 if let Some(handler) = self.error_handler.as_mut() {
@@ -699,6 +745,8 @@ mod tests {
 
     struct TestChannel;
 
+    struct FundingChannel(Option<LiveEvent>);
+
     impl Channel for TestChannel {
         fn build<MD>(_instruments: &[Instrument<MD>]) -> Result<Self, BuildError> {
             Ok(Self)
@@ -710,6 +758,41 @@ mod tests {
             _timeout: Duration,
         ) -> Result<(usize, LiveEvent), BotError> {
             Err(BotError::Timeout)
+        }
+
+        fn send(
+            &mut self,
+            _id: u64,
+            _inst_no: usize,
+            _request: LiveRequest,
+        ) -> Result<(), BotError> {
+            Ok(())
+        }
+    }
+
+    impl Channel for FundingChannel {
+        fn build<MD>(_instruments: &[Instrument<MD>]) -> Result<Self, BuildError> {
+            Ok(Self(Some(LiveEvent::FundingSettlement {
+                symbol: "BTC".into(),
+                event_id: 7,
+                amount: -0.25,
+                position_qty: 2.0,
+                funding_rate: 0.001,
+                mark_price: 125.0,
+                currency: 1,
+                exch_ts: 100,
+            })))
+        }
+
+        fn recv_timeout(
+            &mut self,
+            _id: u64,
+            _timeout: Duration,
+        ) -> Result<(usize, LiveEvent), BotError> {
+            self.0
+                .take()
+                .map(|event| (0, event))
+                .ok_or(BotError::Timeout)
         }
 
         fn send(
@@ -738,5 +821,28 @@ mod tests {
 
         let error = bot.modify(0, 1, 100.0, 1.0, false).unwrap_err();
         assert!(matches!(error, BotError::UnsupportedOperation(_)));
+    }
+
+    #[test]
+    fn live_funding_settlement_is_captured_for_the_unified_runtime() {
+        let mut bot = LiveBotBuilder::new()
+            .register(Instrument::new(
+                "test",
+                "BTC",
+                0.1,
+                0.001,
+                HashMapMarketDepth::new(0.1, 0.001),
+                16,
+            ))
+            .build::<FundingChannel>()
+            .unwrap();
+        bot.set_runtime_capture(true);
+        assert_eq!(
+            bot.wait_next_feed(true, 1_000).unwrap(),
+            ElapseResult::MarketFeed
+        );
+        let event = bot.runtime_funding_events()[0].1;
+        assert_eq!((event.event_id, event.delivery_ts), (7, 100));
+        assert_eq!((event.amount, event.position_qty), (-0.25, 2.0));
     }
 }

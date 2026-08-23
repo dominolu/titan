@@ -104,3 +104,37 @@ impl EventSet {
         self.invalidate(4 * asset_no + 2);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_timestamp_order_is_asset_then_legacy_event_kind() {
+        let mut events = EventSet::new(2);
+        for asset_no in 0..2 {
+            events.update_local_data(asset_no, 10);
+            events.update_local_order(asset_no, 10);
+            events.update_exch_data(asset_no, 10);
+            events.update_exch_order(asset_no, 10);
+        }
+
+        let expected = [
+            (0, EventIntentKind::LocalData),
+            (0, EventIntentKind::LocalOrder),
+            (0, EventIntentKind::ExchData),
+            (0, EventIntentKind::ExchOrder),
+            (1, EventIntentKind::LocalData),
+            (1, EventIntentKind::LocalOrder),
+            (1, EventIntentKind::ExchData),
+            (1, EventIntentKind::ExchOrder),
+        ];
+        for (asset_no, kind) in expected {
+            let event = events.next().unwrap();
+            assert_eq!(event.asset_no, asset_no);
+            assert!(event.kind == kind);
+            events.invalidate(4 * asset_no + kind as usize);
+        }
+        assert!(events.next().is_none());
+    }
+}

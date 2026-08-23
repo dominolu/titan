@@ -2,6 +2,9 @@ use crate::{
     backtest::{
         BacktestError,
         assettype::AssetType,
+        execution::{
+            ExecutionObserver, ExecutionReason, MatchOutcome, NoopExecutionObserver, ProposedFill,
+        },
         models::{FeeModel, L3QueueModel, LatencyModel},
         order::ExchToLocal,
         proc::Processor,
@@ -42,21 +45,23 @@ use crate::{
 /// best. Be aware that this may cause unrealistic fill simulations if you attempt to execute a
 /// large quantity.
 ///
-pub struct L3NoPartialFillExchange<AT, LM, QM, MD, FM>
+pub struct L3NoPartialFillExchange<AT, LM, QM, MD, FM, O = NoopExecutionObserver>
 where
     AT: AssetType,
     LM: LatencyModel,
     QM: L3QueueModel<MD>,
     MD: L3MarketDepth,
     FM: FeeModel,
+    O: ExecutionObserver,
 {
     depth: MD,
-    state: State<AT, FM>,
+    _state: State<AT, FM>,
     queue_model: QM,
     order_e2l: ExchToLocal<LM>,
+    observer: O,
 }
 
-impl<AT, LM, QM, MD, FM> L3NoPartialFillExchange<AT, LM, QM, MD, FM>
+impl<AT, LM, QM, MD, FM> L3NoPartialFillExchange<AT, LM, QM, MD, FM, NoopExecutionObserver>
 where
     AT: AssetType,
     LM: LatencyModel,
@@ -72,11 +77,33 @@ where
         queue_model: QM,
         order_e2l: ExchToLocal<LM>,
     ) -> Self {
+        Self::new_with_observer(depth, state, queue_model, order_e2l, NoopExecutionObserver)
+    }
+}
+
+impl<AT, LM, QM, MD, FM, O> L3NoPartialFillExchange<AT, LM, QM, MD, FM, O>
+where
+    AT: AssetType,
+    LM: LatencyModel,
+    QM: L3QueueModel<MD>,
+    MD: L3MarketDepth,
+    FM: FeeModel,
+    O: ExecutionObserver,
+    BacktestError: From<<MD as L3MarketDepth>::Error>,
+{
+    pub fn new_with_observer(
+        depth: MD,
+        state: State<AT, FM>,
+        queue_model: QM,
+        order_e2l: ExchToLocal<LM>,
+        observer: O,
+    ) -> Self {
         Self {
             depth,
-            state,
+            _state: state,
             queue_model,
             order_e2l,
+            observer,
         }
     }
 
@@ -86,6 +113,12 @@ where
         order.status = Status::Expired;
         order.exch_timestamp = timestamp;
 
+        self.observer.on_order_outcome(
+            &order,
+            MatchOutcome::Expired {
+                exchange_ts: timestamp,
+            },
+        );
         self.order_e2l.respond(order);
         Ok(())
     }
@@ -116,7 +149,15 @@ where
         order.status = Status::Filled;
         order.exch_timestamp = timestamp;
 
-        self.state.apply_fill(order);
+        self.observer.on_order_outcome(
+            order,
+            MatchOutcome::Fill(ProposedFill {
+                exchange_ts: timestamp,
+                price: order.exec_price(),
+                qty: order.exec_qty,
+                maker,
+            }),
+        );
 
         if MAKE_RESPONSE {
             self.order_e2l.respond(order.clone());
@@ -311,13 +352,14 @@ where
     }
 }
 
-impl<AT, LM, QM, MD, FM> Processor for L3NoPartialFillExchange<AT, LM, QM, MD, FM>
+impl<AT, LM, QM, MD, FM, O> Processor for L3NoPartialFillExchange<AT, LM, QM, MD, FM, O>
 where
     AT: AssetType,
     LM: LatencyModel,
     QM: L3QueueModel<MD>,
     MD: L3MarketDepth,
     FM: FeeModel,
+    O: ExecutionObserver,
     BacktestError: From<<MD as L3MarketDepth>::Error>,
 {
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
@@ -401,16 +443,54 @@ where
         timestamp: i64,
         _wait_resp_order_id: Option<OrderId>,
     ) -> Result<bool, BacktestError> {
-        while let Some(mut order) = self.order_e2l.receive(timestamp) {
+        if let Some(mut order) = self.order_e2l.receive(timestamp) {
             // Processes a new order.
             if order.req == Status::New {
                 order.req = Status::None;
                 self.ack_new(&mut order, timestamp)?;
+                match order.status {
+                    Status::New => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Accepted {
+                            exchange_ts: timestamp,
+                        },
+                    ),
+                    Status::Expired => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Expired {
+                            exchange_ts: timestamp,
+                        },
+                    ),
+                    Status::Filled => {}
+                    _ => self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Rejected {
+                            exchange_ts: timestamp,
+                            reason: ExecutionReason::Unknown(0),
+                        },
+                    ),
+                }
             }
             // Processes a cancel order.
             else if order.req == Status::Canceled {
                 order.req = Status::None;
                 self.ack_cancel(&mut order, timestamp)?;
+                if order.req == Status::Rejected {
+                    self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Rejected {
+                            exchange_ts: timestamp,
+                            reason: ExecutionReason::Unknown(0),
+                        },
+                    );
+                } else {
+                    self.observer.on_order_outcome(
+                        &order,
+                        MatchOutcome::Canceled {
+                            exchange_ts: timestamp,
+                        },
+                    );
+                }
             }
             // Processes a modify order.
             else if order.req == Status::Replaced {
@@ -423,6 +503,58 @@ where
             self.order_e2l.respond(order);
         }
         Ok(false)
+    }
+
+    fn peek_recv_order(&self, timestamp: i64) -> Option<Order> {
+        self.order_e2l.peek_receive(timestamp)
+    }
+
+    fn reject_recv_order(
+        &mut self,
+        timestamp: i64,
+        reason: ExecutionReason,
+    ) -> Result<bool, BacktestError> {
+        let Some(mut order) = self.order_e2l.receive(timestamp) else {
+            return Ok(false);
+        };
+        order.req = Status::None;
+        order.status = Status::Rejected;
+        order.exch_timestamp = timestamp;
+        self.observer.on_order_outcome(
+            &order,
+            MatchOutcome::Rejected {
+                exchange_ts: timestamp,
+                reason,
+            },
+        );
+        self.order_e2l.respond(order);
+        Ok(false)
+    }
+
+    fn cancel_from_risk(
+        &mut self,
+        timestamp: i64,
+        order_id: OrderId,
+    ) -> Result<bool, BacktestError> {
+        let mut order = match self
+            .queue_model
+            .cancel_backtest_order(order_id, &self.depth)
+        {
+            Ok(order) => order,
+            Err(BacktestError::OrderNotFound) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        order.req = Status::None;
+        order.status = Status::Canceled;
+        order.exch_timestamp = timestamp;
+        self.observer.on_order_outcome(
+            &order,
+            MatchOutcome::Canceled {
+                exchange_ts: timestamp,
+            },
+        );
+        self.order_e2l.respond(order);
+        Ok(true)
     }
 
     fn earliest_recv_order_timestamp(&self) -> i64 {
