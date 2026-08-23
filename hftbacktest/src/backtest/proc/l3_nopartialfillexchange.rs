@@ -362,6 +362,14 @@ where
     O: ExecutionObserver,
     BacktestError: From<<MD as L3MarketDepth>::Error>,
 {
+    fn reset(&mut self) {
+        self.order_e2l.reset();
+        self.depth.clear_orders(Side::None);
+        let _ = self.queue_model.clear_orders(Side::None);
+        self._state.state_values = Default::default();
+        self.observer.reset();
+    }
+
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
         event.is(EXCH_EVENT).then_some(event.exch_ts)
     }

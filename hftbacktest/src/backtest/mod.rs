@@ -19,16 +19,22 @@ use crate::{
         data::{Data, FeedLatencyAdjustment, NpyDTyped},
         evs::{EventIntentKind, EventSet},
         execution::{
-            AccountError, CurrencyId, ExchangePortfolio, ExecutionEventProjector,
+            AccountError, AllowAllRisk, CurrencyId, ExchangePortfolio, ExecutionEventProjector,
             ExecutionOrderRequest, ExecutionReason, ExecutionReport, FundingEngine, FundingError,
-            FundingReport, InstrumentId, InstrumentSpec, LegacyExecutionFeeAdapter, NoFee,
-            ObservedOutcome, OrderOrigin, OutcomeBus, PortfolioLedger, ProjectedEvent, RiskAction,
-            RiskActionSink, RiskDecision, RiskReason, ScheduledFunding, SharedTickExecutionConfig,
-            TickCoordinatorError, TickOutcomeCoordinator, VenueId, VenueRisk,
+            FundingReport, InstrumentId, InstrumentSpec, InstrumentSpecError,
+            LegacyExecutionFeeAdapter, LocalPreTradeRisk, NoFee, ObservedOutcome, OrderOrigin,
+            OutcomeBus, PortfolioLedger, ProjectedEvent, RiskAction, RiskActionSink, RiskDecision,
+            RiskReason, ScheduledFunding, SharedTickExecutionConfig, TickCoordinatorError,
+            TickOutcomeCoordinator, VenueId, VenueRisk,
         },
         models::{LatencyModel, QueueModel},
         order::order_bus,
         proc::{Local, LocalProcessor, NoPartialFillExchange, PartialFillExchange, Processor},
+        result::{
+            AccountSnapshot, AuditKind, AuditRecord, AuditRecorder, BacktestResult, EndPolicy,
+            ReproducibilityMetadata, RunTermination,
+        },
+        scheduler::{EventKey, EventPhase},
         state::State,
     },
     depth::{L2MarketDepth, L3MarketDepth, MarketDepth},
@@ -87,6 +93,8 @@ pub enum BacktestError {
     InvalidOrderRequest,
     #[error("order status is invalid to proceed the request")]
     InvalidOrderStatus,
+    #[error("unsupported operation: {0}")]
+    UnsupportedOperation(&'static str),
     #[error("end of data")]
     EndOfData,
     #[error("data error: {0:?}")]
@@ -103,6 +111,10 @@ pub enum BacktestError {
 
 fn execution_reason_from_risk(reason: RiskReason) -> ExecutionReason {
     match reason {
+        RiskReason::InvalidInstrument => ExecutionReason::InvalidInstrument,
+        RiskReason::InvalidPrice => ExecutionReason::InvalidPrice,
+        RiskReason::InvalidQuantity => ExecutionReason::InvalidQuantity,
+        RiskReason::DuplicateOrderId => ExecutionReason::DuplicateOrderId,
         RiskReason::PositionLimit => ExecutionReason::PositionLimit,
         RiskReason::NotionalLimit => ExecutionReason::NotionalLimit,
         RiskReason::InsufficientBalance => ExecutionReason::InsufficientBalance,
@@ -110,6 +122,21 @@ fn execution_reason_from_risk(reason: RiskReason) -> ExecutionReason {
         RiskReason::ReduceOnlyViolation => ExecutionReason::ReduceOnlyViolation,
         RiskReason::MarketClosed => ExecutionReason::MarketClosed,
         RiskReason::Custom(code) => ExecutionReason::Unknown(code),
+    }
+}
+
+fn execution_reason_from_spec(error: InstrumentSpecError) -> ExecutionReason {
+    match error {
+        InstrumentSpecError::InvalidPrice | InstrumentSpecError::PricePrecision => {
+            ExecutionReason::InvalidPrice
+        }
+        InstrumentSpecError::InvalidQuantity
+        | InstrumentSpecError::QuantityPrecision
+        | InstrumentSpecError::QuantityBelowMinimum
+        | InstrumentSpecError::QuantityAboveMaximum => ExecutionReason::InvalidQuantity,
+        InstrumentSpecError::NotionalBelowMinimum
+        | InstrumentSpecError::InvalidPositiveField { .. }
+        | InstrumentSpecError::InvalidQuantityRange => ExecutionReason::InvalidInstrument,
     }
 }
 
@@ -734,7 +761,9 @@ impl<MD> BacktestBuilder<MD> {
             shared_report_scratch: Vec::with_capacity(2),
             shared_pending_reports: VecDeque::with_capacity(64),
             shared_exchange_portfolio: ExchangePortfolio::default(),
+            shared_initial_balances: HashMap::new(),
             shared_venue_risks: HashMap::new(),
+            shared_local_risk: Box::new(AllowAllRisk),
             shared_risk_actions: RiskActionSink::with_capacity(4),
             runtime_reduce_only: HashMap::new(),
             next_risk_order_id: u64::MAX,
@@ -745,6 +774,9 @@ impl<MD> BacktestBuilder<MD> {
             shared_projected_events: Vec::new(),
             shared_delivery_scratch: Vec::with_capacity(4),
             shared_state_values: vec![StateValues::default(); num_assets],
+            audit: AuditRecorder::disabled(),
+            audit_run_id: 0,
+            audit_sequence: 0,
             runtime_capture_enabled: false,
         })
     }
@@ -768,7 +800,9 @@ pub struct Backtest<MD> {
     shared_report_scratch: Vec<ExecutionReport>,
     shared_pending_reports: VecDeque<(usize, ExecutionReport)>,
     shared_exchange_portfolio: ExchangePortfolio,
+    shared_initial_balances: HashMap<(VenueId, CurrencyId), f64>,
     shared_venue_risks: HashMap<VenueId, Box<dyn VenueRisk>>,
+    shared_local_risk: Box<dyn LocalPreTradeRisk>,
     shared_risk_actions: RiskActionSink,
     runtime_reduce_only: HashMap<(usize, OrderId), bool>,
     next_risk_order_id: OrderId,
@@ -779,6 +813,9 @@ pub struct Backtest<MD> {
     shared_projected_events: Vec<(usize, ProjectedEvent)>,
     shared_delivery_scratch: Vec<(OrderId, i64)>,
     shared_state_values: Vec<StateValues>,
+    audit: AuditRecorder,
+    audit_run_id: u64,
+    audit_sequence: u64,
     runtime_capture_enabled: bool,
 }
 
@@ -813,6 +850,108 @@ where
         self.runtime_match_outcomes.clear();
     }
 
+    /// Rewinds a Tick/L3 backtest in place while preserving immutable data/model configuration.
+    pub fn reset(&mut self) {
+        self.cur_ts = i64::MAX;
+        self.evs.reset();
+        for state in &mut self.local {
+            state.reset();
+        }
+        for state in &mut self.exch {
+            state.reset();
+        }
+        for bus in self.outcome_buses.iter_mut().flatten() {
+            bus.clear();
+        }
+        for coordinator in self.shared_tick_coordinators.iter_mut().flatten() {
+            coordinator.reset();
+        }
+        self.runtime_feed_events.clear();
+        self.runtime_order_events.clear();
+        self.runtime_match_outcomes.clear();
+        self.shared_exchange_reports.clear();
+        self.shared_report_scratch.clear();
+        self.shared_pending_reports.clear();
+        self.shared_exchange_portfolio.reset();
+        self.shared_local_portfolio.reset();
+        self.restore_shared_exchange_balances();
+        self.shared_projector.reset();
+        self.shared_projected_events.clear();
+        self.shared_delivery_scratch.clear();
+        self.shared_state_values.fill(StateValues::default());
+        self.shared_venue_risks
+            .values_mut()
+            .for_each(|risk| risk.reset_all());
+        self.shared_local_risk.reset();
+        self.shared_risk_actions.clear();
+        self.runtime_reduce_only.clear();
+        self.next_risk_order_id = u64::MAX;
+        self.pending_liquidations.clear();
+        self.risk_order_instruments.clear();
+        self.audit.reset();
+        self.audit_sequence = 0;
+    }
+
+    pub fn enable_audit(&mut self, run_id: u64, capacity: usize) {
+        self.audit = AuditRecorder::bounded(capacity);
+        self.audit_run_id = run_id;
+        self.audit_sequence = 0;
+    }
+
+    pub fn audit(&self) -> &AuditRecorder {
+        &self.audit
+    }
+
+    fn record_audit(
+        &mut self,
+        timestamp: i64,
+        phase: EventPhase,
+        asset_no: usize,
+        kind: AuditKind,
+        order_id: u64,
+        code: u32,
+        value0: f64,
+        value1: f64,
+    ) {
+        let venue_no = self
+            .shared_tick_coordinators
+            .get(asset_no)
+            .and_then(Option::as_ref)
+            .map_or(0, |coordinator| coordinator.spec().venue_id.0);
+        self.audit.record(AuditRecord {
+            run_id: self.audit_run_id,
+            schema_version: 1,
+            key: EventKey {
+                timestamp,
+                phase,
+                source_priority: 0,
+                venue_no,
+                asset_no: asset_no as u32,
+                sequence: self.audit_sequence,
+            },
+            kind,
+            order_id,
+            code,
+            value0,
+            value1,
+        });
+        self.audit_sequence = self.audit_sequence.wrapping_add(1);
+    }
+
+    fn restore_shared_exchange_balances(&mut self) {
+        for (&(venue_id, currency), &balance) in &self.shared_initial_balances {
+            self.shared_exchange_portfolio
+                .venue_mut_or_insert(venue_id)
+                .account_mut()
+                .set_balance(currency, balance)
+                .expect("validated initial balance must remain valid during reset");
+            self.shared_local_portfolio
+                .venue_mut_or_insert(venue_id)
+                .seed_balance(currency, balance)
+                .expect("validated initial balance must remain valid during reset");
+        }
+    }
+
     /// Enables exchange-time shared state/account coordination for the configured Tick assets.
     /// The legacy local processor remains the strategy-visible state until B06 delivery migration.
     pub fn configure_shared_tick_execution(
@@ -840,16 +979,20 @@ where
         self.shared_pending_reports.clear();
         self.shared_exchange_portfolio.reset();
         self.shared_local_portfolio.reset();
+        self.restore_shared_exchange_balances();
         self.shared_projected_events.clear();
         self.shared_state_values.fill(StateValues::default());
         self.shared_venue_risks
             .values_mut()
             .for_each(|risk| risk.reset_all());
+        self.shared_local_risk.reset();
         self.shared_risk_actions.clear();
         self.runtime_reduce_only.clear();
         self.next_risk_order_id = u64::MAX;
         self.pending_liquidations.clear();
         self.risk_order_instruments.clear();
+        self.audit.reset();
+        self.audit_sequence = 0;
         Ok(())
     }
 
@@ -874,16 +1017,20 @@ where
         self.shared_pending_reports.clear();
         self.shared_exchange_portfolio.reset();
         self.shared_local_portfolio.reset();
+        self.restore_shared_exchange_balances();
         self.shared_projected_events.clear();
         self.shared_state_values.fill(StateValues::default());
         self.shared_venue_risks
             .values_mut()
             .for_each(|risk| risk.reset_all());
+        self.shared_local_risk.reset();
         self.shared_risk_actions.clear();
         self.runtime_reduce_only.clear();
         self.next_risk_order_id = u64::MAX;
         self.pending_liquidations.clear();
         self.risk_order_instruments.clear();
+        self.audit.reset();
+        self.audit_sequence = 0;
         Ok(())
     }
 
@@ -903,12 +1050,112 @@ where
         &self.shared_exchange_portfolio
     }
 
+    /// Returns the authoritative exchange-final and report-delivered local-final states using
+    /// the same result schema as the Bar prepared runtime.
+    pub fn shared_account_snapshots(&self) -> (Vec<AccountSnapshot>, Vec<AccountSnapshot>) {
+        let mut exchange = Vec::new();
+        let mut local = Vec::new();
+        for coordinator in self.shared_tick_coordinators.iter().flatten() {
+            let spec = coordinator.spec();
+            let risk = self.shared_venue_risks.get(&spec.venue_id);
+            let snapshot = |account: &execution::VenueAccount| {
+                let metrics = risk.map_or_else(Default::default, |risk| {
+                    risk.instrument_metrics(account, spec.instrument_id)
+                });
+                AccountSnapshot {
+                    venue_no: spec.venue_id.0,
+                    asset_no: spec.asset_no,
+                    currency: spec.settlement_currency,
+                    position: account.position(spec.instrument_id).qty,
+                    balance: account.balance(spec.settlement_currency),
+                    fee: account.fee(spec.settlement_currency),
+                    funding: account.funding(spec.settlement_currency),
+                    realized_pnl: account.position(spec.instrument_id).realized_pnl,
+                    unrealized_pnl: metrics.unrealized_pnl,
+                    margin: metrics.initial_margin,
+                }
+            };
+            exchange.push(
+                self.shared_exchange_portfolio
+                    .venue(spec.venue_id)
+                    .map(|account| snapshot(account.account()))
+                    .unwrap_or(AccountSnapshot {
+                        venue_no: spec.venue_id.0,
+                        asset_no: spec.asset_no,
+                        currency: spec.settlement_currency,
+                        ..Default::default()
+                    }),
+            );
+            local.push(
+                self.shared_local_portfolio
+                    .venue(spec.venue_id)
+                    .map(|account| snapshot(account.account()))
+                    .unwrap_or(AccountSnapshot {
+                        venue_no: spec.venue_id.0,
+                        asset_no: spec.asset_no,
+                        currency: spec.settlement_currency,
+                        ..Default::default()
+                    }),
+            );
+        }
+        (exchange, local)
+    }
+
+    /// Builds a Tick/L2/L3 `BacktestResult` directly from captured canonical reports and account
+    /// ledgers. No strategy code is rerun to derive statistics.
+    pub fn shared_backtest_result(
+        &self,
+        run_id: u64,
+        metadata: ReproducibilityMetadata,
+        end_policy: EndPolicy,
+        termination: RunTermination,
+    ) -> BacktestResult {
+        let mut result = BacktestResult::empty(metadata);
+        result.run_id = run_id;
+        result.end_policy = end_policy;
+        result.termination = termination;
+        let mut order_ids = HashSet::new();
+        let reports = self
+            .shared_exchange_reports
+            .iter()
+            .map(|(_, report)| *report);
+        for report in reports {
+            order_ids.insert((report.venue_id, report.order_id));
+            if result.order_count == 0 {
+                result.start_exchange_ts = report.exchange_ts;
+                result.start_delivery_ts = report.delivery_ts;
+            } else {
+                result.start_exchange_ts = result.start_exchange_ts.min(report.exchange_ts);
+                result.start_delivery_ts = result.start_delivery_ts.min(report.delivery_ts);
+            }
+            result.end_exchange_ts = result.end_exchange_ts.max(report.exchange_ts);
+            result.end_delivery_ts = result.end_delivery_ts.max(report.delivery_ts);
+            match report.kind {
+                execution::ExecutionReportKind::Rejected => result.reject_count += 1,
+                execution::ExecutionReportKind::Canceled => result.cancel_count += 1,
+                execution::ExecutionReportKind::Expired => result.expire_count += 1,
+                execution::ExecutionReportKind::Fill => result.fill_count += 1,
+                execution::ExecutionReportKind::Accepted => {}
+            }
+            result.order_count = order_ids.len() as u64;
+        }
+        (result.exchange_final, result.local_delivered_final) = self.shared_account_snapshots();
+        result
+    }
+
     /// Installs the venue-scoped exchange-arrival and post-trade risk model used by Tick matching.
     pub fn configure_shared_tick_venue_risk<R>(&mut self, venue_id: VenueId, risk: R)
     where
         R: VenueRisk + 'static,
     {
         self.shared_venue_risks.insert(venue_id, Box::new(risk));
+    }
+
+    pub fn configure_shared_tick_local_risk<R>(&mut self, risk: R)
+    where
+        R: LocalPreTradeRisk + 'static,
+    {
+        self.shared_local_risk = Box::new(risk);
     }
 
     /// Seeds authoritative exchange collateral before the first order arrives.
@@ -922,6 +1169,11 @@ where
             .venue_mut_or_insert(venue_id)
             .account_mut()
             .set_balance(currency, balance)?;
+        self.shared_local_portfolio
+            .venue_mut_or_insert(venue_id)
+            .seed_balance(currency, balance)?;
+        self.shared_initial_balances
+            .insert((venue_id, currency), balance);
         Ok(())
     }
 
@@ -959,12 +1211,12 @@ where
             .get(asset_no)
             .and_then(Option::as_ref)
             .ok_or(BacktestError::InvalidSharedTickSpec)?;
-        let position = coordinator.exchange_position();
         let spec = coordinator.spec().clone();
         let exchange = self
             .shared_exchange_portfolio
             .venue_mut_or_insert(scheduled.event.venue_id);
-        engine
+        let position = exchange.account().position(spec.instrument_id).qty;
+        let report = engine
             .settle(
                 scheduled.event,
                 position,
@@ -973,7 +1225,18 @@ where
                 scheduled.delivery_ts,
                 sequence,
             )
-            .map_err(BacktestError::from)
+            .map_err(BacktestError::from)?;
+        self.record_audit(
+            report.event.settlement_ts,
+            EventPhase::ExchangeState,
+            asset_no,
+            AuditKind::Funding,
+            0,
+            0,
+            report.event.rate,
+            report.amount,
+        );
+        Ok(report)
     }
 
     pub fn deliver_runtime_funding(&mut self, report: FundingReport) -> Result<(), BacktestError> {
@@ -993,6 +1256,10 @@ where
         self.shared_projected_events.clear();
     }
 
+    pub fn drain_shared_projected_events(&mut self, output: &mut Vec<(usize, ProjectedEvent)>) {
+        output.append(&mut self.shared_projected_events);
+    }
+
     pub fn set_runtime_capture(&mut self, enabled: bool) {
         self.runtime_capture_enabled = enabled;
         if !enabled {
@@ -1004,11 +1271,7 @@ where
 
     #[inline]
     fn drain_exchange_outcomes(&mut self, asset_no: usize) -> Result<(), BacktestError> {
-        let Some(bus) = self
-            .outcome_buses
-            .get_mut(asset_no)
-            .and_then(Option::as_mut)
-        else {
+        let Some(bus) = self.outcome_buses.get(asset_no).and_then(Option::as_ref) else {
             return Ok(());
         };
         // Market events overwhelmingly produce no order outcome. Avoid taking the mutable
@@ -1018,7 +1281,13 @@ where
             return Ok(());
         }
         let mut generated_risk_actions = Vec::new();
-        while let Some(outcome) = bus.pop_front() {
+        loop {
+            let outcome = self.outcome_buses[asset_no]
+                .as_mut()
+                .and_then(OutcomeBus::pop_front);
+            let Some(outcome) = outcome else {
+                break;
+            };
             if let Some(coordinator) = self
                 .shared_tick_coordinators
                 .get_mut(asset_no)
@@ -1031,11 +1300,69 @@ where
                     | execution::MatchOutcome::Expired { exchange_ts } => exchange_ts,
                     execution::MatchOutcome::Fill(fill) => fill.exchange_ts,
                 };
-                coordinator.apply(outcome, exchange_ts, &mut self.shared_report_scratch)?;
-                for report in &self.shared_report_scratch {
+                let venue_id = coordinator.spec().venue_id;
+                let apply_result = coordinator.apply(
+                    outcome,
+                    exchange_ts,
+                    self.shared_exchange_portfolio.venue_mut_or_insert(venue_id),
+                    &mut self.shared_report_scratch,
+                );
+                if apply_result.is_err() {
+                    self.record_audit(
+                        exchange_ts,
+                        EventPhase::ExchangeState,
+                        asset_no,
+                        AuditKind::Diagnostic,
+                        outcome.order_id,
+                        1,
+                        0.0,
+                        0.0,
+                    );
+                }
+                apply_result?;
+                for index in 0..self.shared_report_scratch.len() {
+                    let report = self.shared_report_scratch[index];
+                    self.record_audit(
+                        report.exchange_ts,
+                        EventPhase::ExchangeState,
+                        asset_no,
+                        AuditKind::ExecutionReport,
+                        report.order_id,
+                        crate::runtime::execution_reason_code(report.reason),
+                        report.exec_price,
+                        report.exec_qty,
+                    );
+                    self.record_audit(
+                        report.exchange_ts,
+                        EventPhase::ExchangeState,
+                        asset_no,
+                        AuditKind::OrderTransition,
+                        report.order_id,
+                        report.status as u32,
+                        report.order_qty,
+                        report.exec_qty,
+                    );
                     if let Some(delta) = report.account_delta {
-                        self.shared_exchange_portfolio
-                            .apply(report.venue_id, delta)?;
+                        self.record_audit(
+                            report.exchange_ts,
+                            EventPhase::Matching,
+                            asset_no,
+                            AuditKind::Fill,
+                            report.order_id,
+                            0,
+                            report.exec_price,
+                            report.exec_qty,
+                        );
+                        self.record_audit(
+                            report.exchange_ts,
+                            EventPhase::ExchangeState,
+                            asset_no,
+                            AuditKind::AccountDelta,
+                            report.order_id,
+                            0,
+                            delta.position_delta,
+                            delta.cash_delta - delta.fee + delta.funding,
+                        );
                         if self
                             .shared_exchange_portfolio
                             .venue(report.venue_id)
@@ -1087,6 +1414,16 @@ where
                     ..
                 } => {
                     if let Some(action_asset) = self.asset_for_instrument(instrument_id) {
+                        self.record_audit(
+                            self.cur_ts,
+                            EventPhase::PostTradeRisk,
+                            action_asset,
+                            AuditKind::RiskDecision,
+                            order_id,
+                            0,
+                            0.0,
+                            0.0,
+                        );
                         self.exch[action_asset].cancel_from_risk(self.cur_ts, order_id)?;
                         self.evs.update_local_order(
                             action_asset,
@@ -1102,6 +1439,16 @@ where
                     let Some(action_asset) = self.asset_for_instrument(instrument_id) else {
                         continue;
                     };
+                    self.record_audit(
+                        self.cur_ts,
+                        EventPhase::PostTradeRisk,
+                        action_asset,
+                        AuditKind::Liquidation,
+                        0,
+                        0,
+                        0.0,
+                        0.0,
+                    );
                     let qty = self
                         .shared_exchange_portfolio
                         .venue(venue_id)
@@ -1234,6 +1581,16 @@ impl<P: Processor> BacktestProcessorState<P> {
         }
     }
 
+    fn reset(&mut self) {
+        if !self.data.is_empty() {
+            self.reader
+                .release(std::mem::replace(&mut self.data, Data::empty()));
+        }
+        self.reader.reset();
+        self.row = None;
+        self.processor.reset();
+    }
+
     /// Get the index of the next available row, only advancing the reader if there's no
     /// row currently available.
     fn next_row(&mut self) -> Result<usize, BacktestError> {
@@ -1269,6 +1626,251 @@ impl<MD> Backtest<MD>
 where
     MD: MarketDepth,
 {
+    fn execution_request(
+        &self,
+        asset_no: usize,
+        order_id: OrderId,
+        side: Side,
+        price: f64,
+        qty: f64,
+        order_type: OrdType,
+        time_in_force: TimeInForce,
+    ) -> Option<ExecutionOrderRequest> {
+        let coordinator = self
+            .shared_tick_coordinators
+            .get(asset_no)
+            .and_then(Option::as_ref)?;
+        let spec = coordinator.spec();
+        Some(ExecutionOrderRequest {
+            client_order_id: order_id,
+            venue_id: spec.venue_id,
+            instrument_id: spec.instrument_id,
+            price,
+            qty,
+            side,
+            time_in_force,
+            order_type,
+            reduce_only: self
+                .runtime_reduce_only
+                .get(&(asset_no, order_id))
+                .copied()
+                .unwrap_or(false),
+            origin: OrderOrigin::Strategy,
+            local_submit_ts: self.cur_ts,
+        })
+    }
+
+    fn local_rejection_reason(
+        &mut self,
+        asset_no: usize,
+        request: &ExecutionOrderRequest,
+    ) -> Option<ExecutionReason> {
+        let spec = self.shared_tick_coordinators[asset_no]
+            .as_ref()
+            .unwrap()
+            .spec();
+        let validation = match request.order_type {
+            OrdType::Limit => spec.validate_limit_order(request.price, request.qty),
+            OrdType::Market => spec.validate_quantity(request.qty),
+            OrdType::Unsupported => return Some(ExecutionReason::InvalidInstrument),
+        };
+        if let Err(error) = validation {
+            return Some(execution_reason_from_spec(error));
+        }
+        match self
+            .shared_local_risk
+            .check(request, &self.shared_local_portfolio)
+        {
+            RiskDecision::Allow => None,
+            RiskDecision::Reject { reason } => Some(execution_reason_from_risk(reason)),
+        }
+    }
+
+    fn emit_local_rejection(
+        &mut self,
+        asset_no: usize,
+        request: ExecutionOrderRequest,
+        reason: ExecutionReason,
+    ) -> Result<(), BacktestError> {
+        let order = self.local[asset_no].reject_order(
+            request.client_order_id,
+            request.side,
+            request.price,
+            request.qty,
+            request.order_type,
+            request.time_in_force,
+            request.local_submit_ts,
+        )?;
+        if self.runtime_capture_enabled {
+            self.runtime_order_events
+                .push((asset_no, request.local_submit_ts, order));
+        }
+        self.shared_tick_coordinators[asset_no]
+            .as_mut()
+            .unwrap()
+            .reject_local(request, reason, &mut self.shared_report_scratch)?;
+        for report in self.shared_report_scratch.drain(..) {
+            self.audit.record(AuditRecord {
+                run_id: self.audit_run_id,
+                schema_version: 1,
+                key: EventKey {
+                    timestamp: report.exchange_ts,
+                    phase: EventPhase::StrategyCallback,
+                    source_priority: 0,
+                    venue_no: report.venue_id.0,
+                    asset_no: asset_no as u32,
+                    sequence: self.audit_sequence,
+                },
+                kind: AuditKind::ExecutionReport,
+                order_id: report.order_id,
+                code: crate::runtime::execution_reason_code(report.reason),
+                value0: 0.0,
+                value1: 0.0,
+            });
+            self.audit_sequence = self.audit_sequence.wrapping_add(1);
+            self.shared_exchange_reports.push((asset_no, report));
+            let local = self
+                .shared_local_portfolio
+                .venue_mut_or_insert(report.venue_id);
+            let projected = self.shared_projector.project(report, local)?;
+            if self.runtime_capture_enabled {
+                self.shared_projected_events
+                    .extend(projected.iter().copied().map(|event| (asset_no, event)));
+            }
+        }
+        self.runtime_reduce_only
+            .remove(&(asset_no, request.client_order_id));
+        Ok(())
+    }
+
+    fn submit_with_local_risk(
+        &mut self,
+        asset_no: usize,
+        order_id: OrderId,
+        side: Side,
+        price: f64,
+        qty: f64,
+        order_type: OrdType,
+        time_in_force: TimeInForce,
+    ) -> Result<bool, BacktestError> {
+        self.record_audit(
+            self.cur_ts,
+            EventPhase::StrategyCallback,
+            asset_no,
+            AuditKind::Command,
+            order_id,
+            1,
+            price,
+            qty,
+        );
+        let Some(request) = self.execution_request(
+            asset_no,
+            order_id,
+            side,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+        ) else {
+            self.local[asset_no].submit_order(
+                order_id,
+                side,
+                price,
+                qty,
+                order_type,
+                time_in_force,
+                self.cur_ts,
+            )?;
+            return Ok(false);
+        };
+        if self.shared_tick_coordinators[asset_no]
+            .as_ref()
+            .unwrap()
+            .coordinator()
+            .order(order_id)
+            .is_some()
+        {
+            self.record_audit(
+                self.cur_ts,
+                EventPhase::StrategyCallback,
+                asset_no,
+                AuditKind::RiskDecision,
+                order_id,
+                crate::runtime::execution_reason_code(ExecutionReason::DuplicateOrderId),
+                0.0,
+                0.0,
+            );
+            self.shared_tick_coordinators[asset_no]
+                .as_mut()
+                .unwrap()
+                .reject_duplicate_local(request, &mut self.shared_report_scratch);
+            for report in self.shared_report_scratch.drain(..) {
+                self.audit.record(AuditRecord {
+                    run_id: self.audit_run_id,
+                    schema_version: 1,
+                    key: EventKey {
+                        timestamp: report.exchange_ts,
+                        phase: EventPhase::StrategyCallback,
+                        source_priority: 0,
+                        venue_no: report.venue_id.0,
+                        asset_no: asset_no as u32,
+                        sequence: self.audit_sequence,
+                    },
+                    kind: AuditKind::ExecutionReport,
+                    order_id: report.order_id,
+                    code: crate::runtime::execution_reason_code(report.reason),
+                    value0: 0.0,
+                    value1: 0.0,
+                });
+                self.audit_sequence = self.audit_sequence.wrapping_add(1);
+                self.shared_exchange_reports.push((asset_no, report));
+                let local = self
+                    .shared_local_portfolio
+                    .venue_mut_or_insert(report.venue_id);
+                let projected = self.shared_projector.project(report, local)?;
+                if self.runtime_capture_enabled {
+                    self.shared_projected_events
+                        .extend(projected.iter().copied().map(|event| (asset_no, event)));
+                }
+            }
+            return Ok(true);
+        }
+        if let Some(reason) = self.local_rejection_reason(asset_no, &request) {
+            self.record_audit(
+                self.cur_ts,
+                EventPhase::StrategyCallback,
+                asset_no,
+                AuditKind::RiskDecision,
+                order_id,
+                crate::runtime::execution_reason_code(reason),
+                0.0,
+                0.0,
+            );
+            self.emit_local_rejection(asset_no, request, reason)?;
+            return Ok(true);
+        }
+        self.record_audit(
+            self.cur_ts,
+            EventPhase::StrategyCallback,
+            asset_no,
+            AuditKind::RiskDecision,
+            order_id,
+            0,
+            0.0,
+            0.0,
+        );
+        self.local[asset_no].submit_order(
+            order_id,
+            side,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+            self.cur_ts,
+        )?;
+        Ok(false)
+    }
+
     pub fn builder() -> BacktestBuilder<MD> {
         BacktestBuilder {
             local: vec![],
@@ -1313,7 +1915,9 @@ where
             shared_report_scratch: Vec::with_capacity(2),
             shared_pending_reports: VecDeque::with_capacity(64),
             shared_exchange_portfolio: ExchangePortfolio::default(),
+            shared_initial_balances: HashMap::new(),
             shared_venue_risks: HashMap::new(),
+            shared_local_risk: Box::new(AllowAllRisk),
             shared_risk_actions: RiskActionSink::with_capacity(4),
             runtime_reduce_only: HashMap::new(),
             next_risk_order_id: u64::MAX,
@@ -1324,6 +1928,9 @@ where
             shared_projected_events: Vec::new(),
             shared_delivery_scratch: Vec::with_capacity(4),
             shared_state_values: vec![StateValues::default(); num_assets],
+            audit: AuditRecorder::disabled(),
+            audit_run_id: 0,
+            audit_sequence: 0,
             runtime_capture_enabled: false,
         }
     }
@@ -1532,7 +2139,12 @@ where
                                             Side::Sell => -request.qty,
                                             _ => return Some(ExecutionReason::ReduceOnlyViolation),
                                         };
-                                        let old_qty = coordinator.exchange_position();
+                                        let old_qty = self
+                                            .shared_exchange_portfolio
+                                            .venue(spec.venue_id)
+                                            .map_or(0.0, |account| {
+                                                account.account().position(spec.instrument_id).qty
+                                            });
                                         let new_qty = old_qty + signed_qty;
                                         if old_qty == 0.0 || new_qty.abs() >= old_qty.abs() {
                                             return Some(ExecutionReason::ReduceOnlyViolation);
@@ -1651,16 +2263,22 @@ where
         order_type: OrdType,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let local = self.local.get_mut(asset_no).unwrap();
-        local.submit_order(
+        let rejected = self.submit_with_local_risk(
+            asset_no,
             order_id,
             Side::Buy,
             price,
             qty,
             order_type,
             time_in_force,
-            self.cur_ts,
         )?;
+        if rejected {
+            return Ok(if wait {
+                ElapseResult::OrderResponse
+            } else {
+                ElapseResult::Ok
+            });
+        }
 
         if wait {
             return self.goto::<false>(
@@ -1682,16 +2300,22 @@ where
         order_type: OrdType,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let local = self.local.get_mut(asset_no).unwrap();
-        local.submit_order(
+        let rejected = self.submit_with_local_risk(
+            asset_no,
             order_id,
             Side::Sell,
             price,
             qty,
             order_type,
             time_in_force,
-            self.cur_ts,
         )?;
+        if rejected {
+            return Ok(if wait {
+                ElapseResult::OrderResponse
+            } else {
+                ElapseResult::Ok
+            });
+        }
 
         if wait {
             return self.goto::<false>(
@@ -1708,16 +2332,22 @@ where
         order: OrderRequest,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let local = self.local.get_mut(asset_no).unwrap();
-        local.submit_order(
+        let rejected = self.submit_with_local_risk(
+            asset_no,
             order.order_id,
             order.side,
             order.price,
             order.qty,
             order.order_type,
             order.time_in_force,
-            self.cur_ts,
         )?;
+        if rejected {
+            return Ok(if wait {
+                ElapseResult::OrderResponse
+            } else {
+                ElapseResult::Ok
+            });
+        }
 
         if wait {
             return self.goto::<false>(
@@ -1734,22 +2364,15 @@ where
     #[inline]
     fn modify(
         &mut self,
-        asset_no: usize,
-        order_id: OrderId,
-        price: f64,
-        qty: f64,
-        wait: bool,
+        _asset_no: usize,
+        _order_id: OrderId,
+        _price: f64,
+        _qty: f64,
+        _wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let local = self.local.get_mut(asset_no).unwrap();
-        local.modify(order_id, price, qty, self.cur_ts)?;
-
-        if wait {
-            return self.goto::<false>(
-                UNTIL_END_OF_DATA,
-                WaitOrderResponse::Specified { asset_no, order_id },
-            );
-        }
-        Ok(ElapseResult::Ok)
+        Err(BacktestError::UnsupportedOperation(
+            "order modification is disabled; cancel and submit a replacement order",
+        ))
     }
 
     #[inline]
@@ -1868,7 +2491,7 @@ mod test {
 
     use crate::{
         backtest::{
-            Backtest, DataSource,
+            Backtest, BacktestError, DataSource,
             ExchangeKind::{NoPartialFillExchange, PartialFillExchange},
             L2AssetBuilder, L3AssetBuilder,
             assettype::LinearAsset,
@@ -1876,14 +2499,15 @@ mod test {
             execution::{
                 CashFlowMode, CrossMarginRisk, CurrencyId, ExchangeAccountState, ExchangeRisk,
                 ExecutionOrderRequest, ExecutionReason, ExecutionReportKind, InstrumentId,
-                InstrumentSpec, InstrumentType, MarginParameters, MatchOutcome, PostTradeRisk,
-                RateFeeModel, RiskAction, RiskActionSink, RiskDecision, RiskReason,
-                SharedTickExecutionConfig, VenueId,
+                InstrumentSpec, InstrumentType, LocalPreTradeRisk, MarginParameters, MatchOutcome,
+                PortfolioLedger, PostTradeRisk, RateFeeModel, RiskAction, RiskActionSink,
+                RiskDecision, RiskReason, SharedTickExecutionConfig, VenueId,
             },
             models::{
                 CommonFees, ConstantLatency, L3FIFOQueueModel, PowerProbQueueFunc3, ProbQueueModel,
                 RiskAdverseQueueModel, TradingValueFeeModel,
             },
+            result::AuditKind,
         },
         depth::HashMapMarketDepth,
         prelude::{Bot, Event, OrdType, Status, TimeInForce},
@@ -1898,6 +2522,20 @@ mod test {
         venue_id: VenueId,
         instrument_id: InstrumentId,
         cancel_order_id: Option<u64>,
+    }
+
+    struct RejectLocalRisk;
+
+    impl LocalPreTradeRisk for RejectLocalRisk {
+        fn check(
+            &mut self,
+            _request: &ExecutionOrderRequest,
+            _portfolio: &PortfolioLedger,
+        ) -> RiskDecision {
+            RiskDecision::Reject {
+                reason: RiskReason::PositionLimit,
+            }
+        }
     }
 
     impl ExchangeRisk for LiquidateAfterFill {
@@ -2008,7 +2646,183 @@ mod test {
         assert_eq!(1, backtester.runtime_feed_events().len());
         backtester.set_runtime_capture(false);
         assert!(backtester.runtime_feed_events().is_empty());
+        assert!(matches!(
+            backtester.modify(0, 1, 1.0, 1.0, false),
+            Err(BacktestError::UnsupportedOperation(_))
+        ));
 
+        backtester.configure_shared_tick_local_risk(RejectLocalRisk);
+        backtester.enable_audit(9, 16);
+        backtester.set_runtime_capture(true);
+        assert_eq!(
+            backtester.submit_buy_order(0, 77, 1.0, 1.0, TimeInForce::GTC, OrdType::Limit, true,)?,
+            crate::types::ElapseResult::OrderResponse
+        );
+        assert_eq!(backtester.orders(0)[&77].status, Status::Rejected);
+        assert_eq!(backtester.runtime_order_events().len(), 1);
+        assert!(
+            backtester
+                .shared_exchange_reports()
+                .iter()
+                .any(|(_, report)| {
+                    report.order_id == 77 && report.reason == ExecutionReason::PositionLimit
+                })
+        );
+        assert!(backtester.audit().records().iter().any(|record| {
+            record.run_id == 9
+                && record.order_id == 77
+                && record.kind == AuditKind::RiskDecision
+                && record.code
+                    == crate::runtime::execution_reason_code(ExecutionReason::PositionLimit)
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn tick_reset_replays_identically_one_hundred_times() -> Result<(), Box<dyn Error>> {
+        let data = Data::from_data(&[
+            Event {
+                ev: EXCH_BID_DEPTH_EVENT | LOCAL_BID_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 100,
+                px: 99.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_ASK_DEPTH_EVENT | LOCAL_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 100,
+                px: 101.0,
+                qty: 10.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+            Event {
+                ev: EXCH_EVENT | LOCAL_EVENT,
+                exch_ts: 1_000,
+                local_ts: 1_000,
+                px: 0.0,
+                qty: 0.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            },
+        ]);
+        let mut backtester = Backtest::builder()
+            .add_asset(
+                L2AssetBuilder::default()
+                    .data(vec![DataSource::Data(data)])
+                    .latency_model(ConstantLatency::new(10, 10))
+                    .asset_type(LinearAsset::new(1.0))
+                    .fee_model(TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)))
+                    .queue_model(ProbQueueModel::new(PowerProbQueueFunc3::new(3.0)))
+                    .exchange(NoPartialFillExchange)
+                    .depth(|| HashMapMarketDepth::new(0.01, 1.0))
+                    .build()?,
+            )
+            .build()?;
+        backtester.set_shared_exchange_balance(VenueId(0), CurrencyId(0), 100.0)?;
+        let mut expected = None;
+        let mut expected_result = None;
+        for run in 0..100 {
+            backtester.elapse_bt(1)?;
+            backtester.submit_buy_order(
+                0,
+                42,
+                0.0,
+                2.0,
+                TimeInForce::IOC,
+                OrdType::Market,
+                false,
+            )?;
+            backtester.elapse_bt(100)?;
+            let reports: Vec<_> = backtester
+                .shared_exchange_reports()
+                .iter()
+                .map(|(_, report)| {
+                    (
+                        report.kind,
+                        report.reason,
+                        report.order_id,
+                        report.venue_order_id,
+                        report.exchange_ts,
+                        report.delivery_ts,
+                        report.sequence,
+                        report.status,
+                        report.exec_price.to_bits(),
+                        report.exec_qty.to_bits(),
+                    )
+                })
+                .collect();
+            assert_eq!(reports.len(), 2);
+            assert_eq!(backtester.position(0), 2.0);
+            let identity = crate::backtest::result::ModelIdentity::new("test", 1);
+            let result = backtester.shared_backtest_result(
+                run + 1,
+                crate::backtest::result::ReproducibilityMetadata {
+                    engine_version: env!("CARGO_PKG_VERSION").into(),
+                    git_revision: "test".into(),
+                    strategy_id: "tick-reset".into(),
+                    strategy_version: "1".into(),
+                    runtime_abi_version: crate::runtime::STRATEGY_ABI_VERSION,
+                    phase_contract_version: crate::backtest::scheduler::PHASE_CONTRACT_VERSION,
+                    data_manifest_hash: 1,
+                    config_hash: 2,
+                    matching: identity.clone(),
+                    fee: identity.clone(),
+                    latency: identity.clone(),
+                    risk: identity.clone(),
+                    execution_quality: identity,
+                    random_seed: 3,
+                },
+                crate::backtest::result::EndPolicy::DrainAll,
+                crate::backtest::result::RunTermination::DataEnd,
+            );
+            let result_core = (
+                result.order_count,
+                result.fill_count,
+                result.reject_count,
+                result.exchange_final.clone(),
+                result.local_delivered_final.clone(),
+            );
+            if let Some(expected) = &expected_result {
+                assert_eq!(&result_core, expected);
+            } else {
+                expected_result = Some(result_core);
+            }
+            if let Some(expected) = &expected {
+                assert_eq!(&reports, expected);
+            } else {
+                expected = Some(reports);
+            }
+            if run != 99 {
+                backtester.reset();
+                assert_eq!(backtester.current_timestamp(), i64::MAX);
+                assert!(backtester.shared_exchange_reports().is_empty());
+                assert!(backtester.runtime_order_events().is_empty());
+                assert!(backtester.audit().records().is_empty());
+                assert_eq!(
+                    backtester
+                        .shared_exchange_portfolio()
+                        .venue(VenueId(0))
+                        .unwrap()
+                        .account()
+                        .balance(CurrencyId(0)),
+                    100.0
+                );
+                assert_eq!(
+                    backtester
+                        .shared_local_portfolio()
+                        .total_balance(CurrencyId(0)),
+                    100.0
+                );
+            }
+        }
         Ok(())
     }
 

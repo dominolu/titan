@@ -62,6 +62,10 @@ impl EventSet {
         })
     }
 
+    pub fn reset(&mut self) {
+        self.timestamp.fill(i64::MAX);
+    }
+
     #[inline]
     fn update(&mut self, evst_no: usize, timestamp: i64) {
         let item = unsafe { self.timestamp.get_unchecked_mut(evst_no) };

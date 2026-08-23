@@ -92,6 +92,12 @@ impl<T> GlobalScheduler<T> {
         self.events.first_key_value().map(|(key, _)| *key)
     }
 
+    pub fn peek(&self) -> Option<(EventKey, &T)> {
+        self.events
+            .first_key_value()
+            .map(|(key, value)| (*key, value))
+    }
+
     pub fn pop(&mut self) -> Option<ScheduledEvent<T>> {
         self.events
             .pop_first()

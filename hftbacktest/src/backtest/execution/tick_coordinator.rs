@@ -1,9 +1,9 @@
 use thiserror::Error;
 
 use super::{
-    ExecutionCoordinator, ExecutionError, ExecutionFeeModel, ExecutionOrderRequest,
-    ExecutionReport, InstrumentSpec, LegacyOrderSnapshot, MatchOutcome, ObservedOutcome,
-    OrderOrigin, OrderState,
+    ExchangeAccountState, ExecutionCoordinator, ExecutionError, ExecutionFeeModel,
+    ExecutionOrderRequest, ExecutionReason, ExecutionReport, InstrumentSpec, LegacyOrderSnapshot,
+    MatchOutcome, ObservedOutcome, OrderOrigin, OrderState,
 };
 
 #[derive(Debug, Error, PartialEq)]
@@ -62,17 +62,44 @@ where
         &self.coordinator
     }
 
-    /// Exchange-time position maintained by the coordinator which consumed the matcher outcome.
-    pub fn exchange_position(&self) -> f64 {
-        self.coordinator
-            .exchange_account()
-            .account()
-            .position(self.spec.instrument_id)
-            .qty
-    }
-
     pub fn reset(&mut self) {
         self.coordinator.reset();
+    }
+
+    /// Produces a canonical immediate local rejection. It never enters exchange transport and
+    /// therefore uses the local submit timestamp for both event and delivery visibility.
+    pub fn reject_local(
+        &mut self,
+        request: ExecutionOrderRequest,
+        reason: super::ExecutionReason,
+        reports: &mut Vec<ExecutionReport>,
+    ) -> Result<(), TickCoordinatorError> {
+        reports.clear();
+        self.coordinator.submit_for_rejection(request, &self.spec)?;
+        let mut report = self.coordinator.reject(
+            request.client_order_id,
+            request.local_submit_ts,
+            request.local_submit_ts,
+            reason,
+        )?;
+        report.asset_no = self.spec.asset_no;
+        reports.push(report);
+        Ok(())
+    }
+
+    pub fn reject_duplicate_local(
+        &mut self,
+        request: ExecutionOrderRequest,
+        reports: &mut Vec<ExecutionReport>,
+    ) {
+        let mut report = self.coordinator.reject_unstored_request(
+            request,
+            request.local_submit_ts,
+            request.local_submit_ts,
+            ExecutionReason::DuplicateOrderId,
+        );
+        report.asset_no = self.spec.asset_no;
+        reports.push(report);
     }
 
     /// Applies one observed matcher result. `reports` is caller-owned and reusable; it receives
@@ -81,6 +108,7 @@ where
         &mut self,
         observed: ObservedOutcome,
         delivery_ts: i64,
+        exchange_account: &mut ExchangeAccountState,
         reports: &mut Vec<ExecutionReport>,
     ) -> Result<(), TickCoordinatorError> {
         reports.clear();
@@ -136,6 +164,7 @@ where
             observed.outcome,
             delivery_ts,
             &self.spec,
+            exchange_account,
         )?);
         for report in reports.iter_mut() {
             report.asset_no = self.spec.asset_no;
@@ -208,6 +237,7 @@ mod tests {
         );
         let order = Order::new(7, 0, 1.0, 2.0, Side::Buy, OrdType::Market, TimeInForce::IOC);
         let mut reports = Vec::with_capacity(2);
+        let mut account = ExchangeAccountState::new(spec().venue_id);
         adapter
             .apply(
                 observed(
@@ -220,6 +250,7 @@ mod tests {
                     }),
                 ),
                 120,
+                &mut account,
                 &mut reports,
             )
             .unwrap();
@@ -227,15 +258,7 @@ mod tests {
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].status, Status::New);
         assert_eq!(reports[1].status, Status::Filled);
-        assert_eq!(
-            adapter
-                .coordinator()
-                .exchange_account()
-                .account()
-                .position(InstrumentId(10))
-                .qty,
-            2.0
-        );
+        assert_eq!(account.account().position(InstrumentId(10)).qty, 2.0);
     }
 
     #[test]
@@ -256,10 +279,12 @@ mod tests {
             TimeInForce::GTC,
         );
         let mut reports = Vec::with_capacity(2);
+        let mut account = ExchangeAccountState::new(spec().venue_id);
         adapter
             .apply(
                 observed(&order, MatchOutcome::Accepted { exchange_ts: 10 }),
                 12,
+                &mut account,
                 &mut reports,
             )
             .unwrap();
@@ -267,6 +292,7 @@ mod tests {
             .apply(
                 observed(&order, MatchOutcome::Canceled { exchange_ts: 20 }),
                 23,
+                &mut account,
                 &mut reports,
             )
             .unwrap();

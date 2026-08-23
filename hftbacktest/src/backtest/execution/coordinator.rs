@@ -36,8 +36,8 @@ pub enum ExecutionError {
 pub struct ExecutionCoordinator<F> {
     venue_id: VenueId,
     orders: BTreeMap<OrderId, ExecutionOrder>,
-    exchange_account: ExchangeAccountState,
     fee_model: F,
+    next_venue_order_id: u64,
     next_report_sequence: u64,
 }
 
@@ -49,14 +49,10 @@ where
         Self {
             venue_id,
             orders: BTreeMap::new(),
-            exchange_account: ExchangeAccountState::new(venue_id),
             fee_model,
+            next_venue_order_id: 1,
             next_report_sequence: 0,
         }
-    }
-
-    pub fn exchange_account(&self) -> &ExchangeAccountState {
-        &self.exchange_account
     }
 
     pub fn order(&self, order_id: OrderId) -> Option<&ExecutionOrder> {
@@ -96,6 +92,30 @@ where
         }
     }
 
+    /// Registers a request solely so a local validation/risk rejection can traverse the same
+    /// state machine and report projector. Market constraints are intentionally not revalidated.
+    pub fn submit_for_rejection(
+        &mut self,
+        request: ExecutionOrderRequest,
+        spec: &InstrumentSpec,
+    ) -> Result<(), ExecutionError> {
+        if request.venue_id != self.venue_id || spec.venue_id != self.venue_id {
+            return Err(ExecutionError::VenueMismatch);
+        }
+        if request.instrument_id != spec.instrument_id {
+            return Err(ExecutionError::InstrumentMismatch);
+        }
+        match self.orders.entry(request.client_order_id) {
+            Entry::Occupied(_) => Err(ExecutionError::DuplicateOrderId),
+            Entry::Vacant(entry) => {
+                let mut order = ExecutionOrder::new(request);
+                order.transition(OrderTransition::Submit)?;
+                entry.insert(order);
+                Ok(())
+            }
+        }
+    }
+
     pub fn accept(
         &mut self,
         order_id: OrderId,
@@ -107,6 +127,13 @@ where
             .get_mut(&order_id)
             .ok_or(ExecutionError::OrderNotFound)?;
         order.transition(OrderTransition::Accept)?;
+        if order.venue_order_id.is_none() {
+            order.venue_order_id = Some(self.next_venue_order_id);
+            self.next_venue_order_id = self
+                .next_venue_order_id
+                .checked_add(1)
+                .expect("venue order ID overflow");
+        }
         order.exchange_arrival_ts = exchange_ts;
         order.last_exchange_ts = exchange_ts;
         self.make_report(
@@ -120,6 +147,42 @@ where
             false,
             None,
         )
+    }
+
+    /// Emits a rejection without inserting or changing an order. This is used for a duplicate
+    /// client ID rejected by the local gateway while preserving the original lifecycle.
+    pub fn reject_unstored_request(
+        &mut self,
+        request: ExecutionOrderRequest,
+        exchange_ts: i64,
+        delivery_ts: i64,
+        reason: ExecutionReason,
+    ) -> ExecutionReport {
+        let sequence = self.next_report_sequence;
+        self.next_report_sequence = self
+            .next_report_sequence
+            .checked_add(1)
+            .expect("execution report sequence overflow");
+        ExecutionReport {
+            kind: ExecutionReportKind::Rejected,
+            reason,
+            venue_id: request.venue_id,
+            instrument_id: request.instrument_id,
+            asset_no: 0,
+            order_id: request.client_order_id,
+            venue_order_id: 0,
+            exchange_ts,
+            delivery_ts,
+            sequence,
+            status: Status::Rejected,
+            side: request.side,
+            order_price: request.price,
+            order_qty: request.qty,
+            exec_price: 0.0,
+            exec_qty: 0.0,
+            maker: false,
+            account_delta: None,
+        }
     }
 
     pub fn request_cancel(&mut self, order_id: OrderId) -> Result<(), ExecutionError> {
@@ -244,6 +307,7 @@ where
         outcome: super::MatchOutcome,
         delivery_ts: i64,
         spec: &InstrumentSpec,
+        exchange_account: &mut ExchangeAccountState,
     ) -> Result<ExecutionReport, ExecutionError> {
         match outcome {
             super::MatchOutcome::Accepted { exchange_ts } => {
@@ -253,7 +317,9 @@ where
                 exchange_ts,
                 reason,
             } => self.reject(order_id, exchange_ts, delivery_ts, reason),
-            super::MatchOutcome::Fill(fill) => self.fill(order_id, fill, delivery_ts, spec),
+            super::MatchOutcome::Fill(fill) => {
+                self.fill(order_id, fill, delivery_ts, spec, exchange_account)
+            }
             super::MatchOutcome::Canceled { exchange_ts } => {
                 self.cancel(order_id, exchange_ts, delivery_ts)
             }
@@ -269,6 +335,7 @@ where
         fill: ProposedFill,
         delivery_ts: i64,
         spec: &InstrumentSpec,
+        exchange_account: &mut ExchangeAccountState,
     ) -> Result<ExecutionReport, ExecutionError> {
         if spec.venue_id != self.venue_id {
             return Err(ExecutionError::VenueMismatch);
@@ -301,7 +368,10 @@ where
             Side::Sell => -1.0,
             _ => unreachable!("validated execution request side"),
         };
-        let current = self.exchange_account.account().position(spec.instrument_id);
+        if exchange_account.account().venue_id() != self.venue_id {
+            return Err(ExecutionError::VenueMismatch);
+        }
+        let current = exchange_account.account().position(spec.instrument_id);
         let realized_pnl = realized_pnl(
             spec,
             current.qty,
@@ -331,7 +401,7 @@ where
             execution_price: fill.price,
             realized_pnl,
         };
-        self.exchange_account.apply_and_report(
+        exchange_account.apply_and_report(
             delta,
             fill.exchange_ts,
             delivery_ts,
@@ -365,8 +435,9 @@ where
     ) -> Result<ExecutionReport, ExecutionError> {
         let order = self
             .orders
-            .get(&order_id)
+            .get_mut(&order_id)
             .ok_or(ExecutionError::OrderNotFound)?;
+        order.last_delivery_ts = delivery_ts;
         let status = match order.state {
             OrderState::Initialized | OrderState::Submitted => Status::None,
             OrderState::Accepted | OrderState::PendingCancel => Status::New,
@@ -388,6 +459,7 @@ where
             instrument_id: order.request.instrument_id,
             asset_no: 0,
             order_id,
+            venue_order_id: order.venue_order_id.unwrap_or(0),
             exchange_ts,
             delivery_ts,
             sequence,
@@ -404,8 +476,8 @@ where
 
     pub fn reset(&mut self) {
         self.orders.clear();
-        self.exchange_account.account_mut().reset();
         self.fee_model.reset();
+        self.next_venue_order_id = 1;
         self.next_report_sequence = 0;
     }
 }
@@ -493,6 +565,7 @@ mod tests {
     #[test]
     fn multiple_fills_each_create_report_fee_and_account_delta() {
         let spec = spec();
+        let mut account = ExchangeAccountState::new(spec.venue_id);
         let mut coordinator = ExecutionCoordinator::new(
             VenueId(2),
             RateFeeModel {
@@ -502,7 +575,8 @@ mod tests {
             },
         );
         coordinator.submit(request(), &spec).unwrap();
-        coordinator.accept(8, 20, 25).unwrap();
+        let accepted = coordinator.accept(8, 20, 25).unwrap();
+        assert_eq!(accepted.venue_order_id, 1);
         let first = coordinator
             .fill(
                 8,
@@ -514,6 +588,7 @@ mod tests {
                 },
                 25,
                 &spec,
+                &mut account,
             )
             .unwrap();
         let second = coordinator
@@ -527,6 +602,7 @@ mod tests {
                 },
                 25,
                 &spec,
+                &mut account,
             )
             .unwrap();
 
@@ -535,11 +611,16 @@ mod tests {
         assert_eq!(second.status, Status::Filled);
         assert_eq!(second.exec_qty, 2.0);
         assert_ne!(first.sequence, second.sequence);
-        let account = coordinator.exchange_account().account();
-        assert_eq!(account.position(spec.instrument_id).qty, 5.0);
-        assert_eq!(account.position(spec.instrument_id).num_trades, 2);
-        assert!((account.balance(CurrencyId(1)) + 502.502).abs() < 1e-12);
-        assert!((account.fee(CurrencyId(1)) - 0.502).abs() < 1e-12);
+        assert_eq!(first.venue_order_id, accepted.venue_order_id);
+        assert_eq!(second.venue_order_id, accepted.venue_order_id);
+        assert_eq!(coordinator.order(8).unwrap().exchange_arrival_ts, 20);
+        assert_eq!(coordinator.order(8).unwrap().last_exchange_ts, 20);
+        assert_eq!(coordinator.order(8).unwrap().last_delivery_ts, 25);
+        let venue_account = account.account();
+        assert_eq!(venue_account.position(spec.instrument_id).qty, 5.0);
+        assert_eq!(venue_account.position(spec.instrument_id).num_trades, 2);
+        assert!((venue_account.balance(CurrencyId(1)) + 502.502).abs() < 1e-12);
+        assert!((venue_account.fee(CurrencyId(1)) - 0.502).abs() < 1e-12);
     }
 
     #[test]
@@ -572,6 +653,7 @@ mod tests {
     fn derivative_cash_flow_uses_realized_pnl_instead_of_opening_notional() {
         let mut spec = spec();
         spec.cash_flow_mode = CashFlowMode::DerivativePnl;
+        let mut account = ExchangeAccountState::new(spec.venue_id);
         let mut coordinator = ExecutionCoordinator::new(
             VenueId(2),
             RateFeeModel {
@@ -595,15 +677,10 @@ mod tests {
                 },
                 20,
                 &spec,
+                &mut account,
             )
             .unwrap();
-        assert_eq!(
-            coordinator
-                .exchange_account()
-                .account()
-                .balance(CurrencyId(1)),
-            0.0
-        );
+        assert_eq!(account.account().balance(CurrencyId(1)), 0.0);
 
         let mut sell = buy;
         sell.client_order_id = 9;
@@ -621,21 +698,13 @@ mod tests {
                 },
                 30,
                 &spec,
+                &mut account,
             )
             .unwrap();
-        let position = coordinator
-            .exchange_account()
-            .account()
-            .position(spec.instrument_id);
+        let position = account.account().position(spec.instrument_id);
         assert_eq!(position.qty, 0.0);
         assert_eq!(position.avg_entry_price, 0.0);
         assert_eq!(position.realized_pnl, 20.0);
-        assert_eq!(
-            coordinator
-                .exchange_account()
-                .account()
-                .balance(CurrencyId(1)),
-            20.0
-        );
+        assert_eq!(account.account().balance(CurrencyId(1)), 20.0);
     }
 }

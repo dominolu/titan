@@ -9,6 +9,12 @@ use thiserror::Error;
 use tracing::{debug, info};
 
 use crate::{
+    backtest::execution::{
+        AccountDelta, AccountReport, CurrencyId, ExecutionEventProjector, ExecutionReason,
+        FundingBoundary, FundingEvent, FundingReport, InstrumentId, LIVE_EXECUTION_ABI_VERSION,
+        LiveExecutionAdapter, LiveExecutionEvent, LiveOrderStatus, PortfolioLedger, ProjectedEvent,
+        VenueId,
+    },
     depth::{L2MarketDepth, MarketDepth},
     live::{Instrument, ipc::Channel},
     runtime::RuntimeFunding,
@@ -151,7 +157,13 @@ impl<MD> LiveBotBuilder<MD> {
             order_hook: self.order_hook,
             runtime_feed_events: Vec::new(),
             runtime_order_events: Vec::new(),
+            runtime_projected_events: Vec::new(),
             runtime_funding_events: Vec::new(),
+            runtime_execution_adapter: LiveExecutionAdapter::new(LIVE_EXECUTION_ABI_VERSION)
+                .expect("built-in live execution ABI must match"),
+            runtime_projector: ExecutionEventProjector::with_capacity(3),
+            runtime_local_portfolio: PortfolioLedger::default(),
+            next_runtime_execution_sequence: 0,
             runtime_capture_enabled: false,
         })
     }
@@ -190,7 +202,12 @@ pub struct LiveBot<CH, MD> {
     order_hook: Option<OrderRecvHook>,
     runtime_feed_events: Vec<(usize, Event)>,
     runtime_order_events: Vec<(usize, i64, Order)>,
+    runtime_projected_events: Vec<(usize, ProjectedEvent)>,
     runtime_funding_events: Vec<(usize, RuntimeFunding)>,
+    runtime_execution_adapter: LiveExecutionAdapter,
+    runtime_projector: ExecutionEventProjector,
+    runtime_local_portfolio: PortfolioLedger,
+    next_runtime_execution_sequence: u64,
     runtime_capture_enabled: bool,
 }
 
@@ -215,6 +232,10 @@ where
         self.runtime_order_events.clear();
     }
 
+    pub fn drain_runtime_projected_events(&mut self, output: &mut Vec<(usize, ProjectedEvent)>) {
+        output.append(&mut self.runtime_projected_events);
+    }
+
     pub fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
         &self.runtime_funding_events
     }
@@ -224,10 +245,17 @@ where
     }
 
     pub fn set_runtime_capture(&mut self, enabled: bool) {
+        if enabled && !self.runtime_capture_enabled {
+            self.runtime_execution_adapter.reset();
+            self.runtime_projector.reset();
+            self.runtime_local_portfolio.reset();
+            self.next_runtime_execution_sequence = 0;
+        }
         self.runtime_capture_enabled = enabled;
         if !enabled {
             self.runtime_feed_events.clear();
             self.runtime_order_events.clear();
+            self.runtime_projected_events.clear();
             self.runtime_funding_events.clear();
         }
     }
@@ -268,6 +296,84 @@ where
                 if self.runtime_capture_enabled {
                     self.runtime_order_events
                         .push((inst_no, recv_ts, order.clone()));
+                    let fill = order.exec_qty > 0.0
+                        && matches!(order.status, Status::PartiallyFilled | Status::Filled);
+                    let status = if fill {
+                        if order.status == Status::Filled {
+                            LiveOrderStatus::Filled
+                        } else {
+                            LiveOrderStatus::PartiallyFilled
+                        }
+                    } else {
+                        match order.status {
+                            Status::Rejected => LiveOrderStatus::Rejected,
+                            Status::Canceled => LiveOrderStatus::Canceled,
+                            Status::Expired => LiveOrderStatus::Expired,
+                            _ => LiveOrderStatus::Accepted,
+                        }
+                    };
+                    let instrument_id = InstrumentId(inst_no as u32 + 1);
+                    let account_delta = fill.then_some(AccountDelta {
+                        instrument_id,
+                        position_delta: order.exec_qty * f64::from(order.side as i8),
+                        trade_qty: order.exec_qty,
+                        trade_value: order.exec_price() * order.exec_qty,
+                        currency: CurrencyId(0),
+                        cash_delta: 0.0,
+                        fee: 0.0,
+                        funding: 0.0,
+                        execution_price: order.exec_price(),
+                        realized_pnl: 0.0,
+                    });
+                    let sequence = self.next_runtime_execution_sequence;
+                    self.next_runtime_execution_sequence = self
+                        .next_runtime_execution_sequence
+                        .checked_add(1)
+                        .expect("live execution sequence overflow");
+                    let event = LiveExecutionEvent {
+                        event_id: u128::from(sequence),
+                        venue_id: VenueId(0),
+                        instrument_id,
+                        asset_no: inst_no as u32,
+                        order_id: order.order_id,
+                        // Legacy connectors do not expose this field. Preserve a stable non-zero
+                        // compatibility identity while canonical connectors use the adapter API.
+                        venue_order_id: order.order_id,
+                        exchange_ts: order.exch_timestamp,
+                        delivery_ts: recv_ts,
+                        sequence,
+                        status,
+                        reason: if order.status == Status::Rejected {
+                            ExecutionReason::Unknown(1)
+                        } else {
+                            ExecutionReason::None
+                        },
+                        side: order.side,
+                        order_price: order.price(),
+                        order_qty: order.qty,
+                        exec_price: order.exec_price(),
+                        exec_qty: order.exec_qty,
+                        maker: order.maker,
+                        account_delta,
+                    };
+                    if let Some(report) = self
+                        .runtime_execution_adapter
+                        .normalize(event)
+                        .map_err(|error| BotError::Custom(error.to_string()))?
+                    {
+                        self.runtime_projected_events.extend(
+                            self.runtime_projector
+                                .project(
+                                    report,
+                                    self.runtime_local_portfolio
+                                        .venue_mut_or_insert(report.venue_id),
+                                )
+                                .map_err(|error| BotError::Custom(error.to_string()))?
+                                .iter()
+                                .copied()
+                                .map(|event| (inst_no, event)),
+                        );
+                    }
                 }
                 let received_order_resp = match wait_order_response {
                     WaitOrderResponse::Any => true,
@@ -305,6 +411,173 @@ where
                     return Ok(ElapseResult::OrderResponse);
                 }
             }
+            LiveEvent::ExecutionReport {
+                event_id,
+                venue_no,
+                instrument_id,
+                asset_no,
+                order_id,
+                venue_order_id,
+                exchange_ts,
+                delivery_ts,
+                sequence,
+                status,
+                reason,
+                side,
+                order_price,
+                order_qty,
+                leaves_qty,
+                exec_price,
+                exec_qty,
+                maker,
+                local_submit_ts,
+                time_in_force,
+                order_type,
+                request,
+                account_delta,
+                ..
+            } => {
+                if asset_no as usize != inst_no {
+                    return Err(BotError::Custom(
+                        "canonical live execution asset does not match channel routing".into(),
+                    ));
+                }
+                let status = match status {
+                    1 => LiveOrderStatus::Accepted,
+                    2 => LiveOrderStatus::Rejected,
+                    3 => LiveOrderStatus::Canceled,
+                    4 => LiveOrderStatus::Expired,
+                    5 => LiveOrderStatus::PartiallyFilled,
+                    6 => LiveOrderStatus::Filled,
+                    value => LiveOrderStatus::Unknown(value),
+                };
+                let side = match side {
+                    1 => Side::Buy,
+                    -1 => Side::Sell,
+                    _ => return Err(BotError::Custom("invalid canonical live side".into())),
+                };
+                let legacy_status = match status {
+                    LiveOrderStatus::Accepted => Status::New,
+                    LiveOrderStatus::Rejected => Status::Rejected,
+                    LiveOrderStatus::Canceled => Status::Canceled,
+                    LiveOrderStatus::Expired => Status::Expired,
+                    LiveOrderStatus::PartiallyFilled => Status::PartiallyFilled,
+                    LiveOrderStatus::Filled => Status::Filled,
+                    LiveOrderStatus::Unknown(_) => Status::Unsupported,
+                };
+                let time_in_force = match time_in_force {
+                    0 => TimeInForce::GTC,
+                    1 => TimeInForce::GTX,
+                    2 => TimeInForce::FOK,
+                    3 => TimeInForce::IOC,
+                    _ => TimeInForce::Unsupported,
+                };
+                let order_type = match order_type {
+                    0 => OrdType::Limit,
+                    1 => OrdType::Market,
+                    _ => OrdType::Unsupported,
+                };
+                let request = match request {
+                    0 => Status::None,
+                    1 => Status::New,
+                    4 => Status::Canceled,
+                    _ => Status::Unsupported,
+                };
+                let account_delta = account_delta.map(|delta| AccountDelta {
+                    instrument_id: InstrumentId(delta.instrument_id),
+                    position_delta: delta.position_delta,
+                    trade_qty: delta.trade_qty,
+                    trade_value: delta.trade_value,
+                    currency: CurrencyId(delta.currency),
+                    cash_delta: delta.cash_delta,
+                    fee: delta.fee,
+                    funding: delta.funding,
+                    execution_price: delta.execution_price,
+                    realized_pnl: delta.realized_pnl,
+                });
+                if self.runtime_capture_enabled
+                    && let Some(report) = self
+                        .runtime_execution_adapter
+                        .normalize(LiveExecutionEvent {
+                            event_id,
+                            venue_id: VenueId(venue_no),
+                            instrument_id: InstrumentId(instrument_id),
+                            asset_no,
+                            order_id,
+                            venue_order_id,
+                            exchange_ts,
+                            delivery_ts,
+                            sequence,
+                            status,
+                            reason: crate::runtime::execution_reason_from_code(reason),
+                            side,
+                            order_price,
+                            order_qty,
+                            exec_price,
+                            exec_qty,
+                            maker,
+                            account_delta,
+                        })
+                        .map_err(|error| BotError::Custom(error.to_string()))?
+                {
+                    self.runtime_projected_events.extend(
+                        self.runtime_projector
+                            .project(
+                                report,
+                                self.runtime_local_portfolio
+                                    .venue_mut_or_insert(report.venue_id),
+                            )
+                            .map_err(|error| BotError::Custom(error.to_string()))?
+                            .iter()
+                            .copied()
+                            .map(|event| (inst_no, event)),
+                    );
+                }
+                let instrument = unsafe { self.instruments.get_unchecked_mut(inst_no) };
+                let tick_size = instrument.tick_size;
+                let order = Order {
+                    qty: order_qty,
+                    leaves_qty,
+                    exec_qty,
+                    exec_price_tick: (exec_price / tick_size).round() as i64,
+                    price_tick: (order_price / tick_size).round() as i64,
+                    tick_size,
+                    exch_timestamp: exchange_ts,
+                    local_timestamp: local_submit_ts,
+                    order_id,
+                    q: Box::new(()),
+                    maker,
+                    order_type,
+                    req: request,
+                    status: legacy_status,
+                    side,
+                    time_in_force,
+                };
+                instrument.last_order_latency = Some((local_submit_ts, exchange_ts, delivery_ts));
+                match instrument.orders.entry(order_id) {
+                    Entry::Occupied(mut entry) => {
+                        let existing = entry.get_mut();
+                        if let Some(hook) = self.order_hook.as_mut() {
+                            hook(existing, &order)?;
+                        }
+                        if exchange_ts >= existing.exch_timestamp
+                            && !matches!(
+                                existing.status,
+                                Status::Canceled
+                                    | Status::Expired
+                                    | Status::Filled
+                                    | Status::Rejected
+                            )
+                        {
+                            existing.update(&order);
+                        }
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(order);
+                    }
+                }
+                return Ok(ElapseResult::OrderResponse);
+            }
             LiveEvent::Position { qty, .. } => {
                 unsafe { self.instruments.get_unchecked_mut(inst_no) }
                     .state
@@ -333,24 +606,76 @@ where
                 ..
             } => {
                 if self.runtime_capture_enabled {
-                    self.runtime_funding_events.push((
-                        inst_no,
-                        RuntimeFunding {
-                            event_id,
-                            asset_no: inst_no as u32,
-                            venue_no: 0,
-                            instrument_id: inst_no as u32 + 1,
-                            currency,
-                            publication_ts: exch_ts,
-                            effective_ts: exch_ts,
-                            settlement_ts: exch_ts,
+                    let instrument_id = InstrumentId(inst_no as u32 + 1);
+                    let event = FundingEvent {
+                        event_id,
+                        venue_id: VenueId(0),
+                        instrument_id,
+                        currency: CurrencyId(currency),
+                        publication_ts: exch_ts,
+                        effective_ts: exch_ts,
+                        settlement_ts: exch_ts,
+                        rate: funding_rate,
+                        mark_price,
+                        boundary: FundingBoundary::BeforeSettlementEvents,
+                    };
+                    let delta = AccountDelta {
+                        instrument_id,
+                        position_delta: 0.0,
+                        trade_qty: 0.0,
+                        trade_value: 0.0,
+                        currency: CurrencyId(currency),
+                        cash_delta: 0.0,
+                        fee: 0.0,
+                        funding: amount,
+                        execution_price: 0.0,
+                        realized_pnl: 0.0,
+                    };
+                    let report = FundingReport {
+                        event,
+                        delivery_ts: exch_ts,
+                        sequence: event_id,
+                        position_qty,
+                        amount,
+                        account_report: AccountReport {
+                            venue_id: VenueId(0),
+                            exchange_ts: exch_ts,
                             delivery_ts: exch_ts,
-                            rate: funding_rate,
-                            mark_price,
-                            position_qty,
-                            amount,
+                            sequence: event_id,
+                            delta,
                         },
-                    ));
+                    };
+                    if let Some(report) = self
+                        .runtime_execution_adapter
+                        .normalize_funding((1_u128 << 127) | u128::from(event_id), report)
+                        .map_err(|error| BotError::Custom(error.to_string()))?
+                    {
+                        self.runtime_projector
+                            .project_funding(
+                                report,
+                                self.runtime_local_portfolio
+                                    .venue_mut_or_insert(report.event.venue_id),
+                            )
+                            .map_err(|error| BotError::Custom(error.to_string()))?;
+                        self.runtime_funding_events.push((
+                            inst_no,
+                            RuntimeFunding {
+                                event_id,
+                                asset_no: inst_no as u32,
+                                venue_no: 0,
+                                instrument_id: instrument_id.0,
+                                currency,
+                                publication_ts: exch_ts,
+                                effective_ts: exch_ts,
+                                settlement_ts: exch_ts,
+                                delivery_ts: exch_ts,
+                                rate: funding_rate,
+                                mark_price,
+                                position_qty,
+                                amount,
+                            },
+                        ));
+                    }
                 }
                 if WAIT_NEXT_FEED {
                     return Ok(ElapseResult::MarketFeed);
@@ -741,11 +1066,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{depth::HashMapMarketDepth, live::ipc::Channel};
+    use crate::{depth::HashMapMarketDepth, live::ipc::Channel, types::LiveAccountDelta};
+    use std::collections::VecDeque;
 
     struct TestChannel;
 
     struct FundingChannel(Option<LiveEvent>);
+
+    struct CanonicalExecutionChannel(VecDeque<LiveEvent>);
 
     impl Channel for TestChannel {
         fn build<MD>(_instruments: &[Instrument<MD>]) -> Result<Self, BuildError> {
@@ -805,6 +1133,69 @@ mod tests {
         }
     }
 
+    impl Channel for CanonicalExecutionChannel {
+        fn build<MD>(_instruments: &[Instrument<MD>]) -> Result<Self, BuildError> {
+            let event = LiveEvent::ExecutionReport {
+                symbol: "BTC".into(),
+                event_id: 44,
+                venue_no: 3,
+                instrument_id: 8,
+                asset_no: 0,
+                order_id: 9,
+                venue_order_id: 99,
+                exchange_ts: 100,
+                delivery_ts: 120,
+                sequence: 7,
+                status: 5,
+                reason: 0,
+                side: 1,
+                order_price: 100.0,
+                order_qty: 2.0,
+                leaves_qty: 1.0,
+                exec_price: 100.0,
+                exec_qty: 1.0,
+                maker: false,
+                local_submit_ts: 90,
+                time_in_force: 0,
+                order_type: 0,
+                request: 1,
+                account_delta: Some(LiveAccountDelta {
+                    instrument_id: 8,
+                    position_delta: 1.0,
+                    trade_qty: 1.0,
+                    trade_value: 100.0,
+                    currency: 1,
+                    cash_delta: -100.0,
+                    fee: 0.1,
+                    funding: 0.0,
+                    execution_price: 100.0,
+                    realized_pnl: 0.0,
+                }),
+            };
+            Ok(Self(VecDeque::from([event.clone(), event])))
+        }
+
+        fn recv_timeout(
+            &mut self,
+            _id: u64,
+            _timeout: Duration,
+        ) -> Result<(usize, LiveEvent), BotError> {
+            self.0
+                .pop_front()
+                .map(|event| (0, event))
+                .ok_or(BotError::Timeout)
+        }
+
+        fn send(
+            &mut self,
+            _id: u64,
+            _inst_no: usize,
+            _request: LiveRequest,
+        ) -> Result<(), BotError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn live_modify_is_explicitly_disabled() {
         let mut bot = LiveBotBuilder::new()
@@ -821,6 +1212,40 @@ mod tests {
 
         let error = bot.modify(0, 1, 100.0, 1.0, false).unwrap_err();
         assert!(matches!(error, BotError::UnsupportedOperation(_)));
+    }
+
+    #[test]
+    fn canonical_live_execution_uses_connector_event_id_for_reconnect_deduplication() {
+        let mut bot = LiveBotBuilder::new()
+            .register(Instrument::new(
+                "connector_name",
+                "BTC",
+                0.1,
+                0.001,
+                HashMapMarketDepth::new(0.1, 0.001),
+                0,
+            ))
+            .build::<CanonicalExecutionChannel>()
+            .unwrap();
+        bot.set_runtime_capture(true);
+        assert_eq!(
+            bot.wait_next_feed(true, 1_000_000).unwrap(),
+            ElapseResult::OrderResponse
+        );
+        assert_eq!(
+            bot.wait_next_feed(true, 1_000_000).unwrap(),
+            ElapseResult::OrderResponse
+        );
+        let mut projected = Vec::new();
+        bot.drain_runtime_projected_events(&mut projected);
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[0].1.report.venue_order_id, 99);
+        assert_eq!(projected[1].1.report.sequence, 7);
+        assert_eq!(projected[2].1.visible_position, 1.0);
+        assert_eq!(
+            bot.orders(0).get(&9).unwrap().status,
+            Status::PartiallyFilled
+        );
     }
 
     #[test]

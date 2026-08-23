@@ -27,7 +27,7 @@ use crate::{
     types::{Event, Order, Status},
 };
 
-pub const STRATEGY_ABI_VERSION: u32 = 6;
+pub const STRATEGY_ABI_VERSION: u32 = 7;
 pub const EVENT_SLOT_COUNT: usize = 32;
 
 /// Stable callback identifiers. New event kinds must use a previously unused number;
@@ -60,13 +60,18 @@ impl StrategyEventKind {
 pub struct FillEvent {
     pub asset_no: u64,
     pub order_id: u64,
+    pub venue_order_id: u64,
     pub exch_ts: i64,
     pub local_ts: i64,
+    pub sequence: u64,
     pub price: f64,
     pub qty: f64,
+    pub venue_no: u32,
+    pub instrument_id: u32,
+    pub reason: u32,
     pub side: i8,
     pub maker: u8,
-    pub _reserved: [u8; 6],
+    pub _reserved: [u8; 2],
 }
 
 /// Flat order-response payload. One entry corresponds to one response received by the
@@ -76,17 +81,122 @@ pub struct FillEvent {
 pub struct OrderEvent {
     pub asset_no: u64,
     pub order_id: u64,
+    pub venue_order_id: u64,
     pub exch_ts: i64,
     pub local_ts: i64,
+    pub sequence: u64,
     pub price: f64,
     pub qty: f64,
     pub exec_price: f64,
     pub exec_qty: f64,
+    pub venue_no: u32,
+    pub instrument_id: u32,
+    pub reason: u32,
     pub side: i8,
     pub status: u8,
     pub request: u8,
     pub maker: u8,
     pub _reserved: [u8; 4],
+}
+
+/// Stable numeric reason code shared by backtest and live ABI payloads.
+pub const fn execution_reason_code(reason: crate::backtest::execution::ExecutionReason) -> u32 {
+    use crate::backtest::execution::ExecutionReason::*;
+    match reason {
+        None => 0,
+        LocalRisk => 1,
+        ExchangeRisk => 2,
+        InvalidInstrument => 3,
+        InvalidPrice => 4,
+        InvalidQuantity => 5,
+        DuplicateOrderId => 6,
+        PositionLimit => 7,
+        NotionalLimit => 8,
+        InsufficientBalance => 9,
+        InsufficientMargin => 10,
+        ReduceOnlyViolation => 11,
+        MarketClosed => 12,
+        InsufficientLiquidity => 13,
+        Expired => 14,
+        UserCanceled => 15,
+        Unknown(code) => 0x8000_0000 | code,
+    }
+}
+
+/// Decodes the stable numeric execution reason used by canonical live connectors.
+pub const fn execution_reason_from_code(code: u32) -> crate::backtest::execution::ExecutionReason {
+    use crate::backtest::execution::ExecutionReason;
+    match code {
+        0 => ExecutionReason::None,
+        1 => ExecutionReason::LocalRisk,
+        2 => ExecutionReason::ExchangeRisk,
+        3 => ExecutionReason::InvalidInstrument,
+        4 => ExecutionReason::InvalidPrice,
+        5 => ExecutionReason::InvalidQuantity,
+        6 => ExecutionReason::DuplicateOrderId,
+        7 => ExecutionReason::PositionLimit,
+        8 => ExecutionReason::NotionalLimit,
+        9 => ExecutionReason::InsufficientBalance,
+        10 => ExecutionReason::InsufficientMargin,
+        11 => ExecutionReason::ReduceOnlyViolation,
+        12 => ExecutionReason::MarketClosed,
+        13 => ExecutionReason::InsufficientLiquidity,
+        14 => ExecutionReason::Expired,
+        15 => ExecutionReason::UserCanceled,
+        value if value & 0x8000_0000 != 0 => ExecutionReason::Unknown(value & 0x7fff_ffff),
+        value => ExecutionReason::Unknown(value),
+    }
+}
+
+/// Projects one canonical execution report into ABI v7 buffers.
+pub fn project_execution_report(
+    report: &crate::backtest::execution::ExecutionReport,
+    request: u8,
+    orders: &mut Vec<OrderEvent>,
+    fills: &mut Vec<FillEvent>,
+) {
+    use crate::backtest::execution::{ExecutionEventProjector, ProjectedEventKind};
+    let reason = execution_reason_code(report.reason);
+    orders.push(OrderEvent {
+        asset_no: report.asset_no as u64,
+        order_id: report.order_id,
+        venue_order_id: report.venue_order_id,
+        exch_ts: report.exchange_ts,
+        local_ts: report.delivery_ts,
+        sequence: report.sequence,
+        price: report.order_price,
+        qty: report.order_qty,
+        exec_price: report.exec_price,
+        exec_qty: report.exec_qty,
+        venue_no: report.venue_id.0,
+        instrument_id: report.instrument_id.0,
+        reason,
+        side: report.side as i8,
+        status: report.status as u8,
+        request,
+        maker: u8::from(report.maker),
+        _reserved: [0; 4],
+    });
+    if ExecutionEventProjector::visible_event_kinds(report, false)
+        .contains(&Some(ProjectedEventKind::Filled))
+    {
+        fills.push(FillEvent {
+            asset_no: report.asset_no as u64,
+            order_id: report.order_id,
+            venue_order_id: report.venue_order_id,
+            exch_ts: report.exchange_ts,
+            local_ts: report.delivery_ts,
+            sequence: report.sequence,
+            price: report.exec_price,
+            qty: report.exec_qty,
+            venue_no: report.venue_id.0,
+            instrument_id: report.instrument_id.0,
+            reason,
+            side: report.side as i8,
+            maker: u8::from(report.maker),
+            _reserved: [0; 2],
+        });
+    }
 }
 
 /// Projects one locally delivered execution response into the stable runtime ABI buffers.
@@ -99,8 +209,7 @@ pub fn project_order_response(
     fills: &mut Vec<FillEvent>,
 ) {
     use crate::backtest::execution::{
-        ExecutionEventProjector, ExecutionReason, ExecutionReport, ExecutionReportKind,
-        InstrumentId, ProjectedEventKind, VenueId,
+        ExecutionReason, ExecutionReport, ExecutionReportKind, InstrumentId, VenueId,
     };
     let kind = if order.exec_qty > 0.0
         && matches!(order.status, Status::PartiallyFilled | Status::Filled)
@@ -121,6 +230,7 @@ pub fn project_order_response(
         instrument_id: InstrumentId(asset_no as u32 + 1),
         asset_no: asset_no as u32,
         order_id: order.order_id,
+        venue_order_id: 0,
         exchange_ts: order.exch_timestamp,
         delivery_ts,
         sequence: 0,
@@ -133,36 +243,7 @@ pub fn project_order_response(
         maker: order.maker,
         account_delta: None,
     };
-    orders.push(OrderEvent {
-        asset_no: asset_no as u64,
-        order_id: order.order_id,
-        exch_ts: order.exch_timestamp,
-        local_ts: delivery_ts,
-        price: order.price(),
-        qty: order.qty,
-        exec_price: order.exec_price(),
-        exec_qty: order.exec_qty,
-        side: order.side as i8,
-        status: order.status as u8,
-        request: order.req as u8,
-        maker: u8::from(order.maker),
-        _reserved: [0; 4],
-    });
-    if ExecutionEventProjector::visible_event_kinds(&report, false)
-        .contains(&Some(ProjectedEventKind::Filled))
-    {
-        fills.push(FillEvent {
-            asset_no: asset_no as u64,
-            order_id: order.order_id,
-            exch_ts: order.exch_timestamp,
-            local_ts: delivery_ts,
-            price: order.exec_price(),
-            qty: order.exec_qty,
-            side: order.side as i8,
-            maker: u8::from(order.maker),
-            _reserved: [0; 6],
-        });
-    }
+    project_execution_report(&report, order.req as u8, orders, fills);
 }
 
 /// Read-only top-of-book state refreshed by Rust before every market callback.
@@ -179,6 +260,16 @@ pub struct MarketState {
 
 pub const ORDER_COMMAND_SUBMIT: u8 = 1;
 pub const ORDER_COMMAND_CANCEL: u8 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrderCommandDecodeError {
+    InvalidKind,
+    InvalidSide,
+    InvalidTimeInForce,
+    InvalidOrderType,
+    InvalidPrice,
+    InvalidQuantity,
+}
 
 /// Preallocated command written by a foreign callback and consumed synchronously by Rust
 /// after the callback returns. Modification is intentionally absent; use cancel/replace.
@@ -198,6 +289,70 @@ pub struct OrderCommand {
     pub trigger_price: f64,
     /// GTD expiry on the global clock. Zero means no expiry.
     pub gtd_expiry_ts: i64,
+}
+
+impl OrderCommand {
+    /// Decode the transport-only ABI object exactly once at the Rust boundary.
+    pub fn decode_execution(
+        self,
+        now: i64,
+        venue_id: VenueId,
+        instrument_id: InstrumentId,
+    ) -> Result<Option<crate::backtest::execution::ExecutionCommand>, OrderCommandDecodeError> {
+        use crate::backtest::execution::{
+            CancelRequest, ExecutionCommand, ExecutionOrderRequest, OrderOrigin,
+        };
+        let side = match self.side {
+            1 => crate::types::Side::Buy,
+            -1 => crate::types::Side::Sell,
+            _ => return Err(OrderCommandDecodeError::InvalidSide),
+        };
+        match self.kind {
+            0 => Ok(None),
+            ORDER_COMMAND_CANCEL => Ok(Some(ExecutionCommand::Cancel(CancelRequest {
+                client_order_id: self.order_id,
+                venue_id,
+                instrument_id,
+                local_submit_ts: now,
+            }))),
+            ORDER_COMMAND_SUBMIT => {
+                let time_in_force = match self.time_in_force {
+                    0 => crate::types::TimeInForce::GTC,
+                    1 => crate::types::TimeInForce::GTX,
+                    2 => crate::types::TimeInForce::FOK,
+                    3 => crate::types::TimeInForce::IOC,
+                    _ => return Err(OrderCommandDecodeError::InvalidTimeInForce),
+                };
+                let order_type = match self.order_type {
+                    0 => crate::types::OrdType::Limit,
+                    1 => crate::types::OrdType::Market,
+                    _ => return Err(OrderCommandDecodeError::InvalidOrderType),
+                };
+                if !self.qty.is_finite() || self.qty <= 0.0 {
+                    return Err(OrderCommandDecodeError::InvalidQuantity);
+                }
+                if !self.price.is_finite()
+                    || (order_type == crate::types::OrdType::Limit && self.price <= 0.0)
+                {
+                    return Err(OrderCommandDecodeError::InvalidPrice);
+                }
+                Ok(Some(ExecutionCommand::Submit(ExecutionOrderRequest {
+                    client_order_id: self.order_id,
+                    venue_id,
+                    instrument_id,
+                    price: self.price,
+                    qty: self.qty,
+                    side,
+                    time_in_force,
+                    order_type,
+                    reduce_only: self._reserved[0] != 0,
+                    origin: OrderOrigin::Strategy,
+                    local_submit_ts: now,
+                })))
+            }
+            _ => Err(OrderCommandDecodeError::InvalidKind),
+        }
+    }
 }
 
 impl Default for OrderCommand {
@@ -473,6 +628,12 @@ pub trait RuntimeEventSource {
     ) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Final resource/recorder hook. It is invoked exactly once after `on_stop`, including all
+    /// callback and source error paths.
+    fn finish(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -568,7 +729,9 @@ pub struct MaterializedBarSource {
     execution_cursor: usize,
     order_batch: Vec<OrderEvent>,
     fill_batch: Vec<FillEvent>,
-    bar_pending: bool,
+    pending_bar_deliveries: VecDeque<PendingBarDelivery>,
+    current_bar_delivery: Option<PendingBarDelivery>,
+    feed_latency_ns: i64,
     entry_latency_ns: i64,
     pending_actions: VecDeque<PendingBarAction>,
     conditional_books: Vec<ConditionalOrderBook>,
@@ -576,6 +739,7 @@ pub struct MaterializedBarSource {
     gtd_orders: BTreeMap<(u64, u64), (i64, PendingBarOrder)>,
     conditional_scratch: Vec<ConditionalAction>,
     timers: TimerQueue,
+    scheduler: crate::backtest::scheduler::GlobalScheduler<BarBoundary>,
     configured_timers: Vec<RuntimeTimer>,
     timer_scratch: Vec<TimerEvent>,
     current_timer: RuntimeTimer,
@@ -584,6 +748,24 @@ pub struct MaterializedBarSource {
     current_funding: RuntimeFunding,
     funding_callback_pending: bool,
     next_risk_order_id: u64,
+    end_policy: crate::backtest::result::EndPolicy,
+    data_end_ts: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BarBoundary {
+    ResponseDelivery,
+    FundingSettlement,
+    CommandArrival,
+    Timer,
+    MarketOpen,
+    BarClose,
+}
+
+struct PendingBarDelivery {
+    delivery_ts: i64,
+    meta: BarBatchMeta,
+    bars: Vec<BarItem>,
 }
 
 impl MaterializedBarSource {
@@ -621,6 +803,12 @@ impl MaterializedBarSource {
             .map(|record| record.timeframe_ns)
             .min()
             .unwrap_or(0);
+        let data_end_ts = feed
+            .records()
+            .iter()
+            .map(|record| record.bar.close_ts)
+            .max()
+            .unwrap_or(i64::MIN);
         let mut execution_assets = vec![false; num_assets];
         for record in feed.records() {
             if record.timeframe_ns == execution_timeframe_ns {
@@ -640,7 +828,9 @@ impl MaterializedBarSource {
             execution_cursor: 0,
             order_batch: Vec::with_capacity(1),
             fill_batch: Vec::with_capacity(1),
-            bar_pending: false,
+            pending_bar_deliveries: VecDeque::with_capacity(4),
+            current_bar_delivery: None,
+            feed_latency_ns: 0,
             entry_latency_ns: 0,
             pending_actions: VecDeque::with_capacity(16),
             conditional_books: (0..num_assets)
@@ -650,6 +840,7 @@ impl MaterializedBarSource {
             gtd_orders: BTreeMap::new(),
             conditional_scratch: Vec::with_capacity(8),
             timers: TimerQueue::default(),
+            scheduler: crate::backtest::scheduler::GlobalScheduler::new(),
             configured_timers: Vec::new(),
             timer_scratch: Vec::with_capacity(4),
             current_timer: RuntimeTimer {
@@ -662,6 +853,8 @@ impl MaterializedBarSource {
             current_funding: RuntimeFunding::default(),
             funding_callback_pending: false,
             next_risk_order_id: u64::MAX,
+            end_policy: crate::backtest::result::EndPolicy::DrainAll,
+            data_end_ts,
         })
     }
 
@@ -682,6 +875,78 @@ impl MaterializedBarSource {
         }
     }
 
+    fn next_boundary(
+        &mut self,
+        market: Option<(i64, BarBoundary)>,
+        bar_delivery: Option<i64>,
+    ) -> Option<BarBoundary> {
+        use crate::backtest::scheduler::EventPhase;
+        self.scheduler.reset();
+        if let Some(key) = self.execution.next_delivery_key() {
+            self.scheduler.schedule(
+                key.timestamp,
+                key.phase,
+                key.source_priority,
+                key.venue_no,
+                key.asset_no,
+                BarBoundary::ResponseDelivery,
+            );
+        }
+        if let Some(timestamp) = self.next_funding_settlement_ts() {
+            self.scheduler.schedule(
+                timestamp,
+                EventPhase::ExchangeState,
+                0,
+                0,
+                0,
+                BarBoundary::FundingSettlement,
+            );
+        }
+        if let Some(timestamp) = self.next_action_ts() {
+            self.scheduler.schedule(
+                timestamp,
+                EventPhase::CommandArrival,
+                0,
+                0,
+                0,
+                BarBoundary::CommandArrival,
+            );
+        }
+        if let Some(timestamp) = self.next_timer_ts() {
+            self.scheduler
+                .schedule(timestamp, EventPhase::Timer, 0, 0, 0, BarBoundary::Timer);
+        }
+        if let Some((timestamp, boundary)) = market {
+            let phase = if boundary == BarBoundary::MarketOpen {
+                EventPhase::Matching
+            } else {
+                EventPhase::MarketDelivery
+            };
+            self.scheduler.schedule(timestamp, phase, 0, 0, 0, boundary);
+        }
+        if let Some(timestamp) = bar_delivery {
+            self.scheduler.schedule(
+                timestamp,
+                EventPhase::MarketDelivery,
+                0,
+                0,
+                0,
+                BarBoundary::BarClose,
+            );
+        }
+        let event = self.scheduler.pop()?;
+        let limit = match self.end_policy {
+            crate::backtest::result::EndPolicy::DrainAll => None,
+            crate::backtest::result::EndPolicy::StopAtDataEnd => Some(self.data_end_ts),
+            crate::backtest::result::EndPolicy::StopAtTime(timestamp) => Some(timestamp),
+        };
+        if limit.is_some_and(|limit| event.key.timestamp > limit) {
+            None
+        } else {
+            Some(event.payload)
+        }
+    }
+
     pub fn configure_context(&mut self, ctx: &mut StrategyRuntimeContext) {
         ctx.histories_ptr = self.views.as_ptr();
         ctx.num_histories = self.views.len();
@@ -690,6 +955,23 @@ impl MaterializedBarSource {
         ctx.num_commands = 0;
         ctx.positions_ptr = self.execution.positions().as_ptr();
         ctx.num_positions = self.execution.positions().len();
+    }
+
+    pub fn set_end_policy(&mut self, policy: crate::backtest::result::EndPolicy) {
+        self.end_policy = policy;
+    }
+
+    /// Configures when a closed Bar becomes locally visible. The Bar itself continues to contain
+    /// only `open_ts`/`close_ts`; visibility is represented by the scheduler envelope.
+    pub fn configure_feed_latency(
+        &mut self,
+        feed_latency_ns: i64,
+    ) -> Result<(), MaterializedBarError> {
+        if feed_latency_ns < 0 {
+            return Err(MaterializedBarError::InvalidOrder);
+        }
+        self.feed_latency_ns = feed_latency_ns;
+        Ok(())
     }
 
     pub fn schedule_timer(&mut self, timer: RuntimeTimer) {
@@ -882,7 +1164,8 @@ impl MaterializedBarSource {
         self.execution_cursor = 0;
         self.order_batch.clear();
         self.fill_batch.clear();
-        self.bar_pending = false;
+        self.pending_bar_deliveries.clear();
+        self.current_bar_delivery = None;
         self.pending_actions.clear();
         for book in &mut self.conditional_books {
             book.reset();
@@ -891,6 +1174,7 @@ impl MaterializedBarSource {
         self.gtd_orders.clear();
         self.conditional_scratch.clear();
         self.timers.reset();
+        self.scheduler.reset();
         for index in 0..self.configured_timers.len() {
             let timer = self.configured_timers[index];
             self.enqueue_timer(timer);
@@ -928,17 +1212,18 @@ impl MaterializedBarSource {
             return Err(MaterializedBarError::CommandOverflow);
         }
         for command in self.commands[..ctx.num_commands].iter().copied() {
-            match command.kind {
-                ORDER_COMMAND_SUBMIT => {
+            let decoded = command
+                .decode_execution(
+                    ctx.now,
+                    VenueId(0),
+                    InstrumentId(command.asset_no as u32 + 1),
+                )
+                .map_err(|_| MaterializedBarError::InvalidOrder)?;
+            match decoded {
+                Some(crate::backtest::execution::ExecutionCommand::Submit(request)) => {
                     if !allow_submit
                         || command.asset_no as usize >= self.execution.positions().len()
                         || !self.matcher.supports_asset(command.asset_no as usize)
-                        || !matches!(command.side, -1 | 1)
-                        || !command.price.is_finite()
-                        || command.qty <= 0.0
-                        || !command.qty.is_finite()
-                        || command.time_in_force > 3
-                        || command.order_type > 1
                         || command._reserved[1] > 2
                         || (command._reserved[1] != 0
                             && (!command.trigger_price.is_finite() || command.trigger_price <= 0.0))
@@ -950,6 +1235,7 @@ impl MaterializedBarSource {
                     {
                         return Err(MaterializedBarError::InvalidOrder);
                     }
+                    debug_assert_eq!(request.client_order_id, command.order_id);
                     match self.execution.check_local_submit(command, ctx.now)? {
                         crate::backtest::execution::RiskDecision::Allow => {}
                         crate::backtest::execution::RiskDecision::Reject { reason } => {
@@ -968,6 +1254,10 @@ impl MaterializedBarSource {
                         || self
                             .gtd_orders
                             .contains_key(&(command.asset_no, command.order_id));
+                    if duplicate {
+                        self.execution.reject_duplicate_local(command, ctx.now)?;
+                        continue;
+                    }
                     let inserted = if command._reserved[1] == 0 {
                         self.matcher.submit(pending)
                     } else {
@@ -975,11 +1265,9 @@ impl MaterializedBarSource {
                             .insert((command.asset_no, command.order_id), pending)
                             .is_none()
                     };
-                    if duplicate || !inserted {
-                        return Err(MaterializedBarError::DuplicateOrder {
-                            asset_no: command.asset_no,
-                            order_id: command.order_id,
-                        });
+                    if !inserted {
+                        self.execution.reject_duplicate_local(command, ctx.now)?;
+                        continue;
                     }
                     if command.gtd_expiry_ts != 0 {
                         self.gtd_orders.insert(
@@ -993,15 +1281,15 @@ impl MaterializedBarSource {
                         exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
                     });
                 }
-                ORDER_COMMAND_CANCEL => {
+                Some(crate::backtest::execution::ExecutionCommand::Cancel(request)) => {
+                    debug_assert_eq!(request.client_order_id, command.order_id);
                     self.pending_actions.push_back(PendingBarAction::Cancel {
                         command,
                         local_submit_ts: ctx.now,
                         exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
                     });
                 }
-                0 => {}
-                _ => return Err(MaterializedBarError::InvalidOrder),
+                None => {}
             }
         }
         ctx.num_commands = 0;
@@ -1371,12 +1659,17 @@ impl MaterializedBarSource {
                 self.order_batch.push(OrderEvent {
                     asset_no: report.asset_no as u64,
                     order_id: report.order_id,
+                    venue_order_id: report.venue_order_id,
                     exch_ts: report.exchange_ts,
                     local_ts: report.delivery_ts,
+                    sequence: report.sequence,
                     price: report.order_price,
                     qty: report.order_qty,
                     exec_price: report.exec_price,
                     exec_qty: report.exec_qty,
+                    venue_no: report.venue_id.0,
+                    instrument_id: report.instrument_id.0,
+                    reason: execution_reason_code(report.reason),
                     side: report.side as i8,
                     status: report.status as u8,
                     request: 0,
@@ -1394,13 +1687,18 @@ impl MaterializedBarSource {
                 self.fill_batch.push(FillEvent {
                     asset_no: report.asset_no as u64,
                     order_id: report.order_id,
+                    venue_order_id: report.venue_order_id,
                     exch_ts: report.exchange_ts,
                     local_ts: report.delivery_ts,
+                    sequence: report.sequence,
                     price: report.exec_price,
                     qty: report.exec_qty,
+                    venue_no: report.venue_id.0,
+                    instrument_id: report.instrument_id.0,
+                    reason: execution_reason_code(report.reason),
                     side: report.side as i8,
                     maker: u8::from(report.maker),
-                    _reserved: [0; 6],
+                    _reserved: [0; 2],
                 });
                 Some(RuntimeEvent {
                     kind: StrategyEventKind::Filled as u32,
@@ -1428,88 +1726,68 @@ impl RuntimeEventSource for MaterializedBarSource {
             if self.funding_callback_pending {
                 return Ok(Some(self.next_funding_event()));
             }
-            if self.bar_pending {
-                let first = self.feed.batch()[0];
-                let action_ts = self.next_action_ts().unwrap_or(i64::MAX);
-                let delivery_ts = self.execution.next_delivery_ts().unwrap_or(i64::MAX);
-                let timer_ts = self.next_timer_ts().unwrap_or(i64::MAX);
-                let funding_ts = self.next_funding_settlement_ts().unwrap_or(i64::MAX);
-                if delivery_ts <= action_ts
-                    && delivery_ts <= funding_ts
-                    && delivery_ts <= timer_ts
-                    && delivery_ts <= first.bar.close_ts
-                {
+            let market = self
+                .feed
+                .peek_open_ts()?
+                .map(|timestamp| (timestamp, BarBoundary::MarketOpen));
+            let bar_delivery = self
+                .pending_bar_deliveries
+                .front()
+                .map(|delivery| delivery.delivery_ts);
+            match self.next_boundary(market, bar_delivery) {
+                Some(BarBoundary::ResponseDelivery) => {
                     self.deliver_next_runtime_event()?;
-                    continue;
                 }
-                if funding_ts <= action_ts
-                    && funding_ts <= timer_ts
-                    && funding_ts <= first.bar.close_ts
-                {
+                Some(BarBoundary::FundingSettlement) => {
                     self.process_next_funding()?;
-                    continue;
                 }
-                if action_ts <= timer_ts && action_ts <= first.bar.close_ts {
+                Some(BarBoundary::CommandArrival) => {
                     self.process_next_action()?;
-                    continue;
                 }
-                if timer_ts < first.bar.close_ts {
-                    return Ok(self.next_timer_event());
+                Some(BarBoundary::Timer) => return Ok(self.next_timer_event()),
+                Some(BarBoundary::MarketOpen) => {
+                    let meta = self
+                        .feed
+                        .next_batch()?
+                        .expect("peeked Bar open must have a batch");
+                    self.match_at_next_open(meta)?;
+                    let delivery = PendingBarDelivery {
+                        delivery_ts: meta.close_ts.saturating_add(self.feed_latency_ns),
+                        meta,
+                        bars: self.feed.batch().to_vec(),
+                    };
+                    let index = self
+                        .pending_bar_deliveries
+                        .iter()
+                        .position(|queued| {
+                            (
+                                queued.delivery_ts,
+                                queued.meta.close_ts,
+                                queued.meta.timeframe_ns,
+                            ) > (
+                                delivery.delivery_ts,
+                                delivery.meta.close_ts,
+                                delivery.meta.timeframe_ns,
+                            )
+                        })
+                        .unwrap_or(self.pending_bar_deliveries.len());
+                    self.pending_bar_deliveries.insert(index, delivery);
                 }
-                self.bar_pending = false;
-                return Ok(Some(RuntimeEvent {
-                    kind: StrategyEventKind::Bar as u32,
-                    now: first.bar.close_ts,
-                    payload: RuntimePayload::Bars {
-                        timeframe_ns: first.bar.close_ts - first.bar.open_ts,
-                        close_ts: first.bar.close_ts,
-                        bars: self.feed.batch(),
-                    },
-                }));
-            }
-
-            let next_open_ts = self.feed.peek_open_ts()?;
-            let boundary = next_open_ts.unwrap_or(i64::MAX);
-            let action = self.next_action_ts();
-            let delivery = self.execution.next_delivery_ts();
-            let timer = self.next_timer_ts();
-            let funding = self.next_funding_settlement_ts();
-            if let Some(delivery_ts) = delivery
-                && delivery_ts <= action.unwrap_or(i64::MAX)
-                && delivery_ts <= funding.unwrap_or(i64::MAX)
-                && delivery_ts <= timer.unwrap_or(i64::MAX)
-                && delivery_ts <= boundary
-            {
-                self.deliver_next_runtime_event()?;
-                continue;
-            }
-            if funding.is_some_and(|funding_ts| {
-                funding_ts <= action.unwrap_or(i64::MAX)
-                    && funding_ts <= timer.unwrap_or(i64::MAX)
-                    && funding_ts <= boundary
-            }) {
-                self.process_next_funding()?;
-                continue;
-            }
-            if action.is_some_and(|action_ts| {
-                action_ts <= timer.unwrap_or(i64::MAX) && action_ts <= boundary
-            }) {
-                self.process_next_action()?;
-                continue;
-            }
-            if timer.is_some_and(|timer_ts| timer_ts <= boundary) {
-                return Ok(self.next_timer_event());
-            }
-
-            let Some(meta) = self.feed.next_batch()? else {
-                self.deliver_next_runtime_event()?;
-                if self.execution.next_delivery_ts().is_some() {
-                    continue;
+                Some(BarBoundary::BarClose) => {
+                    self.current_bar_delivery = self.pending_bar_deliveries.pop_front();
+                    let delivery = self.current_bar_delivery.as_ref().unwrap();
+                    return Ok(Some(RuntimeEvent {
+                        kind: StrategyEventKind::Bar as u32,
+                        now: delivery.delivery_ts,
+                        payload: RuntimePayload::Bars {
+                            timeframe_ns: delivery.meta.timeframe_ns,
+                            close_ts: delivery.meta.close_ts,
+                            bars: &delivery.bars,
+                        },
+                    }));
                 }
-                return Ok(None);
-            };
-            self.match_at_next_open(meta)?;
-            self.bar_pending = true;
+                None => return Ok(None),
+            }
         }
     }
 
@@ -1519,7 +1797,11 @@ impl RuntimeEventSource for MaterializedBarSource {
         ctx: &mut StrategyRuntimeContext,
     ) -> Result<(), Self::Error> {
         if kind == StrategyEventKind::Bar as u32 {
-            for item in self.feed.batch() {
+            let delivery = self
+                .current_bar_delivery
+                .as_ref()
+                .expect("Bar callback must have one pending delivery");
+            for item in &delivery.bars {
                 if let Some(slot) = self.histories.iter_mut().find(|slot| {
                     slot.asset_no == item.asset_no
                         && slot.timeframe_ns == item.bar.close_ts - item.bar.open_ts
@@ -1528,6 +1810,7 @@ impl RuntimeEventSource for MaterializedBarSource {
                 }
             }
             self.refresh_views();
+            self.current_bar_delivery = None;
         }
         self.process_commands(
             ctx,
@@ -1653,7 +1936,14 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
     let stop_hook = source
         .after_callback(StrategyEventKind::Stop as u32, ctx)
         .map_err(|error| RuntimeError::Source(error.to_string()));
-    result.and(error_hook).and(stop_result).and(stop_hook)?;
+    let finish_hook = source
+        .finish()
+        .map_err(|error| RuntimeError::Source(error.to_string()));
+    result
+        .and(error_hook)
+        .and(stop_result)
+        .and(stop_hook)
+        .and(finish_hook)?;
     Ok(stats)
 }
 
@@ -1767,6 +2057,7 @@ impl PreparedBarRuntime {
         mut context: StrategyRuntimeContext,
         result_template: crate::backtest::result::BacktestResult,
     ) -> Self {
+        source.set_end_policy(result_template.end_policy);
         source.configure_context(&mut context);
         Self {
             source,
@@ -1890,6 +2181,7 @@ mod tests {
     struct State {
         calls: Vec<u32>,
         history_commits: usize,
+        finalized: usize,
     }
 
     unsafe extern "C" fn record(ctx: *mut StrategyRuntimeContext) -> i32 {
@@ -1935,6 +2227,11 @@ mod tests {
             if kind == StrategyEventKind::Bar as u32 {
                 unsafe { (*self.state).history_commits += 1 };
             }
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<(), Self::Error> {
+            unsafe { (*self.state).finalized += 1 };
             Ok(())
         }
     }
@@ -1994,6 +2291,7 @@ mod tests {
         };
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Start, fail_start);
+        callbacks.set(StrategyEventKind::Error, record);
         callbacks.set(StrategyEventKind::Stop, record);
         let mut ctx = StrategyRuntimeContext {
             user_data: (&mut state as *mut State).cast(),
@@ -2005,9 +2303,11 @@ mod tests {
             state.calls,
             vec![
                 StrategyEventKind::Start as u32,
+                StrategyEventKind::Error as u32,
                 StrategyEventKind::Stop as u32
             ]
         );
+        assert_eq!(state.finalized, 1);
     }
 
     fn reproducibility_metadata() -> ReproducibilityMetadata {
@@ -2163,5 +2463,174 @@ mod tests {
             ]
         );
         assert_eq!(source.funding_reports().len(), 1);
+    }
+
+    #[test]
+    fn stop_at_data_end_does_not_drain_future_timer_or_funding() {
+        let records = [TimedBarItem {
+            asset_no: 0,
+            timeframe_ns: 60,
+            bar: Bar {
+                open_ts: 0,
+                close_ts: 60,
+                open: 1.0,
+                high: 1.0,
+                low: 1.0,
+                close: 1.0,
+                volume: 1.0,
+                quote_volume: 1.0,
+                buy_volume: 0.0,
+                trade_count: 1,
+                flags: BAR_COMPLETE,
+            },
+        }];
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        source.set_end_policy(crate::backtest::result::EndPolicy::StopAtDataEnd);
+        source.schedule_timer(RuntimeTimer {
+            deadline_ts: 61,
+            owner_id: 1,
+            timer_id: 1,
+        });
+        source.schedule_funding(RuntimeFunding {
+            event_id: 1,
+            asset_no: 0,
+            venue_no: 0,
+            instrument_id: 1,
+            currency: 0,
+            publication_ts: 50,
+            effective_ts: 60,
+            settlement_ts: 61,
+            delivery_ts: 61,
+            rate: 0.001,
+            mark_price: 1.0,
+            position_qty: 0.0,
+            amount: 0.0,
+        });
+        let mut callbacks = CallbackRegistry::default();
+        callbacks.set(StrategyEventKind::Bar, record);
+        callbacks.set(StrategyEventKind::Funding, record);
+        callbacks.set(StrategyEventKind::Timer, record);
+        let mut state = State::default();
+        let mut context = StrategyRuntimeContext {
+            user_data: (&mut state as *mut State).cast(),
+            ..Default::default()
+        };
+        source.configure_context(&mut context);
+        run_event_runtime(&mut source, &callbacks, &mut context).unwrap();
+        assert_eq!(state.calls, [StrategyEventKind::Bar as u32]);
+        assert!(source.funding_reports().is_empty());
+    }
+
+    #[test]
+    fn same_timestamp_bar_funding_delivery_and_timer_follow_phase_contract() {
+        let records = [TimedBarItem {
+            asset_no: 0,
+            timeframe_ns: 60,
+            bar: Bar {
+                open_ts: 0,
+                close_ts: 60,
+                open: 1.0,
+                high: 1.0,
+                low: 1.0,
+                close: 1.0,
+                volume: 1.0,
+                quote_volume: 1.0,
+                buy_volume: 0.0,
+                trade_count: 1,
+                flags: BAR_COMPLETE,
+            },
+        }];
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        source.schedule_timer(RuntimeTimer {
+            deadline_ts: 60,
+            owner_id: 1,
+            timer_id: 1,
+        });
+        source.schedule_funding(RuntimeFunding {
+            event_id: 1,
+            asset_no: 0,
+            venue_no: 0,
+            instrument_id: 1,
+            currency: 0,
+            publication_ts: 50,
+            effective_ts: 55,
+            settlement_ts: 60,
+            delivery_ts: 60,
+            rate: 0.001,
+            mark_price: 1.0,
+            position_qty: 0.0,
+            amount: 0.0,
+        });
+        let mut callbacks = CallbackRegistry::default();
+        callbacks.set(StrategyEventKind::Bar, record);
+        callbacks.set(StrategyEventKind::Funding, record);
+        callbacks.set(StrategyEventKind::Timer, record);
+        let mut state = State::default();
+        let mut context = StrategyRuntimeContext {
+            user_data: (&mut state as *mut State).cast(),
+            ..Default::default()
+        };
+        source.configure_context(&mut context);
+        run_event_runtime(&mut source, &callbacks, &mut context).unwrap();
+        assert_eq!(
+            state.calls,
+            [
+                StrategyEventKind::Bar as u32,
+                StrategyEventKind::Funding as u32,
+                StrategyEventKind::Timer as u32,
+            ]
+        );
+    }
+
+    #[test]
+    fn bar_feed_latency_lives_in_envelope_and_does_not_block_next_market_open() {
+        let records: Vec<_> = [10, 20]
+            .into_iter()
+            .map(|close_ts| TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 10,
+                bar: Bar {
+                    open_ts: close_ts - 10,
+                    close_ts,
+                    open: close_ts as f64,
+                    high: close_ts as f64,
+                    low: close_ts as f64,
+                    close: close_ts as f64,
+                    volume: 1.0,
+                    quote_volume: 1.0,
+                    buy_volume: 0.0,
+                    trade_count: 1,
+                    flags: BAR_COMPLETE,
+                },
+            })
+            .collect();
+        let mut source = MaterializedBarSource::new(&records, 2).unwrap();
+        source.configure_feed_latency(5).unwrap();
+        let (kind, now, close_ts) = {
+            let event = source.next_event().unwrap().unwrap();
+            let RuntimePayload::Bars { close_ts, .. } = event.payload else {
+                panic!("expected delayed Bar");
+            };
+            (event.kind, event.now, close_ts)
+        };
+        assert_eq!(
+            (kind, now, close_ts),
+            (StrategyEventKind::Bar as u32, 15, 10)
+        );
+        // Bar 2 market-open at t=10 was processed before Bar 1 became visible at t=15.
+        assert_eq!(source.pending_bar_deliveries.len(), 1);
+        let mut context = StrategyRuntimeContext::default();
+        source
+            .after_callback(StrategyEventKind::Bar as u32, &mut context)
+            .unwrap();
+        let (now, close_ts) = {
+            let event = source.next_event().unwrap().unwrap();
+            let RuntimePayload::Bars { close_ts, .. } = event.payload else {
+                panic!("expected second delayed Bar");
+            };
+            (event.now, close_ts)
+        };
+        assert_eq!((now, close_ts), (25, 20));
+        assert_eq!(records[0].bar.close_ts, 10);
     }
 }

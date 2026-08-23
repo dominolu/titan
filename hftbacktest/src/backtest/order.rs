@@ -78,6 +78,10 @@ impl<LM> ExchToLocal<LM>
 where
     LM: LatencyModel,
 {
+    pub fn reset(&mut self) {
+        self.to_exch.reset();
+        self.to_local.reset();
+    }
     /// Returns the timestamp of the earliest order to be received by the exchange from the local.
     pub fn earliest_recv_order_timestamp(&self) -> Option<i64> {
         self.to_exch.earliest_timestamp()
@@ -129,6 +133,10 @@ impl<LM> LocalToExch<LM>
 where
     LM: LatencyModel,
 {
+    pub fn reset(&mut self) {
+        self.to_exch.reset();
+        self.to_local.reset();
+    }
     /// Returns the timestamp of the earliest order to be received by the local from the exchange.
     pub fn earliest_recv_order_timestamp(&self) -> Option<i64> {
         self.to_local.earliest_timestamp()

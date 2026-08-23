@@ -206,6 +206,11 @@ impl ExchangeAccountState {
         &self.0
     }
 
+    /// Seeds frozen run-start collateral before any delayed report is projected.
+    pub fn seed_balance(&mut self, currency: CurrencyId, balance: f64) -> Result<(), AccountError> {
+        self.0.set_balance(currency, balance)
+    }
+
     pub fn account_mut(&mut self) -> &mut VenueAccount {
         &mut self.0
     }
@@ -247,6 +252,11 @@ impl LocalAccountView {
 
     pub fn account(&self) -> &VenueAccount {
         &self.0
+    }
+
+    /// Seeds frozen run-start collateral before any delayed report is projected.
+    pub fn seed_balance(&mut self, currency: CurrencyId, balance: f64) -> Result<(), AccountError> {
+        self.0.set_balance(currency, balance)
     }
 
     pub fn deliver(&mut self, report: AccountReport) -> Result<(), AccountError> {

@@ -352,7 +352,8 @@ impl Channel for IceoryxUnifiedChannel {
                             | LiveEvent::Order { symbol, .. }
                             | LiveEvent::Position { symbol, .. }
                             | LiveEvent::Funding { symbol, .. }
-                            | LiveEvent::FundingSettlement { symbol, .. } => {
+                            | LiveEvent::FundingSettlement { symbol, .. }
+                            | LiveEvent::ExecutionReport { symbol, .. } => {
                                 if let Some(inst_no) = ch.symbol_to_inst_no.get(symbol) {
                                     return Ok((*inst_no, ev));
                                 }

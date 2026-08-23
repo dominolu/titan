@@ -1,6 +1,7 @@
 # Titan Tick/Bar 共享执行层完整需求规格
 
 > 文档状态：需求基线（已完成实现与最终验收，2026-08-24）
+> 验收证据：[`shared_execution_layer_acceptance_report.md`](shared_execution_layer_acceptance_report.md)
 > 适用范围：Titan/HFTBacktest 的 Tick/L2/L3、Bar、Hybrid 回测，以及与实盘策略事件的统一
 > 依据：
 >

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
     mem::size_of,
@@ -21,7 +21,7 @@ use crate::{
     },
     backtest::{
         result::{AuditKind, AuditRecord, AuditRecorder},
-        scheduler::{EventKey, EventPhase},
+        scheduler::{EventKey, EventPhase, GlobalScheduler},
     },
     market_data::{BAR_COMPLETE, BAR_EMPTY, BAR_PARTIAL},
     runtime::{BarItem, FillEvent, OrderCommand, TimedBarItem},
@@ -115,15 +115,15 @@ pub struct BarExecutionState {
     fills: Vec<FillEvent>,
     coordinators: Vec<TickOutcomeCoordinator<Box<dyn ExecutionFeeModel>>>,
     exchange_accounts: ExchangePortfolio,
+    initial_balances: BTreeMap<(VenueId, CurrencyId), f64>,
     local_accounts: PortfolioLedger,
     projector: ExecutionEventProjector,
     reports: Vec<ExecutionReport>,
     projected: Vec<(usize, ProjectedEvent)>,
     report_scratch: Vec<ExecutionReport>,
     response_latency_ns: i64,
-    pending_reports: VecDeque<(usize, ExecutionReport)>,
+    deliveries: GlobalScheduler<BarDelivery>,
     funding_engines: Vec<FundingEngine>,
-    pending_funding: VecDeque<(usize, FundingReport)>,
     funding_reports: Vec<FundingReport>,
     next_funding_sequence: u64,
     local_risk: Box<dyn LocalPreTradeRisk>,
@@ -132,6 +132,18 @@ pub struct BarExecutionState {
     audit: AuditRecorder,
     audit_run_id: u64,
     audit_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BarDelivery {
+    Execution {
+        asset_no: usize,
+        report: ExecutionReport,
+    },
+    Funding {
+        asset_no: usize,
+        report: FundingReport,
+    },
 }
 
 #[derive(Debug, Error)]
@@ -204,13 +216,14 @@ impl BarExecutionState {
                 .map(|coordinator| coordinator.unwrap())
                 .collect(),
             exchange_accounts: ExchangePortfolio::default(),
+            initial_balances: BTreeMap::new(),
             local_accounts: PortfolioLedger::default(),
             projector: ExecutionEventProjector::with_capacity(3),
             reports: Vec::new(),
             projected: Vec::new(),
             report_scratch: Vec::with_capacity(2),
             response_latency_ns,
-            pending_reports: VecDeque::with_capacity(16),
+            deliveries: GlobalScheduler::new(),
             funding_engines: (0..num_assets)
                 .map(|_| {
                     FundingEngine::new(FundingRounding {
@@ -220,7 +233,6 @@ impl BarExecutionState {
                     .unwrap()
                 })
                 .collect(),
-            pending_funding: VecDeque::with_capacity(8),
             funding_reports: Vec::with_capacity(8),
             next_funding_sequence: 0,
             local_risk: Box::new(AllowAllRisk),
@@ -300,6 +312,10 @@ impl BarExecutionState {
             .venue_mut_or_insert(venue_id)
             .account_mut()
             .set_balance(currency, balance)?;
+        self.local_accounts
+            .venue_mut_or_insert(venue_id)
+            .seed_balance(currency, balance)?;
+        self.initial_balances.insert((venue_id, currency), balance);
         Ok(())
     }
 
@@ -319,7 +335,20 @@ impl BarExecutionState {
             command.qty,
         );
         let request = self.request(command, local_submit_ts)?;
-        let decision = self.local_risk.check(&request, &self.local_accounts);
+        let spec = self.coordinators[command.asset_no as usize].spec();
+        let validation = match request.order_type {
+            OrdType::Limit => spec.validate_limit_order(request.price, request.qty),
+            OrdType::Market => spec.validate_quantity(request.qty),
+            OrdType::Unsupported => {
+                Err(crate::backtest::execution::InstrumentSpecError::InvalidPrice)
+            }
+        };
+        let decision = match validation {
+            Ok(()) => self.local_risk.check(&request, &self.local_accounts),
+            Err(error) => RiskDecision::Reject {
+                reason: risk_reason_from_spec(error),
+            },
+        };
         self.record_audit(
             local_submit_ts,
             EventPhase::StrategyCallback,
@@ -340,18 +369,24 @@ impl BarExecutionState {
         reason: RiskReason,
     ) -> Result<(), BarExecutionError> {
         let asset_no = command.asset_no as usize;
-        self.coordinators[asset_no].apply(
-            ObservedOutcome {
-                order_id: command.order_id,
-                order: Some(snapshot(command, local_submit_ts)),
-                outcome: MatchOutcome::Rejected {
-                    exchange_ts: local_submit_ts,
-                    reason: execution_reason(reason),
-                },
-            },
-            local_submit_ts,
+        let request = self.request(command, local_submit_ts)?;
+        self.coordinators[asset_no].reject_local(
+            request,
+            execution_reason(reason),
             &mut self.report_scratch,
         )?;
+        self.collect_reports(asset_no);
+        Ok(())
+    }
+
+    pub fn reject_duplicate_local(
+        &mut self,
+        command: OrderCommand,
+        local_submit_ts: i64,
+    ) -> Result<(), BarExecutionError> {
+        let asset_no = command.asset_no as usize;
+        let request = self.request(command, local_submit_ts)?;
+        self.coordinators[asset_no].reject_duplicate_local(request, &mut self.report_scratch);
         self.collect_reports(asset_no);
         Ok(())
     }
@@ -380,7 +415,8 @@ impl BarExecutionState {
             }
             RiskDecision::Reject { reason } => {
                 let asset_no = command.asset_no as usize;
-                self.coordinators[asset_no].apply(
+                self.apply_observed(
+                    asset_no,
                     ObservedOutcome {
                         order_id: command.order_id,
                         order: Some(snapshot(command, local_submit_ts)),
@@ -390,9 +426,7 @@ impl BarExecutionState {
                         },
                     },
                     exchange_arrival_ts + self.response_latency_ns,
-                    &mut self.report_scratch,
                 )?;
-                self.collect_reports(asset_no);
                 Ok(false)
             }
         }
@@ -434,11 +468,6 @@ impl BarExecutionState {
             origin: OrderOrigin::Strategy,
             local_submit_ts,
         };
-        match request.order_type {
-            OrdType::Limit => spec.validate_limit_order(request.price, request.qty)?,
-            OrdType::Market => spec.validate_quantity(request.qty)?,
-            OrdType::Unsupported => return Err(BarExecutionError::InvalidConfiguration),
-        }
         Ok(request)
     }
 
@@ -475,16 +504,15 @@ impl BarExecutionState {
                 ),
             };
             let asset_no = command.asset_no as usize;
-            self.coordinators[asset_no].apply(
+            self.apply_observed(
+                asset_no,
                 ObservedOutcome {
                     order_id: command.order_id,
                     order: Some(snapshot(command, local_submit_ts)),
                     outcome: canonical,
                 },
                 exchange_ts + self.response_latency_ns,
-                &mut self.report_scratch,
             )?;
-            self.collect_reports(asset_no);
         }
         Ok(())
     }
@@ -498,7 +526,8 @@ impl BarExecutionState {
         exchange_arrival_ts: i64,
     ) -> Result<(), BarExecutionError> {
         let asset_no = command.asset_no as usize;
-        self.coordinators[asset_no].apply(
+        self.apply_observed(
+            asset_no,
             ObservedOutcome {
                 order_id: command.order_id,
                 order: Some(snapshot(command, local_submit_ts)),
@@ -507,9 +536,7 @@ impl BarExecutionState {
                 },
             },
             exchange_arrival_ts + self.response_latency_ns,
-            &mut self.report_scratch,
         )?;
-        self.collect_reports(asset_no);
         Ok(())
     }
 
@@ -531,15 +558,45 @@ impl BarExecutionState {
                 reason: crate::backtest::execution::ExecutionReason::Unknown(1),
             }
         };
-        self.coordinators[asset_no].apply(
+        self.apply_observed(
+            asset_no,
             ObservedOutcome {
                 order_id: command.order_id,
                 order: Some(snapshot(command, local_submit_ts)),
                 outcome,
             },
             exchange_arrival_ts + self.response_latency_ns,
-            &mut self.report_scratch,
         )?;
+        Ok(())
+    }
+
+    fn apply_observed(
+        &mut self,
+        asset_no: usize,
+        observed: ObservedOutcome,
+        delivery_ts: i64,
+    ) -> Result<(), BarExecutionError> {
+        let venue_id = self.coordinators[asset_no].spec().venue_id;
+        let order_id = observed.order_id;
+        let result = self.coordinators[asset_no].apply(
+            observed,
+            delivery_ts,
+            self.exchange_accounts.venue_mut_or_insert(venue_id),
+            &mut self.report_scratch,
+        );
+        if result.is_err() {
+            self.record_audit(
+                delivery_ts,
+                EventPhase::ExchangeState,
+                asset_no as u32,
+                AuditKind::Diagnostic,
+                order_id,
+                1,
+                0.0,
+                0.0,
+            );
+        }
+        result?;
         self.collect_reports(asset_no);
         Ok(())
     }
@@ -568,9 +625,6 @@ impl BarExecutionState {
                 report.exec_qty,
             );
             if let Some(delta) = report.account_delta {
-                self.exchange_accounts
-                    .apply(report.venue_id, delta)
-                    .expect("coordinator-validated delta must apply to the venue account");
                 if let Some(risk) = self.venue_risk.get_mut(&report.venue_id) {
                     let before = self.risk_actions.as_slice().len();
                     risk.on_account_change(
@@ -616,42 +670,37 @@ impl BarExecutionState {
                 );
             }
             self.reports.push(report);
-            let index = self
-                .pending_reports
-                .iter()
-                .position(|(_, queued)| {
-                    (queued.delivery_ts, queued.sequence) > (report.delivery_ts, report.sequence)
-                })
-                .unwrap_or(self.pending_reports.len());
-            self.pending_reports.insert(index, (asset_no, report));
+            self.deliveries.schedule(
+                report.delivery_ts,
+                response_delivery_phase(report.exchange_ts, report.delivery_ts),
+                0,
+                report.venue_id.0,
+                report.asset_no,
+                BarDelivery::Execution { asset_no, report },
+            );
         }
         self.report_scratch.clear();
     }
 
     pub fn next_delivery_ts(&self) -> Option<i64> {
-        match (
-            self.pending_reports
-                .front()
-                .map(|(_, report)| report.delivery_ts),
-            self.pending_funding
-                .front()
-                .map(|(_, report)| report.delivery_ts),
-        ) {
-            (Some(order), Some(funding)) => Some(order.min(funding)),
-            (order, funding) => order.or(funding),
-        }
+        self.deliveries.peek_key().map(|key| key.timestamp)
+    }
+
+    pub fn next_delivery_key(&self) -> Option<crate::backtest::scheduler::EventKey> {
+        self.deliveries.peek_key()
     }
 
     pub fn deliver_next(&mut self) -> Result<bool, BarExecutionError> {
-        if self.pending_funding.front().is_some_and(|(_, funding)| {
-            self.pending_reports
-                .front()
-                .is_none_or(|(_, order)| funding.delivery_ts < order.delivery_ts)
-        }) {
+        if !self
+            .deliveries
+            .peek()
+            .is_some_and(|(_, event)| matches!(event, BarDelivery::Execution { .. }))
+        {
             return Ok(false);
         }
-        let Some((asset_no, report)) = self.pending_reports.pop_front() else {
-            return Ok(false);
+        let BarDelivery::Execution { asset_no, report } = self.deliveries.pop().unwrap().payload
+        else {
+            unreachable!();
         };
         let events = self.projector.project(
             report,
@@ -671,13 +720,18 @@ impl BarExecutionState {
             self.fills.push(FillEvent {
                 asset_no: asset_no as u64,
                 order_id: report.order_id,
+                venue_order_id: report.venue_order_id,
                 exch_ts: report.exchange_ts,
                 local_ts: report.delivery_ts,
+                sequence: report.sequence,
                 price: report.exec_price,
                 qty: report.exec_qty,
+                venue_no: report.venue_id.0,
+                instrument_id: report.instrument_id.0,
+                reason: crate::runtime::execution_reason_code(report.reason),
                 side: report.side as i8,
                 maker: u8::from(report.maker),
-                _reserved: [0; 6],
+                _reserved: [0; 2],
             });
         }
         Ok(true)
@@ -715,22 +769,30 @@ impl BarExecutionState {
             report.event.rate,
             report.amount,
         );
-        let index = self
-            .pending_funding
-            .iter()
-            .position(|(_, queued)| {
-                (queued.delivery_ts, queued.sequence) > (report.delivery_ts, report.sequence)
-            })
-            .unwrap_or(self.pending_funding.len());
-        self.pending_funding.insert(index, (asset_no, report));
+        self.deliveries.schedule(
+            report.delivery_ts,
+            response_delivery_phase(report.event.settlement_ts, report.delivery_ts),
+            0,
+            report.event.venue_id.0,
+            scheduled.asset_no,
+            BarDelivery::Funding { asset_no, report },
+        );
         Ok(())
     }
 
     pub fn deliver_next_funding(
         &mut self,
     ) -> Result<Option<(usize, FundingReport)>, BarExecutionError> {
-        let Some((asset_no, report)) = self.pending_funding.pop_front() else {
+        if !self
+            .deliveries
+            .peek()
+            .is_some_and(|(_, event)| matches!(event, BarDelivery::Funding { .. }))
+        {
             return Ok(None);
+        }
+        let BarDelivery::Funding { asset_no, report } = self.deliveries.pop().unwrap().payload
+        else {
+            unreachable!();
         };
         self.projector.project_funding(
             report,
@@ -741,11 +803,9 @@ impl BarExecutionState {
     }
 
     pub fn next_is_funding(&self) -> bool {
-        self.pending_funding.front().is_some_and(|(_, funding)| {
-            self.pending_reports
-                .front()
-                .is_none_or(|(_, order)| funding.delivery_ts < order.delivery_ts)
-        })
+        self.deliveries
+            .peek()
+            .is_some_and(|(_, event)| matches!(event, BarDelivery::Funding { .. }))
     }
 
     pub fn positions(&self) -> &[f64] {
@@ -876,18 +936,30 @@ impl BarExecutionState {
             coordinator.reset();
         }
         self.exchange_accounts.reset();
+        for (&(venue_id, currency), &balance) in &self.initial_balances {
+            self.exchange_accounts
+                .venue_mut_or_insert(venue_id)
+                .account_mut()
+                .set_balance(currency, balance)
+                .expect("validated initial balance must remain valid during reset");
+        }
         self.local_accounts.reset();
+        for (&(venue_id, currency), &balance) in &self.initial_balances {
+            self.local_accounts
+                .venue_mut_or_insert(venue_id)
+                .seed_balance(currency, balance)
+                .expect("validated initial balance must remain valid during reset");
+        }
         self.projector.reset();
         self.positions.fill(0.0);
         self.fills.clear();
         self.reports.clear();
         self.projected.clear();
         self.report_scratch.clear();
-        self.pending_reports.clear();
+        self.deliveries.reset();
         for engine in &mut self.funding_engines {
             engine.reset();
         }
-        self.pending_funding.clear();
         self.funding_reports.clear();
         self.next_funding_sequence = 0;
         self.local_risk.reset();
@@ -905,8 +977,21 @@ impl BarExecutionState {
     }
 }
 
+#[inline]
+fn response_delivery_phase(exchange_ts: i64, delivery_ts: i64) -> EventPhase {
+    if delivery_ts == exchange_ts {
+        EventPhase::ZeroLatencyResponse
+    } else {
+        EventPhase::OldResponseDelivery
+    }
+}
+
 fn execution_reason(reason: RiskReason) -> ExecutionReason {
     match reason {
+        RiskReason::InvalidInstrument => ExecutionReason::InvalidInstrument,
+        RiskReason::InvalidPrice => ExecutionReason::InvalidPrice,
+        RiskReason::InvalidQuantity => ExecutionReason::InvalidQuantity,
+        RiskReason::DuplicateOrderId => ExecutionReason::DuplicateOrderId,
         RiskReason::PositionLimit => ExecutionReason::PositionLimit,
         RiskReason::NotionalLimit => ExecutionReason::NotionalLimit,
         RiskReason::InsufficientBalance => ExecutionReason::InsufficientBalance,
@@ -914,6 +999,22 @@ fn execution_reason(reason: RiskReason) -> ExecutionReason {
         RiskReason::ReduceOnlyViolation => ExecutionReason::ReduceOnlyViolation,
         RiskReason::MarketClosed => ExecutionReason::MarketClosed,
         RiskReason::Custom(code) => ExecutionReason::Unknown(code),
+    }
+}
+
+fn risk_reason_from_spec(error: crate::backtest::execution::InstrumentSpecError) -> RiskReason {
+    use crate::backtest::execution::InstrumentSpecError;
+    match error {
+        InstrumentSpecError::InvalidPrice | InstrumentSpecError::PricePrecision => {
+            RiskReason::InvalidPrice
+        }
+        InstrumentSpecError::InvalidQuantity
+        | InstrumentSpecError::QuantityPrecision
+        | InstrumentSpecError::QuantityBelowMinimum
+        | InstrumentSpecError::QuantityAboveMaximum => RiskReason::InvalidQuantity,
+        InstrumentSpecError::NotionalBelowMinimum
+        | InstrumentSpecError::InvalidPositiveField { .. }
+        | InstrumentSpecError::InvalidQuantityRange => RiskReason::InvalidInstrument,
     }
 }
 
@@ -2217,6 +2318,82 @@ mod tests {
         assert_eq!(
             state.reports()[0].reason,
             ExecutionReason::InsufficientMargin
+        );
+    }
+
+    #[test]
+    fn invalid_and_duplicate_bar_orders_are_canonical_local_rejections() {
+        let currency = CurrencyId(1);
+        let spec = InstrumentSpec {
+            instrument_id: InstrumentId(1),
+            asset_no: 0,
+            venue_id: VenueId(2),
+            tick_size: 1.0,
+            lot_size: 1.0,
+            min_qty: 1.0,
+            max_qty: 10.0,
+            min_notional: 0.0,
+            contract_size: 1.0,
+            price_currency: currency,
+            settlement_currency: currency,
+            margin_currency: currency,
+            instrument_type: InstrumentType::Spot,
+            cash_flow_mode: crate::backtest::execution::CashFlowMode::LegacyNotional,
+            version: 1,
+        };
+        let mut state = BarExecutionState::new_with_configs(
+            1,
+            vec![SharedTickExecutionConfig::new(spec, NoFee { currency })],
+            0,
+        )
+        .unwrap();
+        let mut invalid = risk_command(80);
+        invalid.price = 1.5;
+        let RiskDecision::Reject { reason } = state.check_local_submit(invalid, 10).unwrap() else {
+            panic!("invalid precision must reject locally");
+        };
+        assert_eq!(reason, RiskReason::InvalidPrice);
+        state.reject_local(invalid, 10, reason).unwrap();
+        assert_eq!(
+            state.reports().last().unwrap().reason,
+            ExecutionReason::InvalidPrice
+        );
+
+        let valid = risk_command(81);
+        state.accept(valid, 20, 20).unwrap();
+        let original_state = state.coordinators[0].coordinator().order(81).unwrap().state;
+        state.reject_duplicate_local(valid, 21).unwrap();
+        assert_eq!(
+            state.reports().last().unwrap().reason,
+            ExecutionReason::DuplicateOrderId
+        );
+        assert_eq!(
+            state.coordinators[0].coordinator().order(81).unwrap().state,
+            original_state
+        );
+    }
+
+    #[test]
+    fn invalid_order_transition_stops_and_enters_diagnostic_audit() {
+        let mut state = BarExecutionState::new(1);
+        state.enable_audit(9, 32);
+        let command = risk_command(90);
+        state.accept(command, 1, 1).unwrap();
+        let fill = BarMatchOutcome::Fill {
+            command,
+            local_submit_ts: 1,
+            exchange_ts: 2,
+            price: 1.0,
+            qty: 1.0,
+        };
+        state.apply(&[fill]).unwrap();
+        assert!(state.apply(&[fill]).is_err());
+        assert!(
+            state
+                .audit()
+                .records()
+                .iter()
+                .any(|record| record.kind == AuditKind::Diagnostic && record.order_id == 90)
         );
     }
 }

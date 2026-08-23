@@ -49,6 +49,18 @@ where
         current_timestamp: i64,
     ) -> Result<(), BacktestError>;
 
+    /// Materializes an immediate local rejection without entering the request transport.
+    fn reject_order(
+        &mut self,
+        order_id: OrderId,
+        side: Side,
+        price: f64,
+        qty: f64,
+        order_type: OrdType,
+        time_in_force: TimeInForce,
+        current_timestamp: i64,
+    ) -> Result<Order, BacktestError>;
+
     /// Modifies an open order.
     ///
     /// * `order_id` - Order ID to modify.
@@ -101,6 +113,9 @@ where
 }
 
 impl<P: Processor + ?Sized> Processor for Box<P> {
+    fn reset(&mut self) {
+        P::reset(self)
+    }
     fn event_seen_timestamp(&self, event: &Event) -> Option<i64> {
         P::event_seen_timestamp(self, event)
     }
@@ -156,6 +171,8 @@ impl<P: Processor + ?Sized> Processor for Box<P> {
 }
 /// Processes the historical feed data and the order interaction.
 pub trait Processor {
+    /// Clears all run-scoped state while preserving immutable model configuration.
+    fn reset(&mut self);
     /// The time of an event as seen by this [Processor]. For a local event processor this will
     /// be the timestamp an event was seen at locally, and for an exchange processor this will
     /// be the timestamp an event was generated at on the exchange.

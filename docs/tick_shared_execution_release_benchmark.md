@@ -56,3 +56,32 @@ target/release/tick_execution_benchmark --events 1000000 --runs 30 --warmup 5
 逐样本回归中位为 **+0.034%**，继续通过 3% 门槛。`OutcomeBus` 使用共享 pending 位完成空队列快速
 判断；只有实际产生订单 outcome 时才访问 `VecDeque`。历史流动性与成交质量模型默认关闭，启用时仅在
 `PartialFillExchange` 成交候选路径执行，不影响默认 Tick market-data 热路径。
+
+## ABI v7 与统一调度复验（2026-08-24）
+
+在 canonical report ABI v7、Tick local risk/audit、Live projector 和 Bar `GlobalScheduler` 接线后，
+再次以相同参数执行三次。详细审计仍关闭：
+
+| 样本 | Noop events/s | OutcomeBus events/s | 回归 |
+|---|---:|---:|---:|
+| 1 | 18,722,920 | 18,513,174 | +1.133% |
+| 2 | 18,693,050 | 18,617,979 | +0.403% |
+| 3 | 18,832,630 | 18,737,441 | +0.508% |
+
+逐样本回归中位为 **+0.508%**，低于 3% 门槛。ABI v7 扩展只影响有订单报告的边界，默认 Tick
+market-data 热路径仍无 Python 对象、字符串分发或逐事件堆分配。
+
+## Venue 权威账户与最终实现复验（2026-08-24）
+
+移除 coordinator 内重复账户、让 Tick/Bar 直接使用 Venue 所有的权威账户，并完成 ABI v7、
+canonical live event 与审计接线后，用同一 release 命令再次执行三次完整 A/B（每次 5 轮 warmup、
+30 轮计时）：
+
+| 样本 | Noop events/s | OutcomeBus events/s | 回归 |
+|---|---:|---:|---:|
+| 1 | 12,862,701 | 12,921,604 | -0.456% |
+| 2 | 12,876,166 | 12,988,809 | -0.867% |
+| 3 | 12,862,109 | 12,964,508 | -0.790% |
+
+逐样本回归中位为 **-0.790%**，即共享路径在该样本中略快于 Noop 对照；绝对值和性能回退均低于
+3% 门槛。结果不用于宣称通用加速，只证明最终共享执行实现没有突破冻结的回退预算。
