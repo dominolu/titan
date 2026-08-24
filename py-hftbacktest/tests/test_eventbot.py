@@ -441,6 +441,20 @@ class TestRustOwnedEventBot(unittest.TestCase):
             run_event_bot(data_mode="bar", bars=bars, feed_latency=-1)
         with self.assertRaises(ValueError):
             run_event_bot(make_bot(), feed_latency=1)
+        with self.assertRaises(ValueError):
+            run_event_bot(
+                data_mode="bar",
+                bars=bars,
+                bar_matching="signal_close",
+                feed_latency=1,
+            )
+        with self.assertRaises(ValueError):
+            run_event_bot(
+                data_mode="bar",
+                bars=bars,
+                bar_matching="signal_close",
+                entry_latency=1,
+            )
 
     def test_dual_ma_strategy_trades_only_on_crosses(self):
         closes = [3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0, 1.0]
@@ -860,6 +874,53 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[4], 2)
         self.assertEqual(state[5], 1)
         self.assertEqual(state[6], 10)
+
+    def test_signal_close_fills_at_the_producing_bar_close(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for i, open_px in enumerate([10.0, 20.0]):
+            bars[i]["asset_no"] = 0
+            bars[i]["timeframe_ns"] = 60
+            bars[i]["bar"] = (
+                i * 60,
+                (i + 1) * 60,
+                open_px,
+                open_px + 1.0,
+                open_px - 1.0,
+                open_px + 0.5,
+                1.0,
+                open_px,
+                0.5,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            s.state[0] += 1
+            if s.state[0] == 1:
+                s.submit_buy_order(0, 7, 1_000.0, 2.0, 0, 0, False)
+
+        @njit
+        def on_filled(s):
+            fill = s.fills()[0]
+            s.state[1] += 1
+            s.state[2] = fill["price"]
+            s.state[3] = fill["exch_ts"]
+            s.state[4] = s.position(0)
+
+        state = run_event_bot(
+            on_bar=on_bar,
+            on_filled=on_filled,
+            data_mode="bar",
+            bars=bars,
+            history_capacity=8,
+            bar_matching="signal_close",
+        )
+        self.assertEqual(state[0], 2)
+        self.assertEqual(state[1], 1)
+        self.assertEqual(state[2], 10.5)
+        self.assertEqual(state[3], 60)
+        self.assertEqual(state[4], 2)
 
     def test_bar_batch_groups_assets_by_close_and_timeframe(self):
         bars = np.zeros(4, dtype=timed_bar_dtype)

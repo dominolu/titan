@@ -876,8 +876,10 @@ def run_event_bot(
 
     Tick mode waits for the next Rust feed/order-response boundary and delivers all assets at
     that timestamp as one global batch; ``frame_interval`` is the maximum wait duration, not a
-    Python polling loop. Bar mode consumes an explicit ``timed_bar_dtype`` array, jumps directly
-    between scheduler boundaries and uses conservative NextOpen execution. ``feed_latency``
+    Python polling loop. Bar mode consumes an explicit ``timed_bar_dtype`` array and jumps
+    directly between scheduler boundaries. The default is conservative NextOpen execution;
+    ``bar_matching='signal_close'`` explicitly opts into same-close execution for parity with
+    engines whose close-of-Bar callback can fill at that same close. ``feed_latency``
     controls when a closed Bar becomes visible, while ``entry_latency`` and ``response_latency``
     control exchange arrival and local execution-report delivery; all are nanoseconds and live
     outside the Bar payload. Hybrid deterministically merges
@@ -889,10 +891,16 @@ def run_event_bot(
 
     if data_mode not in ("tick", "bar", "hybrid"):
         raise ValueError("data_mode must be 'tick', 'bar' or 'hybrid'")
-    matching_modes = {"next_open": 0, "touch": 1, "conservative_ohlc": 2}
+    matching_modes = {
+        "next_open": 0,
+        "touch": 1,
+        "conservative_ohlc": 2,
+        "signal_close": 3,
+    }
     if bar_matching not in matching_modes:
         raise ValueError(
-            "bar_matching must be 'next_open', 'touch' or 'conservative_ohlc'"
+            "bar_matching must be 'next_open', 'touch', 'conservative_ohlc' "
+            "or 'signal_close'"
         )
     if not np.isfinite(volume_participation) or not 0.0 <= volume_participation <= 1.0:
         raise ValueError("volume_participation must be finite and in [0, 1]")
@@ -903,7 +911,9 @@ def run_event_bot(
     ):
         raise ValueError("explicit Bar latencies are only valid in data_mode='bar'")
     if data_mode != "bar" and bar_matching != "next_open":
-        raise ValueError("OHLC matching is only valid when Bar is the execution source")
+        raise ValueError("explicit Bar matching is only valid when Bar is the execution source")
+    if bar_matching == "signal_close" and (feed_latency != 0 or entry_latency != 0):
+        raise ValueError("signal_close requires zero feed_latency and entry_latency")
     if data_mode in ("tick", "hybrid") and (frame_interval <= 0 or max_tick_batch <= 0):
         raise ValueError("frame_interval and max_tick_batch must be positive")
     if data_mode in ("tick", "hybrid") and hbt is None:

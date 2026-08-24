@@ -35,7 +35,8 @@ Titan
 * **Numba 事件策略接口**：面向策略作者的事件 API 固定为单参数
   ``@njit def on_tick(s)`` / ``@njit def on_bar(s)``；``s`` 同时提供行情上下文、状态和
   下单能力。Rust 拥有事件循环、时钟、行情状态与撮合；当前已连接 Tick、Bar 与
-  Bar-signal/Tick-execution Hybrid，并支持 Timer、Funding 和显式 OHLC Bar 撮合配置。完整设计见
+  Bar-signal/Tick-execution Hybrid，并支持 Timer、Funding，以及通过 ``bar_matching`` 选择
+  ``next_open``、``signal_close``、``touch`` 或 ``conservative_ohlc``。完整设计见
   `docs/bar_tick_numba_strategy.md <docs/bar_tick_numba_strategy.md>`_。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
   （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
