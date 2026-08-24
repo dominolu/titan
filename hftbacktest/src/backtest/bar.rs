@@ -107,6 +107,17 @@ pub struct NextOpenBarMatcher {
     outcomes: Vec<BarMatchOutcome>,
 }
 
+/// Same-close matcher for close-of-Bar strategies. Orders submitted from `on_bar` become
+/// eligible at that Bar's close and execute at its close price. This intentionally models a
+/// close-auction/same-close assumption and must be selected explicitly because it is not
+/// conservative for ordinary continuous-market data.
+pub struct SignalCloseBarMatcher {
+    execution_timeframe_ns: i64,
+    execution_assets: Vec<bool>,
+    orders: Vec<PendingBarOrder>,
+    outcomes: Vec<BarMatchOutcome>,
+}
+
 /// Transitional Bar execution adapter. It is deliberately separate from feed and matching; P0-C
 /// replaces its position-only accounting with the shared execution coordinator without changing
 /// either component.
@@ -1175,6 +1186,102 @@ impl BarMatchingModel for NextOpenBarMatcher {
     }
 }
 
+impl SignalCloseBarMatcher {
+    pub fn new(execution_timeframe_ns: i64, execution_assets: Vec<bool>) -> Self {
+        Self {
+            execution_timeframe_ns,
+            execution_assets,
+            orders: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    pub fn supports_asset(&self, asset_no: usize) -> bool {
+        self.execution_assets
+            .get(asset_no)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+impl BarMatchingModel for SignalCloseBarMatcher {
+    fn submit(&mut self, order: PendingBarOrder) -> bool {
+        if !self.supports_asset(order.command.asset_no as usize)
+            || self.orders.iter().any(|existing| {
+                existing.command.asset_no == order.command.asset_no
+                    && existing.command.order_id == order.command.order_id
+            })
+        {
+            return false;
+        }
+        self.orders.push(order);
+        true
+    }
+
+    fn cancel(&mut self, asset_no: u64, order_id: u64) -> bool {
+        if let Some(index) = self.orders.iter().position(|order| {
+            order.command.asset_no == asset_no && order.command.order_id == order_id
+        }) {
+            self.orders.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn on_batch(&mut self, meta: BarBatchMeta, bars: &[BarItem]) {
+        self.outcomes.clear();
+        if meta.timeframe_ns != self.execution_timeframe_ns {
+            return;
+        }
+        let mut index = 0;
+        while index < self.orders.len() {
+            let pending = self.orders[index];
+            let command = pending.command;
+            let Some(item) = bars.iter().find(|item| item.asset_no == command.asset_no) else {
+                index += 1;
+                continue;
+            };
+            if item.bar.flags & BAR_EMPTY != 0 || item.bar.close_ts < pending.eligible_after {
+                index += 1;
+                continue;
+            }
+            let close = item.bar.close;
+            let executable = command.order_type == 1
+                || (command.side == 1 && close <= command.price)
+                || (command.side == -1 && close >= command.price);
+            if executable {
+                self.outcomes.push(BarMatchOutcome::Fill {
+                    command,
+                    local_submit_ts: pending.local_submit_ts,
+                    exchange_ts: item.bar.close_ts,
+                    price: close,
+                    qty: command.qty,
+                });
+                self.orders.remove(index);
+            } else if matches!(command.time_in_force, 2 | 3) {
+                self.outcomes.push(BarMatchOutcome::Expired {
+                    command,
+                    local_submit_ts: pending.local_submit_ts,
+                    exchange_ts: item.bar.close_ts,
+                });
+                self.orders.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn outcomes(&self) -> &[BarMatchOutcome] {
+        &self.outcomes
+    }
+
+    fn reset(&mut self) {
+        self.orders.clear();
+        self.outcomes.clear();
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OhlcFillAssumption {
     /// A limit fills when the Bar touches its price.
@@ -1196,6 +1303,7 @@ pub struct OhlcBarMatcher {
 
 pub enum ConfiguredBarMatcher {
     NextOpen(NextOpenBarMatcher),
+    SignalClose(SignalCloseBarMatcher),
     Ohlc(OhlcBarMatcher),
 }
 
@@ -1203,6 +1311,7 @@ impl ConfiguredBarMatcher {
     pub fn supports_asset(&self, asset_no: usize) -> bool {
         match self {
             Self::NextOpen(matcher) => matcher.supports_asset(asset_no),
+            Self::SignalClose(matcher) => matcher.supports_asset(asset_no),
             Self::Ohlc(matcher) => matcher
                 .execution_assets
                 .get(asset_no)
@@ -1216,6 +1325,7 @@ impl BarMatchingModel for ConfiguredBarMatcher {
     fn submit(&mut self, order: PendingBarOrder) -> bool {
         match self {
             Self::NextOpen(matcher) => matcher.submit(order),
+            Self::SignalClose(matcher) => matcher.submit(order),
             Self::Ohlc(matcher) => matcher.submit(order),
         }
     }
@@ -1223,6 +1333,7 @@ impl BarMatchingModel for ConfiguredBarMatcher {
     fn cancel(&mut self, asset_no: u64, order_id: u64) -> bool {
         match self {
             Self::NextOpen(matcher) => matcher.cancel(asset_no, order_id),
+            Self::SignalClose(matcher) => matcher.cancel(asset_no, order_id),
             Self::Ohlc(matcher) => matcher.cancel(asset_no, order_id),
         }
     }
@@ -1230,6 +1341,7 @@ impl BarMatchingModel for ConfiguredBarMatcher {
     fn on_batch(&mut self, meta: BarBatchMeta, bars: &[BarItem]) {
         match self {
             Self::NextOpen(matcher) => matcher.on_batch(meta, bars),
+            Self::SignalClose(matcher) => matcher.on_batch(meta, bars),
             Self::Ohlc(matcher) => matcher.on_batch(meta, bars),
         }
     }
@@ -1237,6 +1349,7 @@ impl BarMatchingModel for ConfiguredBarMatcher {
     fn outcomes(&self) -> &[BarMatchOutcome] {
         match self {
             Self::NextOpen(matcher) => matcher.outcomes(),
+            Self::SignalClose(matcher) => matcher.outcomes(),
             Self::Ohlc(matcher) => matcher.outcomes(),
         }
     }
@@ -1244,6 +1357,7 @@ impl BarMatchingModel for ConfiguredBarMatcher {
     fn reset(&mut self) {
         match self {
             Self::NextOpen(matcher) => matcher.reset(),
+            Self::SignalClose(matcher) => matcher.reset(),
             Self::Ohlc(matcher) => matcher.reset(),
         }
     }
@@ -1849,6 +1963,40 @@ mod tests {
         assert!(feed.next_batch().unwrap().is_none());
         feed.reset().unwrap();
         assert_eq!(feed.next_batch().unwrap().unwrap().close_ts, 10);
+    }
+
+    #[test]
+    fn signal_close_fills_at_the_producing_bar_close() {
+        let mut feed = MaterializedBarFeed::new(&[record(0, 10)]).unwrap();
+        let meta = feed.next_batch().unwrap().unwrap();
+        let command = OrderCommand {
+            kind: 1,
+            side: 1,
+            order_type: 1,
+            asset_no: 0,
+            order_id: 7,
+            qty: 2.0,
+            ..OrderCommand::default()
+        };
+        let mut matcher = SignalCloseBarMatcher::new(10, vec![true]);
+        assert!(matcher.submit(PendingBarOrder {
+            command,
+            local_submit_ts: 10,
+            eligible_after: 10,
+        }));
+
+        matcher.on_batch(meta, feed.batch());
+
+        assert_eq!(
+            matcher.outcomes(),
+            &[BarMatchOutcome::Fill {
+                command,
+                local_submit_ts: 10,
+                exchange_ts: 10,
+                price: 1.5,
+                qty: 2.0,
+            }]
+        );
     }
 
     #[test]

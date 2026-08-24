@@ -2434,8 +2434,15 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
     {
         return -4;
     }
+    if matching_mode == 3
+        && (feed_latency_ns != 0
+            || entry_latency_ns != 0
+            || source.configure_signal_close_matching().is_err())
+    {
+        return -4;
+    }
     let assumption = match matching_mode {
-        0 => None,
+        0 | 3 => None,
         1 => Some(OhlcFillAssumption::Touch),
         2 => Some(OhlcFillAssumption::Conservative),
         _ => return -4,

@@ -1,7 +1,7 @@
 # Bar/Tick 回测与实盘统一策略接口
 
 > 状态：统一运行时已落地。Rust 事件循环、Numba 单参数回调、全局 TickBatch、显式 Bar、
-> 历史环、NextOpen/Touch/ConservativeOhlc/VolumeLimited、Hybrid、Timer、Funding，以及
+> 历史环、NextOpen/SignalClose/Touch/ConservativeOhlc/VolumeLimited、Hybrid、Timer、Funding，以及
 > native/canonical/recovery Live Bar 的去重与恢复组件均已实现；不受支持的能力组合 fail-fast。
 >
 > 当前仓库只保留 Rust `Strategy` trait；最终面向策略作者的接口必须是 Numba Python
@@ -126,7 +126,7 @@ Bar。策略何时看见 Bar 属于 Feed/Runtime 的投递规则，不属于 `Ba
 输入可以直接是已经完成、排序并带周期元信息的 OHLCV 文件。引擎直接跳到下一根
 `close_ts`，填充 Bar 批次并调用 `on_bar(s)`，不运行固定 1 ms 帧轮询，也不扫描逐笔成交。
 
-调用顺序必须为：
+默认 `bar_matching="next_open"` 的调用顺序为：
 
 ```text
 Bar N 在 T 关闭
@@ -136,9 +136,9 @@ Bar N 在 T 关闭
   -> 订单最早由 Bar N+1 撮合
 ```
 
-禁止使用刚关闭的 Bar N 的 high/low 判断 `on_bar(s)` 中新订单是否成交。Bar-only 必须使用
-显式撮合模型，例如 `NextOpen`、`Touch`、`ConservativeOhlc` 或 `VolumeLimited`，不能复用
-L2 队列位置模型。
+除显式选择 `signal_close` 外，禁止使用刚关闭的 Bar N 判断 `on_bar(s)` 中新订单是否成交。
+Bar-only 必须使用显式撮合模型，例如 `NextOpen`、`SignalClose`、`Touch`、
+`ConservativeOhlc` 或 `VolumeLimited`，不能复用 L2 队列位置模型。
 
 首个实现采用保守 `NextOpen`：Bar N 回调提交的订单最早在 Bar N+1 的 open 处理；市价单
 按 open 成交，限价买单仅在 `open <= limit`、限价卖单仅在 `open >= limit` 时成交。该模型
@@ -146,6 +146,36 @@ L2 队列位置模型。
 多周期输入只使用全局最小周期作为执行时钟，其他周期只产生信号；订单记录提交时的
 `eligible_after`，不得使用开始时间早于该值的 Bar 撮合。`BAR_EMPTY`（包括 NaN 或合成
 空 Bar）不参与撮合。
+
+### `bar_matching` 参数
+
+`run_event_bot(data_mode="bar", ...)` 通过 `bar_matching` 显式选择 Bar 撮合和成交价语义：
+
+| 参数值 | 市价单成交价 | 限价单判定与成交价 | 典型用途 |
+| --- | --- | --- | --- |
+| `next_open` | 下一根可执行 Bar 的 `open` | 下一根 open 穿过限价时按 open 成交 | 默认、保守且避免同 Bar 前视 |
+| `signal_close` | 产生信号 Bar 的 `close` | close 穿过限价时按 close 成交 | 与 same-close Bar 引擎进行结果对齐 |
+| `touch` | 下一根符合条件 Bar 的 `open` | high/low 触及后按订单限价成交 | 乐观 OHLC 限价撮合 |
+| `conservative_ohlc` | 下一根符合条件 Bar 的 `open` | 既触及且 close 穿过限价后按订单限价成交 | 保守 OHLC 限价撮合 |
+
+```python
+run_event_bot(
+    data_mode="bar",
+    bars=bars,
+    bar_matching="signal_close",
+    on_bar=on_bar,
+    on_filled=on_filled,
+)
+```
+
+`signal_close` 是明确的 same-close 回测假设：策略先读取完整收盘 Bar，再以该 close 成交。
+除非执行场景真实提供收盘集合竞价或等价保证，否则它包含普通连续交易无法实现的同 Bar
+成交假设，不应当作为实盘可成交性证明。为防止时间倒流，该模式要求 `feed_latency=0` 且
+`entry_latency=0`；`response_latency` 可以非零，只影响策略收到成交回报的时间。成交价会
+进入统一执行层，用于订单事件、持仓、现金、手续费和账户结算，而不是仅在导出结果时替换。
+
+`volume_participation` 只控制 OHLC 撮合的成交量参与上限。默认值仍为
+`bar_matching="next_open"`，因此现有策略不传参数时结果保持不变。
 
 ### Tick-only
 
