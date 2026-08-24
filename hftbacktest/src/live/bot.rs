@@ -616,6 +616,7 @@ where
                         effective_ts: exch_ts,
                         settlement_ts: exch_ts,
                         rate: funding_rate,
+                        price_source: crate::backtest::execution::FundingPriceSource::Mark,
                         mark_price,
                         boundary: FundingBoundary::BeforeSettlementEvents,
                     };
@@ -665,6 +666,11 @@ where
                                 venue_no: 0,
                                 instrument_id: instrument_id.0,
                                 currency,
+                                price_source: 0,
+                                position_snapshot: 0,
+                                formula: 0,
+                                rounding_mode: 0,
+                                boundary: 0,
                                 publication_ts: exch_ts,
                                 effective_ts: exch_ts,
                                 settlement_ts: exch_ts,
@@ -673,6 +679,7 @@ where
                                 mark_price,
                                 position_qty,
                                 amount,
+                                rounding_increment: 1e-12,
                             },
                         ));
                     }

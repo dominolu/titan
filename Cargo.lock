@@ -1880,6 +1880,7 @@ dependencies = [
  "futures-util",
  "hftbacktest-derive",
  "iceoryx2",
+ "libc",
  "nom 8.0.0",
  "rand 0.9.5",
  "serde",

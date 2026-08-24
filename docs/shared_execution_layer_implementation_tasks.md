@@ -121,7 +121,7 @@ Expired report。
   FOK 保持原子撮合语义。
 - [x] ConservativeOhlc/Touch/VolumeLimited：Rust matcher 与 Python `bar_matching`/
   `volume_participation` 显式配置已接通，FOK 原子性及独立 partial fill 已测试。
-- [x] Stop Market/Stop Limit/GTD：Bar 与 Tick runtime 均已接通触发与到期，公共 ABI v7 fail-fast
+- [x] Stop Market/Stop Limit/GTD：Bar 与 Tick runtime 均已接通触发与到期，公共 ABI v8 fail-fast
   校验无效组合。
 - [x] Instrument/MarketStatus 与标准审计报告：版本化 InstrumentSpec/status 调度 cursor、market-status
   risk gate、reset，以及 `TITAUDIT` 版本化 little-endian 有界分块格式已完成。
@@ -131,16 +131,18 @@ Expired report。
 - [x] DataManifest/Catalog、RunConfig/BatchNode、CustomData：清单 hash 与输入枚举顺序无关，Batch 每轮
   强制 reset，CustomData 保持 scheduler envelope。
 - [x] Simulation hooks、OCO/OTO/Bracket、完整多币种 Portfolio：能力位于 execution core 外，通过
-  canonical command bus 输出；VenueAccount/Portfolio 以 CurrencyId 聚合并保留 Instrument 明细。
+  canonical command bus 输出；Bar 运行时已验证父单成交激活 OTO/Bracket 子单，以及 OCO/Bracket
+  子单成交撤销兄弟单，所有动作均重新进入 risk/transport/state/report 链；VenueAccount/Portfolio 以
+  CurrencyId 聚合并保留 Instrument 明细。
 - [x] ExecutionAlgorithm command producer：与策略和 simulation hook 共用有界 `PlatformCommandBus`，
-  origin、容量错误和 reset 行为已测试。
+  运行时生成的命令已接入真实 Bar 撮合路径；origin、容量错误、成交和 reset 行为均有测试。
 
 ## 最终验收（2026-08-24）
 
-- [x] `cargo test --workspace --all-targets`：以最终提交执行结果为准；核心共享执行库 115 项测试通过，
-  connector 的真实网络测试按定义 ignored。
+- [x] `cargo test --workspace --all-targets`：最终核心共享执行库 122 项测试通过，connector 两个目标
+  各 31 项通过、各 1 项真实网络测试按定义 ignored。
 - [x] `cargo check --workspace --all-targets` 与 `cargo fmt --all -- --check` 通过。
-- [x] Python release 扩展重建后，`python -m unittest discover -s tests -v`：33 项通过，1 项外部行情 fixture 测试跳过。
-- [x] Tick release A/B：100 万事件、30 轮、5 轮 warmup，最终权威账户所有权与 ABI v7 代码三次回归分别为
-  -0.456%、-0.867%、-0.790%，中位 -0.790%（实验组更快），通过不超过 3% 的门槛；详见
+- [x] Python release 扩展重建后，`python -m unittest discover -s tests -v`：34 项通过，1 项外部行情 fixture 测试跳过。
+- [x] Tick release A/B：100 万事件、30 轮、5 轮 warmup，ABI v8 与复审修复后的三次回归分别为
+  -5.945%、+1.095%、+5.286%，中位 +1.095%，通过不超过 3% 的门槛；详见
   [`tick_shared_execution_release_benchmark.md`](tick_shared_execution_release_benchmark.md)。

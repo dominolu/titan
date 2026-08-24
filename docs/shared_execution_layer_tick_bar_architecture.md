@@ -917,7 +917,7 @@ pub struct BacktestResult {
 
 ### Phase 6：统一 runtime、Result 和 Reset
 
-- [x] ABI v7（含 venue order ID、sequence、venue/instrument、reason）；
+- [x] ABI v8（含 venue order ID、sequence、venue/instrument、reason 及显式 Funding 配置）；
 - [ ] 统一 order/fill/position event projector；
 - [ ] account views；
 - [ ] BacktestResult；
@@ -979,7 +979,7 @@ shared_execution
 | 相同时间事件不稳定 | `(timestamp,priority,sequence)` 统一键 |
 | 抽象层过重 | 热路径泛型/inline，事件 buffer 预分配，不强制 trait object |
 | Partial fill 伪真实性 | 每个 Bar model 明确能力和时间语义，NextOpen 不宣称 partial |
-| ABI 错位 | ABI v7、Rust/Python offset 测试、旧 ABI fail-fast |
+| ABI 错位 | ABI v8、Rust/Python offset 测试、旧 ABI fail-fast |
 | 大规模重写难回退 | feature flag、adapter、一次只迁移一个职责 |
 
 ## 19. 验收定义

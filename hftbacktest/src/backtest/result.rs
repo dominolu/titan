@@ -3,6 +3,25 @@ use super::{
     scheduler::EventKey,
 };
 
+/// Monotonic CPU time consumed by the current process. Unsupported targets return zero while
+/// Unix targets use the kernel process CPU clock rather than wall time.
+pub fn process_cpu_time_ns() -> u64 {
+    #[cfg(unix)]
+    {
+        let mut value = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let status = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut value) };
+        if status == 0 && value.tv_sec >= 0 && value.tv_nsec >= 0 {
+            return (value.tv_sec as u64)
+                .saturating_mul(1_000_000_000)
+                .saturating_add(value.tv_nsec as u64);
+        }
+    }
+    0
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndPolicy {
     DrainAll,
@@ -681,6 +700,7 @@ mod tests {
                 effective_ts: 2,
                 settlement_ts: 3,
                 rate: 0.001,
+                price_source: crate::backtest::execution::FundingPriceSource::Mark,
                 mark_price: 100.0,
                 boundary: FundingBoundary::BeforeSettlementEvents,
             };
