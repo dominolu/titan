@@ -28,6 +28,11 @@ def main():
         choices=("next_open", "signal_close", "touch", "conservative_ohlc"),
         default="next_open",
     )
+    parser.add_argument(
+        "--close-positions-on-stop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -85,6 +90,7 @@ def main():
         state=runtime_state,
         state_i64=runtime_state_i64,
         bar_matching=args.bar_matching,
+        close_positions_on_stop=args.close_positions_on_stop,
     )
 
     count = int(runtime_state_i64[fill_count_index])
@@ -176,6 +182,7 @@ def main():
         "data": args.data,
         "source": args.source,
         "bar_matching": args.bar_matching,
+        "close_positions_on_stop": args.close_positions_on_stop,
         "bars": len(bars),
         "fills": count,
         "account_states": count + 1,
