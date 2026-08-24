@@ -148,7 +148,7 @@ mod tests {
     use super::*;
     use crate::backtest::execution::{
         AccountReport, CurrencyId, ExecutionEventProjector, FundingBoundary, FundingEvent,
-        LocalAccountView,
+        FundingPriceSource, LocalAccountView,
     };
 
     fn event(event_id: u128, sequence: u64, qty: f64) -> LiveExecutionEvent {
@@ -226,6 +226,7 @@ mod tests {
                 effective_ts: 90,
                 settlement_ts: 100,
                 rate: 0.001,
+                price_source: FundingPriceSource::Mark,
                 mark_price: 100.0,
                 boundary: FundingBoundary::BeforeSettlementEvents,
             },
@@ -252,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_backtest_and_live_reports_project_to_identical_abi_v7_bytes() {
+    fn equivalent_backtest_and_live_reports_project_to_identical_abi_v8_bytes() {
         let live_event = event(99, 7, 1.0);
         let mut adapter = LiveExecutionAdapter::new(LIVE_EXECUTION_ABI_VERSION).unwrap();
         let live_report = adapter.normalize(live_event).unwrap().unwrap();

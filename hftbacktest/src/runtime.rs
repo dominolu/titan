@@ -19,15 +19,21 @@ use crate::{
     backtest::{
         execution::{
             ConditionalAction, ConditionalOrder, ConditionalOrderBook, CurrencyId, FundingBoundary,
-            FundingEvent, InstrumentId, ScheduledFunding, TriggerKind, VenueId,
+            FundingConfig, FundingEvent, FundingFormula, FundingPositionSnapshot,
+            FundingPriceSource, FundingRounding, FundingRoundingMode, InstrumentId,
+            ScheduledFunding, TriggerKind, VenueId,
         },
-        scheduler::{TimerEvent, TimerId, TimerQueue},
+        platform::{
+            ContingencyAction, ContingencyGroup, ContingencyManager, ExecutionAlgorithm,
+            PlatformCommandBus, SimulationHook,
+        },
+        scheduler::{EventPhase, TimerEvent, TimerId, TimerQueue},
     },
     market_data::{Bar, BarHistory},
     types::{Event, Order, Status},
 };
 
-pub const STRATEGY_ABI_VERSION: u32 = 7;
+pub const STRATEGY_ABI_VERSION: u32 = 8;
 pub const EVENT_SLOT_COUNT: usize = 32;
 
 /// Stable callback identifiers. New event kinds must use a previously unused number;
@@ -148,7 +154,7 @@ pub const fn execution_reason_from_code(code: u32) -> crate::backtest::execution
     }
 }
 
-/// Projects one canonical execution report into ABI v7 buffers.
+/// Projects one canonical execution report into ABI v8 buffers.
 pub fn project_execution_report(
     report: &crate::backtest::execution::ExecutionReport,
     request: u8,
@@ -264,6 +270,7 @@ pub const ORDER_COMMAND_CANCEL: u8 = 2;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrderCommandDecodeError {
     InvalidKind,
+    InvalidOrigin,
     InvalidSide,
     InvalidTimeInForce,
     InvalidOrderType,
@@ -302,11 +309,6 @@ impl OrderCommand {
         use crate::backtest::execution::{
             CancelRequest, ExecutionCommand, ExecutionOrderRequest, OrderOrigin,
         };
-        let side = match self.side {
-            1 => crate::types::Side::Buy,
-            -1 => crate::types::Side::Sell,
-            _ => return Err(OrderCommandDecodeError::InvalidSide),
-        };
         match self.kind {
             0 => Ok(None),
             ORDER_COMMAND_CANCEL => Ok(Some(ExecutionCommand::Cancel(CancelRequest {
@@ -316,6 +318,17 @@ impl OrderCommand {
                 local_submit_ts: now,
             }))),
             ORDER_COMMAND_SUBMIT => {
+                let origin = match self._reserved[2] {
+                    0 => OrderOrigin::Strategy,
+                    1 => OrderOrigin::ExecutionAlgorithm,
+                    2 => OrderOrigin::Liquidation,
+                    _ => return Err(OrderCommandDecodeError::InvalidOrigin),
+                };
+                let side = match self.side {
+                    1 => crate::types::Side::Buy,
+                    -1 => crate::types::Side::Sell,
+                    _ => return Err(OrderCommandDecodeError::InvalidSide),
+                };
                 let time_in_force = match self.time_in_force {
                     0 => crate::types::TimeInForce::GTC,
                     1 => crate::types::TimeInForce::GTX,
@@ -346,7 +359,7 @@ impl OrderCommand {
                     time_in_force,
                     order_type,
                     reduce_only: self._reserved[0] != 0,
-                    origin: OrderOrigin::Strategy,
+                    origin,
                     local_submit_ts: now,
                 })))
             }
@@ -398,7 +411,7 @@ pub struct RuntimeTimer {
     pub timer_id: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct RuntimeFunding {
     pub event_id: u64,
@@ -406,6 +419,16 @@ pub struct RuntimeFunding {
     pub venue_no: u32,
     pub instrument_id: u32,
     pub currency: u32,
+    /// 0=mark, 1=index, high bit set=external source ID.
+    pub price_source: u32,
+    /// 0=before settlement events, 1=after settlement events.
+    pub position_snapshot: u8,
+    /// Currently 0=InstrumentNotional.
+    pub formula: u8,
+    /// 0=nearest, 1=toward-zero, 2=floor, 3=ceil.
+    pub rounding_mode: u8,
+    /// 0=before settlement events, 1=after settlement events.
+    pub boundary: u8,
     pub publication_ts: i64,
     pub effective_ts: i64,
     pub settlement_ts: i64,
@@ -414,6 +437,85 @@ pub struct RuntimeFunding {
     pub mark_price: f64,
     pub position_qty: f64,
     pub amount: f64,
+    pub rounding_increment: f64,
+}
+
+impl Default for RuntimeFunding {
+    fn default() -> Self {
+        Self {
+            event_id: 0,
+            asset_no: 0,
+            venue_no: 0,
+            instrument_id: 0,
+            currency: 0,
+            price_source: 0,
+            position_snapshot: 0,
+            formula: 0,
+            rounding_mode: 0,
+            boundary: 0,
+            publication_ts: 0,
+            effective_ts: 0,
+            settlement_ts: 0,
+            delivery_ts: 0,
+            rate: 0.0,
+            mark_price: 0.0,
+            position_qty: 0.0,
+            amount: 0.0,
+            rounding_increment: 1e-12,
+        }
+    }
+}
+
+impl RuntimeFunding {
+    pub fn config(self) -> Result<FundingConfig, MaterializedBarError> {
+        let price_source = match self.price_source {
+            0 => FundingPriceSource::Mark,
+            1 => FundingPriceSource::Index,
+            value if value & 0x8000_0000 != 0 => FundingPriceSource::External(value & 0x7fff_ffff),
+            _ => return Err(MaterializedBarError::InvalidOrder),
+        };
+        let position_snapshot = match self.position_snapshot {
+            0 => FundingPositionSnapshot::BeforeSettlementEvents,
+            1 => FundingPositionSnapshot::AfterSettlementEvents,
+            _ => return Err(MaterializedBarError::InvalidOrder),
+        };
+        let formula = match self.formula {
+            0 => FundingFormula::InstrumentNotional,
+            _ => return Err(MaterializedBarError::InvalidOrder),
+        };
+        let mode = match self.rounding_mode {
+            0 => FundingRoundingMode::Nearest,
+            1 => FundingRoundingMode::TowardZero,
+            2 => FundingRoundingMode::Floor,
+            3 => FundingRoundingMode::Ceil,
+            _ => return Err(MaterializedBarError::InvalidOrder),
+        };
+        let boundary = match self.boundary {
+            0 => FundingBoundary::BeforeSettlementEvents,
+            1 => FundingBoundary::AfterSettlementEvents,
+            _ => return Err(MaterializedBarError::InvalidOrder),
+        };
+        Ok(FundingConfig {
+            price_source,
+            position_snapshot,
+            formula,
+            currency: CurrencyId(self.currency),
+            rounding: FundingRounding {
+                increment: self.rounding_increment,
+                mode,
+            },
+            boundary,
+        })
+    }
+}
+
+fn config_price_source(code: u32) -> FundingPriceSource {
+    match code {
+        0 => FundingPriceSource::Mark,
+        1 => FundingPriceSource::Index,
+        value if value & 0x8000_0000 != 0 => FundingPriceSource::External(value & 0x7fff_ffff),
+        _ => unreachable!("RuntimeFunding is validated before enqueue"),
+    }
 }
 
 /// Read-only ring metadata exposed to foreign callbacks.
@@ -634,6 +736,19 @@ pub trait RuntimeEventSource {
     fn finish(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    fn classify_error(
+        &self,
+        _error: &Self::Error,
+    ) -> (
+        crate::backtest::result::EngineComponent,
+        crate::backtest::result::EngineErrorCode,
+    ) {
+        (
+            crate::backtest::result::EngineComponent::DataSource,
+            crate::backtest::result::EngineErrorCode::InvalidData,
+        )
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -733,7 +848,13 @@ pub struct MaterializedBarSource {
     current_bar_delivery: Option<PendingBarDelivery>,
     feed_latency_ns: i64,
     entry_latency_ns: i64,
-    pending_actions: VecDeque<PendingBarAction>,
+    action_scheduler: crate::backtest::scheduler::GlobalScheduler<PendingBarAction>,
+    platform_commands: PlatformCommandBus,
+    execution_algorithms: Vec<Box<dyn ExecutionAlgorithm>>,
+    simulation_hooks: Vec<Box<dyn SimulationHook>>,
+    contingencies: ContingencyManager,
+    held_contingent_orders: BTreeMap<(u64, u64), PendingBarOrder>,
+    contingency_report_cursor: usize,
     conditional_books: Vec<ConditionalOrderBook>,
     conditional_orders: BTreeMap<(u64, u64), PendingBarOrder>,
     gtd_orders: BTreeMap<(u64, u64), (i64, PendingBarOrder)>,
@@ -756,6 +877,7 @@ pub struct MaterializedBarSource {
 enum BarBoundary {
     ResponseDelivery,
     FundingSettlement,
+    OrderExpiry,
     CommandArrival,
     Timer,
     MarketOpen,
@@ -832,7 +954,13 @@ impl MaterializedBarSource {
             current_bar_delivery: None,
             feed_latency_ns: 0,
             entry_latency_ns: 0,
-            pending_actions: VecDeque::with_capacity(16),
+            action_scheduler: crate::backtest::scheduler::GlobalScheduler::new(),
+            platform_commands: PlatformCommandBus::with_capacity(1024),
+            execution_algorithms: Vec::new(),
+            simulation_hooks: Vec::new(),
+            contingencies: ContingencyManager::default(),
+            held_contingent_orders: BTreeMap::new(),
+            contingency_report_cursor: 0,
             conditional_books: (0..num_assets)
                 .map(|_| ConditionalOrderBook::default())
                 .collect(),
@@ -892,23 +1020,36 @@ impl MaterializedBarSource {
                 BarBoundary::ResponseDelivery,
             );
         }
-        if let Some(timestamp) = self.next_funding_settlement_ts() {
+        if let Some(funding) = self.funding.front() {
+            self.scheduler.schedule(
+                funding.event.settlement_ts,
+                EventPhase::ExchangeState,
+                match funding.event.boundary {
+                    FundingBoundary::BeforeSettlementEvents => 0,
+                    FundingBoundary::AfterSettlementEvents => u16::MAX,
+                },
+                funding.event.venue_id.0,
+                funding.asset_no,
+                BarBoundary::FundingSettlement,
+            );
+        }
+        if let Some(timestamp) = self.next_expiry_ts() {
             self.scheduler.schedule(
                 timestamp,
                 EventPhase::ExchangeState,
                 0,
                 0,
                 0,
-                BarBoundary::FundingSettlement,
+                BarBoundary::OrderExpiry,
             );
         }
-        if let Some(timestamp) = self.next_action_ts() {
+        if let Some(key) = self.action_scheduler.peek_key() {
             self.scheduler.schedule(
-                timestamp,
-                EventPhase::CommandArrival,
-                0,
-                0,
-                0,
+                key.timestamp,
+                key.phase,
+                key.source_priority,
+                key.venue_no,
+                key.asset_no,
                 BarBoundary::CommandArrival,
             );
         }
@@ -1001,7 +1142,13 @@ impl MaterializedBarSource {
         self.timers.cancel(TimerId { owner_id, timer_id })
     }
 
-    pub fn schedule_funding(&mut self, funding: RuntimeFunding) {
+    pub fn schedule_funding(
+        &mut self,
+        funding: RuntimeFunding,
+    ) -> Result<(), MaterializedBarError> {
+        let config = funding.config()?;
+        self.execution
+            .configure_funding(funding.asset_no as usize, config)?;
         if let Some(existing) = self
             .configured_funding
             .iter_mut()
@@ -1012,6 +1159,7 @@ impl MaterializedBarSource {
             self.configured_funding.push(funding);
         }
         self.enqueue_funding(funding);
+        Ok(())
     }
 
     fn enqueue_funding(&mut self, funding: RuntimeFunding) {
@@ -1026,8 +1174,13 @@ impl MaterializedBarSource {
                 effective_ts: funding.effective_ts,
                 settlement_ts: funding.settlement_ts,
                 rate: funding.rate,
+                price_source: config_price_source(funding.price_source),
                 mark_price: funding.mark_price,
-                boundary: FundingBoundary::BeforeSettlementEvents,
+                boundary: if funding.boundary == 0 {
+                    FundingBoundary::BeforeSettlementEvents
+                } else {
+                    FundingBoundary::AfterSettlementEvents
+                },
             },
             delivery_ts: funding.delivery_ts,
         };
@@ -1037,10 +1190,12 @@ impl MaterializedBarSource {
             .position(|queued| {
                 (
                     queued.event.settlement_ts,
+                    queued.event.boundary as u8,
                     queued.asset_no,
                     queued.event.event_id,
                 ) > (
                     scheduled.event.settlement_ts,
+                    scheduled.event.boundary as u8,
                     scheduled.asset_no,
                     scheduled.event.event_id,
                 )
@@ -1141,6 +1296,18 @@ impl MaterializedBarSource {
         self.execution.configure_venue_risk(venue_id, risk);
     }
 
+    pub fn add_execution_algorithm<A: ExecutionAlgorithm + 'static>(&mut self, algorithm: A) {
+        self.execution_algorithms.push(Box::new(algorithm));
+    }
+
+    pub fn add_simulation_hook<H: SimulationHook + 'static>(&mut self, hook: H) {
+        self.simulation_hooks.push(Box::new(hook));
+    }
+
+    pub fn register_contingency(&mut self, group: ContingencyGroup) -> bool {
+        self.contingencies.insert(group)
+    }
+
     pub fn set_exchange_balance(
         &mut self,
         venue_id: VenueId,
@@ -1166,7 +1333,17 @@ impl MaterializedBarSource {
         self.fill_batch.clear();
         self.pending_bar_deliveries.clear();
         self.current_bar_delivery = None;
-        self.pending_actions.clear();
+        self.action_scheduler.reset();
+        self.platform_commands.reset();
+        for algorithm in &mut self.execution_algorithms {
+            algorithm.reset();
+        }
+        for hook in &mut self.simulation_hooks {
+            hook.reset();
+        }
+        self.contingencies.reset();
+        self.held_contingent_orders.clear();
+        self.contingency_report_cursor = 0;
         for book in &mut self.conditional_books {
             book.reset();
         }
@@ -1193,6 +1370,7 @@ impl MaterializedBarSource {
     pub fn clear_results(&mut self) {
         self.execution.clear_results();
         self.execution_cursor = 0;
+        self.contingency_report_cursor = 0;
         self.order_batch.clear();
         self.fill_batch.clear();
     }
@@ -1203,6 +1381,183 @@ impl MaterializedBarSource {
         self.execution.projected()
     }
 
+    fn execution_command_to_abi(
+        &self,
+        command: crate::backtest::execution::ExecutionCommand,
+    ) -> Result<OrderCommand, MaterializedBarError> {
+        use crate::backtest::execution::ExecutionCommand;
+        let (venue_id, instrument_id) = match command {
+            ExecutionCommand::Submit(request) => (request.venue_id, request.instrument_id),
+            ExecutionCommand::Cancel(request) => (request.venue_id, request.instrument_id),
+        };
+        let asset_no = self
+            .execution
+            .asset_for_instrument(venue_id, instrument_id)
+            .ok_or(MaterializedBarError::InvalidOrder)? as u64;
+        Ok(match command {
+            ExecutionCommand::Submit(request) => OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: request.side as i8,
+                time_in_force: match request.time_in_force {
+                    crate::types::TimeInForce::GTC => 0,
+                    crate::types::TimeInForce::GTX => 1,
+                    crate::types::TimeInForce::FOK => 2,
+                    crate::types::TimeInForce::IOC => 3,
+                    crate::types::TimeInForce::Unsupported => {
+                        return Err(MaterializedBarError::InvalidOrder);
+                    }
+                },
+                order_type: match request.order_type {
+                    crate::types::OrdType::Limit => 0,
+                    crate::types::OrdType::Market => 1,
+                    crate::types::OrdType::Unsupported => {
+                        return Err(MaterializedBarError::InvalidOrder);
+                    }
+                },
+                _reserved: [
+                    u8::from(request.reduce_only),
+                    0,
+                    match request.origin {
+                        crate::backtest::execution::OrderOrigin::Strategy => 0,
+                        crate::backtest::execution::OrderOrigin::ExecutionAlgorithm => 1,
+                        crate::backtest::execution::OrderOrigin::Liquidation => 2,
+                    },
+                    0,
+                ],
+                asset_no,
+                order_id: request.client_order_id,
+                price: request.price,
+                qty: request.qty,
+                trigger_price: 0.0,
+                gtd_expiry_ts: 0,
+            },
+            ExecutionCommand::Cancel(request) => OrderCommand {
+                kind: ORDER_COMMAND_CANCEL,
+                asset_no,
+                order_id: request.client_order_id,
+                ..OrderCommand::default()
+            },
+        })
+    }
+
+    fn dispatch_platform_event(
+        &mut self,
+        key: crate::backtest::scheduler::EventKey,
+    ) -> Result<(), MaterializedBarError> {
+        let mut generated = Vec::new();
+        for algorithm in &mut self.execution_algorithms {
+            algorithm.on_event(key, &mut generated);
+        }
+        for hook in &mut self.simulation_hooks {
+            hook.on_event(key, &mut generated);
+        }
+        for command in generated {
+            self.platform_commands
+                .push(command)
+                .map_err(|_| MaterializedBarError::CommandOverflow)?;
+        }
+        let commands: Vec<_> = self.platform_commands.drain().collect();
+        if commands.len() > self.commands.len() {
+            return Err(MaterializedBarError::CommandOverflow);
+        }
+        let command_count = commands.len();
+        for (index, command) in commands.into_iter().enumerate() {
+            self.commands[index] = self.execution_command_to_abi(command)?;
+        }
+        let mut context = StrategyRuntimeContext {
+            now: key.timestamp,
+            num_commands: command_count,
+            ..StrategyRuntimeContext::default()
+        };
+        self.process_commands(&mut context, true)
+    }
+
+    fn process_contingency_reports(&mut self, now: i64) -> Result<(), MaterializedBarError> {
+        let reports: Vec<_> = self.execution.reports()[self.contingency_report_cursor..].to_vec();
+        self.contingency_report_cursor = self.execution.reports().len();
+        let mut actions = Vec::new();
+        for report in reports {
+            if report.kind == crate::backtest::execution::ExecutionReportKind::Fill {
+                self.contingencies.on_filled(report.order_id, &mut actions);
+            }
+        }
+        for action in actions.drain(..) {
+            let order_id = match action {
+                ContingencyAction::Activate(order_id) | ContingencyAction::Cancel(order_id) => {
+                    order_id
+                }
+            };
+            let held_key = self
+                .held_contingent_orders
+                .keys()
+                .find(|(_, candidate)| *candidate == order_id)
+                .copied();
+            match action {
+                ContingencyAction::Activate(_) => {
+                    let Some(key) = held_key else { continue };
+                    let mut pending = self.held_contingent_orders.remove(&key).unwrap();
+                    pending.local_submit_ts = now;
+                    pending.eligible_after = now.saturating_add(self.entry_latency_ns);
+                    if pending.command._reserved[1] == 0 {
+                        if !self.matcher.submit(pending) {
+                            return Err(MaterializedBarError::DuplicateOrder {
+                                asset_no: key.0,
+                                order_id,
+                            });
+                        }
+                    } else {
+                        self.conditional_orders.insert(key, pending);
+                    }
+                    if let Some((_, stored)) = self.gtd_orders.get_mut(&key) {
+                        *stored = pending;
+                    }
+                    self.schedule_action(
+                        EventPhase::PostTradeRisk,
+                        PendingBarAction::Submit {
+                            command: pending.command,
+                            local_submit_ts: now,
+                            exchange_arrival_ts: now.saturating_add(self.entry_latency_ns),
+                        },
+                    );
+                }
+                ContingencyAction::Cancel(_) => {
+                    if let Some(key) = held_key {
+                        let pending = self.held_contingent_orders.remove(&key).unwrap();
+                        self.gtd_orders.remove(&key);
+                        self.execution.cancel(
+                            pending.command,
+                            pending.local_submit_ts,
+                            now,
+                            true,
+                        )?;
+                    } else if let Some(asset_no) = self
+                        .execution
+                        .reports()
+                        .iter()
+                        .rev()
+                        .find(|report| report.order_id == order_id)
+                        .map(|report| u64::from(report.asset_no))
+                    {
+                        self.schedule_action(
+                            EventPhase::PostTradeRisk,
+                            PendingBarAction::Cancel {
+                                command: OrderCommand {
+                                    kind: ORDER_COMMAND_CANCEL,
+                                    asset_no,
+                                    order_id,
+                                    ..OrderCommand::default()
+                                },
+                                local_submit_ts: now,
+                                exchange_arrival_ts: now,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn process_commands(
         &mut self,
         ctx: &mut StrategyRuntimeContext,
@@ -1211,7 +1566,8 @@ impl MaterializedBarSource {
         if ctx.num_commands > self.commands.len() {
             return Err(MaterializedBarError::CommandOverflow);
         }
-        for command in self.commands[..ctx.num_commands].iter().copied() {
+        for index in 0..ctx.num_commands {
+            let command = self.commands[index];
             let decoded = command
                 .decode_execution(
                     ctx.now,
@@ -1253,9 +1609,23 @@ impl MaterializedBarSource {
                         .contains_key(&(command.asset_no, command.order_id))
                         || self
                             .gtd_orders
+                            .contains_key(&(command.asset_no, command.order_id))
+                        || self
+                            .held_contingent_orders
                             .contains_key(&(command.asset_no, command.order_id));
                     if duplicate {
                         self.execution.reject_duplicate_local(command, ctx.now)?;
+                        continue;
+                    }
+                    if self.contingencies.should_hold(command.order_id) {
+                        self.held_contingent_orders
+                            .insert((command.asset_no, command.order_id), pending);
+                        if command.gtd_expiry_ts != 0 {
+                            self.gtd_orders.insert(
+                                (command.asset_no, command.order_id),
+                                (command.gtd_expiry_ts, pending),
+                            );
+                        }
                         continue;
                     }
                     let inserted = if command._reserved[1] == 0 {
@@ -1275,22 +1645,41 @@ impl MaterializedBarSource {
                             (command.gtd_expiry_ts, pending),
                         );
                     }
-                    self.pending_actions.push_back(PendingBarAction::Submit {
-                        command,
-                        local_submit_ts: ctx.now,
-                        exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
-                    });
+                    self.schedule_action(
+                        EventPhase::CommandArrival,
+                        PendingBarAction::Submit {
+                            command,
+                            local_submit_ts: ctx.now,
+                            exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
+                        },
+                    );
                 }
                 Some(crate::backtest::execution::ExecutionCommand::Cancel(request)) => {
                     debug_assert_eq!(request.client_order_id, command.order_id);
-                    self.pending_actions.push_back(PendingBarAction::Cancel {
-                        command,
-                        local_submit_ts: ctx.now,
-                        exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
-                    });
+                    if let Some(pending) = self
+                        .held_contingent_orders
+                        .remove(&(command.asset_no, command.order_id))
+                    {
+                        self.gtd_orders
+                            .remove(&(command.asset_no, command.order_id));
+                        self.execution
+                            .cancel(command, pending.local_submit_ts, ctx.now, true)?;
+                        continue;
+                    }
+                    self.schedule_action(
+                        EventPhase::CommandArrival,
+                        PendingBarAction::Cancel {
+                            command,
+                            local_submit_ts: ctx.now,
+                            exchange_arrival_ts: ctx.now.saturating_add(self.entry_latency_ns),
+                        },
+                    );
                 }
                 None => {}
             }
+        }
+        for command in &mut self.commands[..ctx.num_commands] {
+            *command = OrderCommand::default();
         }
         ctx.num_commands = 0;
         Ok(())
@@ -1313,6 +1702,7 @@ impl MaterializedBarSource {
             .batch()
             .first()
             .map_or(meta.close_ts, |item| item.bar.open_ts);
+        self.process_contingency_reports(exchange_ts)?;
         self.enqueue_risk_actions(exchange_ts)?;
         Ok(())
     }
@@ -1383,16 +1773,19 @@ impl MaterializedBarSource {
                     else {
                         return Err(MaterializedBarError::InvalidOrder);
                     };
-                    self.pending_actions.push_back(PendingBarAction::Cancel {
-                        command: OrderCommand {
-                            kind: ORDER_COMMAND_CANCEL,
-                            asset_no: asset_no as u64,
-                            order_id,
-                            ..Default::default()
+                    self.schedule_action(
+                        EventPhase::PostTradeRisk,
+                        PendingBarAction::Cancel {
+                            command: OrderCommand {
+                                kind: ORDER_COMMAND_CANCEL,
+                                asset_no: asset_no as u64,
+                                order_id,
+                                ..Default::default()
+                            },
+                            local_submit_ts: now,
+                            exchange_arrival_ts: now,
                         },
-                        local_submit_ts: now,
-                        exchange_arrival_ts: now,
-                    });
+                    );
                 }
                 crate::backtest::execution::RiskAction::Liquidate {
                     venue_id,
@@ -1413,7 +1806,7 @@ impl MaterializedBarSource {
                         side: if position > 0.0 { -1 } else { 1 },
                         time_in_force: 3,
                         order_type: 1,
-                        _reserved: [1, 0, 0, 0],
+                        _reserved: [1, 0, 2, 0],
                         asset_no: asset_no as u64,
                         order_id: self.next_risk_order_id,
                         price: 0.0,
@@ -1432,28 +1825,33 @@ impl MaterializedBarSource {
                             order_id: command.order_id,
                         });
                     }
-                    self.pending_actions.push_back(PendingBarAction::Submit {
-                        command,
-                        local_submit_ts: now,
-                        exchange_arrival_ts: now,
-                    });
+                    self.schedule_action(
+                        EventPhase::PostTradeRisk,
+                        PendingBarAction::Submit {
+                            command,
+                            local_submit_ts: now,
+                            exchange_arrival_ts: now,
+                        },
+                    );
                 }
             }
         }
         Ok(())
     }
 
-    fn next_action_ts(&self) -> Option<i64> {
-        let transport = self
-            .pending_actions
-            .front()
-            .copied()
-            .map(PendingBarAction::exchange_arrival_ts);
-        let expiry = self.gtd_orders.values().map(|(expiry, _)| *expiry).min();
-        match (transport, expiry) {
-            (Some(transport), Some(expiry)) => Some(transport.min(expiry)),
-            (transport, expiry) => transport.or(expiry),
-        }
+    fn schedule_action(&mut self, phase: EventPhase, action: PendingBarAction) {
+        let timestamp = action.exchange_arrival_ts();
+        let command = match action {
+            PendingBarAction::Submit { command, .. } | PendingBarAction::Cancel { command, .. } => {
+                command
+            }
+        };
+        self.action_scheduler
+            .schedule(timestamp, phase, 0, 0, command.asset_no as u32, action);
+    }
+
+    fn next_expiry_ts(&self) -> Option<i64> {
+        self.gtd_orders.values().map(|(expiry, _)| *expiry).min()
     }
 
     fn next_timer_ts(&self) -> Option<i64> {
@@ -1490,12 +1888,6 @@ impl MaterializedBarSource {
         })
     }
 
-    fn next_funding_settlement_ts(&self) -> Option<i64> {
-        self.funding
-            .front()
-            .map(|funding| funding.event.settlement_ts)
-    }
-
     fn process_next_funding(&mut self) -> Result<bool, MaterializedBarError> {
         let Some(funding) = self.funding.pop_front() else {
             return Ok(false);
@@ -1507,21 +1899,16 @@ impl MaterializedBarSource {
     fn deliver_next_runtime_event(&mut self) -> Result<bool, MaterializedBarError> {
         if self.execution.next_is_funding() {
             let (asset_no, report) = self.execution.deliver_next_funding()?.unwrap();
-            self.current_funding = RuntimeFunding {
-                event_id: report.event.event_id,
-                asset_no: asset_no as u32,
-                venue_no: report.event.venue_id.0,
-                instrument_id: report.event.instrument_id.0,
-                currency: report.event.currency.0,
-                publication_ts: report.event.publication_ts,
-                effective_ts: report.event.effective_ts,
-                settlement_ts: report.event.settlement_ts,
-                delivery_ts: report.delivery_ts,
-                rate: report.event.rate,
-                mark_price: report.event.mark_price,
-                position_qty: report.position_qty,
-                amount: report.amount,
-            };
+            self.current_funding = self
+                .configured_funding
+                .iter()
+                .find(|funding| funding.event_id == report.event.event_id)
+                .copied()
+                .unwrap_or_default();
+            self.current_funding.asset_no = asset_no as u32;
+            self.current_funding.delivery_ts = report.delivery_ts;
+            self.current_funding.position_qty = report.position_qty;
+            self.current_funding.amount = report.amount;
             self.funding_callback_pending = true;
             return Ok(true);
         }
@@ -1547,42 +1934,35 @@ impl MaterializedBarSource {
         }
     }
 
-    fn process_next_action(&mut self) -> Result<bool, MaterializedBarError> {
-        let next_transport = self
-            .pending_actions
-            .front()
-            .copied()
-            .map(PendingBarAction::exchange_arrival_ts)
-            .unwrap_or(i64::MAX);
-        let next_expiry = self
+    fn process_next_expiry(&mut self) -> Result<bool, MaterializedBarError> {
+        let Some(next_expiry) = self.next_expiry_ts() else {
+            return Ok(false);
+        };
+        let expired: Vec<_> = self
             .gtd_orders
-            .values()
-            .map(|(expiry, _)| *expiry)
-            .min()
-            .unwrap_or(i64::MAX);
-        if next_expiry <= next_transport {
-            let expired: Vec<_> = self
-                .gtd_orders
-                .iter()
-                .filter_map(|(key, (expiry, pending))| {
-                    (*expiry <= next_expiry).then_some((*key, *pending))
-                })
-                .collect();
-            for ((asset_no, order_id), pending) in expired {
-                self.gtd_orders.remove(&(asset_no, order_id));
-                self.conditional_orders.remove(&(asset_no, order_id));
-                self.conditional_books[asset_no as usize].cancel(order_id);
-                self.matcher.cancel(asset_no, order_id);
-                self.execution
-                    .apply(&[crate::backtest::bar::BarMatchOutcome::Expired {
-                        command: pending.command,
-                        local_submit_ts: pending.local_submit_ts,
-                        exchange_ts: next_expiry,
-                    }])?;
-            }
-            return Ok(true);
+            .iter()
+            .filter_map(|(key, (expiry, pending))| {
+                (*expiry <= next_expiry).then_some((*key, *pending))
+            })
+            .collect();
+        for ((asset_no, order_id), pending) in expired {
+            self.gtd_orders.remove(&(asset_no, order_id));
+            self.held_contingent_orders.remove(&(asset_no, order_id));
+            self.conditional_orders.remove(&(asset_no, order_id));
+            self.conditional_books[asset_no as usize].cancel(order_id);
+            self.matcher.cancel(asset_no, order_id);
+            self.execution
+                .apply(&[crate::backtest::bar::BarMatchOutcome::Expired {
+                    command: pending.command,
+                    local_submit_ts: pending.local_submit_ts,
+                    exchange_ts: next_expiry,
+                }])?;
         }
-        let Some(action) = self.pending_actions.pop_front() else {
+        Ok(true)
+    }
+
+    fn process_next_action(&mut self) -> Result<bool, MaterializedBarError> {
+        let Some(action) = self.action_scheduler.pop().map(|event| event.payload) else {
             return Ok(false);
         };
         match action {
@@ -1718,6 +2098,49 @@ impl MaterializedBarSource {
 impl RuntimeEventSource for MaterializedBarSource {
     type Error = MaterializedBarError;
 
+    fn classify_error(
+        &self,
+        error: &Self::Error,
+    ) -> (
+        crate::backtest::result::EngineComponent,
+        crate::backtest::result::EngineErrorCode,
+    ) {
+        use crate::backtest::result::{EngineComponent, EngineErrorCode};
+        match error {
+            MaterializedBarError::InvalidTimeframe
+            | MaterializedBarError::IntervalMismatch
+            | MaterializedBarError::PartialBar
+            | MaterializedBarError::IncompleteBar
+            | MaterializedBarError::InvalidOhlcv
+            | MaterializedBarError::Unsorted
+            | MaterializedBarError::DuplicateAsset
+            | MaterializedBarError::DataSource => {
+                (EngineComponent::DataSource, EngineErrorCode::InvalidData)
+            }
+            MaterializedBarError::InvalidOrder
+            | MaterializedBarError::DuplicateOrder { .. }
+            | MaterializedBarError::CommandOverflow => (
+                EngineComponent::Strategy,
+                EngineErrorCode::InvalidConfiguration,
+            ),
+            MaterializedBarError::SharedExecution(error) => match error {
+                BarExecutionError::Coordinator(_) => {
+                    (EngineComponent::Matching, EngineErrorCode::InvalidState)
+                }
+                BarExecutionError::Account(_) => {
+                    (EngineComponent::Account, EngineErrorCode::AccountInvariant)
+                }
+                BarExecutionError::Funding(_) => {
+                    (EngineComponent::Account, EngineErrorCode::AccountInvariant)
+                }
+                BarExecutionError::Instrument(_) | BarExecutionError::InvalidConfiguration => (
+                    EngineComponent::Configuration,
+                    EngineErrorCode::InvalidConfiguration,
+                ),
+            },
+        }
+    }
+
     fn next_event(&mut self) -> Result<Option<RuntimeEvent<'_>>, Self::Error> {
         loop {
             if self.execution_cursor < self.execution.projected().len() {
@@ -1741,6 +2164,9 @@ impl RuntimeEventSource for MaterializedBarSource {
                 Some(BarBoundary::FundingSettlement) => {
                     self.process_next_funding()?;
                 }
+                Some(BarBoundary::OrderExpiry) => {
+                    self.process_next_expiry()?;
+                }
                 Some(BarBoundary::CommandArrival) => {
                     self.process_next_action()?;
                 }
@@ -1750,6 +2176,26 @@ impl RuntimeEventSource for MaterializedBarSource {
                         .feed
                         .next_batch()?
                         .expect("peeked Bar open must have a batch");
+                    let exchange_ts = self
+                        .feed
+                        .batch()
+                        .first()
+                        .map_or(meta.close_ts, |item| item.bar.open_ts);
+                    self.dispatch_platform_event(crate::backtest::scheduler::EventKey {
+                        timestamp: exchange_ts,
+                        phase: EventPhase::MarketDelivery,
+                        source_priority: 0,
+                        venue_no: 0,
+                        asset_no: 0,
+                        sequence: 0,
+                    })?;
+                    while self
+                        .action_scheduler
+                        .peek_key()
+                        .is_some_and(|key| key.timestamp <= exchange_ts)
+                    {
+                        self.process_next_action()?;
+                    }
                     self.match_at_next_open(meta)?;
                     let delivery = PendingBarDelivery {
                         delivery_ts: meta.close_ts.saturating_add(self.feed_latency_ns),
@@ -1825,8 +2271,21 @@ pub enum RuntimeError {
     InvalidEventId(u32),
     #[error("strategy callback for event {event_id} returned error code {code}")]
     Callback { event_id: u32, code: i32 },
-    #[error("event source failed: {0}")]
-    Source(String),
+    #[error("{component:?} failed: {context}")]
+    Source {
+        component: crate::backtest::result::EngineComponent,
+        code: crate::backtest::result::EngineErrorCode,
+        context: String,
+    },
+}
+
+fn classified_source_error<S: RuntimeEventSource>(source: &S, error: S::Error) -> RuntimeError {
+    let (component, code) = source.classify_error(&error);
+    RuntimeError::Source {
+        component,
+        code,
+        context: error.to_string(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1835,8 +2294,11 @@ pub struct RuntimeRunStats {
     pub market_event_count: u64,
     pub order_event_count: u64,
     pub fill_event_count: u64,
-    pub start_ts: i64,
-    pub end_ts: i64,
+    pub start_exchange_ts: i64,
+    pub end_exchange_ts: i64,
+    pub start_delivery_ts: i64,
+    pub end_delivery_ts: i64,
+    pub termination: crate::backtest::result::RunTermination,
 }
 
 impl Default for RuntimeRunStats {
@@ -1846,10 +2308,47 @@ impl Default for RuntimeRunStats {
             market_event_count: 0,
             order_event_count: 0,
             fill_event_count: 0,
-            start_ts: i64::MAX,
-            end_ts: i64::MIN,
+            start_exchange_ts: i64::MAX,
+            end_exchange_ts: i64::MIN,
+            start_delivery_ts: i64::MAX,
+            end_delivery_ts: i64::MIN,
+            termination: crate::backtest::result::RunTermination::DataEnd,
         }
     }
+}
+
+fn runtime_event_exchange_bounds(event: &RuntimeEvent<'_>) -> (i64, i64) {
+    let bounds = match &event.payload {
+        RuntimePayload::Ticks(items) => items
+            .iter()
+            .map(|item| item.event.exch_ts)
+            .min()
+            .zip(items.iter().map(|item| item.event.exch_ts).max()),
+        RuntimePayload::Bars { close_ts, bars, .. } => bars
+            .iter()
+            .map(|item| item.bar.open_ts)
+            .min()
+            .map(|open_ts| (open_ts, *close_ts)),
+        RuntimePayload::Orders(items) => items
+            .iter()
+            .map(|item| item.exch_ts)
+            .min()
+            .zip(items.iter().map(|item| item.exch_ts).max()),
+        RuntimePayload::Fills(items) => items
+            .iter()
+            .map(|item| item.exch_ts)
+            .min()
+            .zip(items.iter().map(|item| item.exch_ts).max()),
+        RuntimePayload::Pod { ptr, len }
+            if event.kind == StrategyEventKind::Funding as u32
+                && *len == std::mem::size_of::<RuntimeFunding>() =>
+        {
+            let funding = unsafe { &*ptr.as_ptr().cast::<RuntimeFunding>() };
+            Some((funding.settlement_ts, funding.settlement_ts))
+        }
+        RuntimePayload::None | RuntimePayload::Pod { .. } => None,
+    };
+    bounds.unwrap_or((event.now, event.now))
 }
 
 /// Runs an event source entirely under Rust ownership. Foreign code is entered only for
@@ -1873,18 +2372,19 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
     let start_result = dispatch(StrategyEventKind::Start as u32, callbacks, ctx).and_then(|()| {
         source
             .after_callback(StrategyEventKind::Start as u32, ctx)
-            .map_err(|error| RuntimeError::Source(error.to_string()))
+            .map_err(|error| classified_source_error(source, error))
     });
 
     let result = match start_result {
         Err(error) => Err(error),
         Ok(()) => loop {
             if ctx.stop_requested != 0 {
+                stats.termination = crate::backtest::result::RunTermination::StrategyStop;
                 break Ok(());
             }
             let event = match source.next_event() {
                 Ok(event) => event,
-                Err(error) => break Err(RuntimeError::Source(error.to_string())),
+                Err(error) => break Err(classified_source_error(source, error)),
             };
             let Some(event) = event else {
                 break Ok(());
@@ -1892,8 +2392,11 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
             if (event.kind as usize) < EVENT_SLOT_COUNT {
                 stats.callback_count[event.kind as usize] += 1;
             }
-            stats.start_ts = stats.start_ts.min(event.now);
-            stats.end_ts = stats.end_ts.max(event.now);
+            stats.start_delivery_ts = stats.start_delivery_ts.min(event.now);
+            stats.end_delivery_ts = stats.end_delivery_ts.max(event.now);
+            let (exchange_start, exchange_end) = runtime_event_exchange_bounds(&event);
+            stats.start_exchange_ts = stats.start_exchange_ts.min(exchange_start);
+            stats.end_exchange_ts = stats.end_exchange_ts.max(exchange_end);
             match &event.payload {
                 RuntimePayload::Ticks(items) => stats.market_event_count += items.len() as u64,
                 RuntimePayload::Bars { bars, .. } => stats.market_event_count += bars.len() as u64,
@@ -1907,7 +2410,7 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
                 break Err(error);
             }
             if let Err(error) = source.after_callback(kind, ctx) {
-                break Err(RuntimeError::Source(error.to_string()));
+                break Err(classified_source_error(source, error));
             }
         },
     };
@@ -1923,7 +2426,7 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
         dispatch(StrategyEventKind::Error as u32, callbacks, ctx).and_then(|()| {
             source
                 .after_callback(StrategyEventKind::Error as u32, ctx)
-                .map_err(|error| RuntimeError::Source(error.to_string()))
+                .map_err(|error| classified_source_error(source, error))
         })
     } else {
         Ok(())
@@ -1935,15 +2438,23 @@ pub fn run_event_runtime_counted<S: RuntimeEventSource>(
     let stop_result = dispatch(StrategyEventKind::Stop as u32, callbacks, ctx);
     let stop_hook = source
         .after_callback(StrategyEventKind::Stop as u32, ctx)
-        .map_err(|error| RuntimeError::Source(error.to_string()));
+        .map_err(|error| classified_source_error(source, error));
     let finish_hook = source
         .finish()
-        .map_err(|error| RuntimeError::Source(error.to_string()));
+        .map_err(|error| classified_source_error(source, error));
     result
         .and(error_hook)
         .and(stop_result)
         .and(stop_hook)
         .and(finish_hook)?;
+    if stats.start_exchange_ts == i64::MAX {
+        stats.start_exchange_ts = 0;
+        stats.end_exchange_ts = 0;
+    }
+    if stats.start_delivery_ts == i64::MAX {
+        stats.start_delivery_ts = 0;
+        stats.end_delivery_ts = 0;
+    }
     Ok(stats)
 }
 
@@ -1965,7 +2476,9 @@ pub fn run_event_runtime_scoped<S: RuntimeEventSource>(
             RuntimeError::InvalidEventId(_) => {
                 (EngineComponent::Scheduler, EngineErrorCode::InvalidState)
             }
-            RuntimeError::Source(_) => (EngineComponent::DataSource, EngineErrorCode::InvalidData),
+            RuntimeError::Source {
+                component, code, ..
+            } => (*component, *code),
         };
         StructuredEngineError {
             run_id,
@@ -2078,6 +2591,7 @@ impl crate::backtest::result::ReusableRuntime for PreparedBarRuntime {
 
         self.source.configure_context(&mut self.context);
         let start = Instant::now();
+        let cpu_start = crate::backtest::result::process_cpu_time_ns();
         let stats = run_event_runtime_scoped(
             self.next_run_id,
             &mut self.source,
@@ -2088,10 +2602,12 @@ impl crate::backtest::result::ReusableRuntime for PreparedBarRuntime {
         result.run_id = self.next_run_id;
         self.next_run_id += 1;
         result.wall_time_ns = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        result.start_exchange_ts = stats.start_ts;
-        result.end_exchange_ts = stats.end_ts;
-        result.start_delivery_ts = stats.start_ts;
-        result.end_delivery_ts = stats.end_ts;
+        result.cpu_time_ns =
+            crate::backtest::result::process_cpu_time_ns().saturating_sub(cpu_start);
+        result.start_exchange_ts = stats.start_exchange_ts;
+        result.end_exchange_ts = stats.end_exchange_ts;
+        result.start_delivery_ts = stats.start_delivery_ts;
+        result.end_delivery_ts = stats.end_delivery_ts;
         result.market_event_count = stats.market_event_count;
         result.callback_count = stats.callback_count.to_vec();
         let reports = self.source.execution_reports();
@@ -2119,7 +2635,7 @@ impl crate::backtest::result::ReusableRuntime for PreparedBarRuntime {
         let (exchange_final, local_delivered_final) = self.source.account_snapshots();
         result.exchange_final = exchange_final;
         result.local_delivered_final = local_delivered_final;
-        result.termination = crate::backtest::result::RunTermination::DataEnd;
+        result.termination = stats.termination;
         Ok(result)
     }
 
@@ -2196,6 +2712,12 @@ mod tests {
         let state = unsafe { &mut *(ctx.user_data as *mut State) };
         state.calls.push(ctx.event_kind);
         -7
+    }
+
+    unsafe extern "C" fn request_stop(ctx: *mut StrategyRuntimeContext) -> i32 {
+        let ctx = unsafe { &mut *ctx };
+        ctx.stop_requested = 1;
+        0
     }
 
     struct Source {
@@ -2415,21 +2937,29 @@ mod tests {
             owner_id: 7,
             timer_id: 9,
         });
-        source.schedule_funding(RuntimeFunding {
-            event_id: 1,
-            asset_no: 0,
-            venue_no: 0,
-            instrument_id: 1,
-            currency: 0,
-            publication_ts: 70,
-            effective_ts: 75,
-            settlement_ts: 80,
-            delivery_ts: 90,
-            rate: 0.001,
-            mark_price: 1.0,
-            position_qty: 0.0,
-            amount: 0.0,
-        });
+        source
+            .schedule_funding(RuntimeFunding {
+                event_id: 1,
+                asset_no: 0,
+                venue_no: 0,
+                instrument_id: 1,
+                currency: 0,
+                price_source: 0,
+                position_snapshot: 0,
+                formula: 0,
+                rounding_mode: 0,
+                boundary: 0,
+                publication_ts: 70,
+                effective_ts: 75,
+                settlement_ts: 80,
+                delivery_ts: 90,
+                rate: 0.001,
+                mark_price: 1.0,
+                position_qty: 0.0,
+                amount: 0.0,
+                rounding_increment: 1e-12,
+            })
+            .unwrap();
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Timer, record);
         callbacks.set(StrategyEventKind::Funding, record);
@@ -2491,21 +3021,29 @@ mod tests {
             owner_id: 1,
             timer_id: 1,
         });
-        source.schedule_funding(RuntimeFunding {
-            event_id: 1,
-            asset_no: 0,
-            venue_no: 0,
-            instrument_id: 1,
-            currency: 0,
-            publication_ts: 50,
-            effective_ts: 60,
-            settlement_ts: 61,
-            delivery_ts: 61,
-            rate: 0.001,
-            mark_price: 1.0,
-            position_qty: 0.0,
-            amount: 0.0,
-        });
+        source
+            .schedule_funding(RuntimeFunding {
+                event_id: 1,
+                asset_no: 0,
+                venue_no: 0,
+                instrument_id: 1,
+                currency: 0,
+                price_source: 0,
+                position_snapshot: 0,
+                formula: 0,
+                rounding_mode: 0,
+                boundary: 0,
+                publication_ts: 50,
+                effective_ts: 60,
+                settlement_ts: 61,
+                delivery_ts: 61,
+                rate: 0.001,
+                mark_price: 1.0,
+                position_qty: 0.0,
+                amount: 0.0,
+                rounding_increment: 1e-12,
+            })
+            .unwrap();
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Bar, record);
         callbacks.set(StrategyEventKind::Funding, record);
@@ -2546,21 +3084,29 @@ mod tests {
             owner_id: 1,
             timer_id: 1,
         });
-        source.schedule_funding(RuntimeFunding {
-            event_id: 1,
-            asset_no: 0,
-            venue_no: 0,
-            instrument_id: 1,
-            currency: 0,
-            publication_ts: 50,
-            effective_ts: 55,
-            settlement_ts: 60,
-            delivery_ts: 60,
-            rate: 0.001,
-            mark_price: 1.0,
-            position_qty: 0.0,
-            amount: 0.0,
-        });
+        source
+            .schedule_funding(RuntimeFunding {
+                event_id: 1,
+                asset_no: 0,
+                venue_no: 0,
+                instrument_id: 1,
+                currency: 0,
+                price_source: 0,
+                position_snapshot: 0,
+                formula: 0,
+                rounding_mode: 0,
+                boundary: 0,
+                publication_ts: 50,
+                effective_ts: 55,
+                settlement_ts: 60,
+                delivery_ts: 60,
+                rate: 0.001,
+                mark_price: 1.0,
+                position_qty: 0.0,
+                amount: 0.0,
+                rounding_increment: 1e-12,
+            })
+            .unwrap();
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Bar, record);
         callbacks.set(StrategyEventKind::Funding, record);
@@ -2632,5 +3178,274 @@ mod tests {
         };
         assert_eq!((now, close_ts), (25, 20));
         assert_eq!(records[0].bar.close_ts, 10);
+    }
+
+    #[test]
+    fn prepared_result_separates_exchange_and_delivery_time_and_reports_strategy_stop() {
+        let records = three_test_bars();
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        source.configure_feed_latency(5).unwrap();
+        let mut callbacks = CallbackRegistry::default();
+        callbacks.set(StrategyEventKind::Bar, request_stop);
+        let mut runtime = PreparedBarRuntime::new(
+            source,
+            callbacks,
+            StrategyRuntimeContext::default(),
+            BacktestResult::empty(reproducibility_metadata()),
+        );
+        let result = crate::backtest::result::ReusableRuntime::run_once(&mut runtime).unwrap();
+        assert_eq!(
+            result.termination,
+            crate::backtest::result::RunTermination::StrategyStop
+        );
+        assert_eq!((result.start_exchange_ts, result.end_exchange_ts), (0, 10));
+        assert_eq!((result.start_delivery_ts, result.end_delivery_ts), (15, 15));
+        assert!(result.cpu_time_ns > 0);
+    }
+
+    #[test]
+    fn empty_runtime_normalizes_timestamp_bounds() {
+        let mut state = State::default();
+        let mut source = Source {
+            events: Vec::new(),
+            next: 0,
+            state: &mut state,
+        };
+        let stats = run_event_runtime_counted(
+            &mut source,
+            &CallbackRegistry::default(),
+            &mut StrategyRuntimeContext::default(),
+        )
+        .unwrap();
+        assert_eq!((stats.start_exchange_ts, stats.end_exchange_ts), (0, 0));
+        assert_eq!((stats.start_delivery_ts, stats.end_delivery_ts), (0, 0));
+    }
+
+    #[test]
+    fn cancel_command_decodes_without_submit_only_fields() {
+        let command = OrderCommand {
+            kind: ORDER_COMMAND_CANCEL,
+            asset_no: 2,
+            order_id: 9,
+            ..OrderCommand::default()
+        };
+        let decoded = command
+            .decode_execution(100, VenueId(3), InstrumentId(4))
+            .unwrap()
+            .unwrap();
+        let crate::backtest::execution::ExecutionCommand::Cancel(cancel) = decoded else {
+            panic!("cancel command must remain a cancel");
+        };
+        assert_eq!(cancel.client_order_id, 9);
+        assert_eq!(cancel.local_submit_ts, 100);
+    }
+
+    #[test]
+    fn command_bridge_preserves_execution_algorithm_origin() {
+        let command = OrderCommand {
+            kind: ORDER_COMMAND_SUBMIT,
+            side: 1,
+            time_in_force: 3,
+            order_type: 1,
+            _reserved: [0, 0, 1, 0],
+            asset_no: 0,
+            order_id: 10,
+            qty: 1.0,
+            ..OrderCommand::default()
+        };
+        let decoded = command
+            .decode_execution(7, VenueId(0), InstrumentId(1))
+            .unwrap()
+            .unwrap();
+        let crate::backtest::execution::ExecutionCommand::Submit(request) = decoded else {
+            panic!("expected submit");
+        };
+        assert_eq!(
+            request.origin,
+            crate::backtest::execution::OrderOrigin::ExecutionAlgorithm
+        );
+    }
+
+    #[test]
+    fn late_inserted_post_trade_action_precedes_future_transport() {
+        let records = [TimedBarItem {
+            asset_no: 0,
+            timeframe_ns: 10,
+            bar: Bar {
+                open_ts: 0,
+                close_ts: 10,
+                open: 1.0,
+                high: 1.0,
+                low: 1.0,
+                close: 1.0,
+                volume: 1.0,
+                quote_volume: 1.0,
+                buy_volume: 0.0,
+                trade_count: 1,
+                flags: BAR_COMPLETE,
+            },
+        }];
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        let action = |order_id, exchange_arrival_ts| PendingBarAction::Cancel {
+            command: OrderCommand {
+                kind: ORDER_COMMAND_CANCEL,
+                order_id,
+                ..OrderCommand::default()
+            },
+            local_submit_ts: 0,
+            exchange_arrival_ts,
+        };
+        source.schedule_action(EventPhase::CommandArrival, action(1, 200));
+        source.schedule_action(EventPhase::PostTradeRisk, action(2, 150));
+        let first = source.action_scheduler.pop().unwrap();
+        let second = source.action_scheduler.pop().unwrap();
+        assert_eq!(first.key.timestamp, 150);
+        assert_eq!(first.key.phase, EventPhase::PostTradeRisk);
+        assert_eq!(second.key.timestamp, 200);
+    }
+
+    struct EmitOnce {
+        order_id: u64,
+        emitted: bool,
+    }
+
+    impl ExecutionAlgorithm for EmitOnce {
+        fn on_event(
+            &mut self,
+            key: crate::backtest::scheduler::EventKey,
+            out: &mut Vec<crate::backtest::execution::ExecutionCommand>,
+        ) {
+            if self.emitted {
+                return;
+            }
+            self.emitted = true;
+            out.push(crate::backtest::execution::ExecutionCommand::Submit(
+                crate::backtest::execution::ExecutionOrderRequest {
+                    client_order_id: self.order_id,
+                    venue_id: VenueId(0),
+                    instrument_id: InstrumentId(1),
+                    price: 0.0,
+                    qty: 1.0,
+                    side: crate::types::Side::Buy,
+                    time_in_force: crate::types::TimeInForce::IOC,
+                    order_type: crate::types::OrdType::Market,
+                    reduce_only: false,
+                    origin: crate::backtest::execution::OrderOrigin::ExecutionAlgorithm,
+                    local_submit_ts: key.timestamp,
+                },
+            ));
+        }
+
+        fn reset(&mut self) {
+            self.emitted = false;
+        }
+    }
+
+    struct EmitOnceHook(EmitOnce);
+
+    impl SimulationHook for EmitOnceHook {
+        fn on_event(
+            &mut self,
+            key: crate::backtest::scheduler::EventKey,
+            out: &mut Vec<crate::backtest::execution::ExecutionCommand>,
+        ) {
+            self.0.on_event(key, out);
+        }
+
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+    }
+
+    fn three_test_bars() -> Vec<TimedBarItem> {
+        (0..3)
+            .map(|index| TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 10,
+                bar: Bar {
+                    open_ts: index * 10,
+                    close_ts: (index + 1) * 10,
+                    open: 100.0,
+                    high: 101.0,
+                    low: 99.0,
+                    close: 100.0,
+                    volume: 100.0,
+                    quote_volume: 10_000.0,
+                    buy_volume: 50.0,
+                    trade_count: 10,
+                    flags: BAR_COMPLETE,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn algorithms_and_hooks_enter_the_real_bar_execution_path() {
+        let records = three_test_bars();
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        source.add_execution_algorithm(EmitOnce {
+            order_id: 41,
+            emitted: false,
+        });
+        source.add_simulation_hook(EmitOnceHook(EmitOnce {
+            order_id: 42,
+            emitted: false,
+        }));
+        let callbacks = CallbackRegistry::default();
+        let mut context = StrategyRuntimeContext::default();
+        source.configure_context(&mut context);
+        run_event_runtime(&mut source, &callbacks, &mut context).unwrap();
+        for order_id in [41, 42] {
+            assert!(source.execution_reports().iter().any(|report| {
+                report.order_id == order_id
+                    && report.kind == crate::backtest::execution::ExecutionReportKind::Fill
+            }));
+        }
+    }
+
+    #[test]
+    fn bracket_children_activate_then_oco_cancel_through_shared_execution() {
+        let records = three_test_bars();
+        let mut source = MaterializedBarSource::new(&records, 1).unwrap();
+        assert!(source.register_contingency(ContingencyGroup {
+            group_id: 7,
+            kind: crate::backtest::platform::ContingencyKind::Bracket,
+            venue_id: VenueId(0),
+            instrument_id: InstrumentId(1),
+            parent: Some(1),
+            children: vec![2, 3],
+        }));
+        let submit = |order_id, side, order_type, price| OrderCommand {
+            kind: ORDER_COMMAND_SUBMIT,
+            side,
+            time_in_force: 0,
+            order_type,
+            asset_no: 0,
+            order_id,
+            price,
+            qty: 1.0,
+            ..OrderCommand::default()
+        };
+        source.commands[0] = submit(1, 1, 1, 0.0);
+        source.commands[1] = submit(2, -1, 0, 100.0);
+        source.commands[2] = submit(3, -1, 0, 200.0);
+        let mut context = StrategyRuntimeContext {
+            now: -1,
+            num_commands: 3,
+            ..StrategyRuntimeContext::default()
+        };
+        source.process_commands(&mut context, true).unwrap();
+        assert_eq!(source.held_contingent_orders.len(), 2);
+
+        source.configure_context(&mut context);
+        run_event_runtime(&mut source, &CallbackRegistry::default(), &mut context).unwrap();
+        assert!(source.execution_reports().iter().any(|report| {
+            report.order_id == 2
+                && report.kind == crate::backtest::execution::ExecutionReportKind::Fill
+        }));
+        assert!(source.execution_reports().iter().any(|report| {
+            report.order_id == 3
+                && report.kind == crate::backtest::execution::ExecutionReportKind::Canceled
+        }));
     }
 }

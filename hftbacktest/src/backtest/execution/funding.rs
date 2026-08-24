@@ -89,6 +89,8 @@ pub struct FundingEvent {
     pub effective_ts: i64,
     pub settlement_ts: i64,
     pub rate: f64,
+    /// Identifies which frozen reference-price stream supplied `mark_price`.
+    pub price_source: FundingPriceSource,
     pub mark_price: f64,
     pub boundary: FundingBoundary,
 }
@@ -193,7 +195,9 @@ impl FundingEngine {
         // CurrencyId(0) preserves the legacy constructor while explicit configurations freeze
         // currency and boundary semantics before a run starts.
         if self.enforce_config
-            && (event.currency != self.config.currency || event.boundary != self.config.boundary)
+            && (event.currency != self.config.currency
+                || event.boundary != self.config.boundary
+                || event.price_source != self.config.price_source)
         {
             return Err(FundingError::InstrumentMismatch);
         }
@@ -318,6 +322,7 @@ mod tests {
                     effective_ts: 90,
                     settlement_ts: 100,
                     rate: 0.001,
+                    price_source: FundingPriceSource::Mark,
                     mark_price: 100.0,
                     boundary: FundingBoundary::BeforeSettlementEvents,
                 },

@@ -14,11 +14,11 @@ transport、order state machine、Venue account、report、projector、result �
 
 | 需求 | 实现证据 | 验收证据 | 状态 |
 |---|---|---|---|
-| REQ-GEN-001～007 | `execution/`、`runtime.rs`、ABI v7 单参数 callback、全局 TickBatch/BarBatch | `rust_owns_loop_and_dispatches_extensible_callbacks`、Python lifecycle/global batch tests | 通过 |
-| REQ-PERF-001～007 | 单态 Tick matcher、POD buffer、事件跳转、Chunked NPY、可关闭/有界审计 | release A/B 中位 -0.790%；分块 feed/audit tests | 通过 |
+| REQ-GEN-001～007 | `execution/`、`runtime.rs`、ABI v8 单参数 callback、全局 TickBatch/BarBatch | `rust_owns_loop_and_dispatches_extensible_callbacks`、Python lifecycle/global batch tests | 通过 |
+| REQ-PERF-001～007 | 单态 Tick matcher、POD buffer、事件跳转、Chunked NPY、可关闭/有界审计 | ABI v8 复验 release A/B 中位 +1.095%；分块 feed/audit tests | 通过 |
 | REQ-DET-001～004 | `GlobalScheduler<EventKey>`、稳定 source/sequence、显式 RNG seed | scheduler ordering、seeded quality replay、100 次 replay | 通过 |
 | REQ-OWN-001～022 | `SharedExecutionEngine`、`VenueExecutionCore`、Instrument matcher adapter；账户只归 Venue | `ownership_keeps_account_at_venue_not_instrument`、多品种共享账户 tests | 通过 |
-| REQ-BOUND-001～005 | `platform.rs` 的 Data/Actor/Algorithm/Simulation 边界和有界 command bus | `batch_custom_data_and_hooks_stay_outside_execution_core` | 通过 |
+| REQ-BOUND-001～005 | `platform.rs` 的 Data/Actor/Algorithm/Simulation 边界和有界 command bus | platform 边界测试及 `algorithms_and_hooks_enter_the_real_bar_execution_path` | 通过 |
 | REQ-INST-001～004 | 版本化 `InstrumentSpec`、统一精度/数量/名义校验、timestamped update/status | instrument validation、scheduled status/update reset tests | 通过 |
 | REQ-ORD-001～015 | ABI command decode、统一状态机、GTD/trigger/reduce-only、cancel/replace、IOC/FOK | transition/race/partial/FOK/GTD、invalid/duplicate local reject tests | 通过 |
 | REQ-REP-001～004 | matcher 只输出 `MatchOutcome`；coordinator 唯一计算 fee/account/report | independent partial fills、single fee/delta、sink tests | 通过 |
@@ -43,15 +43,15 @@ transport、order state machine、Venue account、report、projector、result �
 
 ## 3. 验收项结果
 
-- **AC-TICK-001～003**：L2/L3、Partial/NoPartial、Queue、Latency、Fee golden tests 通过；最终
-  release A/B 三次回归为 -0.456%、-0.867%、-0.790%，中位 -0.790%，满足不超过 3%。完整方法与
+- **AC-TICK-001～003**：L2/L3、Partial/NoPartial、Queue、Latency、Fee golden tests 通过；ABI v8
+  及复审修复后的 release A/B 三次回归为 -5.945%、+1.095%、+5.286%，中位 +1.095%，满足不超过 3%。完整方法与
   原始样本见 [`tick_shared_execution_release_benchmark.md`](tick_shared_execution_release_benchmark.md)。
 - **AC-BAR-001～004**：NextOpen、OHLC/volume partial/FOK、fee、两段 latency、双状态和 chunk boundary
   测试通过。真实 `AAPL_1m_all_sources.parquet` 与转换后 NPY 均读到 264,190 根；首尾时间、总成交量、
   callback/batch 数完全一致。Parquet/NPY replay 分别为 0.033432s/0.032079s（该数据样本，仅作一致性证据）。
 - **AC-ACC-001～003**：同 Venue 多 Instrument collateral、exchange/local 延迟窗口、多币种明细守恒通过。
 - **AC-SCH/HYB/TMR/FUND**：同时间 phase、唯一 Hybrid matcher、无行情 Timer 下单、Funding 双时间更新通过。
-- **AC-PROJ-001～003**：等价 backtest/live report 产生 ABI v7 兼容字节；reconnect event 去重而 partial fill
+- **AC-PROJ-001～003**：等价 backtest/live report 产生 ABI v8 兼容字节；reconnect event 去重而 partial fill
   不折叠；策略 callback 无运行模式分支。
 - **AC-RST-001～002、AC-RES-001**：Tick 和 Prepared Bar 均连续 100 次一致；fee/model/seed/phase/data
   进入 fingerprint，变更会改变 hash。
@@ -66,13 +66,14 @@ cargo build --release -p py-hftbacktest
 py-hftbacktest/.venv/bin/python -m unittest discover -s py-hftbacktest/tests -v
 ```
 
-最终结果：Rust 核心共享执行库 115 项测试通过；Python 33 项通过、1 项依赖外部行情 fixture 的测试按定义
-跳过。Connector 中要求真实网络/密钥的测试保持 ignored，不计为本地共享执行验收失败。
+最终结果：Rust 核心共享执行库 122 项测试通过；Python 34 项通过、1 项依赖外部行情 fixture 的测试按定义
+跳过。Connector 两个测试目标各 31 项通过、各 1 项真实网络测试 ignored，不计为本地共享执行验收失败。
 
 ## 5. 兼容与迁移
 
 - 公共 modify API 保持禁用；修改使用可审计 cancel/replace。
-- ABI 当前为 v7，迁移字段和兼容策略见 [`strategy_abi_v7_migration.md`](strategy_abi_v7_migration.md)。
+- ABI 当前为 v8；Funding 配置迁移见 [`strategy_abi_v8_migration.md`](strategy_abi_v8_migration.md)，
+  order/fill 字段的 v7 变更仍见 [`strategy_abi_v7_migration.md`](strategy_abi_v7_migration.md)。
 - 旧 `run_configured_materialized_bar_runtime` 符号保留零 latency 兼容；Python 使用 v2 符号显式传递
   feed/entry/response latency。
 - Bar payload 不含 `available_ts`。策略收到 Bar 时的 `s.now` 是调度器 delivery time，Bar 的

@@ -240,6 +240,9 @@ pub enum ContingencyAction {
 #[derive(Default)]
 pub struct ContingencyManager {
     groups: BTreeMap<u64, ContingencyGroup>,
+    order_groups: BTreeMap<u64, u64>,
+    activated_parents: BTreeSet<u64>,
+    triggered_groups: BTreeSet<u64>,
 }
 
 impl ContingencyManager {
@@ -249,16 +252,44 @@ impl ContingencyManager {
             || group
                 .parent
                 .is_some_and(|parent| group.children.contains(&parent))
+            || group
+                .parent
+                .into_iter()
+                .chain(group.children.iter().copied())
+                .any(|order_id| self.order_groups.contains_key(&order_id))
         {
             return false;
+        }
+        if let Some(parent) = group.parent {
+            self.order_groups.insert(parent, group.group_id);
+        }
+        for child in &group.children {
+            self.order_groups.insert(*child, group.group_id);
         }
         self.groups.insert(group.group_id, group);
         true
     }
 
-    pub fn on_filled(&self, order_id: u64, out: &mut Vec<ContingencyAction>) {
-        for group in self.groups.values() {
-            if group.parent == Some(order_id) {
+    pub fn should_hold(&self, order_id: u64) -> bool {
+        let Some(group_id) = self.order_groups.get(&order_id) else {
+            return false;
+        };
+        let group = &self.groups[group_id];
+        group.children.contains(&order_id)
+            && group.parent.is_some()
+            && matches!(group.kind, ContingencyKind::Oto | ContingencyKind::Bracket)
+            && !self.activated_parents.contains(group_id)
+    }
+
+    pub fn on_filled(&mut self, order_id: u64, out: &mut Vec<ContingencyAction>) {
+        let Some(group_id) = self.order_groups.get(&order_id).copied() else {
+            return;
+        };
+        let Some(group) = self.groups.get(&group_id) else {
+            return;
+        };
+        if group.parent == Some(order_id) {
+            if self.activated_parents.insert(group_id) {
                 out.extend(
                     group
                         .children
@@ -266,23 +297,25 @@ impl ContingencyManager {
                         .copied()
                         .map(ContingencyAction::Activate),
                 );
-            } else if group.children.contains(&order_id)
-                && matches!(group.kind, ContingencyKind::Oco | ContingencyKind::Bracket)
-            {
-                out.extend(
-                    group
-                        .children
-                        .iter()
-                        .copied()
-                        .filter(|id| *id != order_id)
-                        .map(ContingencyAction::Cancel),
-                );
             }
+        } else if group.children.contains(&order_id)
+            && matches!(group.kind, ContingencyKind::Oco | ContingencyKind::Bracket)
+            && self.triggered_groups.insert(group_id)
+        {
+            out.extend(
+                group
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != order_id)
+                    .map(ContingencyAction::Cancel),
+            );
         }
     }
 
     pub fn reset(&mut self) {
-        // Groups are immutable run configuration; there is no active state to clear.
+        self.activated_parents.clear();
+        self.triggered_groups.clear();
     }
 }
 

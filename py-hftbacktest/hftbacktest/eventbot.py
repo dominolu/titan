@@ -20,7 +20,7 @@ from . import _hftbacktest
 from .intrinsic import address_as_void_pointer
 from .types import event_dtype
 
-ABI_VERSION = 7
+ABI_VERSION = 8
 EVENT_SLOT_COUNT = 32
 
 EVENT_START = 0
@@ -90,6 +90,11 @@ funding_dtype = np.dtype(
         ("venue_no", "u4"),
         ("instrument_id", "u4"),
         ("currency", "u4"),
+        ("price_source", "u4"),
+        ("position_snapshot", "u1"),
+        ("formula", "u1"),
+        ("rounding_mode", "u1"),
+        ("boundary", "u1"),
         ("publication_ts", "i8"),
         ("effective_ts", "i8"),
         ("settlement_ts", "i8"),
@@ -98,6 +103,7 @@ funding_dtype = np.dtype(
         ("mark_price", "f8"),
         ("position_qty", "f8"),
         ("amount", "f8"),
+        ("rounding_increment", "f8"),
     ],
     align=True,
 )
@@ -912,6 +918,19 @@ def run_event_bot(
         timers = np.ascontiguousarray(timers, dtype=timer_dtype)
     if funding is not None:
         funding = np.ascontiguousarray(funding, dtype=funding_dtype)
+        # Zero preserves source compatibility for arrays created with np.zeros before explicit
+        # rounding was added; the normalized buffer passed to Rust is always explicit.
+        funding["rounding_increment"][funding["rounding_increment"] == 0.0] = 1e-12
+        if (
+            np.any(~np.isfinite(funding["rounding_increment"]))
+            or np.any(funding["rounding_increment"] <= 0.0)
+            or np.any(~np.isin(funding["position_snapshot"], (0, 1)))
+            or np.any(funding["formula"] != 0)
+            or np.any(~np.isin(funding["rounding_mode"], (0, 1, 2, 3)))
+            or np.any(~np.isin(funding["boundary"], (0, 1)))
+            or np.any(funding["position_snapshot"] != funding["boundary"])
+        ):
+            raise ValueError("invalid explicit funding configuration")
         if hbt is not None and type(hbt).__name__.endswith("LiveBot"):
             raise NotImplementedError(
                 "scheduled backtest funding cannot be injected into a live backend; "

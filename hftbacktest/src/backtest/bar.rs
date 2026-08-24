@@ -11,9 +11,9 @@ use thiserror::Error;
 use crate::{
     backtest::execution::{
         AccountError, AllowAllRisk, CurrencyId, ExchangePortfolio, ExecutionEventProjector,
-        ExecutionFeeModel, ExecutionOrderRequest, ExecutionReason, ExecutionReport, FundingEngine,
-        FundingError, FundingReport, FundingRounding, FundingRoundingMode, InstrumentId,
-        InstrumentSpec, InstrumentSpecError, InstrumentType, LegacyOrderSnapshot,
+        ExecutionFeeModel, ExecutionOrderRequest, ExecutionReason, ExecutionReport, FundingConfig,
+        FundingEngine, FundingError, FundingReport, FundingRounding, FundingRoundingMode,
+        InstrumentId, InstrumentSpec, InstrumentSpecError, InstrumentType, LegacyOrderSnapshot,
         LocalPreTradeRisk, MatchOutcome, NoFee, ObservedOutcome, OrderOrigin, PortfolioLedger,
         ProjectedEvent, ProposedFill, RiskAction, RiskActionSink, RiskDecision, RiskReason,
         ScheduledFunding, SharedTickExecutionConfig, TickCoordinatorError, TickOutcomeCoordinator,
@@ -124,6 +124,7 @@ pub struct BarExecutionState {
     response_latency_ns: i64,
     deliveries: GlobalScheduler<BarDelivery>,
     funding_engines: Vec<FundingEngine>,
+    funding_configured: Vec<bool>,
     funding_reports: Vec<FundingReport>,
     next_funding_sequence: u64,
     local_risk: Box<dyn LocalPreTradeRisk>,
@@ -233,6 +234,7 @@ impl BarExecutionState {
                     .unwrap()
                 })
                 .collect(),
+            funding_configured: vec![false; num_assets],
             funding_reports: Vec::with_capacity(8),
             next_funding_sequence: 0,
             local_risk: Box::new(AllowAllRisk),
@@ -465,7 +467,11 @@ impl BarExecutionState {
                 OrdType::Limit
             },
             reduce_only: command._reserved[0] & 1 != 0,
-            origin: OrderOrigin::Strategy,
+            origin: match command._reserved[2] {
+                1 => OrderOrigin::ExecutionAlgorithm,
+                2 => OrderOrigin::Liquidation,
+                _ => OrderOrigin::Strategy,
+            },
             local_submit_ts,
         };
         Ok(request)
@@ -777,6 +783,26 @@ impl BarExecutionState {
             scheduled.asset_no,
             BarDelivery::Funding { asset_no, report },
         );
+        Ok(())
+    }
+
+    pub fn configure_funding(
+        &mut self,
+        asset_no: usize,
+        config: FundingConfig,
+    ) -> Result<(), BarExecutionError> {
+        let engine = self
+            .funding_engines
+            .get_mut(asset_no)
+            .ok_or(BarExecutionError::InvalidConfiguration)?;
+        if self.funding_configured[asset_no] {
+            if engine.config() != config {
+                return Err(BarExecutionError::InvalidConfiguration);
+            }
+            return Ok(());
+        }
+        *engine = FundingEngine::new_with_config(config)?;
+        self.funding_configured[asset_no] = true;
         Ok(())
     }
 

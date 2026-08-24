@@ -151,6 +151,7 @@ struct TickFrameSource<'a, B, MD> {
     pending_funding: VecDeque<(u32, hftbacktest::backtest::execution::FundingReport)>,
     external_funding: VecDeque<RuntimeFunding>,
     funding_engines: Vec<hftbacktest::backtest::execution::FundingEngine>,
+    funding_templates: Vec<Option<RuntimeFunding>>,
     next_funding_sequence: u64,
     current_funding: RuntimeFunding,
     _depth: PhantomData<MD>,
@@ -348,6 +349,25 @@ enum TickRuntimeError<E: std::error::Error + Send + Sync + 'static> {
     TickBatchOverflow { len: usize, max: usize },
 }
 
+fn classify_tick_runtime_error<E: std::error::Error + Send + Sync + 'static>(
+    error: &TickRuntimeError<E>,
+) -> (
+    hftbacktest::backtest::result::EngineComponent,
+    hftbacktest::backtest::result::EngineErrorCode,
+) {
+    use hftbacktest::backtest::result::{EngineComponent, EngineErrorCode};
+    match error {
+        TickRuntimeError::Bot(_) => (EngineComponent::Matching, EngineErrorCode::Internal),
+        TickRuntimeError::InvalidOrder => (
+            EngineComponent::Strategy,
+            EngineErrorCode::InvalidConfiguration,
+        ),
+        TickRuntimeError::TickBatchOverflow { .. } => {
+            (EngineComponent::DataSource, EngineErrorCode::InvalidData)
+        }
+    }
+}
+
 impl<'a, B, MD> TickFrameSource<'a, B, MD>
 where
     MD: MarketDepth,
@@ -407,6 +427,7 @@ where
                     .unwrap()
                 })
                 .collect(),
+            funding_templates: vec![None; num_assets],
             next_funding_sequence: 0,
             current_funding: RuntimeFunding::default(),
             _depth: PhantomData,
@@ -476,7 +497,31 @@ where
         })
     }
 
-    fn schedule_funding(&mut self, funding: RuntimeFunding) {
+    fn schedule_funding(
+        &mut self,
+        funding: RuntimeFunding,
+    ) -> Result<(), TickRuntimeError<B::Error>> {
+        let asset_no = funding.asset_no as usize;
+        if asset_no >= self.funding_engines.len() {
+            return Err(TickRuntimeError::InvalidOrder);
+        }
+        let config = funding
+            .config()
+            .map_err(|_| TickRuntimeError::InvalidOrder)?;
+        if let Some(existing) = self.funding_templates[asset_no] {
+            if existing
+                .config()
+                .map_err(|_| TickRuntimeError::InvalidOrder)?
+                != config
+            {
+                return Err(TickRuntimeError::InvalidOrder);
+            }
+        } else {
+            self.funding_engines[asset_no] =
+                hftbacktest::backtest::execution::FundingEngine::new_with_config(config)
+                    .map_err(|_| TickRuntimeError::InvalidOrder)?;
+            self.funding_templates[asset_no] = Some(funding);
+        }
         let scheduled = hftbacktest::backtest::execution::ScheduledFunding {
             asset_no: funding.asset_no,
             event: hftbacktest::backtest::execution::FundingEvent {
@@ -490,8 +535,9 @@ where
                 effective_ts: funding.effective_ts,
                 settlement_ts: funding.settlement_ts,
                 rate: funding.rate,
+                price_source: config.price_source,
                 mark_price: funding.mark_price,
-                boundary: hftbacktest::backtest::execution::FundingBoundary::BeforeSettlementEvents,
+                boundary: config.boundary,
             },
             delivery_ts: funding.delivery_ts,
         };
@@ -501,16 +547,19 @@ where
             .position(|queued| {
                 (
                     queued.event.settlement_ts,
+                    queued.event.boundary as u8,
                     queued.asset_no,
                     queued.event.event_id,
                 ) > (
                     scheduled.event.settlement_ts,
+                    scheduled.event.boundary as u8,
                     scheduled.asset_no,
                     scheduled.event.event_id,
                 )
             })
             .unwrap_or(self.funding.len());
         self.funding.insert(index, scheduled);
+        Ok(())
     }
 
     fn next_funding_ts(&self) -> Option<i64> {
@@ -559,21 +608,10 @@ where
             self.hbt
                 .deliver_runtime_funding(report)
                 .map_err(TickRuntimeError::Bot)?;
-            self.current_funding = RuntimeFunding {
-                event_id: report.event.event_id,
-                asset_no,
-                venue_no: report.event.venue_id.0,
-                instrument_id: report.event.instrument_id.0,
-                currency: report.event.currency.0,
-                publication_ts: report.event.publication_ts,
-                effective_ts: report.event.effective_ts,
-                settlement_ts: report.event.settlement_ts,
-                delivery_ts: report.delivery_ts,
-                rate: report.event.rate,
-                mark_price: report.event.mark_price,
-                position_qty: report.position_qty,
-                amount: report.amount,
-            };
+            self.current_funding = self.funding_templates[asset_no as usize].unwrap_or_default();
+            self.current_funding.delivery_ts = report.delivery_ts;
+            self.current_funding.position_qty = report.position_qty;
+            self.current_funding.amount = report.amount;
             return Ok(true);
         }
         let Some(scheduled) = self.funding.pop_front() else {
@@ -688,7 +726,7 @@ where
         }
     }
 
-    fn synthesize_order(&mut self, command: OrderCommand, now: i64, status: Status) {
+    fn synthesize_order(&mut self, command: OrderCommand, now: i64, status: Status, reason: u32) {
         self.synthetic_order_events.push_back(OrderEvent {
             asset_no: command.asset_no,
             order_id: command.order_id,
@@ -702,7 +740,7 @@ where
             exec_qty: 0.0,
             venue_no: 0,
             instrument_id: command.asset_no as u32 + 1,
-            reason: 0,
+            reason,
             side: command.side,
             status: status as u8,
             request: 0,
@@ -719,6 +757,9 @@ where
         let count = ctx.num_commands.min(self.commands.len());
         for index in 0..count {
             let command = self.commands[index];
+            if command.asset_no as usize >= self.hbt.num_assets() {
+                return Err(TickRuntimeError::InvalidOrder);
+            }
             let decoded = command
                 .decode_execution(
                     ctx.now,
@@ -747,7 +788,7 @@ where
                         {
                             return Err(TickRuntimeError::InvalidOrder);
                         }
-                        self.synthesize_order(command, ctx.now, Status::New);
+                        self.synthesize_order(command, ctx.now, Status::New, 0);
                     } else {
                         self.submit_to_bot(command.asset_no as usize, request)?;
                         if command.gtd_expiry_ts != 0 {
@@ -764,18 +805,37 @@ where
                         .conditional_orders
                         .remove(&(command.asset_no, command.order_id))
                     {
-                        self.synthesize_order(original, ctx.now, Status::Canceled);
+                        self.synthesize_order(original, ctx.now, Status::Canceled, 0);
                     } else {
                         self.active_gtd
                             .remove(&(command.asset_no, command.order_id));
-                        self.hbt
-                            .cancel(command.asset_no as usize, command.order_id, false)
-                            .map_err(TickRuntimeError::Bot)?;
+                        if self
+                            .hbt
+                            .orders(command.asset_no as usize)
+                            .contains_key(&command.order_id)
+                        {
+                            self.hbt
+                                .cancel(command.asset_no as usize, command.order_id, false)
+                                .map_err(TickRuntimeError::Bot)?;
+                        } else {
+                            // An unknown client order ID is a canonical command rejection, not an
+                            // engine failure. This also keeps Cancel independent of submit-only
+                            // fields such as side, quantity and order type.
+                            self.synthesize_order(
+                                command,
+                                ctx.now,
+                                Status::Rejected,
+                                hftbacktest::runtime::execution_reason_code(
+                                    hftbacktest::backtest::execution::ExecutionReason::Unknown(1),
+                                ),
+                            );
+                        }
                     }
                 }
                 None => {}
             }
         }
+        self.commands[..count].fill(OrderCommand::default());
         ctx.num_commands = 0;
         Ok(())
     }
@@ -852,6 +912,16 @@ where
 {
     type Error = TickRuntimeError<B::Error>;
 
+    fn classify_error(
+        &self,
+        error: &Self::Error,
+    ) -> (
+        hftbacktest::backtest::result::EngineComponent,
+        hftbacktest::backtest::result::EngineErrorCode,
+    ) {
+        classify_tick_runtime_error(error)
+    }
+
     fn next_event(&mut self) -> Result<Option<RuntimeEvent<'_>>, Self::Error> {
         if self.delivered_end
             && self.next_timer_ts().is_none()
@@ -897,9 +967,36 @@ where
                 payload: RuntimePayload::None,
             }));
         }
-        if self.next_funding_ts().is_some_and(|timestamp| {
-            self.delivered_end || (self.clock_started && timestamp <= self.hbt.current_timestamp())
-        }) {
+        let funding_due = self.next_funding_ts().is_some_and(|timestamp| {
+            if self.delivered_end {
+                return true;
+            }
+            if !self.clock_started || timestamp > self.hbt.current_timestamp() {
+                return false;
+            }
+            let settlement = self
+                .funding
+                .front()
+                .map_or(i64::MAX, |scheduled| scheduled.event.settlement_ts);
+            let delivery = self
+                .pending_funding
+                .front()
+                .map_or(i64::MAX, |(_, report)| report.delivery_ts);
+            let external = self
+                .external_funding
+                .front()
+                .map_or(i64::MAX, |event| event.delivery_ts);
+            let after_current_market = settlement <= delivery
+                && settlement <= external
+                && self.funding.front().is_some_and(|scheduled| {
+                    scheduled.event.settlement_ts == self.hbt.current_timestamp()
+                        && scheduled.event.boundary
+                            == hftbacktest::backtest::execution::FundingBoundary::AfterSettlementEvents
+                        && self.tick_pending
+                });
+            !after_current_market
+        });
+        if funding_due {
             if self.process_funding_boundary()? {
                 return Ok(Some(self.funding_event()));
             }
@@ -992,7 +1089,7 @@ where
         for index in 0..self.conditional_scratch.len() {
             let (key, command) = self.conditional_scratch[index];
             self.conditional_orders.remove(&key);
-            self.synthesize_order(command, now, Status::Expired);
+            self.synthesize_order(command, now, Status::Expired, 0);
         }
         self.conditional_scratch.clear();
         for (key, (deadline, command)) in &self.active_gtd {
@@ -1007,7 +1104,7 @@ where
                 .cancel(asset_no as usize, order_id, false)
                 .map_err(TickRuntimeError::Bot)?;
             self.suppressed_terminal.insert(key);
-            self.synthesize_order(command, now, Status::Expired);
+            self.synthesize_order(command, now, Status::Expired, 0);
         }
         self.conditional_scratch.clear();
         for (key, command) in &self.conditional_orders {
@@ -1312,6 +1409,22 @@ where
 {
     type Error = HybridRuntimeError<B::Error>;
 
+    fn classify_error(
+        &self,
+        error: &Self::Error,
+    ) -> (
+        hftbacktest::backtest::result::EngineComponent,
+        hftbacktest::backtest::result::EngineErrorCode,
+    ) {
+        use hftbacktest::backtest::result::{EngineComponent, EngineErrorCode};
+        match error {
+            HybridRuntimeError::Tick(error) => classify_tick_runtime_error(error),
+            HybridRuntimeError::Bar(_) | HybridRuntimeError::MissingTickData => {
+                (EngineComponent::DataSource, EngineErrorCode::InvalidData)
+            }
+        }
+    }
+
     fn next_event(&mut self) -> Result<Option<RuntimeEvent<'_>>, Self::Error> {
         self.buffer_tick()?;
         let bar_close = self.next_bar_close();
@@ -1419,7 +1532,9 @@ where
         source.schedule_timer(timer);
     }
     for event in funding.iter().copied() {
-        source.schedule_funding(event);
+        if source.schedule_funding(event).is_err() {
+            return -4;
+        }
     }
     source.configure_context(ctx);
     match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
@@ -1487,7 +1602,9 @@ where
         source.tick.schedule_timer(timer);
     }
     for event in funding.iter().copied() {
-        source.tick.schedule_funding(event);
+        if source.tick.schedule_funding(event).is_err() {
+            return -4;
+        }
     }
     source.configure_context(ctx);
     match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
@@ -1877,7 +1994,9 @@ pub unsafe extern "C" fn run_scheduled_materialized_bar_runtime(
         source.schedule_timer(timer);
     }
     for event in funding.iter().copied() {
-        source.schedule_funding(event);
+        if source.schedule_funding(event).is_err() {
+            return -4;
+        }
     }
     let ctx = unsafe { &mut *ctx_ptr };
     if ctx.abi_version != hftbacktest::runtime::STRATEGY_ABI_VERSION
@@ -2015,7 +2134,9 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
         source.schedule_timer(timer);
     }
     for event in funding.iter().copied() {
-        source.schedule_funding(event);
+        if source.schedule_funding(event).is_err() {
+            return -4;
+        }
     }
     let ctx = unsafe { &mut *ctx_ptr };
     if ctx.abi_version != hftbacktest::runtime::STRATEGY_ABI_VERSION

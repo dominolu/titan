@@ -92,7 +92,10 @@ class TestRustOwnedEventBot(unittest.TestCase):
                 BAR_COMPLETE,
             )
         funding = np.zeros(1, dtype=funding_dtype)
-        funding[0] = (1, 0, 0, 1, 0, 80, 100, 120, 130, 0.001, 100, 0, 0)
+        funding[0] = (
+            1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            80, 100, 120, 130, 0.001, 100, 0, 0, 1e-12,
+        )
 
         @njit
         def on_bar(s):
@@ -195,7 +198,10 @@ class TestRustOwnedEventBot(unittest.TestCase):
 
     def test_tick_funding_settles_exchange_then_projects_after_report_latency(self):
         funding = np.zeros(1, dtype=funding_dtype)
-        funding[0] = (2, 0, 0, 1, 0, 160, 180, 200, 220, 0.001, 100.0, 0.0, 0.0)
+        funding[0] = (
+            2, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            160, 180, 200, 220, 0.001, 100.0, 0.0, 0.0, 1e-12,
+        )
 
         @njit
         def on_tick(s):
@@ -408,6 +414,15 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[3], 0)
         self.assertEqual(state[4], 11)
         self.assertEqual(state[5], 1)
+
+    def test_cancel_command_does_not_require_submit_only_fields(self):
+        @njit
+        def on_start(s):
+            s.state_i64[0] = s.cancel(0, 999, False)
+
+        state_i64 = np.full(1, -99, dtype=np.int64)
+        run_event_bot(make_bot(), on_start=on_start, state_i64=state_i64)
+        self.assertEqual(state_i64[0], 0)
 
     def test_tick_batch_is_global_across_assets(self):
         rows0 = make_rows()

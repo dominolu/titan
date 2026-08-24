@@ -153,7 +153,9 @@ impl ExecutionOrder {
                 self.state = OrderState::PendingCancel;
                 TransitionResult::StateChanged
             }
-            OrderTransition::Cancel if old_state == OrderState::PendingCancel => {
+            OrderTransition::Cancel
+                if matches!(old_state, OrderState::Submitted | OrderState::PendingCancel) =>
+            {
                 self.state = OrderState::Canceled;
                 TransitionResult::StateChanged
             }
