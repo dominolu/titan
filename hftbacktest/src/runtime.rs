@@ -926,7 +926,7 @@ pub struct MaterializedBarSource {
     next_risk_order_id: u64,
     execution_timeframe_ns: i64,
     last_execution_closes: Vec<Option<(i64, f64)>>,
-    close_positions_on_stop: bool,
+    last_bar_delivery_ts: i64,
     terminal_close_started: bool,
     end_policy: crate::backtest::result::EndPolicy,
     data_end_ts: i64,
@@ -1041,7 +1041,7 @@ impl MaterializedBarSource {
             next_risk_order_id: u64::MAX,
             execution_timeframe_ns,
             last_execution_closes: vec![None; num_assets],
-            close_positions_on_stop: false,
+            last_bar_delivery_ts: i64::MIN,
             terminal_close_started: false,
             end_policy: crate::backtest::result::EndPolicy::DrainAll,
             data_end_ts,
@@ -1165,12 +1165,6 @@ impl MaterializedBarSource {
         self.end_policy = policy;
     }
 
-    /// Emits one engine-owned reduce-only market close per non-flat asset at the final
-    /// executable Bar close before `on_stop` is dispatched.
-    pub fn set_close_positions_on_stop(&mut self, enabled: bool) {
-        self.close_positions_on_stop = enabled;
-    }
-
     fn close_terminal_positions(&mut self) -> Result<(), MaterializedBarError> {
         self.terminal_close_started = true;
         for asset_no in 0..self.execution.positions().len() {
@@ -1181,6 +1175,7 @@ impl MaterializedBarSource {
             let Some((close_ts, close)) = self.last_execution_closes[asset_no] else {
                 return Err(MaterializedBarError::InvalidOrder);
             };
+            let terminal_ts = close_ts.max(self.last_bar_delivery_ts);
             let order_id = self.next_risk_order_id;
             self.next_risk_order_id = self.next_risk_order_id.wrapping_sub(1);
             let command = OrderCommand {
@@ -1195,14 +1190,14 @@ impl MaterializedBarSource {
                 qty: position.abs(),
                 ..OrderCommand::default()
             };
-            if !self.execution.arrive(command, close_ts, close_ts)? {
+            if !self.execution.arrive(command, terminal_ts, terminal_ts)? {
                 continue;
             }
             self.execution
                 .apply(&[crate::backtest::bar::BarMatchOutcome::Fill {
                     command,
-                    local_submit_ts: close_ts,
-                    exchange_ts: close_ts,
+                    local_submit_ts: terminal_ts,
+                    exchange_ts: terminal_ts,
                     price: close,
                     qty: position.abs(),
                 }])?;
@@ -1489,6 +1484,7 @@ impl MaterializedBarSource {
         self.funding_callback_pending = false;
         self.next_risk_order_id = u64::MAX;
         self.last_execution_closes.fill(None);
+        self.last_bar_delivery_ts = i64::MIN;
         self.terminal_close_started = false;
         Ok(())
     }
@@ -2319,11 +2315,7 @@ impl RuntimeEventSource for MaterializedBarSource {
                 .pending_bar_deliveries
                 .front()
                 .map(|delivery| delivery.delivery_ts);
-            if market.is_none()
-                && bar_delivery.is_none()
-                && self.close_positions_on_stop
-                && !self.terminal_close_started
-            {
+            if market.is_none() && bar_delivery.is_none() && !self.terminal_close_started {
                 self.close_terminal_positions()?;
                 continue;
             }
@@ -2434,6 +2426,7 @@ impl RuntimeEventSource for MaterializedBarSource {
                 .current_bar_delivery
                 .as_ref()
                 .expect("Bar callback must have one pending delivery");
+            self.last_bar_delivery_ts = self.last_bar_delivery_ts.max(delivery.delivery_ts);
             for item in &delivery.bars {
                 if let Some(slot) = self.histories.iter_mut().find(|slot| {
                     slot.asset_no == item.asset_no
