@@ -125,8 +125,8 @@ Expired report。
   `volume_participation` 显式配置已接通，FOK 原子性及独立 partial fill 已测试。
 - [x] SignalClose：Python `bar_matching="signal_close"` 显式启用信号 Bar close 成交；默认
   NextOpen 不变，零 feed/entry latency 限制和 same-close 前视风险均已 fail-fast/文档化。
-- [x] Terminal flatten：Bar runtime 的 `close_positions_on_stop=True` 在 `on_stop` 前按最后
-  executable close 生成 reduce-only market fill，并复用账户、费用和 projector 事件链。
+- [x] Terminal flatten：Bar runtime 固定在 `on_stop` 前按最后 executable close 生成
+  reduce-only market fill，并复用账户、费用和 projector 事件链；不提供关闭参数。
 - [x] Stop Market/Stop Limit/GTD：Bar 与 Tick runtime 均已接通触发与到期，公共 ABI v8 fail-fast
   校验无效组合。
 - [x] Instrument/MarketStatus 与标准审计报告：版本化 InstrumentSpec/status 调度 cursor、market-status
