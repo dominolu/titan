@@ -26,7 +26,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     titan_metadata = json.loads((titan_dir / "summary.json").read_text())
     bar_matching = titan_metadata.get("bar_matching", "next_open")
-    close_positions_on_stop = titan_metadata.get("close_positions_on_stop", False)
+    terminal_flatten = titan_metadata.get("terminal_flatten") == "last_executable_bar_close"
     price_difference_class = (
         "signal_close_price_precision"
         if bar_matching == "signal_close"
@@ -203,7 +203,7 @@ def main():
     cash_effect = common["cash_effect_titan_minus_nautilus"]
     summary = {
         "bar_matching": bar_matching,
-        "close_positions_on_stop": close_positions_on_stop,
+        "terminal_flatten": terminal_flatten,
         "titan_fills": titan_fills.height,
         "nautilus_fills": nautilus_fills.height,
         "fill_count_difference": titan_fills.height - nautilus_fills.height,
@@ -231,7 +231,7 @@ def main():
         ).height,
         "max_abs_account_total_diff": float(accounts["total_diff"].abs().max()),
         "titan_ending_cash_before_terminal_close": float(
-            titan_accounts["total"][-2 if close_positions_on_stop else -1]
+            titan_accounts["total"][-2 if terminal_flatten else -1]
         ),
         "nautilus_cash_before_terminal_close": float(
             nautilus_accounts["total"][-2]
@@ -287,7 +287,7 @@ def main():
     )
     terminal_reason = (
         "两边均在停止前按最后 Bar close 平仓"
-        if close_positions_on_stop
+        if terminal_flatten
         else "Nautilus 停止时额外平仓；Titan 保留持仓"
     )
     report = f"""# Titan 与 Nautilus AAPL 双均线逐笔差异报告

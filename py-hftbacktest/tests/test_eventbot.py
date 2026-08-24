@@ -364,7 +364,9 @@ class TestRustOwnedEventBot(unittest.TestCase):
 
         @njit
         def on_filled(s):
-            s.state[0] += s.fills()[0]["qty"]
+            fill = s.fills()[0]
+            if fill["order_id"] == 92:
+                s.state[0] += fill["qty"]
 
         touch = run_event_bot(
             data_mode="bar",
@@ -441,15 +443,6 @@ class TestRustOwnedEventBot(unittest.TestCase):
             run_event_bot(data_mode="bar", bars=bars, feed_latency=-1)
         with self.assertRaises(ValueError):
             run_event_bot(make_bot(), feed_latency=1)
-        with self.assertRaises(ValueError):
-            run_event_bot(make_bot(), close_positions_on_stop=True)
-        with self.assertRaises(ValueError):
-            run_event_bot(
-                data_mode="bar",
-                bars=bars,
-                close_positions_on_stop=True,
-                feed_latency=1,
-            )
         with self.assertRaises(ValueError):
             run_event_bot(
                 data_mode="bar",
@@ -862,6 +855,8 @@ class TestRustOwnedEventBot(unittest.TestCase):
         @njit
         def on_filled(s):
             fill = s.fills()[0]
+            if fill["order_id"] != 7:
+                return
             s.state[1] += 1
             s.state[2] = fill["price"]
             s.state[3] = s.now
@@ -884,7 +879,7 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[5], 1)
         self.assertEqual(state[6], 10)
 
-    def test_close_positions_on_stop_fills_at_final_bar_close_before_stop(self):
+    def test_bar_runtime_always_flattens_at_final_bar_close_before_stop(self):
         bars = np.zeros(2, dtype=timed_bar_dtype)
         for i, open_px in enumerate([10.0, 20.0]):
             bars[i]["asset_no"] = 0
@@ -929,7 +924,6 @@ class TestRustOwnedEventBot(unittest.TestCase):
             bars=bars,
             history_capacity=2,
             bar_matching="signal_close",
-            close_positions_on_stop=True,
         )
         self.assertEqual(state[1], 2)
         self.assertEqual(tuple(state[2:6]), (10.5, 1.0, 20.5, -1.0))
@@ -969,7 +963,6 @@ class TestRustOwnedEventBot(unittest.TestCase):
             bars=bars,
             timers=timers,
             bar_matching="signal_close",
-            close_positions_on_stop=True,
         )
         self.assertEqual(tuple(state[1:4]), (1.0, 1.0, 2.0))
 
@@ -1001,6 +994,8 @@ class TestRustOwnedEventBot(unittest.TestCase):
         @njit
         def on_filled(s):
             fill = s.fills()[0]
+            if fill["order_id"] != 7:
+                return
             s.state[1] += 1
             s.state[2] = fill["price"]
             s.state[3] = fill["exch_ts"]
@@ -1082,8 +1077,10 @@ class TestRustOwnedEventBot(unittest.TestCase):
 
         @njit
         def on_filled(s):
-            s.state[0] += 1
-            s.state[1] = s.now
+            fill = s.fills()[0]
+            if fill["order_id"] == 99:
+                s.state[0] += 1
+                s.state[1] = s.now
 
         state = run_event_bot(data_mode="bar", bars=bars, on_bar=on_bar, on_filled=on_filled)
         self.assertEqual(state[0], 1)
@@ -1117,9 +1114,11 @@ class TestRustOwnedEventBot(unittest.TestCase):
 
         @njit
         def on_filled(s):
-            s.state[0] += 1
-            s.state[1] = s.now
-            s.state[2] = s.fills()[0]["price"]
+            fill = s.fills()[0]
+            if fill["order_id"] == 5:
+                s.state[0] += 1
+                s.state[1] = s.now
+                s.state[2] = fill["price"]
 
         state = run_event_bot(data_mode="bar", bars=bars, on_bar=on_bar, on_filled=on_filled)
         self.assertEqual(state[0], 1)
@@ -1154,9 +1153,11 @@ class TestRustOwnedEventBot(unittest.TestCase):
 
         @njit
         def on_filled(s):
-            s.state[0] += 1
-            s.state[1] = s.fills()[0]["price"]
-            s.state_i64[0] = s.now
+            fill = s.fills()[0]
+            if fill["order_id"] == 81:
+                s.state[0] += 1
+                s.state[1] = fill["price"]
+                s.state_i64[0] = s.now
 
         state_i64 = np.zeros(2, dtype=np.int64)
         state = run_event_bot(
