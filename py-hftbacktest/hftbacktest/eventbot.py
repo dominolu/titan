@@ -778,7 +778,7 @@ def _scheduled_bar_runtime_function():
 
 
 def _configured_bar_runtime_function():
-    function = _lib.run_configured_materialized_bar_runtime_v2
+    function = _lib.run_configured_materialized_bar_runtime_v3
     function.restype = c_int64
     function.argtypes = [
         c_void_p, c_size_t,  # bars
@@ -789,6 +789,7 @@ def _configured_bar_runtime_function():
         c_size_t,  # history capacity
         c_uint32, c_double,  # matching model
         c_int64, c_int64, c_int64,  # feed, entry and response latency
+        c_uint32,  # close positions on stop
     ]
     return function
 
@@ -868,6 +869,7 @@ def run_event_bot(
     feed_latency=0,
     entry_latency=0,
     response_latency=0,
+    close_positions_on_stop=False,
 ):
     """Runs callbacks under the Rust-owned event loop.
 
@@ -887,6 +889,8 @@ def run_event_bot(
     backend. Optional ``timer_dtype`` records remain active after market data ends in every mode.
     Backtests accept ``funding_dtype`` records, settled by the Rust account engine and delivered
     through ``on_funding(s)`` after their configured report latency.
+    In Bar mode, ``close_positions_on_stop=True`` asks the Rust engine to flatten every remaining
+    position at the final executable Bar close before ``on_stop(s)``.
     """
 
     if data_mode not in ("tick", "bar", "hybrid"):
@@ -912,6 +916,12 @@ def run_event_bot(
         raise ValueError("explicit Bar latencies are only valid in data_mode='bar'")
     if data_mode != "bar" and bar_matching != "next_open":
         raise ValueError("explicit Bar matching is only valid when Bar is the execution source")
+    if data_mode != "bar" and close_positions_on_stop:
+        raise ValueError("close_positions_on_stop is currently supported only in Bar mode")
+    if not isinstance(close_positions_on_stop, (bool, np.bool_)):
+        raise TypeError("close_positions_on_stop must be a bool")
+    if close_positions_on_stop and feed_latency != 0:
+        raise ValueError("close_positions_on_stop requires zero feed_latency")
     if bar_matching == "signal_close" and (feed_latency != 0 or entry_latency != 0):
         raise ValueError("signal_close requires zero feed_latency and entry_latency")
     if data_mode in ("tick", "hybrid") and (frame_interval <= 0 or max_tick_batch <= 0):
@@ -1070,6 +1080,7 @@ def run_event_bot(
             int(feed_latency),
             int(entry_latency),
             int(response_latency),
+            int(close_positions_on_stop),
         )
     if result != 0:
         raise RuntimeError(

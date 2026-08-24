@@ -26,6 +26,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     titan_metadata = json.loads((titan_dir / "summary.json").read_text())
     bar_matching = titan_metadata.get("bar_matching", "next_open")
+    close_positions_on_stop = titan_metadata.get("close_positions_on_stop", False)
     price_difference_class = (
         "signal_close_price_precision"
         if bar_matching == "signal_close"
@@ -202,8 +203,10 @@ def main():
     cash_effect = common["cash_effect_titan_minus_nautilus"]
     summary = {
         "bar_matching": bar_matching,
+        "close_positions_on_stop": close_positions_on_stop,
         "titan_fills": titan_fills.height,
         "nautilus_fills": nautilus_fills.height,
+        "fill_count_difference": titan_fills.height - nautilus_fills.height,
         "common_fills": common.height,
         "side_mismatches": common.filter(
             pl.col("titan_side") != pl.col("nautilus_side")
@@ -228,11 +231,12 @@ def main():
         ).height,
         "max_abs_account_total_diff": float(accounts["total_diff"].abs().max()),
         "titan_ending_cash_before_terminal_close": float(
-            titan_accounts["total"][-1]
+            titan_accounts["total"][-2 if close_positions_on_stop else -1]
         ),
         "nautilus_cash_before_terminal_close": float(
-            nautilus_accounts["total"][titan_accounts.height - 1]
+            nautilus_accounts["total"][-2]
         ),
+        "titan_ending_cash_after_terminal_close": float(titan_accounts["total"][-1]),
         "nautilus_ending_cash_after_terminal_close": float(
             nautilus_accounts["total"][-1]
         ),
@@ -281,6 +285,11 @@ def main():
         if bar_matching == "signal_close"
         else "价格与休市时间差由两个引擎不同的 Bar 撮合假设产生，不是数据源不一致。"
     )
+    terminal_reason = (
+        "两边均在停止前按最后 Bar close 平仓"
+        if close_positions_on_stop
+        else "Nautilus 停止时额外平仓；Titan 保留持仓"
+    )
     report = f"""# Titan 与 Nautilus AAPL 双均线逐笔差异报告
 
 ## 结论
@@ -296,7 +305,7 @@ def main():
 | 数量不一致 | {summary['quantity_mismatches']:,} | 无 |
 | 成交价不一致 | {summary['price_mismatches']:,} | {execution_reason} |
 | 时间戳不一致 | {summary['timestamp_mismatches']:,} | {timestamp_reason} |
-| Titan 缺少末尾成交 | 1 | Nautilus `close_positions_on_stop=True` 在停止时额外卖出 100 股；Titan Stop callback 禁止下单并保留多仓 |
+| 末尾成交数量差 | {abs(summary['fill_count_difference']):,} | {terminal_reason} |
 | 手续费金额不一致 | {summary['common_commission_amount_mismatches']:,} | 两边费率都为零；仅因末尾平仓多一条零手续费记录 |
 
 ## 数值影响
@@ -305,7 +314,7 @@ def main():
 - 平均绝对价格差 {summary['mean_abs_price_diff']:.6f} USD，最大绝对价格差 {summary['max_abs_price_diff']:.6f} USD。
 - 其中隔夜推进 {summary['overnight_gaps']} 笔，周末推进 {summary['weekend_gaps']} 笔。
 - 在末尾强平前，Titan 相对 Nautilus 的累计现金差为 {summary['net_cash_effect_titan_minus_nautilus_before_terminal_close']:.4f} USD；这是不同成交价的机械结果。
-- Nautilus 末尾额外 SELL {summary['terminal_close_qty']:.0f} @ {summary['terminal_close_price']:.4f}，现金增加 {summary['terminal_close_cash_delta']:.2f} USD。
+- 末尾平仓为 SELL {summary['terminal_close_qty']:.0f} @ {summary['terminal_close_price']:.4f}，现金增加 {summary['terminal_close_cash_delta']:.2f} USD；Titan 与 Nautilus 数量差为 {summary['fill_count_difference']}。
 - 两边累计手续费均为 0 USD。
 
 ## 源头验证

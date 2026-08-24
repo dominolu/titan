@@ -2402,6 +2402,48 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
     entry_latency_ns: i64,
     response_latency_ns: i64,
 ) -> i64 {
+    unsafe {
+        run_configured_materialized_bar_runtime_v3(
+            records_ptr,
+            record_count,
+            timers_ptr,
+            timer_count,
+            funding_ptr,
+            funding_count,
+            ctx_ptr,
+            callbacks,
+            callback_count,
+            history_capacity,
+            matching_mode,
+            volume_participation,
+            feed_latency_ns,
+            entry_latency_ns,
+            response_latency_ns,
+            0,
+        )
+    }
+}
+
+/// Configured Bar runtime with an explicit engine-owned terminal-flatten policy.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v3(
+    records_ptr: *const TimedBarItem,
+    record_count: usize,
+    timers_ptr: *const RuntimeTimer,
+    timer_count: usize,
+    funding_ptr: *const RuntimeFunding,
+    funding_count: usize,
+    ctx_ptr: *mut StrategyRuntimeContext,
+    callbacks: *const usize,
+    callback_count: usize,
+    history_capacity: usize,
+    matching_mode: u32,
+    volume_participation: f64,
+    feed_latency_ns: i64,
+    entry_latency_ns: i64,
+    response_latency_ns: i64,
+    close_positions_on_stop: u32,
+) -> i64 {
     if records_ptr.is_null()
         || ctx_ptr.is_null()
         || (timer_count > 0 && timers_ptr.is_null())
@@ -2434,6 +2476,10 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
     {
         return -4;
     }
+    if close_positions_on_stop > 1 || (close_positions_on_stop == 1 && feed_latency_ns != 0) {
+        return -4;
+    }
+    source.set_close_positions_on_stop(close_positions_on_stop == 1);
     if matching_mode == 3
         && (feed_latency_ns != 0
             || entry_latency_ns != 0

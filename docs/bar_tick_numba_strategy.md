@@ -177,6 +177,31 @@ run_event_bot(
 `volume_participation` 只控制 OHLC 撮合的成交量参与上限。默认值仍为
 `bar_matching="next_open"`，因此现有策略不传参数时结果保持不变。
 
+### `close_positions_on_stop` 参数
+
+Bar 回测可显式设置 `close_positions_on_stop=True`，让 Rust 引擎在数据结束、调用
+`on_stop(s)` 之前，将每个非零持仓按该资产最后一根可执行 Bar 的 `close` 全量平仓：
+
+```python
+run_event_bot(
+    data_mode="bar",
+    bars=bars,
+    bar_matching="signal_close",
+    close_positions_on_stop=True,
+)
+```
+
+终止平仓不是 `on_stop` 中的策略下单。引擎生成 reduce-only market order，并依次经过交易所
+账户、手续费模型、ExecutionEventProjector 以及 `on_order`、`on_filled`、`on_position` 回调；
+这些事件全部完成后才调用 `on_stop`，所以 `on_stop` 看到的持仓为零。平仓成交时间和价格均
+使用最后一根可执行 Bar 的 `close_ts`/`close`。无最后有效 Bar 的非零持仓必须 fail-fast，
+不得使用 NaN、空 Bar 或虚构价格。
+
+该参数默认 `False`，只支持 `data_mode="bar"` 且要求 `feed_latency=0`，避免在延迟投递
+最后一根 Bar 后生成时间戳更早的终止成交。它用于与
+Nautilus `close_positions_on_stop=True` 等结束生命周期对齐；是否强制平仓和 Bar 撮合价格是
+两个独立配置。
+
 ### Tick-only
 
 输入为成交、BBO、深度快照或深度增量，继续使用订单簿和 Tick/L2 撮合模型。策略订阅
