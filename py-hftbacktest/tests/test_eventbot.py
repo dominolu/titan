@@ -442,6 +442,15 @@ class TestRustOwnedEventBot(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_event_bot(make_bot(), feed_latency=1)
         with self.assertRaises(ValueError):
+            run_event_bot(make_bot(), close_positions_on_stop=True)
+        with self.assertRaises(ValueError):
+            run_event_bot(
+                data_mode="bar",
+                bars=bars,
+                close_positions_on_stop=True,
+                feed_latency=1,
+            )
+        with self.assertRaises(ValueError):
             run_event_bot(
                 data_mode="bar",
                 bars=bars,
@@ -874,6 +883,95 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[4], 2)
         self.assertEqual(state[5], 1)
         self.assertEqual(state[6], 10)
+
+    def test_close_positions_on_stop_fills_at_final_bar_close_before_stop(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for i, open_px in enumerate([10.0, 20.0]):
+            bars[i]["asset_no"] = 0
+            bars[i]["timeframe_ns"] = 60
+            bars[i]["bar"] = (
+                i * 60,
+                (i + 1) * 60,
+                open_px,
+                open_px + 1.0,
+                open_px - 1.0,
+                open_px + 0.5,
+                10.0,
+                0.0,
+                0.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            s.state[0] += 1
+            if s.state[0] == 1:
+                s.submit_buy_order(0, 7, 0.0, 2.0, 0, 1, False)
+
+        @njit
+        def on_filled(s):
+            fill = s.fills()[0]
+            index = int(s.state[1])
+            s.state[2 + index * 2] = fill["price"]
+            s.state[3 + index * 2] = fill["side"]
+            s.state[1] += 1
+
+        @njit
+        def on_stop(s):
+            s.state[7] = s.position(0)
+
+        state = run_event_bot(
+            on_bar=on_bar,
+            on_filled=on_filled,
+            on_stop=on_stop,
+            data_mode="bar",
+            bars=bars,
+            history_capacity=2,
+            bar_matching="signal_close",
+            close_positions_on_stop=True,
+        )
+        self.assertEqual(state[1], 2)
+        self.assertEqual(tuple(state[2:6]), (10.5, 1.0, 20.5, -1.0))
+        self.assertEqual(state[7], 0.0)
+
+    def test_terminal_close_precedes_future_timer(self):
+        bars = np.zeros(1, dtype=timed_bar_dtype)
+        bars[0]["asset_no"] = 0
+        bars[0]["timeframe_ns"] = 60
+        bars[0]["bar"] = (0, 60, 10, 11, 9, 10.5, 10, 0, 0, 1, BAR_COMPLETE)
+        timers = np.zeros(1, dtype=timer_dtype)
+        timers[0] = (100, 1, 1)
+
+        @njit
+        def record_event(s, code):
+            index = int(s.state[0])
+            s.state[index + 1] = code
+            s.state[0] += 1
+
+        @njit
+        def on_bar(s):
+            s.submit_buy_order(0, 7, 0.0, 2.0, 0, 1, False)
+
+        @njit
+        def on_filled(s):
+            record_event(s, 1.0)
+
+        @njit
+        def on_timer(s):
+            record_event(s, 2.0)
+
+        state = run_event_bot(
+            on_bar=on_bar,
+            on_filled=on_filled,
+            on_timer=on_timer,
+            data_mode="bar",
+            bars=bars,
+            timers=timers,
+            bar_matching="signal_close",
+            close_positions_on_stop=True,
+        )
+        self.assertEqual(tuple(state[1:4]), (1.0, 1.0, 2.0))
 
     def test_signal_close_fills_at_the_producing_bar_close(self):
         bars = np.zeros(2, dtype=timed_bar_dtype)
