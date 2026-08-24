@@ -1239,6 +1239,22 @@ where
         Ok(report)
     }
 
+    /// Advances the authoritative Tick engine through every event strictly earlier than
+    /// `timestamp`, leaving all events exactly at the boundary untouched. Scheduled Funding uses
+    /// this to take a true before-market position snapshot without reimplementing Tick matching.
+    pub fn advance_runtime_before(
+        &mut self,
+        timestamp: i64,
+    ) -> Result<ElapseResult, BacktestError> {
+        if self.cur_ts != i64::MAX && timestamp <= self.cur_ts {
+            return Ok(ElapseResult::Ok);
+        }
+        if self.cur_ts == i64::MAX {
+            self.initialize_evs()?;
+        }
+        self.goto::<true, false>(timestamp, WaitOrderResponse::Any)
+    }
+
     pub fn deliver_runtime_funding(&mut self, report: FundingReport) -> Result<(), BacktestError> {
         self.shared_projector.project_funding(
             report,
@@ -1973,16 +1989,17 @@ where
                 }
             }
         }
-        self.goto::<false>(UNTIL_END_OF_DATA, WaitOrderResponse::None)
+        self.goto::<false, true>(UNTIL_END_OF_DATA, WaitOrderResponse::None)
     }
 
-    fn goto<const WAIT_NEXT_FEED: bool>(
+    fn goto<const WAIT_NEXT_FEED: bool, const INCLUSIVE: bool>(
         &mut self,
         timestamp: i64,
         wait_order_response: WaitOrderResponse,
     ) -> Result<ElapseResult, BacktestError> {
         let mut result = ElapseResult::Ok;
         let mut timestamp = timestamp;
+        let hard_boundary = timestamp;
         for (asset_no, local) in self.local.iter().enumerate() {
             self.evs
                 .update_exch_order(asset_no, local.earliest_send_order_timestamp());
@@ -1992,7 +2009,11 @@ where
         loop {
             match self.evs.next() {
                 Some(ev) => {
-                    if ev.timestamp > timestamp {
+                    if ev.timestamp > timestamp
+                        || (!INCLUSIVE
+                            && timestamp == hard_boundary
+                            && ev.timestamp == hard_boundary)
+                    {
                         self.cur_ts = timestamp;
                         return Ok(result);
                     }
@@ -2183,6 +2204,7 @@ where
                     }
                 }
                 None => {
+                    self.cur_ts = timestamp;
                     return Ok(ElapseResult::EndOfData);
                 }
             }
@@ -2281,7 +2303,7 @@ where
         }
 
         if wait {
-            return self.goto::<false>(
+            return self.goto::<false, true>(
                 UNTIL_END_OF_DATA,
                 WaitOrderResponse::Specified { asset_no, order_id },
             );
@@ -2318,7 +2340,7 @@ where
         }
 
         if wait {
-            return self.goto::<false>(
+            return self.goto::<false, true>(
                 UNTIL_END_OF_DATA,
                 WaitOrderResponse::Specified { asset_no, order_id },
             );
@@ -2350,7 +2372,7 @@ where
         }
 
         if wait {
-            return self.goto::<false>(
+            return self.goto::<false, true>(
                 UNTIL_END_OF_DATA,
                 WaitOrderResponse::Specified {
                     asset_no,
@@ -2386,7 +2408,7 @@ where
         local.cancel(order_id, self.cur_ts)?;
 
         if wait {
-            return self.goto::<false>(
+            return self.goto::<false, true>(
                 UNTIL_END_OF_DATA,
                 WaitOrderResponse::Specified { asset_no, order_id },
             );
@@ -2418,7 +2440,7 @@ where
         order_id: OrderId,
         timeout: i64,
     ) -> Result<ElapseResult, BacktestError> {
-        self.goto::<false>(
+        self.goto::<false, true>(
             self.cur_ts + timeout,
             WaitOrderResponse::Specified { asset_no, order_id },
         )
@@ -2442,9 +2464,9 @@ where
             }
         }
         if include_order_resp {
-            self.goto::<true>(self.cur_ts + timeout, WaitOrderResponse::Any)
+            self.goto::<true, true>(self.cur_ts + timeout, WaitOrderResponse::Any)
         } else {
-            self.goto::<true>(self.cur_ts + timeout, WaitOrderResponse::None)
+            self.goto::<true, true>(self.cur_ts + timeout, WaitOrderResponse::None)
         }
     }
 
@@ -2461,7 +2483,7 @@ where
                 }
             }
         }
-        self.goto::<false>(self.cur_ts + duration, WaitOrderResponse::None)
+        self.goto::<false, true>(self.cur_ts + duration, WaitOrderResponse::None)
     }
 
     #[inline]

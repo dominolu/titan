@@ -10,6 +10,10 @@ use hftbacktest::{
     backtest::{
         Backtest,
         bar::{BarFeed, MaterializedBarFeed, OhlcFillAssumption},
+        platform::{
+            ContingencyAction, ContingencyGroup, ContingencyManager, ExecutionAlgorithm,
+            PlatformCommandProducers, SimulationHook,
+        },
     },
     depth::MarketDepth,
     market_data::BarHistory,
@@ -140,6 +144,8 @@ struct TickFrameSource<'a, B, MD> {
     clock_started: bool,
     conditional_orders: BTreeMap<(u64, u64), OrderCommand>,
     active_gtd: BTreeMap<(u64, u64), (i64, OrderCommand)>,
+    contingencies: ContingencyManager,
+    held_contingent_orders: BTreeMap<(u64, u64), OrderCommand>,
     synthetic_order_events: VecDeque<OrderEvent>,
     suppressed_terminal: BTreeSet<(u64, u64)>,
     conditional_scratch: Vec<((u64, u64), OrderCommand)>,
@@ -154,11 +160,20 @@ struct TickFrameSource<'a, B, MD> {
     funding_templates: Vec<Option<RuntimeFunding>>,
     next_funding_sequence: u64,
     current_funding: RuntimeFunding,
+    platform: PlatformCommandProducers,
+    platform_scratch: Vec<hftbacktest::backtest::execution::ExecutionCommand>,
+    platform_sequence: u64,
     _depth: PhantomData<MD>,
 }
 
 trait RuntimeBotEvents {
     type RuntimeError;
+    fn advance_runtime_before(
+        &mut self,
+        _timestamp: i64,
+    ) -> Result<Option<ElapseResult>, Self::RuntimeError> {
+        Ok(None)
+    }
     fn register_runtime_order_extensions(
         &mut self,
         _asset_no: usize,
@@ -195,6 +210,12 @@ where
     MD: MarketDepth,
 {
     type RuntimeError = hftbacktest::backtest::BacktestError;
+    fn advance_runtime_before(
+        &mut self,
+        timestamp: i64,
+    ) -> Result<Option<ElapseResult>, Self::RuntimeError> {
+        Backtest::advance_runtime_before(self, timestamp).map(Some)
+    }
     fn register_runtime_order_extensions(
         &mut self,
         asset_no: usize,
@@ -347,6 +368,8 @@ enum TickRuntimeError<E: std::error::Error + Send + Sync + 'static> {
     InvalidOrder,
     #[error("global TickBatch length {len} exceeds configured maximum {max}")]
     TickBatchOverflow { len: usize, max: usize },
+    #[error("platform command capacity exceeded")]
+    CommandOverflow,
 }
 
 fn classify_tick_runtime_error<E: std::error::Error + Send + Sync + 'static>(
@@ -365,6 +388,10 @@ fn classify_tick_runtime_error<E: std::error::Error + Send + Sync + 'static>(
         TickRuntimeError::TickBatchOverflow { .. } => {
             (EngineComponent::DataSource, EngineErrorCode::InvalidData)
         }
+        TickRuntimeError::CommandOverflow => (
+            EngineComponent::Strategy,
+            EngineErrorCode::InvalidConfiguration,
+        ),
     }
 }
 
@@ -401,6 +428,8 @@ where
             clock_started: false,
             conditional_orders: BTreeMap::new(),
             active_gtd: BTreeMap::new(),
+            contingencies: ContingencyManager::default(),
+            held_contingent_orders: BTreeMap::new(),
             synthetic_order_events: VecDeque::new(),
             suppressed_terminal: BTreeSet::new(),
             conditional_scratch: Vec::with_capacity(16),
@@ -430,6 +459,9 @@ where
             funding_templates: vec![None; num_assets],
             next_funding_sequence: 0,
             current_funding: RuntimeFunding::default(),
+            platform: PlatformCommandProducers::with_capacity(1024),
+            platform_scratch: Vec::with_capacity(16),
+            platform_sequence: 0,
             _depth: PhantomData,
         };
         source
@@ -437,6 +469,122 @@ where
             .drain_runtime_projected_events(&mut source.canonical_events);
         source.canonical_events.clear();
         source
+    }
+
+    fn add_execution_algorithm<A: ExecutionAlgorithm + 'static>(&mut self, algorithm: A) {
+        self.platform.add_algorithm(algorithm);
+    }
+
+    fn add_simulation_hook<H: SimulationHook + 'static>(&mut self, hook: H) {
+        self.platform.add_hook(hook);
+    }
+
+    fn register_contingency(&mut self, group: ContingencyGroup) -> bool {
+        self.contingencies.insert(group)
+    }
+
+    fn execution_command_to_abi(
+        command: hftbacktest::backtest::execution::ExecutionCommand,
+        num_assets: usize,
+    ) -> Result<OrderCommand, TickRuntimeError<B::Error>> {
+        use hftbacktest::backtest::execution::ExecutionCommand;
+        let (venue_id, instrument_id) = match command {
+            ExecutionCommand::Submit(request) => (request.venue_id, request.instrument_id),
+            ExecutionCommand::Cancel(request) => (request.venue_id, request.instrument_id),
+        };
+        if venue_id.0 != 0 || instrument_id.0 == 0 {
+            return Err(TickRuntimeError::InvalidOrder);
+        }
+        let asset_no = u64::from(instrument_id.0 - 1);
+        if asset_no as usize >= num_assets {
+            return Err(TickRuntimeError::InvalidOrder);
+        }
+        Ok(match command {
+            ExecutionCommand::Submit(request) => OrderCommand {
+                kind: hftbacktest::runtime::ORDER_COMMAND_SUBMIT,
+                side: match request.side {
+                    Side::Buy => 1,
+                    Side::Sell => -1,
+                    Side::None | Side::Unsupported => {
+                        return Err(TickRuntimeError::InvalidOrder);
+                    }
+                },
+                time_in_force: match request.time_in_force {
+                    hftbacktest::types::TimeInForce::GTC => 0,
+                    hftbacktest::types::TimeInForce::GTX => 1,
+                    hftbacktest::types::TimeInForce::FOK => 2,
+                    hftbacktest::types::TimeInForce::IOC => 3,
+                    hftbacktest::types::TimeInForce::Unsupported => {
+                        return Err(TickRuntimeError::InvalidOrder);
+                    }
+                },
+                order_type: match request.order_type {
+                    hftbacktest::types::OrdType::Limit => 0,
+                    hftbacktest::types::OrdType::Market => 1,
+                    hftbacktest::types::OrdType::Unsupported => {
+                        return Err(TickRuntimeError::InvalidOrder);
+                    }
+                },
+                _reserved: [
+                    u8::from(request.reduce_only),
+                    0,
+                    match request.origin {
+                        hftbacktest::backtest::execution::OrderOrigin::Strategy => 0,
+                        hftbacktest::backtest::execution::OrderOrigin::ExecutionAlgorithm => 1,
+                        hftbacktest::backtest::execution::OrderOrigin::Liquidation => 2,
+                    },
+                    0,
+                ],
+                asset_no,
+                order_id: request.client_order_id,
+                price: request.price,
+                qty: request.qty,
+                trigger_price: 0.0,
+                gtd_expiry_ts: 0,
+            },
+            ExecutionCommand::Cancel(request) => OrderCommand {
+                kind: hftbacktest::runtime::ORDER_COMMAND_CANCEL,
+                asset_no,
+                order_id: request.client_order_id,
+                ..OrderCommand::default()
+            },
+        })
+    }
+
+    fn dispatch_platform_event(&mut self, now: i64) -> Result<(), TickRuntimeError<B::Error>> {
+        let key = hftbacktest::backtest::scheduler::EventKey {
+            timestamp: now,
+            phase: hftbacktest::backtest::scheduler::EventPhase::MarketDelivery,
+            source_priority: 0,
+            venue_no: 0,
+            asset_no: 0,
+            sequence: self.platform_sequence,
+        };
+        self.platform_sequence = self.platform_sequence.wrapping_add(1);
+        self.platform_scratch.clear();
+        self.platform
+            .collect(key, &mut self.platform_scratch)
+            .map_err(|_| TickRuntimeError::CommandOverflow)?;
+        if self.platform_scratch.len() > self.commands.len() {
+            return Err(TickRuntimeError::CommandOverflow);
+        }
+        let generated = std::mem::take(&mut self.platform_scratch);
+        let command_count = generated.len();
+        let num_assets = self.hbt.num_assets();
+        for (index, command) in generated.iter().copied().enumerate() {
+            self.commands[index] = Self::execution_command_to_abi(command, num_assets)?;
+        }
+        self.platform_scratch = generated;
+        self.platform_scratch.clear();
+        if command_count != 0 {
+            let mut context = StrategyRuntimeContext {
+                now,
+                num_commands: command_count,
+                ..StrategyRuntimeContext::default()
+            };
+            self.process_commands(&mut context, true)?;
+        }
+        Ok(())
     }
 
     fn configure_context(&mut self, ctx: &mut StrategyRuntimeContext) {
@@ -608,10 +756,8 @@ where
             self.hbt
                 .deliver_runtime_funding(report)
                 .map_err(TickRuntimeError::Bot)?;
-            self.current_funding = self.funding_templates[asset_no as usize].unwrap_or_default();
-            self.current_funding.delivery_ts = report.delivery_ts;
-            self.current_funding.position_qty = report.position_qty;
-            self.current_funding.amount = report.amount;
+            let config = self.funding_engines[asset_no as usize].config();
+            self.current_funding = RuntimeFunding::from_report(asset_no, report, config);
             return Ok(true);
         }
         let Some(scheduled) = self.funding.pop_front() else {
@@ -749,6 +895,92 @@ where
         });
     }
 
+    fn process_contingency_report(
+        &mut self,
+        order_id: u64,
+        status: Status,
+        now: i64,
+    ) -> Result<(), TickRuntimeError<B::Error>> {
+        let mut actions = Vec::new();
+        self.contingencies.on_report(order_id, status, &mut actions);
+        for action in actions {
+            let target = match action {
+                ContingencyAction::Activate(target) | ContingencyAction::Cancel(target) => target,
+            };
+            let held_key = self
+                .held_contingent_orders
+                .keys()
+                .find(|(_, candidate)| *candidate == target)
+                .copied();
+            match action {
+                ContingencyAction::Activate(_) => {
+                    let Some(key) = held_key else {
+                        continue;
+                    };
+                    let command = self
+                        .held_contingent_orders
+                        .remove(&key)
+                        .expect("located held contingent order");
+                    let Some(hftbacktest::backtest::execution::ExecutionCommand::Submit(request)) =
+                        command
+                            .decode_execution(
+                                now,
+                                hftbacktest::backtest::execution::VenueId(0),
+                                hftbacktest::backtest::execution::InstrumentId(
+                                    command.asset_no as u32 + 1,
+                                ),
+                            )
+                            .map_err(|_| TickRuntimeError::InvalidOrder)?
+                    else {
+                        return Err(TickRuntimeError::InvalidOrder);
+                    };
+                    if command._reserved[1] != 0 {
+                        self.conditional_orders.insert(key, command);
+                    } else {
+                        self.submit_to_bot(command.asset_no as usize, request)?;
+                        if command.gtd_expiry_ts != 0 {
+                            self.active_gtd
+                                .insert(key, (command.gtd_expiry_ts, command));
+                        }
+                    }
+                }
+                ContingencyAction::Cancel(_) => {
+                    if let Some(key) = held_key {
+                        let command = self
+                            .held_contingent_orders
+                            .remove(&key)
+                            .expect("located held contingent order");
+                        self.synthesize_order(command, now, Status::Canceled, 0);
+                    } else if let Some(command) = self
+                        .conditional_orders
+                        .keys()
+                        .find(|(_, candidate)| *candidate == target)
+                        .copied()
+                        .and_then(|key| self.conditional_orders.remove(&key))
+                    {
+                        self.synthesize_order(command, now, Status::Canceled, 0);
+                    } else if let Some((asset_no, _)) = self
+                        .active_gtd
+                        .keys()
+                        .find(|(_, candidate)| *candidate == target)
+                        .copied()
+                        .or_else(|| {
+                            (0..self.hbt.num_assets())
+                                .find(|asset_no| self.hbt.orders(*asset_no).contains_key(&target))
+                                .map(|asset_no| (asset_no as u64, target))
+                        })
+                    {
+                        self.active_gtd.remove(&(asset_no, target));
+                        self.hbt
+                            .cancel(asset_no as usize, target, false)
+                            .map_err(TickRuntimeError::Bot)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn process_commands(
         &mut self,
         ctx: &mut StrategyRuntimeContext,
@@ -781,6 +1013,20 @@ where
                         return Err(TickRuntimeError::InvalidOrder);
                     }
                     if command._reserved[1] != 0 {
+                        if self.contingencies.should_reject(command.order_id) {
+                            self.synthesize_order(command, ctx.now, Status::Rejected, 0xC001);
+                            continue;
+                        }
+                        if self.contingencies.should_hold(command.order_id) {
+                            if self
+                                .held_contingent_orders
+                                .insert((command.asset_no, command.order_id), command)
+                                .is_some()
+                            {
+                                return Err(TickRuntimeError::InvalidOrder);
+                            }
+                            continue;
+                        }
                         if self
                             .conditional_orders
                             .insert((command.asset_no, command.order_id), command)
@@ -790,6 +1036,20 @@ where
                         }
                         self.synthesize_order(command, ctx.now, Status::New, 0);
                     } else {
+                        if self.contingencies.should_reject(command.order_id) {
+                            self.synthesize_order(command, ctx.now, Status::Rejected, 0xC001);
+                            continue;
+                        }
+                        if self.contingencies.should_hold(command.order_id) {
+                            if self
+                                .held_contingent_orders
+                                .insert((command.asset_no, command.order_id), command)
+                                .is_some()
+                            {
+                                return Err(TickRuntimeError::InvalidOrder);
+                            }
+                            continue;
+                        }
                         self.submit_to_bot(command.asset_no as usize, request)?;
                         if command.gtd_expiry_ts != 0 {
                             self.active_gtd.insert(
@@ -802,6 +1062,11 @@ where
                 Some(hftbacktest::backtest::execution::ExecutionCommand::Cancel(request)) => {
                     debug_assert_eq!(request.client_order_id, command.order_id);
                     if let Some(original) = self
+                        .held_contingent_orders
+                        .remove(&(command.asset_no, command.order_id))
+                    {
+                        self.synthesize_order(original, ctx.now, Status::Canceled, 0);
+                    } else if let Some(original) = self
                         .conditional_orders
                         .remove(&(command.asset_no, command.order_id))
                     {
@@ -842,7 +1107,10 @@ where
 
     /// Drain execution responses already delivered to the strategy's local visibility boundary.
     /// Shared backtests use canonical reports; legacy/live bots fall back to `Order` snapshots.
-    fn capture_execution_events(&mut self, clear_buffers: bool) {
+    fn capture_execution_events(
+        &mut self,
+        clear_buffers: bool,
+    ) -> Result<(), TickRuntimeError<B::Error>> {
         if clear_buffers {
             self.fills.clear();
             self.order_events.clear();
@@ -851,6 +1119,7 @@ where
         self.hbt
             .drain_runtime_projected_events(&mut self.canonical_events);
         if !self.canonical_events.is_empty() {
+            let mut contingency_reports = Vec::new();
             for (asset_no, projected) in &self.canonical_events {
                 use hftbacktest::backtest::execution::ProjectedEventKind;
                 match projected.kind {
@@ -872,15 +1141,24 @@ where
                         ) {
                             self.active_gtd.remove(&key);
                         }
+                        contingency_reports.push((
+                            report.order_id,
+                            report.status,
+                            report.delivery_ts,
+                        ));
                     }
                     ProjectedEventKind::Position => self.position_pending = true,
                     ProjectedEventKind::Filled => {}
                 }
             }
+            for (order_id, status, now) in contingency_reports {
+                self.process_contingency_report(order_id, status, now)?;
+            }
             // Canonical and legacy captures describe the same reports for shared Backtest.
             self.hbt.clear_runtime_order_events();
-            return;
+            return Ok(());
         }
+        let mut contingency_reports = Vec::new();
         for (asset_no, recv_ts, order) in self.hbt.runtime_order_events() {
             let key = (*asset_no as u64, order.order_id);
             if self.suppressed_terminal.remove(&key) {
@@ -899,8 +1177,13 @@ where
             ) {
                 self.active_gtd.remove(&key);
             }
+            contingency_reports.push((order.order_id, order.status, *recv_ts));
         }
         self.hbt.clear_runtime_order_events();
+        for (order_id, status, now) in contingency_reports {
+            self.process_contingency_report(order_id, status, now)?;
+        }
+        Ok(())
     }
 }
 
@@ -1031,6 +1314,9 @@ where
             .conditional_orders
             .values()
             .filter_map(|command| (command.gtd_expiry_ts != 0).then_some(command.gtd_expiry_ts))
+            .chain(self.held_contingent_orders.values().filter_map(|command| {
+                (command.gtd_expiry_ts != 0).then_some(command.gtd_expiry_ts)
+            }))
             .chain(self.active_gtd.values().map(|(deadline, _)| *deadline))
             .min();
         let original_interval = self.frame_interval;
@@ -1038,6 +1324,14 @@ where
             .into_iter()
             .flatten()
             .min();
+        let before_funding_boundary = self.funding.front().and_then(|scheduled| {
+            (scheduled.event.boundary
+                == hftbacktest::backtest::execution::FundingBoundary::BeforeSettlementEvents
+                && Some(scheduled.event.settlement_ts) == next_deadline
+                && (!self.clock_started
+                    || scheduled.event.settlement_ts > self.hbt.current_timestamp()))
+            .then_some(scheduled.event.settlement_ts)
+        });
         if let Some(deadline) = next_deadline
             && self.clock_started
         {
@@ -1046,10 +1340,16 @@ where
                 .min(deadline.saturating_sub(self.hbt.current_timestamp()).max(1));
         }
 
-        let result = self
-            .hbt
-            .wait_next_feed(true, self.frame_interval)
-            .map_err(TickRuntimeError::Bot)?;
+        let result = if let Some(boundary) = before_funding_boundary {
+            self.hbt
+                .advance_runtime_before(boundary)
+                .map_err(TickRuntimeError::Bot)?
+                .ok_or(TickRuntimeError::InvalidOrder)?
+        } else {
+            self.hbt
+                .wait_next_feed(true, self.frame_interval)
+                .map_err(TickRuntimeError::Bot)?
+        };
         self.clock_started = true;
         self.frame_interval = original_interval;
         self.ended = result == ElapseResult::EndOfData;
@@ -1067,7 +1367,7 @@ where
             });
         }
         self.hbt.clear_runtime_feed_events();
-        self.capture_execution_events(true);
+        self.capture_execution_events(true)?;
         for (_, event) in self.hbt.runtime_funding_events() {
             let index = self
                 .external_funding
@@ -1080,6 +1380,17 @@ where
         }
         self.hbt.clear_runtime_funding_events();
         let now = self.hbt.current_timestamp();
+        self.conditional_scratch.clear();
+        for (key, command) in &self.held_contingent_orders {
+            if command.gtd_expiry_ts != 0 && command.gtd_expiry_ts <= now {
+                self.conditional_scratch.push((*key, *command));
+            }
+        }
+        for index in 0..self.conditional_scratch.len() {
+            let (key, command) = self.conditional_scratch[index];
+            self.held_contingent_orders.remove(&key);
+            self.synthesize_order(command, now, Status::Expired, 0);
+        }
         self.conditional_scratch.clear();
         for (key, command) in &self.conditional_orders {
             if command.gtd_expiry_ts != 0 && command.gtd_expiry_ts <= now {
@@ -1155,11 +1466,17 @@ where
             self.position_pending = true;
         }
         self.refresh_markets();
+        let periodic_market_boundary =
+            result == ElapseResult::Ok && before_funding_boundary.is_none();
+        if !self.ticks.is_empty() || periodic_market_boundary {
+            self.dispatch_platform_event(now)?;
+            self.capture_execution_events(false)?;
+        }
         self.order_pending = !self.order_events.is_empty();
         self.fill_pending = !self.fills.is_empty();
         // A pure order-response boundary should not synthesize an empty market-data callback.
         // Preserve the periodic empty callback only when the max-wait interval elapsed.
-        self.tick_pending = !self.ticks.is_empty() || result == ElapseResult::Ok;
+        self.tick_pending = !self.ticks.is_empty() || periodic_market_boundary;
         self.next_event()
     }
 
@@ -1176,7 +1493,7 @@ where
         // Local validation/risk rejection is visible at the submit timestamp and must not wait
         // for another market-data frame before on_order is dispatched.
         if had_commands {
-            self.capture_execution_events(false);
+            self.capture_execution_events(false)?;
             self.order_pending |= !self.order_events.is_empty();
             self.fill_pending |= !self.fills.is_empty();
         }

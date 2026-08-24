@@ -238,6 +238,115 @@ class TestRustOwnedEventBot(unittest.TestCase):
         self.assertEqual(state[2], 1.0)
         self.assertEqual(state_i64[1], 220)
 
+    def test_tick_funding_before_and_after_use_distinct_same_time_positions(self):
+        def bot_with_entry_latency():
+            return HashMapMarketDepthBacktest(
+                [
+                    BacktestAsset()
+                    .linear_asset(1.0)
+                    .data(make_rows())
+                    .no_partial_fill_exchange()
+                    .constant_order_latency(50, 0)
+                    .power_prob_queue_model3(3.0)
+                    .tick_size(0.1)
+                    .lot_size(0.001)
+                    .roi_lb(0.0)
+                    .roi_ub(200.0)
+                    .last_trades_capacity(16)
+                ]
+            )
+
+        @njit
+        def on_tick(s):
+            if s.state_i64[0] == 0 and s.now == 100:
+                s.submit_buy_order(0, 92, 0.0, 1.0, 3, 1, False)
+                s.state_i64[0] = 1
+
+        @njit
+        def on_funding(s):
+            event = s.funding()
+            s.state[0] = event["position_qty"]
+            s.state[1] = event["amount"]
+
+        observed = []
+        for boundary in (0, 1):
+            funding = np.zeros(1, dtype=funding_dtype)
+            funding[0] = (
+                20 + boundary, 0, 0, 1, 0, 0, boundary, 0, 0, boundary,
+                120, 140, 150, 160, 0.001, 100.0, 0.0, 0.0, 1e-12,
+            )
+            state = np.zeros(2)
+            run_event_bot(
+                bot_with_entry_latency(),
+                funding=funding,
+                on_tick=on_tick,
+                on_funding=on_funding,
+                state=state,
+                state_i64=np.zeros(1, dtype=np.int64),
+                frame_interval=100,
+            )
+            observed.append(tuple(state))
+
+        self.assertEqual(observed[0], (0.0, 0.0))
+        self.assertEqual(observed[1][0], 1.0)
+        self.assertAlmostEqual(observed[1][1], -0.1)
+
+    def test_tick_funding_callback_uses_each_report_metadata(self):
+        funding = np.zeros(2, dtype=funding_dtype)
+        funding[0] = (
+            31, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            110, 115, 120, 130, 0.001, 100.0, 0.0, 0.0, 1e-12,
+        )
+        funding[1] = (
+            32, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            210, 215, 220, 230, 0.002, 101.0, 0.0, 0.0, 1e-12,
+        )
+
+        @njit
+        def on_funding(s):
+            event = s.funding()
+            s.state_i64[0] += 1
+            s.state_i64[1] = event["event_id"]
+            s.state_i64[2] = event["settlement_ts"]
+            s.state[0] = event["rate"]
+            s.state[1] = event["mark_price"]
+
+        state = np.zeros(2)
+        state_i64 = np.zeros(3, dtype=np.int64)
+        run_event_bot(
+            make_bot(),
+            funding=funding,
+            on_funding=on_funding,
+            state=state,
+            state_i64=state_i64,
+        )
+        self.assertEqual(tuple(state_i64), (2, 32, 220))
+        self.assertAlmostEqual(state[0], 0.002)
+        self.assertAlmostEqual(state[1], 101.0)
+
+    def test_tick_funding_clock_boundary_does_not_emit_synthetic_tick(self):
+        rows = make_rows()[[0, 1, 3, 4]].copy()
+        funding = np.zeros(1, dtype=funding_dtype)
+        funding[0] = (
+            41, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+            120, 140, 150, 160, 0.001, 100.0, 0.0, 0.0, 1e-12,
+        )
+
+        @njit
+        def on_tick(s):
+            if s.now == 150:
+                s.state_i64[0] += 1
+
+        state_i64 = np.zeros(1, dtype=np.int64)
+        run_event_bot(
+            HashMapMarketDepthBacktest([make_asset(rows)]),
+            funding=funding,
+            on_tick=on_tick,
+            state_i64=state_i64,
+            frame_interval=100,
+        )
+        self.assertEqual(state_i64[0], 0)
+
     def test_bar_matching_mode_is_explicit_and_volume_limited(self):
         bars = np.zeros(2, dtype=timed_bar_dtype)
         bars[0]["asset_no"] = 0

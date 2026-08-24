@@ -4,6 +4,7 @@ use super::{
     execution::{ExecutionCommand, InstrumentId, VenueId},
     scheduler::EventKey,
 };
+use crate::types::Status;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DataSourceManifest {
@@ -161,6 +162,67 @@ pub struct PlatformCommandBus {
     commands: Vec<ExecutionCommand>,
 }
 
+/// Mode-independent owner for platform command producers.
+///
+/// Algorithms and simulation hooks only emit canonical [`ExecutionCommand`] values. The
+/// runtime which owns this component remains responsible for decoding those commands and
+/// routing them through its normal risk, transport and matching path.
+pub struct PlatformCommandProducers {
+    bus: PlatformCommandBus,
+    algorithms: Vec<Box<dyn ExecutionAlgorithm>>,
+    hooks: Vec<Box<dyn SimulationHook>>,
+    generated: Vec<ExecutionCommand>,
+}
+
+impl PlatformCommandProducers {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bus: PlatformCommandBus::with_capacity(capacity),
+            algorithms: Vec::new(),
+            hooks: Vec::new(),
+            generated: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn add_algorithm<A: ExecutionAlgorithm + 'static>(&mut self, algorithm: A) {
+        self.algorithms.push(Box::new(algorithm));
+    }
+
+    pub fn add_hook<H: SimulationHook + 'static>(&mut self, hook: H) {
+        self.hooks.push(Box::new(hook));
+    }
+
+    pub fn collect(
+        &mut self,
+        key: EventKey,
+        output: &mut Vec<ExecutionCommand>,
+    ) -> Result<(), PlatformError> {
+        self.generated.clear();
+        for algorithm in &mut self.algorithms {
+            algorithm.on_event(key, &mut self.generated);
+        }
+        for hook in &mut self.hooks {
+            hook.on_event(key, &mut self.generated);
+        }
+        for command in self.generated.drain(..) {
+            self.bus.push(command)?;
+        }
+        output.extend(self.bus.drain());
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.bus.reset();
+        self.generated.clear();
+        for algorithm in &mut self.algorithms {
+            algorithm.reset();
+        }
+        for hook in &mut self.hooks {
+            hook.reset();
+        }
+    }
+}
+
 impl PlatformCommandBus {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -243,6 +305,7 @@ pub struct ContingencyManager {
     order_groups: BTreeMap<u64, u64>,
     activated_parents: BTreeSet<u64>,
     triggered_groups: BTreeSet<u64>,
+    closed_groups: BTreeSet<u64>,
 }
 
 impl ContingencyManager {
@@ -279,9 +342,16 @@ impl ContingencyManager {
             && group.parent.is_some()
             && matches!(group.kind, ContingencyKind::Oto | ContingencyKind::Bracket)
             && !self.activated_parents.contains(group_id)
+            && !self.closed_groups.contains(group_id)
     }
 
-    pub fn on_filled(&mut self, order_id: u64, out: &mut Vec<ContingencyAction>) {
+    pub fn should_reject(&self, order_id: u64) -> bool {
+        self.order_groups
+            .get(&order_id)
+            .is_some_and(|group_id| self.closed_groups.contains(group_id))
+    }
+
+    pub fn on_report(&mut self, order_id: u64, status: Status, out: &mut Vec<ContingencyAction>) {
         let Some(group_id) = self.order_groups.get(&order_id).copied() else {
             return;
         };
@@ -289,7 +359,7 @@ impl ContingencyManager {
             return;
         };
         if group.parent == Some(order_id) {
-            if self.activated_parents.insert(group_id) {
+            if status == Status::Filled && self.activated_parents.insert(group_id) {
                 out.extend(
                     group
                         .children
@@ -297,11 +367,25 @@ impl ContingencyManager {
                         .copied()
                         .map(ContingencyAction::Activate),
                 );
+            } else if matches!(
+                status,
+                Status::Rejected | Status::Canceled | Status::Expired
+            ) && self.closed_groups.insert(group_id)
+            {
+                out.extend(
+                    group
+                        .children
+                        .iter()
+                        .copied()
+                        .map(ContingencyAction::Cancel),
+                );
             }
         } else if group.children.contains(&order_id)
             && matches!(group.kind, ContingencyKind::Oco | ContingencyKind::Bracket)
+            && matches!(status, Status::PartiallyFilled | Status::Filled)
             && self.triggered_groups.insert(group_id)
         {
+            self.closed_groups.insert(group_id);
             out.extend(
                 group
                     .children
@@ -316,6 +400,7 @@ impl ContingencyManager {
     pub fn reset(&mut self) {
         self.activated_parents.clear();
         self.triggered_groups.clear();
+        self.closed_groups.clear();
     }
 }
 
@@ -437,8 +522,37 @@ mod tests {
             children: vec![11, 12],
         });
         let mut actions = Vec::new();
-        manager.on_filled(11, &mut actions);
+        manager.on_report(10, Status::PartiallyFilled, &mut actions);
+        assert!(actions.is_empty());
+        assert!(manager.should_hold(11));
+        manager.on_report(10, Status::Filled, &mut actions);
+        assert_eq!(
+            actions,
+            [
+                ContingencyAction::Activate(11),
+                ContingencyAction::Activate(12)
+            ]
+        );
+        actions.clear();
+        manager.on_report(11, Status::Filled, &mut actions);
         assert_eq!(actions, [ContingencyAction::Cancel(12)]);
+
+        let mut rejected = ContingencyManager::default();
+        assert!(rejected.insert(ContingencyGroup {
+            group_id: 2,
+            kind: ContingencyKind::Bracket,
+            venue_id: VenueId(1),
+            instrument_id: InstrumentId(1),
+            parent: Some(20),
+            children: vec![21, 22],
+        }));
+        actions.clear();
+        rejected.on_report(20, Status::Rejected, &mut actions);
+        assert_eq!(
+            actions,
+            [ContingencyAction::Cancel(21), ContingencyAction::Cancel(22)]
+        );
+        assert!(rejected.should_reject(21));
 
         let mut catalog = DataCatalog::default();
         let catalog_hash = catalog.register("primary", manifest).unwrap();
@@ -527,6 +641,25 @@ mod tests {
                 cancel.local_submit_ts
             ),
             (VenueId(3), InstrumentId(4), 5)
+        );
+
+        let mut producers = PlatformCommandProducers::with_capacity(2);
+        producers.add_algorithm(OneShotAlgorithm);
+        producers.add_hook(CancelHook);
+        let mut commands = Vec::new();
+        producers.collect(key, &mut commands).unwrap();
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], ExecutionCommand::Submit(_)));
+        assert!(matches!(commands[1], ExecutionCommand::Cancel(_)));
+        producers.reset();
+
+        let mut bounded = PlatformCommandProducers::with_capacity(1);
+        bounded.add_algorithm(OneShotAlgorithm);
+        bounded.add_hook(CancelHook);
+        commands.clear();
+        assert_eq!(
+            bounded.collect(key, &mut commands),
+            Err(PlatformError::CommandCapacity)
         );
     }
 }
