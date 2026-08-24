@@ -175,32 +175,31 @@ run_event_bot(
 进入统一执行层，用于订单事件、持仓、现金、手续费和账户结算，而不是仅在导出结果时替换。
 
 `volume_participation` 只控制 OHLC 撮合的成交量参与上限。默认值仍为
-`bar_matching="next_open"`，因此现有策略不传参数时结果保持不变。
+`bar_matching="next_open"`；终止平仓是独立且固定的生命周期规则。
 
-### `close_positions_on_stop` 参数
+### 固定的终止平仓规则
 
-Bar 回测可显式设置 `close_positions_on_stop=True`，让 Rust 引擎在数据结束、调用
-`on_stop(s)` 之前，将每个非零持仓按该资产最后一根可执行 Bar 的 `close` 全量平仓：
+Bar 回测在数据结束、调用 `on_stop(s)` 之前，固定将每个非零持仓按该资产最后一根可执行
+Bar 的 `close` 全量平仓。该生命周期规则不可关闭，也不提供策略参数：
 
 ```python
 run_event_bot(
     data_mode="bar",
     bars=bars,
     bar_matching="signal_close",
-    close_positions_on_stop=True,
 )
 ```
 
 终止平仓不是 `on_stop` 中的策略下单。引擎生成 reduce-only market order，并依次经过交易所
 账户、手续费模型、ExecutionEventProjector 以及 `on_order`、`on_filled`、`on_position` 回调；
 这些事件全部完成后才调用 `on_stop`，所以 `on_stop` 看到的持仓为零。平仓成交时间和价格均
-使用最后一根可执行 Bar 的 `close_ts`/`close`。无最后有效 Bar 的非零持仓必须 fail-fast，
-不得使用 NaN、空 Bar 或虚构价格。
+使用最后一根可执行 Bar 的 `close`。无最后有效 Bar 的非零持仓必须 fail-fast，不得使用
+NaN、空 Bar 或虚构价格。无行情延迟时成交时间为该 Bar 的 `close_ts`；存在 feed latency
+时，成交时间取 `close_ts` 与最后一次 Bar 投递时间的较大值。
 
-该参数默认 `False`，只支持 `data_mode="bar"` 且要求 `feed_latency=0`，避免在延迟投递
-最后一根 Bar 后生成时间戳更早的终止成交。它用于与
-Nautilus `close_positions_on_stop=True` 等结束生命周期对齐；是否强制平仓和 Bar 撮合价格是
-两个独立配置。
+若最后一根 Bar 存在 feed latency，成交投递时间不得早于该 Bar 的实际投递时间，避免时钟
+倒退。固定平仓规则用于与 Nautilus 的结束生命周期对齐；Bar 撮合价格仍由
+`bar_matching` 独立控制。
 
 ### Tick-only
 
