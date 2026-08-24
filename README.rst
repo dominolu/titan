@@ -38,6 +38,8 @@ Titan
   Bar-signal/Tick-execution Hybrid，并支持 Timer、Funding，以及通过 ``bar_matching`` 选择
   ``next_open``、``signal_close``、``touch`` 或 ``conservative_ohlc``。完整设计见
   `docs/bar_tick_numba_strategy.md <docs/bar_tick_numba_strategy.md>`_。
+  Bar 回测还可用 ``close_positions_on_stop=True`` 在 ``on_stop`` 前按最后 Bar close 走统一
+  执行与账户链强制平仓。
 * **统一 Broker API**：``connector/src/api.rs`` 提供一套统一数据结构
   （订单/持仓/账户/行情/订单簿/资金费/成交/费率/杠杆）与 ``BrokerApi`` trait，
   覆盖所有已支持的交易所——策略切换 broker 只需改一行代码。

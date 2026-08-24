@@ -29,7 +29,7 @@ use crate::{
         },
         scheduler::{EventPhase, TimerEvent, TimerId, TimerQueue},
     },
-    market_data::{Bar, BarHistory},
+    market_data::{BAR_EMPTY, Bar, BarHistory},
     types::{Event, Order, Status},
 };
 
@@ -924,6 +924,10 @@ pub struct MaterializedBarSource {
     current_funding: RuntimeFunding,
     funding_callback_pending: bool,
     next_risk_order_id: u64,
+    execution_timeframe_ns: i64,
+    last_execution_closes: Vec<Option<(i64, f64)>>,
+    close_positions_on_stop: bool,
+    terminal_close_started: bool,
     end_policy: crate::backtest::result::EndPolicy,
     data_end_ts: i64,
 }
@@ -1035,6 +1039,10 @@ impl MaterializedBarSource {
             current_funding: RuntimeFunding::default(),
             funding_callback_pending: false,
             next_risk_order_id: u64::MAX,
+            execution_timeframe_ns,
+            last_execution_closes: vec![None; num_assets],
+            close_positions_on_stop: false,
+            terminal_close_started: false,
             end_policy: crate::backtest::result::EndPolicy::DrainAll,
             data_end_ts,
         })
@@ -1155,6 +1163,51 @@ impl MaterializedBarSource {
 
     pub fn set_end_policy(&mut self, policy: crate::backtest::result::EndPolicy) {
         self.end_policy = policy;
+    }
+
+    /// Emits one engine-owned reduce-only market close per non-flat asset at the final
+    /// executable Bar close before `on_stop` is dispatched.
+    pub fn set_close_positions_on_stop(&mut self, enabled: bool) {
+        self.close_positions_on_stop = enabled;
+    }
+
+    fn close_terminal_positions(&mut self) -> Result<(), MaterializedBarError> {
+        self.terminal_close_started = true;
+        for asset_no in 0..self.execution.positions().len() {
+            let position = self.execution.exchange_position(asset_no).unwrap_or(0.0);
+            if position == 0.0 {
+                continue;
+            }
+            let Some((close_ts, close)) = self.last_execution_closes[asset_no] else {
+                return Err(MaterializedBarError::InvalidOrder);
+            };
+            let order_id = self.next_risk_order_id;
+            self.next_risk_order_id = self.next_risk_order_id.wrapping_sub(1);
+            let command = OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: if position > 0.0 { -1 } else { 1 },
+                time_in_force: 3,
+                order_type: 1,
+                _reserved: [1, 0, 2, 0],
+                asset_no: asset_no as u64,
+                order_id,
+                price: close,
+                qty: position.abs(),
+                ..OrderCommand::default()
+            };
+            if !self.execution.arrive(command, close_ts, close_ts)? {
+                continue;
+            }
+            self.execution
+                .apply(&[crate::backtest::bar::BarMatchOutcome::Fill {
+                    command,
+                    local_submit_ts: close_ts,
+                    exchange_ts: close_ts,
+                    price: close,
+                    qty: position.abs(),
+                }])?;
+        }
+        Ok(())
     }
 
     /// Configures when a closed Bar becomes locally visible. The Bar itself continues to contain
@@ -1435,6 +1488,8 @@ impl MaterializedBarSource {
         }
         self.funding_callback_pending = false;
         self.next_risk_order_id = u64::MAX;
+        self.last_execution_closes.fill(None);
+        self.terminal_close_started = false;
         Ok(())
     }
 
@@ -2264,6 +2319,14 @@ impl RuntimeEventSource for MaterializedBarSource {
                 .pending_bar_deliveries
                 .front()
                 .map(|delivery| delivery.delivery_ts);
+            if market.is_none()
+                && bar_delivery.is_none()
+                && self.close_positions_on_stop
+                && !self.terminal_close_started
+            {
+                self.close_terminal_positions()?;
+                continue;
+            }
             match self.next_boundary(market, bar_delivery) {
                 Some(BarBoundary::ResponseDelivery) => {
                     self.deliver_next_runtime_event()?;
@@ -2288,6 +2351,14 @@ impl RuntimeEventSource for MaterializedBarSource {
                         .batch()
                         .first()
                         .map_or(meta.close_ts, |item| item.bar.open_ts);
+                    if meta.timeframe_ns == self.execution_timeframe_ns {
+                        for item in self.feed.batch() {
+                            if item.bar.flags & BAR_EMPTY == 0 {
+                                self.last_execution_closes[item.asset_no as usize] =
+                                    Some((item.bar.close_ts, item.bar.close));
+                            }
+                        }
+                    }
                     self.dispatch_platform_event(crate::backtest::scheduler::EventKey {
                         timestamp: exchange_ts,
                         phase: EventPhase::MarketDelivery,

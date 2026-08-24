@@ -69,6 +69,16 @@ def main():
     parser.add_argument("--timeframe-ns", type=int, default=60_000_000_000)
     parser.add_argument("--include-unfinalized", action="store_true")
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--bar-matching",
+        choices=("next_open", "signal_close", "touch", "conservative_ohlc"),
+        default="next_open",
+    )
+    parser.add_argument(
+        "--close-positions-on-stop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     args = parser.parse_args()
 
     bars = load_bars(
@@ -100,6 +110,8 @@ def main():
             on_stop=strategy.on_stop,
             state=strategy.state,
             state_i64=strategy.state_i64,
+            bar_matching=args.bar_matching,
+            close_positions_on_stop=args.close_positions_on_stop,
         )
         durations.append(time.perf_counter_ns() - started)
         core = (tuple(state), tuple(strategy.state_i64))
