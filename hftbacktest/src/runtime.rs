@@ -14,7 +14,7 @@ use crate::{
     backtest::bar::{
         BarBatchMeta, BarExecutionError, BarExecutionState, BarFeed, BarFeedError,
         BarMatchingModel, ConfiguredBarMatcher, MaterializedBarFeed, NextOpenBarMatcher,
-        OhlcBarMatcher, OhlcFillAssumption, PendingBarOrder,
+        OhlcBarMatcher, OhlcFillAssumption, PendingBarOrder, SignalCloseBarMatcher,
     },
     backtest::{
         execution::{
@@ -887,8 +887,9 @@ fn action_precedes_matching(key: crate::backtest::scheduler::EventKey, exchange_
 /// Rust-owned source for already materialized, closed Bar records.
 ///
 /// Records may contain multiple assets and timeframes. They must be sorted by
-/// `(close_ts, timeframe_ns, asset_no)`. Matching is conservative NextOpen and only the
-/// globally smallest timeframe is executable, so a slower Bar can never expose a future open.
+/// `(close_ts, timeframe_ns, asset_no)`. Matching defaults to conservative NextOpen; callers may
+/// explicitly select OHLC or same-close assumptions. Only the globally smallest timeframe is
+/// executable, so a slower Bar can never expose a future execution Bar.
 pub struct MaterializedBarSource {
     feed: MaterializedBarFeed,
     histories: Vec<HistorySlot>,
@@ -1336,6 +1337,27 @@ impl MaterializedBarSource {
         Ok(())
     }
 
+    pub fn configure_signal_close_matching(&mut self) -> Result<(), MaterializedBarError> {
+        let execution_timeframe_ns = self
+            .feed
+            .records()
+            .iter()
+            .map(|record| record.timeframe_ns)
+            .min()
+            .ok_or(MaterializedBarError::InvalidOrder)?;
+        let mut execution_assets = vec![false; self.execution.positions().len()];
+        for record in self.feed.records() {
+            if record.timeframe_ns == execution_timeframe_ns {
+                execution_assets[record.asset_no as usize] = true;
+            }
+        }
+        self.matcher = ConfiguredBarMatcher::SignalClose(SignalCloseBarMatcher::new(
+            execution_timeframe_ns,
+            execution_assets,
+        ));
+        Ok(())
+    }
+
     pub fn configure_local_risk<R>(&mut self, risk: R)
     where
         R: crate::backtest::execution::LocalPreTradeRisk + 'static,
@@ -1736,6 +1758,9 @@ impl MaterializedBarSource {
     }
 
     fn match_at_next_open(&mut self, meta: BarBatchMeta) -> Result<(), MaterializedBarError> {
+        if matches!(self.matcher, ConfiguredBarMatcher::SignalClose(_)) {
+            return Ok(());
+        }
         self.matcher.on_batch(meta, self.feed.batch());
         self.execution.apply(self.matcher.outcomes())?;
         for outcome in self.matcher.outcomes() {
@@ -1754,6 +1779,29 @@ impl MaterializedBarSource {
             .map_or(meta.close_ts, |item| item.bar.open_ts);
         self.process_contingency_reports(exchange_ts)?;
         self.enqueue_risk_actions(exchange_ts)?;
+        Ok(())
+    }
+
+    fn match_at_signal_close(
+        &mut self,
+        meta: BarBatchMeta,
+        bars: &[BarItem],
+    ) -> Result<(), MaterializedBarError> {
+        if !matches!(self.matcher, ConfiguredBarMatcher::SignalClose(_)) {
+            return Ok(());
+        }
+        self.matcher.on_batch(meta, bars);
+        self.execution.apply(self.matcher.outcomes())?;
+        for outcome in self.matcher.outcomes() {
+            let command = match outcome {
+                crate::backtest::bar::BarMatchOutcome::Fill { command, .. }
+                | crate::backtest::bar::BarMatchOutcome::Expired { command, .. } => command,
+            };
+            self.gtd_orders
+                .remove(&(command.asset_no, command.order_id));
+        }
+        self.process_contingency_reports(meta.close_ts)?;
+        self.enqueue_risk_actions(meta.close_ts)?;
         Ok(())
     }
 
@@ -2301,6 +2349,15 @@ impl RuntimeEventSource for MaterializedBarSource {
         kind: u32,
         ctx: &mut StrategyRuntimeContext,
     ) -> Result<(), Self::Error> {
+        let signal_close_batch = if kind == StrategyEventKind::Bar as u32
+            && matches!(self.matcher, ConfiguredBarMatcher::SignalClose(_))
+        {
+            self.current_bar_delivery
+                .as_ref()
+                .map(|delivery| (delivery.meta, delivery.bars.clone()))
+        } else {
+            None
+        };
         if kind == StrategyEventKind::Bar as u32 {
             let delivery = self
                 .current_bar_delivery
@@ -2320,7 +2377,18 @@ impl RuntimeEventSource for MaterializedBarSource {
         self.process_commands(
             ctx,
             kind != StrategyEventKind::Error as u32 && kind != StrategyEventKind::Stop as u32,
-        )
+        )?;
+        if let Some((meta, bars)) = signal_close_batch {
+            while self
+                .action_scheduler
+                .peek_key()
+                .is_some_and(|key| action_precedes_matching(key, meta.close_ts))
+            {
+                self.process_next_action()?;
+            }
+            self.match_at_signal_close(meta, &bars)?;
+        }
+        Ok(())
     }
 }
 
