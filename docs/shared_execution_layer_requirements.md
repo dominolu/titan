@@ -270,18 +270,23 @@ pub struct EventKey {
 默认 phase 顺序必须显式定义为：
 
 1. 到期但尚未投递的旧 response delivery；
-2. Instrument/MarketStatus/Funding 等交易所状态事件；
+2. Instrument/MarketStatus，以及配置为 `BeforeSettlementEvents` 的 Funding 结算；
 3. 该时点前已完成的市场数据本地投递；
 4. 策略 callback；
 5. callback 产生的 command 和零 entry latency arrival；
 6. 当前时点的 exchange matching opportunity；
-7. 零 response latency report delivery；
-8. 到期 Timer callback；
-9. post-trade risk/liquidation 产生的后续命令，直到当前时点稳定。
+7. 配置为 `AfterSettlementEvents` 的 Funding 结算；
+8. 零 response latency report delivery；
+9. 到期 Timer callback；
+10. post-trade risk/liquidation 产生的后续命令，直到当前时点稳定。
 
 - **REQ-SCH-010**：具体 phase 数值必须集中定义，并写入兼容测试。
 - **REQ-SCH-011**：callback 在当前时点产生的事件必须反复处理到稳定，或明确排入未来时间；禁止遗漏在队列中。
 - **REQ-SCH-012**：若为了保持现有 Tick EventSet 顺序需要调整上述默认次序，必须以 characterization test 的结果为准，并在配置 manifest 中记录 phase contract 版本。
+
+当前实现的 phase contract 为 v2。Funding boundary 是交换所结算语义，不是 callback 排序提示：
+`BeforeSettlementEvents` 必须在同时间 matching 前读取仓位，`AfterSettlementEvents` 必须在 matching 后、
+零延迟本地回报前读取仓位；其 callback 仍由独立 `delivery_ts` 决定。
 
 ### 8.4 Bar 时序
 

@@ -93,7 +93,9 @@ Expired report。
 
 - [x] **D01 Funding 完整事件链**：Bar、Tick 与 Hybrid 均支持 publication/effective/
   settlement/delivery 四时间；exchange settlement 与 local callback 分离；Funding 可跨数据末尾推进，
-  live Funding 通过同一 projector；结果按 Venue/Instrument/Currency 归集，reset 清理 cursor、报告和累计值。
+  `BeforeSettlementEvents` 在同时间 matching 前结算，`AfterSettlementEvents` 在 matching 后结算，而不是
+  仅改变 callback 顺序；每份 report 保留自身 event/config 元数据。live Funding 通过同一 projector；
+  结果按 Venue/Instrument/Currency 归集，reset 清理 cursor、报告和累计值。
 - [x] **D02 Margin/leverage/liquidation/reduce-only**：完成 Venue 级 `CrossMarginRisk`、共享 collateral、
   exchange-position reduce-only、mark/unrealized PnL、初始/维持保证金和 post-trade liquidation action。Bar
   运行时接入 local/exchange/post 三阶段；Tick 在每笔订单实际到达时使用权威账户逐笔检查，同时间订单之间
@@ -131,18 +133,20 @@ Expired report。
 - [x] DataManifest/Catalog、RunConfig/BatchNode、CustomData：清单 hash 与输入枚举顺序无关，Batch 每轮
   强制 reset，CustomData 保持 scheduler envelope。
 - [x] Simulation hooks、OCO/OTO/Bracket、完整多币种 Portfolio：能力位于 execution core 外，通过
-  canonical command bus 输出；Bar 运行时已验证父单成交激活 OTO/Bracket 子单，以及 OCO/Bracket
-  子单成交撤销兄弟单，所有动作均重新进入 risk/transport/state/report 链；VenueAccount/Portfolio 以
-  CurrencyId 聚合并保留 Instrument 明细。
-- [x] ExecutionAlgorithm command producer：与策略和 simulation hook 共用有界 `PlatformCommandBus`，
-  运行时生成的命令已接入真实 Bar 撮合路径；origin、容量错误、成交和 reset 行为均有测试。
+  canonical command bus 输出；Bar 与 Tick 执行源共用 `ContingencyManager`，Hybrid 继承 Tick 唯一执行源，
+  live Bot 复用 Tick 泛型运行时。父单只有完整成交才激活 OTO/Bracket 子单，父单终态失败会撤销 held
+  子单，OCO/Bracket 子单首次部分或完整成交即撤销兄弟单，迟到提交被确定性拒绝；所有已激活动作均
+  重新进入正常 transport/report 链。VenueAccount/Portfolio 以 CurrencyId 聚合并保留 Instrument 明细。
+- [x] ExecutionAlgorithm command producer：策略、execution algorithm 和 simulation hook 共用有界、
+  可 reset 的 `PlatformCommandProducers`/`PlatformCommandBus`；Bar、Tick、Hybrid 与 live Tick 泛型路径均在
+  市场投递点生成 canonical command，再进入各模式原有 risk/transport/matcher；origin 和容量错误保持显式。
 
 ## 最终验收（2026-08-24）
 
-- [x] `cargo test --workspace --all-targets`：最终核心共享执行库 122 项测试通过，connector 两个目标
+- [x] `cargo test --workspace --all-targets`：最终核心共享执行库 125 项测试通过，connector 两个目标
   各 31 项通过、各 1 项真实网络测试按定义 ignored。
 - [x] `cargo check --workspace --all-targets` 与 `cargo fmt --all -- --check` 通过。
-- [x] Python release 扩展重建后，`python -m unittest discover -s tests -v`：34 项通过，1 项外部行情 fixture 测试跳过。
+- [x] Python release 扩展重建后，`python -m unittest discover -s tests -v`：37 项通过，1 项外部行情 fixture 测试跳过。
 - [x] Tick release A/B：100 万事件、30 轮、5 轮 warmup，ABI v8 与复审修复后的三次回归分别为
-  -5.945%、+1.095%、+5.286%，中位 +1.095%，通过不超过 3% 的门槛；详见
+  +1.899%、+0.182%、+1.370%，中位 +1.370%，通过不超过 3% 的门槛；详见
   [`tick_shared_execution_release_benchmark.md`](tick_shared_execution_release_benchmark.md)。

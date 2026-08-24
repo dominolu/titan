@@ -18,17 +18,17 @@ transport、order state machine、Venue account、report、projector、result �
 | REQ-PERF-001～007 | 单态 Tick matcher、POD buffer、事件跳转、Chunked NPY、可关闭/有界审计 | ABI v8 复验 release A/B 中位 +1.095%；分块 feed/audit tests | 通过 |
 | REQ-DET-001～004 | `GlobalScheduler<EventKey>`、稳定 source/sequence、显式 RNG seed | scheduler ordering、seeded quality replay、100 次 replay | 通过 |
 | REQ-OWN-001～022 | `SharedExecutionEngine`、`VenueExecutionCore`、Instrument matcher adapter；账户只归 Venue | `ownership_keeps_account_at_venue_not_instrument`、多品种共享账户 tests | 通过 |
-| REQ-BOUND-001～005 | `platform.rs` 的 Data/Actor/Algorithm/Simulation 边界和有界 command bus | platform 边界测试及 `algorithms_and_hooks_enter_the_real_bar_execution_path` | 通过 |
+| REQ-BOUND-001～005 | `platform.rs` 的 Data/Actor/Algorithm/Simulation 边界和共享有界 command producers；Bar/Tick/Hybrid/live Tick 接同一生产入口 | producer 容量/reset 测试及 `algorithms_and_hooks_enter_the_real_bar_execution_path` | 通过 |
 | REQ-INST-001～004 | 版本化 `InstrumentSpec`、统一精度/数量/名义校验、timestamped update/status | instrument validation、scheduled status/update reset tests | 通过 |
 | REQ-ORD-001～015 | ABI command decode、统一状态机、GTD/trigger/reduce-only、cancel/replace、IOC/FOK | transition/race/partial/FOK/GTD、invalid/duplicate local reject tests | 通过 |
 | REQ-REP-001～004 | matcher 只输出 `MatchOutcome`；coordinator 唯一计算 fee/account/report | independent partial fills、single fee/delta、sink tests | 通过 |
 | REQ-ACC-001～014 | 权威 `ExchangePortfolio`、延迟后的 `PortfolioLedger`、CurrencyId/venue/instrument 明细 | exchange-before-local、cross-instrument collateral、funding attribution tests | 通过 |
 | REQ-TIME-001～004 | Bar 仅有 open/close；feed latency 位于 scheduler envelope；订单四时间字段 | Rust feed-latency/entry/response tests；Python latency ABI test | 通过 |
-| REQ-SCH-001～012 | 集中 phase contract、全排序键、数据结束后继续 drain | same-timestamp Bar/Funding/Timer、order race、StopAtDataEnd tests | 通过 |
+| REQ-SCH-001～012 | v2 集中 phase contract、全排序键、matching 后 Funding phase、数据结束后继续 drain | same-timestamp Bar/Funding/Timer、Before/After 仓位差异、order race、StopAtDataEnd tests | 通过 |
 | REQ-BAR-001～004 | NextOpen、正 entry latency、callback 后提交历史、empty Bar 无流动性 | Rust Bar tests及 Python history/empty/current-Bar tests | 通过 |
 | REQ-HYB-001～004 | Bar 仅发信号、Tick 唯一 execution source；缺 Tick fail-fast | `bar_signal_and_tick_execution_never_double_match`、Python Hybrid test | 通过 |
 | REQ-RISK-001～007 | local/exchange/post 三阶段、稳定 reason、RiskActionSink、Venue cross margin | three-stage、local/exchange visibility、liquidation/reduce-only tests | 通过 |
-| REQ-FUND-001～008 | 独立 Funding event/config/engine；四时间；exchange/local 分离；live projector | explicit config hash、settlement/delivery、live dedupe、result/reset tests | 通过 |
+| REQ-FUND-001～008 | 独立 Funding event/config/engine；四时间；Before/After 真正跨 matching；逐 report 元数据；live projector | explicit config hash、同时间边界仓位、multi-report metadata、live dedupe、result/reset tests | 通过 |
 | REQ-TMR-001～006 | 一等 `TimerQueue`，Replace/cancel/drain/reset；统一 POD payload | timer ordering、无行情下单、数据结束后推进 tests | 通过 |
 | REQ-TICK-001～014 | 可选历史流动性账本和独立 ExecutionQualityModel，默认 identity/disabled | consumption reset、seeded quality/limit/liquidity tests | 通过 |
 | REQ-DATA-001～006 | InMemory、Chunked feed、流式 NPY provider；manifest/排序/完整性验证 | chunk-boundary、NPY rewind/no materialization、manifest tests | 通过 |
@@ -43,14 +43,15 @@ transport、order state machine、Venue account、report、projector、result �
 
 ## 3. 验收项结果
 
-- **AC-TICK-001～003**：L2/L3、Partial/NoPartial、Queue、Latency、Fee golden tests 通过；ABI v8
-  及复审修复后的 release A/B 三次回归为 -5.945%、+1.095%、+5.286%，中位 +1.095%，满足不超过 3%。完整方法与
+- **AC-TICK-001～003**：L2/L3、Partial/NoPartial、Queue、Latency、Fee golden tests 通过；phase v2
+  及跨模式 P2 修复后的 release A/B 三次回归为 +1.899%、+0.182%、+1.370%，中位 +1.370%，满足不超过 3%。完整方法与
   原始样本见 [`tick_shared_execution_release_benchmark.md`](tick_shared_execution_release_benchmark.md)。
 - **AC-BAR-001～004**：NextOpen、OHLC/volume partial/FOK、fee、两段 latency、双状态和 chunk boundary
   测试通过。真实 `AAPL_1m_all_sources.parquet` 与转换后 NPY 均读到 264,190 根；首尾时间、总成交量、
   callback/batch 数完全一致。Parquet/NPY replay 分别为 0.033432s/0.032079s（该数据样本，仅作一致性证据）。
 - **AC-ACC-001～003**：同 Venue 多 Instrument collateral、exchange/local 延迟窗口、多币种明细守恒通过。
-- **AC-SCH/HYB/TMR/FUND**：同时间 phase、唯一 Hybrid matcher、无行情 Timer 下单、Funding 双时间更新通过。
+- **AC-SCH/HYB/TMR/FUND**：v2 同时间 phase、唯一 Hybrid matcher、无行情 Timer 下单、Funding
+  Before/After matching 仓位和逐 report 元数据测试通过。
 - **AC-PROJ-001～003**：等价 backtest/live report 产生 ABI v8 兼容字节；reconnect event 去重而 partial fill
   不折叠；策略 callback 无运行模式分支。
 - **AC-RST-001～002、AC-RES-001**：Tick 和 Prepared Bar 均连续 100 次一致；fee/model/seed/phase/data
@@ -66,7 +67,7 @@ cargo build --release -p py-hftbacktest
 py-hftbacktest/.venv/bin/python -m unittest discover -s py-hftbacktest/tests -v
 ```
 
-最终结果：Rust 核心共享执行库 122 项测试通过；Python 34 项通过、1 项依赖外部行情 fixture 的测试按定义
+最终结果：Rust 核心共享执行库 125 项测试通过；Python 37 项通过、1 项依赖外部行情 fixture 的测试按定义
 跳过。Connector 两个测试目标各 31 项通过、各 1 项真实网络测试 ignored，不计为本地共享执行验收失败。
 
 ## 5. 兼容与迁移

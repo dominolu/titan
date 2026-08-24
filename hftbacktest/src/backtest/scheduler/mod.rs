@@ -6,7 +6,7 @@ mod timer;
 pub use timer::{DuplicateTimerPolicy, TimerError, TimerEvent, TimerId, TimerQueue};
 
 /// Version of the default same-timestamp phase contract.
-pub const PHASE_CONTRACT_VERSION: u32 = 1;
+pub const PHASE_CONTRACT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u16)]
@@ -17,6 +17,8 @@ pub enum EventPhase {
     StrategyCallback = 40,
     CommandArrival = 50,
     Matching = 60,
+    /// Exchange settlements explicitly configured to observe same-time matching results.
+    PostMatchingSettlement = 65,
     ZeroLatencyResponse = 70,
     Timer = 80,
     PostTradeRisk = 90,
@@ -160,6 +162,7 @@ mod tests {
             (EventPhase::PostTradeRisk, "post-risk"),
             (EventPhase::Timer, "timer"),
             (EventPhase::ZeroLatencyResponse, "zero-response"),
+            (EventPhase::PostMatchingSettlement, "post-match-settlement"),
             (EventPhase::Matching, "matching"),
             (EventPhase::CommandArrival, "arrival"),
             (EventPhase::StrategyCallback, "callback"),
@@ -180,6 +183,7 @@ mod tests {
                 "callback",
                 "arrival",
                 "matching",
+                "post-match-settlement",
                 "zero-response",
                 "timer",
                 "post-risk",

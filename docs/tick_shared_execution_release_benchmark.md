@@ -100,3 +100,17 @@ P2 Bar 平台接线后，重新构建 release benchmark，并以相同的 100 �
 
 本机当次绝对吞吐波动明显，因此仍按预先约定的三样本中位数判定：中位回归为 **+1.095%**，低于
 3% 门槛。新增逻辑位于 runtime/Funding/Bar/P2 边界，不进入默认纯 Tick market-data 热循环。
+
+## Phase v2、Tick Funding 与跨模式 P2 修复复验（2026-08-24）
+
+加入 Tick `BeforeSettlementEvents` 的 exclusive boundary、Bar `PostMatchingSettlement` phase，以及
+Tick/Hybrid/live Tick runtime 的共享 platform producer/contingency 接线后，按相同协议连续执行三次：
+
+| 样本 | Noop events/s | OutcomeBus events/s | 回归 |
+|---|---:|---:|---:|
+| 1 | 2,984,245 | 2,928,631 | +1.899% |
+| 2 | 3,340,273 | 3,334,218 | +0.182% |
+| 3 | 3,138,711 | 3,096,293 | +1.370% |
+
+逐样本回归中位为 **+1.370%**，低于 3% 门槛。绝对吞吐与此前采样不同，故只使用同轮交替执行的
+Noop/OutcomeBus 相对值判定；新增 runtime 逻辑不改变单态 Tick matcher 的 observer 热路径。
