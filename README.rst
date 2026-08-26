@@ -113,6 +113,52 @@ Numba 单参数 ``on_bar(s)`` 双均线策略示例：
       --source polygon_s3 \
       --short-period 20 --long-period 50 --quantity 1
 
+双均线回测与图表报告
+--------------------
+
+完整报告示例会运行同一套 Rust-owned Bar runtime 和 Numba 双均线策略，并生成包含净值、
+回撤、风险收益、月度/年度收益、持仓、敞口、成交及费用等图表的自包含 HTML：
+
+.. code-block:: console
+
+    python examples/dual_ma_backtest_report.py \
+      --data data/AAPL_1m_all_sources.parquet \
+      --source auto \
+      --short-period 20 \
+      --long-period 50 \
+      --quantity 100 \
+      --initial-capital 1000000 \
+      --bar-matching next_open \
+      --renderer native \
+      --output backtest_reports/titan_dual_ma_aapl_report/report.html
+
+
+Bar runtime 默认使用 ``RateFeeModel``，maker/taker 每笔成交均按成交额的 ``0.001``
+（千分之一）收费。费用进入 canonical ``AccountDelta``、现金与净值，因此报告中的
+``Total Fee`` 与逐笔 Fill 能够严格对账；一次完整买卖往返约产生 ``0.2%`` 的双边费用。
+
+命令会生成：
+
+* ``report.html``：无需网络即可打开的自包含图表报告；
+* ``summary.json``：策略参数、数据完整性审计、费用模型和核心指标；
+* ``bundle/``：Portfolio、Position、Order、Fill、周期收益、指标及校验结果的 Parquet/JSON；
+* 报告状态为 ``valid`` 时，表示 schema、时间戳、执行计数、币种、费用和组合账务均已通过校验。
+
+安装可选报告依赖后，也可以在原生报告旁生成 QuantStats appendix：
+
+.. code-block:: console
+
+    pip install "hftbacktest[reports]"
+    python examples/dual_ma_backtest_report.py \
+      --source auto \
+      --renderer quantstats \
+      --output backtest_reports/titan_dual_ma_aapl_report/report.html
+
+报告脚本实现见
+`examples/dual_ma_backtest_report.py <examples/dual_ma_backtest_report.py>`_，canonical 报告 API
+及第三方 renderer adapter 说明见
+`py-hftbacktest/README.md <py-hftbacktest/README.md>`_。
+
 重复性能测试前可先转换成 Rust 可直接读取的扁平 NPY，避免每次解析 Parquet：
 
 .. code-block:: console
@@ -128,103 +174,6 @@ Numba 单参数 ``on_bar(s)`` 双均线策略示例：
       --data data/AAPL_1m_polygon_s3.timed_bar.npy \
       --runs 100
 
-上游算法参考
-------------
-
-下面的 Python 片段只用于解释做市算法；仓库已经恢复 Python/Numba binding。新事件策略
-接口不是这里展示的手写 ``while hbt.elapse``，而是 Numba 单参数
-``on_tick(s)`` / ``on_bar(s)`` 回调，详见
-`Bar/Tick 回测与实盘统一策略接口 <docs/bar_tick_numba_strategy.md>`_。当前可直接运行的
-实现见下一节的 Rust 示例。
-
-.. code-block:: python
-
-    @njit
-    def market_making_algo(hbt):
-        asset_no = 0
-        tick_size = hbt.depth(asset_no).tick_size
-        lot_size = hbt.depth(asset_no).lot_size
-
-        # 单位为纳秒
-        while hbt.elapse(10_000_000) == 0:
-            hbt.clear_inactive_orders(asset_no)
-
-            a = 1
-            b = 1
-            c = 1
-            hs = 1
-
-            # Alpha，可以是多个指标的组合。
-            forecast = 0
-            # HFT 中通常是短期市场波动的各种度量，如最近 X 分钟的高低区间。
-            volatility = 0
-            # Delta 风险，可以是多个风险的组合。
-            position = hbt.position(asset_no)
-            risk = (c + volatility) * position
-            half_spread = (c + volatility) * hs
-
-            max_notional_position = 1000
-            notional_qty = 100
-
-            depth = hbt.depth(asset_no)
-            mid_price = (depth.best_bid + depth.best_ask) / 2.0
-
-            # 公允价值 = mid_price + a * forecast
-            #          或 标的(相关资产) + 调整项(基差 + 成本 + 等) + a * forecast
-            # 风险倾斜 = -b * risk
-            reservation_price = mid_price + a * forecast - b * risk
-            new_bid = reservation_price - half_spread
-            new_ask = reservation_price + half_spread
-
-            new_bid_tick = min(np.round(new_bid / tick_size), depth.best_bid_tick)
-            new_ask_tick = max(np.round(new_ask / tick_size), depth.best_ask_tick)
-            order_qty = np.round(notional_qty / mid_price / lot_size) * lot_size
-
-            # 推进处理时间。
-            if not hbt.elapse(1_000_000) != 0:
-                return False
-
-            last_order_id = -1
-            update_bid = True
-            update_ask = True
-            buy_limit_exceeded = position * mid_price > max_notional_position
-            sell_limit_exceeded = position * mid_price < -max_notional_position
-            orders = hbt.orders(asset_no)
-            order_values = orders.values()
-            while order_values.has_next():
-                order = order_values.get()
-                if order.side == BUY:
-                    if order.price_tick == new_bid_tick or buy_limit_exceeded:
-                        update_bid = False
-                    if order.cancellable and (update_bid or buy_limit_exceeded):
-                        hbt.cancel(asset_no, order.order_id, False)
-                        last_order_id = order.order_id
-                elif order.side == SELL:
-                    if order.price_tick == new_ask_tick or sell_limit_exceeded:
-                        update_ask = False
-                    if order.cancellable and (update_ask or sell_limit_exceeded):
-                        hbt.cancel(asset_no, order.order_id, False)
-                        last_order_id = order.order_id
-
-            if update_bid:
-                # 同一价格只挂一个单，以 new_bid_tick 作为订单 ID。
-                order_id = new_bid_tick
-                hbt.submit_buy_order(asset_no, order_id, new_bid_tick * tick_size, order_qty, GTX, LIMIT, False)
-                last_order_id = order_id
-            if update_ask:
-                order_id = new_ask_tick
-                hbt.submit_sell_order(asset_no, order_id, new_ask_tick * tick_size, order_qty, GTX, LIMIT, False)
-                last_order_id = order_id
-
-            # 所有订单请求视为同一时刻发出。
-            # 等待收到其中任一订单的响应。
-            if last_order_id >= 0:
-                # 最长等待 5 秒订单响应。
-                timeout = 5_000_000_000
-                if not hbt.wait_order_response(asset_no, last_order_id, timeout):
-                    return False
-
-        return True
 
 Rust 版做市示例策略
 -------------------
