@@ -31,8 +31,15 @@ from .order import (
     MARKET,
 )
 from .recorder import Recorder
-from .eventbot import run_event_bot, run_strategy
+from .eventbot import EventBotResult, run_event_bot, run_strategy
 from .data_manifest import DataManifest, load_data_manifest
+from .reporting import (
+    BacktestReport,
+    ReportBundle,
+    ReportConfig,
+    ReportStatus,
+    RunMetadata,
+)
 from .types import (
     ALL_ASSETS,
     EVENT_ARRAY,
@@ -71,6 +78,11 @@ __all__ = (
     'ROIVectorMarketDepthBacktest',
     'DataManifest',
     'load_data_manifest',
+    'BacktestReport',
+    'ReportBundle',
+    'ReportConfig',
+    'ReportStatus',
+    'RunMetadata',
 
     'LiveInstrument',
     'HashMapMarketDepthLiveBot',
@@ -114,6 +126,7 @@ __all__ = (
     'MARKET',
     
     'Recorder',
+    'EventBotResult',
     'run_event_bot',
     'run_strategy',
 )
@@ -225,6 +238,14 @@ def ROIVectorMarketDepthBacktest(
 
 
 if LIVE_FEATURE:
+    def HashMapMarketDepthLiveBot(
+            assets: List[LiveInstrument]
+    ) -> HashMapMarketDepthLiveBot_TypeHint:
+        """Constructs a hash-map market-depth live bot for the Rust-owned event runtime."""
+        ptr = build_hashmap_livebot(assets)
+        return HashMapMarketDepthLiveBot_(ptr)
+
+
     def ROIVectorMarketDepthLiveBot(
             assets: List[LiveInstrument]
     ) -> ROIVectorMarketDepthLiveBot_TypeHint:

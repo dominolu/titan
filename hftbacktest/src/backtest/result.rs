@@ -1,5 +1,5 @@
 use super::{
-    execution::{CurrencyId, FundingReport, InstrumentId, VenueId},
+    execution::{CurrencyId, ExecutionReport, FundingReport, InstrumentId, VenueId},
     scheduler::EventKey,
 };
 
@@ -216,6 +216,9 @@ pub struct BacktestResult {
     pub reject_count: u64,
     pub cancel_count: u64,
     pub expire_count: u64,
+    /// Canonical order lifecycle and fill facts captured by the engine. Each partial fill remains
+    /// a distinct `ExecutionReportKind::Fill` record linked to its order ID and sequence.
+    pub execution_reports: Vec<ExecutionReport>,
     pub exchange_final: Vec<AccountSnapshot>,
     pub local_delivered_final: Vec<AccountSnapshot>,
     /// Funding totals remain attributable by Venue/Instrument/Currency and are never inferred
@@ -223,6 +226,36 @@ pub struct BacktestResult {
     pub funding: Vec<FundingSnapshot>,
     pub warnings: Vec<String>,
     pub capability_downgrades: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExecutionReportCounts {
+    pub order_count: u64,
+    pub fill_count: u64,
+    pub reject_count: u64,
+    pub cancel_count: u64,
+    pub expire_count: u64,
+}
+
+/// Counts canonical execution facts using the same Venue/Order composite identity as report
+/// validation. Client order IDs are not required to be globally unique across venues.
+pub fn execution_report_counts(reports: &[ExecutionReport]) -> ExecutionReportCounts {
+    use super::execution::ExecutionReportKind;
+
+    let mut counts = ExecutionReportCounts::default();
+    let mut order_ids = std::collections::BTreeSet::new();
+    for report in reports {
+        order_ids.insert((report.venue_id, report.order_id));
+        match report.kind {
+            ExecutionReportKind::Rejected => counts.reject_count += 1,
+            ExecutionReportKind::Canceled => counts.cancel_count += 1,
+            ExecutionReportKind::Expired => counts.expire_count += 1,
+            ExecutionReportKind::Fill => counts.fill_count += 1,
+            ExecutionReportKind::Accepted => {}
+        }
+    }
+    counts.order_count = order_ids.len() as u64;
+    counts
 }
 
 impl BacktestResult {
@@ -247,6 +280,7 @@ impl BacktestResult {
             reject_count: 0,
             cancel_count: 0,
             expire_count: 0,
+            execution_reports: Vec::new(),
             exchange_final: Vec::new(),
             local_delivered_final: Vec::new(),
             funding: Vec::new(),
@@ -564,7 +598,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backtest::execution::{AccountDelta, AccountReport, FundingBoundary, FundingEvent};
+    use crate::{
+        backtest::execution::{
+            AccountDelta, AccountReport, ExecutionReason, ExecutionReportKind, FundingBoundary,
+            FundingEvent,
+        },
+        types::{Side, Status},
+    };
 
     struct Counter(u64);
 
@@ -594,6 +634,38 @@ mod tests {
         assert_eq!(runner.run().unwrap(), 1);
         runner.dispose();
         assert_eq!(runner.run(), Err(PreparedRunnerError::Disposed));
+    }
+
+    #[test]
+    fn execution_counts_use_venue_and_order_composite_identity() {
+        let report = |venue, kind, sequence| ExecutionReport {
+            kind,
+            reason: ExecutionReason::None,
+            venue_id: VenueId(venue),
+            instrument_id: InstrumentId(venue + 1),
+            asset_no: venue,
+            order_id: 7,
+            venue_order_id: u64::from(venue),
+            exchange_ts: 1,
+            delivery_ts: 1,
+            sequence,
+            status: Status::Filled,
+            side: Side::Buy,
+            order_price: 1.0,
+            order_qty: 1.0,
+            exec_price: 1.0,
+            exec_qty: 1.0,
+            maker: false,
+            account_delta: None,
+        };
+        let reports = [
+            report(1, ExecutionReportKind::Accepted, 1),
+            report(1, ExecutionReportKind::Fill, 2),
+            report(2, ExecutionReportKind::Fill, 3),
+        ];
+        let counts = execution_report_counts(&reports);
+        assert_eq!(counts.order_count, 2);
+        assert_eq!(counts.fill_count, 2);
     }
 
     #[test]
