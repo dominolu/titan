@@ -306,7 +306,7 @@ def main():
 | 成交价不一致 | {summary['price_mismatches']:,} | {execution_reason} |
 | 时间戳不一致 | {summary['timestamp_mismatches']:,} | {timestamp_reason} |
 | 末尾成交数量差 | {abs(summary['fill_count_difference']):,} | {terminal_reason} |
-| 手续费金额不一致 | {summary['common_commission_amount_mismatches']:,} | 两边费率都为零；仅因末尾平仓多一条零手续费记录 |
+| 手续费金额不一致 | {summary['common_commission_amount_mismatches']:,} | Titan Bar runtime 默认按成交额千分之一逐笔收费；对端必须使用相同费率才可比较 |
 
 ## 数值影响
 

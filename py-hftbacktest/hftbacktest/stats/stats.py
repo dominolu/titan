@@ -1,5 +1,6 @@
 import inspect
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import Any, List, Type, Mapping, Literal
 
 import numpy as np
@@ -321,6 +322,25 @@ class Record(ABC):
         """
         self._partition = 'daily'
         return self
+
+    def report(self, config, *, metadata=None):
+        """Build the P0 reporting pipeline from this legacy single-asset record.
+
+        The record class remains the authority for linear/inverse valuation and contract size.
+        Existing ``stats()`` and ``plot()`` behavior is unchanged.
+        """
+        from hftbacktest.reporting import BacktestReport, ReportConfig
+
+        if not isinstance(config, ReportConfig):
+            raise TypeError("config must be a hftbacktest.reporting.ReportConfig")
+        asset_type = "inverse" if isinstance(self, InverseAssetRecord) else "linear"
+        effective_config = replace(
+            config,
+            asset_type=asset_type,
+            contract_size=self._contract_size,
+            timestamp_unit=self._time_unit,
+        )
+        return BacktestReport.from_record(self.df, effective_config, metadata=metadata)
 
     @abstractmethod
     def prepare(self):

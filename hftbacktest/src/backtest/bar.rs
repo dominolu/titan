@@ -14,10 +14,10 @@ use crate::{
         ExecutionFeeModel, ExecutionOrderRequest, ExecutionReason, ExecutionReport, FundingConfig,
         FundingEngine, FundingError, FundingReport, FundingRounding, FundingRoundingMode,
         InstrumentId, InstrumentSpec, InstrumentSpecError, InstrumentType, LegacyOrderSnapshot,
-        LocalPreTradeRisk, MatchOutcome, NoFee, ObservedOutcome, OrderOrigin, PortfolioLedger,
-        ProjectedEvent, ProposedFill, RiskAction, RiskActionSink, RiskDecision, RiskReason,
-        ScheduledFunding, SharedTickExecutionConfig, TickCoordinatorError, TickOutcomeCoordinator,
-        VenueId, VenueRisk,
+        LocalPreTradeRisk, MatchOutcome, ObservedOutcome, OrderOrigin, PortfolioLedger,
+        ProjectedEvent, ProposedFill, RateFeeModel, RiskAction, RiskActionSink, RiskDecision,
+        RiskReason, ScheduledFunding, SharedTickExecutionConfig, TickCoordinatorError,
+        TickOutcomeCoordinator, VenueId, VenueRisk,
     },
     backtest::{
         result::{AuditKind, AuditRecord, AuditRecorder},
@@ -33,6 +33,9 @@ pub struct BarBatchMeta {
     pub close_ts: i64,
     pub timeframe_ns: i64,
 }
+
+/// Default Bar-runtime commission charged on every fill for both maker and taker executions.
+pub const DEFAULT_BAR_FEE_RATE: f64 = 0.001;
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum BarFeedError {
@@ -195,7 +198,11 @@ impl BarExecutionState {
                         cash_flow_mode: crate::backtest::execution::CashFlowMode::LegacyNotional,
                         version: 1,
                     },
-                    NoFee { currency },
+                    RateFeeModel {
+                        maker_rate: DEFAULT_BAR_FEE_RATE,
+                        taker_rate: DEFAULT_BAR_FEE_RATE,
+                        currency,
+                    },
                 )
             })
             .collect();
@@ -2123,6 +2130,32 @@ mod tests {
     }
 
     #[test]
+    fn default_bar_execution_charges_one_per_mille_on_every_fill() {
+        let command = OrderCommand {
+            kind: 1,
+            side: 1,
+            time_in_force: 3,
+            order_type: 1,
+            asset_no: 0,
+            order_id: 10,
+            qty: 2.0,
+            ..OrderCommand::default()
+        };
+        let mut execution = BarExecutionState::new(1);
+        execution
+            .apply(&[BarMatchOutcome::Fill {
+                command,
+                local_submit_ts: 5,
+                exchange_ts: 10,
+                price: 100.0,
+                qty: 2.0,
+            }])
+            .unwrap();
+        let fill = execution.reports().last().unwrap();
+        assert_eq!(fill.account_delta.unwrap().fee, 0.2);
+    }
+
+    #[test]
     fn bar_execution_applies_configured_fee_and_response_latency() {
         use crate::backtest::execution::RateFeeModel;
 
@@ -2254,7 +2287,7 @@ mod tests {
                         cash_flow_mode: crate::backtest::execution::CashFlowMode::LegacyNotional,
                         version: 1,
                     },
-                    NoFee { currency },
+                    crate::backtest::execution::NoFee { currency },
                 )],
                 15,
             )
@@ -2517,7 +2550,10 @@ mod tests {
         };
         let mut state = BarExecutionState::new_with_configs(
             1,
-            vec![SharedTickExecutionConfig::new(spec, NoFee { currency })],
+            vec![SharedTickExecutionConfig::new(
+                spec,
+                crate::backtest::execution::NoFee { currency },
+            )],
             0,
         )
         .unwrap();

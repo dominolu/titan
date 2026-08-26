@@ -75,7 +75,7 @@ def main():
             s.state[4] += fill["qty"]
             s.state[5] = fill["price"]
 
-    run_event_bot(
+    result = run_event_bot(
         data_mode="bar",
         bars=bars,
         history_capacity=args.long_period + 1,
@@ -85,6 +85,7 @@ def main():
         state=runtime_state,
         state_i64=runtime_state_i64,
         bar_matching=args.bar_matching,
+        return_result=True,
     )
 
     count = int(runtime_state_i64[fill_count_index])
@@ -97,7 +98,18 @@ def main():
     sides = fill_i64[:, 5]
     quantities = fill_f64[:, 0]
     prices = fill_f64[:, 1]
-    commissions = np.zeros(count, dtype=np.float64)
+    fee_by_fill = {
+        (report["order_id"], report["sequence"]): report["account_delta"]["fee"]
+        for report in result.execution_reports
+        if report["kind"] == "fill" and report["account_delta"] is not None
+    }
+    commissions = np.asarray(
+        [
+            fee_by_fill[(int(order_id) & ((1 << 64) - 1), int(sequence))]
+            for order_id, sequence in zip(fill_i64[:, 0], fill_i64[:, 4])
+        ],
+        dtype=np.float64,
+    )
     cash_deltas = -sides * quantities * prices - commissions
     positions = np.cumsum(sides * quantities)
     cash = args.initial_cash + np.cumsum(cash_deltas)

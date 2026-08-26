@@ -1,6 +1,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     marker::PhantomData,
     sync::atomic::{AtomicU64, Ordering},
@@ -28,6 +29,115 @@ use hftbacktest::{
 };
 
 static NEXT_RUNTIME_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct RuntimeExecutionReport {
+    pub kind: u8,
+    pub status: u8,
+    pub side: i8,
+    pub maker: u8,
+    pub has_account_delta: u8,
+    pub _reserved: [u8; 3],
+    pub reason: u32,
+    pub venue_id: u32,
+    pub instrument_id: u32,
+    pub asset_no: u32,
+    pub currency: u32,
+    pub order_id: u64,
+    pub venue_order_id: u64,
+    pub exchange_ts: i64,
+    pub delivery_ts: i64,
+    pub sequence: u64,
+    pub order_price: f64,
+    pub order_qty: f64,
+    pub exec_price: f64,
+    pub exec_qty: f64,
+    pub trade_value: f64,
+    pub fee: f64,
+}
+
+impl From<&hftbacktest::backtest::execution::ExecutionReport> for RuntimeExecutionReport {
+    fn from(report: &hftbacktest::backtest::execution::ExecutionReport) -> Self {
+        use hftbacktest::backtest::execution::ExecutionReportKind;
+
+        let (has_account_delta, currency, trade_value, fee) = report
+            .account_delta
+            .map(|delta| (1, delta.currency.0, delta.trade_value, delta.fee))
+            .unwrap_or((0, 0, 0.0, 0.0));
+        Self {
+            kind: match report.kind {
+                ExecutionReportKind::Accepted => 0,
+                ExecutionReportKind::Rejected => 1,
+                ExecutionReportKind::Canceled => 2,
+                ExecutionReportKind::Expired => 3,
+                ExecutionReportKind::Fill => 4,
+            },
+            status: report.status as u8,
+            side: report.side as i8,
+            maker: u8::from(report.maker),
+            has_account_delta,
+            _reserved: [0; 3],
+            reason: hftbacktest::runtime::execution_reason_code(report.reason),
+            venue_id: report.venue_id.0,
+            instrument_id: report.instrument_id.0,
+            asset_no: report.asset_no,
+            currency,
+            order_id: report.order_id,
+            venue_order_id: report.venue_order_id,
+            exchange_ts: report.exchange_ts,
+            delivery_ts: report.delivery_ts,
+            sequence: report.sequence,
+            order_price: report.order_price,
+            order_qty: report.order_qty,
+            exec_price: report.exec_price,
+            exec_qty: report.exec_qty,
+            trade_value,
+            fee,
+        }
+    }
+}
+
+thread_local! {
+    static LAST_RUNTIME_EXECUTION_REPORTS: RefCell<Vec<RuntimeExecutionReport>> = const {
+        RefCell::new(Vec::new())
+    };
+}
+
+fn store_runtime_execution_reports<'a>(
+    reports: impl IntoIterator<Item = &'a hftbacktest::backtest::execution::ExecutionReport>,
+) {
+    LAST_RUNTIME_EXECUTION_REPORTS.with(|stored| {
+        let mut stored = stored.borrow_mut();
+        stored.clear();
+        stored.extend(reports.into_iter().map(RuntimeExecutionReport::from));
+    });
+}
+
+fn clear_runtime_execution_reports() {
+    LAST_RUNTIME_EXECUTION_REPORTS.with(|stored| stored.borrow_mut().clear());
+}
+
+/// Returns a thread-local borrowed snapshot valid until the next runtime call on this thread.
+/// Python copies the POD records immediately, so no cross-language ownership is retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn runtime_last_execution_reports(
+    count: *mut usize,
+) -> *const RuntimeExecutionReport {
+    if count.is_null() {
+        return std::ptr::null();
+    }
+    LAST_RUNTIME_EXECUTION_REPORTS.with(|stored| {
+        let stored = stored.borrow();
+        unsafe { *count = stored.len() };
+        stored.as_ptr()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_execution_report_size() -> usize {
+    std::mem::size_of::<RuntimeExecutionReport>()
+}
 
 fn next_runtime_run_id() -> u64 {
     NEXT_RUNTIME_RUN_ID.fetch_add(1, Ordering::Relaxed)
@@ -131,6 +241,7 @@ struct TickFrameSource<'a, B, MD> {
     fills: Vec<FillEvent>,
     order_events: Vec<OrderEvent>,
     canonical_events: Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
+    captured_reports: Vec<hftbacktest::backtest::execution::ExecutionReport>,
     order_pending: bool,
     fill_pending: bool,
     position_pending: bool,
@@ -415,6 +526,7 @@ where
             fills: Vec::new(),
             order_events: Vec::new(),
             canonical_events: Vec::with_capacity(32),
+            captured_reports: Vec::new(),
             order_pending: false,
             fill_pending: false,
             position_pending: false,
@@ -1125,6 +1237,7 @@ where
                 match projected.kind {
                     ProjectedEventKind::Order => {
                         let report = &projected.report;
+                        self.captured_reports.push(*report);
                         let key = (*asset_no as u64, report.order_id);
                         if self.suppressed_terminal.remove(&key) {
                             continue;
@@ -1824,6 +1937,7 @@ where
     B: Bot<MD> + RuntimeBotEvents<RuntimeError = B::Error>,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    clear_runtime_execution_reports();
     if ctx.abi_version != hftbacktest::runtime::STRATEGY_ABI_VERSION
         || ctx.struct_size as usize != std::mem::size_of::<StrategyRuntimeContext>()
     {
@@ -1854,7 +1968,9 @@ where
         }
     }
     source.configure_context(ctx);
-    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+    let outcome = run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx);
+    store_runtime_execution_reports(source.captured_reports.iter());
+    match outcome {
         Ok(_) => 0,
         Err(error) => {
             let code = structured_error_code(&error);
@@ -1882,6 +1998,7 @@ where
     B: Bot<MD> + RuntimeBotEvents<RuntimeError = B::Error>,
     B::Error: std::error::Error + Send + Sync + 'static,
 {
+    clear_runtime_execution_reports();
     if ctx.abi_version != hftbacktest::runtime::STRATEGY_ABI_VERSION
         || ctx.struct_size as usize != std::mem::size_of::<StrategyRuntimeContext>()
     {
@@ -1924,7 +2041,9 @@ where
         }
     }
     source.configure_context(ctx);
-    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+    let outcome = run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx);
+    store_runtime_execution_reports(source.tick.captured_reports.iter());
+    match outcome {
         Ok(_) => 0,
         Err(error) => {
             let code = structured_error_code(&error);
@@ -2229,6 +2348,7 @@ pub unsafe extern "C" fn run_materialized_bar_runtime(
     callback_count: usize,
     history_capacity: usize,
 ) -> i64 {
+    clear_runtime_execution_reports();
     if records_ptr.is_null() || ctx_ptr.is_null() {
         return -3;
     }
@@ -2258,7 +2378,9 @@ pub unsafe extern "C" fn run_materialized_bar_runtime(
     }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+    let outcome = run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx);
+    store_runtime_execution_reports(source.execution_reports().iter());
+    match outcome {
         Ok(_) => 0,
         Err(error) => {
             let code = structured_error_code(&error);
@@ -2282,6 +2404,7 @@ pub unsafe extern "C" fn run_scheduled_materialized_bar_runtime(
     callback_count: usize,
     history_capacity: usize,
 ) -> i64 {
+    clear_runtime_execution_reports();
     if records_ptr.is_null()
         || ctx_ptr.is_null()
         || (timer_count > 0 && timers_ptr.is_null())
@@ -2333,7 +2456,9 @@ pub unsafe extern "C" fn run_scheduled_materialized_bar_runtime(
     }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+    let outcome = run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx);
+    store_runtime_execution_reports(source.execution_reports().iter());
+    match outcome {
         Ok(_) => 0,
         Err(error) => {
             let code = structured_error_code(&error);
@@ -2402,6 +2527,7 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
     entry_latency_ns: i64,
     response_latency_ns: i64,
 ) -> i64 {
+    clear_runtime_execution_reports();
     if records_ptr.is_null()
         || ctx_ptr.is_null()
         || (timer_count > 0 && timers_ptr.is_null())
@@ -2480,7 +2606,9 @@ pub unsafe extern "C" fn run_configured_materialized_bar_runtime_v2(
     }
     source.configure_context(ctx);
     let callbacks = unsafe { callback_registry(callbacks, callback_count) };
-    match run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx) {
+    let outcome = run_event_runtime_scoped(next_runtime_run_id(), &mut source, &callbacks, ctx);
+    store_runtime_execution_reports(source.execution_reports().iter());
+    match outcome {
         Ok(_) => 0,
         Err(error) => {
             let code = structured_error_code(&error);

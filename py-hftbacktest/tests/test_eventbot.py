@@ -7,6 +7,7 @@ from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest
 from hftbacktest.eventbot import (
     BAR_COMPLETE,
     BAR_EMPTY,
+    EventBotResult,
     run_event_bot,
     timed_bar_dtype,
     timer_dtype,
@@ -1085,6 +1086,50 @@ class TestRustOwnedEventBot(unittest.TestCase):
         state = run_event_bot(data_mode="bar", bars=bars, on_bar=on_bar, on_filled=on_filled)
         self.assertEqual(state[0], 1)
         self.assertEqual(state[1], 300)
+
+    def test_return_result_exports_canonical_execution_reports(self):
+        bars = np.zeros(2, dtype=timed_bar_dtype)
+        for row in range(2):
+            price = 10.0 + row
+            bars[row]["asset_no"] = 0
+            bars[row]["timeframe_ns"] = 60
+            bars[row]["bar"] = (
+                row * 60,
+                (row + 1) * 60,
+                price,
+                price,
+                price,
+                price,
+                10.0,
+                10.0 * price,
+                5.0,
+                1,
+                BAR_COMPLETE,
+            )
+
+        @njit
+        def on_bar(s):
+            if s.bar_close_ts == 60:
+                s.submit_buy_order(0, 41, 0.0, 2.0, 0, 1, False)
+
+        result = run_event_bot(
+            data_mode="bar",
+            bars=bars,
+            on_bar=on_bar,
+            return_result=True,
+        )
+
+        self.assertIsInstance(result, EventBotResult)
+        # Bar mode closes the remaining position at the final executable close.
+        self.assertEqual(result.order_count, 2)
+        self.assertEqual(result.fill_count, 2)
+        fill = next(report for report in result.execution_reports if report["kind"] == "fill")
+        self.assertEqual(fill["order_id"], 41)
+        self.assertEqual(fill["side"], "buy")
+        self.assertEqual(fill["exec_price"], 11.0)
+        self.assertEqual(fill["exec_qty"], 2.0)
+        self.assertIsNotNone(fill["account_delta"])
+        self.assertAlmostEqual(fill["account_delta"]["fee"], 0.022)
 
     def test_empty_bar_never_executes_market_order(self):
         bars = np.zeros(3, dtype=timed_bar_dtype)

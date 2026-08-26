@@ -9,7 +9,20 @@ bots, event-jump materialized Bar backtests, and deterministic Bar-signal/Tick-e
 """
 
 import inspect
-from ctypes import CDLL, POINTER, c_double, c_int64, c_size_t, c_uint32, c_uint64, c_void_p
+from ctypes import (
+    CDLL,
+    POINTER,
+    byref,
+    c_double,
+    c_int64,
+    c_size_t,
+    c_ubyte,
+    c_uint32,
+    c_uint64,
+    c_void_p,
+)
+from dataclasses import dataclass
+from typing import Any
 
 import numba
 import numpy as np
@@ -176,6 +189,67 @@ market_state_dtype = np.dtype(
     align=True,
 )
 
+runtime_execution_report_dtype = np.dtype(
+    [
+        ("kind", "u1"),
+        ("status", "u1"),
+        ("side", "i1"),
+        ("maker", "u1"),
+        ("has_account_delta", "u1"),
+        ("_reserved", "u1", (3,)),
+        ("reason", "u4"),
+        ("venue_id", "u4"),
+        ("instrument_id", "u4"),
+        ("asset_no", "u4"),
+        ("currency", "u4"),
+        ("order_id", "u8"),
+        ("venue_order_id", "u8"),
+        ("exchange_ts", "i8"),
+        ("delivery_ts", "i8"),
+        ("sequence", "u8"),
+        ("order_price", "f8"),
+        ("order_qty", "f8"),
+        ("exec_price", "f8"),
+        ("exec_qty", "f8"),
+        ("trade_value", "f8"),
+        ("fee", "f8"),
+    ],
+    align=True,
+)
+
+
+@dataclass(frozen=True)
+class EventBotResult:
+    """Python-owned result snapshot returned by ``run_event_bot(return_result=True)``."""
+
+    state: np.ndarray
+    execution_reports: tuple[dict[str, Any], ...]
+
+    @property
+    def order_count(self) -> int:
+        return len(
+            {
+                (report["venue_id"], report["order_id"])
+                for report in self.execution_reports
+            }
+        )
+
+    @property
+    def fill_count(self) -> int:
+        return sum(report["kind"] == "fill" for report in self.execution_reports)
+
+    @property
+    def reject_count(self) -> int:
+        return sum(report["kind"] == "rejected" for report in self.execution_reports)
+
+    @property
+    def cancel_count(self) -> int:
+        return sum(report["kind"] == "canceled" for report in self.execution_reports)
+
+    @property
+    def expire_count(self) -> int:
+        return sum(report["kind"] == "expired" for report in self.execution_reports)
+
 order_command_dtype = np.dtype(
     [
         ("kind", "u1"),
@@ -236,11 +310,23 @@ _lib = CDLL(_hftbacktest.__file__)
 _runtime_layout = _lib.strategy_runtime_layout
 _runtime_layout.restype = None
 _runtime_layout.argtypes = [POINTER(c_size_t), POINTER(c_size_t)]
+_runtime_execution_report_size = _lib.runtime_execution_report_size
+_runtime_execution_report_size.restype = c_size_t
+_runtime_execution_report_size.argtypes = []
+_runtime_last_execution_reports = _lib.runtime_last_execution_reports
+_runtime_last_execution_reports.restype = c_void_p
+_runtime_last_execution_reports.argtypes = [POINTER(c_size_t)]
 
 
 def _check_layout():
     if np.dtype(np.uintp).itemsize != 8:
         raise RuntimeError("the strategy runtime currently requires a 64-bit process")
+    if _runtime_execution_report_size() != runtime_execution_report_dtype.itemsize:
+        raise RuntimeError(
+            "Rust/NumPy RuntimeExecutionReport size mismatch: "
+            f"Rust={_runtime_execution_report_size()} "
+            f"Python={runtime_execution_report_dtype.itemsize}"
+        )
     sizes = (c_size_t * 10)()
     offsets = (c_size_t * 40)()
     _runtime_layout(sizes, offsets)
@@ -269,6 +355,63 @@ def _check_layout():
 
 
 _check_layout()
+
+
+def _copy_runtime_execution_reports() -> tuple[dict[str, Any], ...]:
+    count = c_size_t()
+    address = _runtime_last_execution_reports(byref(count))
+    if count.value == 0:
+        return ()
+    if not address:
+        raise RuntimeError("Rust returned a null execution-report snapshot")
+    size = count.value * runtime_execution_report_dtype.itemsize
+    raw = np.frombuffer((c_ubyte * size).from_address(address), dtype=np.uint8)
+    records = raw.view(runtime_execution_report_dtype).copy()
+    kind_names = ("accepted", "rejected", "canceled", "expired", "fill")
+    status_names = {
+        0: "none",
+        1: "new",
+        2: "expired",
+        3: "filled",
+        4: "canceled",
+        5: "partially_filled",
+        6: "rejected",
+        7: "replaced",
+        255: "unsupported",
+    }
+    side_names = {1: "buy", -1: "sell", 0: "none", 127: "unsupported"}
+    reports = []
+    for record in records:
+        kind = int(record["kind"])
+        report = {
+            "kind": kind_names[kind] if kind < len(kind_names) else "unknown",
+            "status": status_names.get(int(record["status"]), "unknown"),
+            "side": side_names.get(int(record["side"]), "unknown"),
+            "maker": bool(record["maker"]),
+            "reason": int(record["reason"]),
+            "venue_id": int(record["venue_id"]),
+            "instrument_id": int(record["instrument_id"]),
+            "asset_no": int(record["asset_no"]),
+            "order_id": int(record["order_id"]),
+            "venue_order_id": int(record["venue_order_id"]),
+            "exchange_ts": int(record["exchange_ts"]),
+            "delivery_ts": int(record["delivery_ts"]),
+            "sequence": int(record["sequence"]),
+            "order_price": float(record["order_price"]),
+            "order_qty": float(record["order_qty"]),
+            "exec_price": float(record["exec_price"]),
+            "exec_qty": float(record["exec_qty"]),
+            "request": "unknown",
+            "account_delta": None,
+        }
+        if record["has_account_delta"]:
+            report["account_delta"] = {
+                "currency": int(record["currency"]),
+                "trade_value": float(record["trade_value"]),
+                "fee": float(record["fee"]),
+            }
+        reports.append(report)
+    return tuple(reports)
 
 
 @jitclass(
@@ -868,6 +1011,7 @@ def run_event_bot(
     feed_latency=0,
     entry_latency=0,
     response_latency=0,
+    return_result=False,
 ):
     """Runs callbacks under the Rust-owned event loop.
 
@@ -888,7 +1032,10 @@ def run_event_bot(
     Backtests accept ``funding_dtype`` records, settled by the Rust account engine and delivered
     through ``on_funding(s)`` after their configured report latency.
     Bar mode always flattens every remaining position at the final executable Bar close before
-    ``on_stop(s)``.
+    ``on_stop(s)``. Set ``return_result=True`` to return an :class:`EventBotResult`
+    containing a copied canonical execution-report snapshot; the default remains the state array.
+    Bar execution charges the Rust runtime default maker/taker fee of 0.001 of trade value per
+    fill; the canonical account delta, cash and report all use the same charge.
     """
 
     if data_mode not in ("tick", "bar", "hybrid"):
@@ -1077,6 +1224,8 @@ def run_event_bot(
         raise RuntimeError(
             f"Rust strategy runtime failed with code {result}; last_error={ctx[0]['last_error']}"
         )
+    if return_result:
+        return EventBotResult(state=state, execution_reports=_copy_runtime_execution_reports())
     return state
 
 

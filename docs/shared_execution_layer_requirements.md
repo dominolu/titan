@@ -536,7 +536,7 @@ exchange-final / local-delivered-final state
 
 ### 20.2 Bar 专业执行
 
-- **AC-BAR-001**：默认零延迟、零费用、NextOpen 配置保持现有双均线策略信号、fill 数量和最终持仓。
+- **AC-BAR-001**：默认零延迟、maker/taker 千分之一成交额费用、NextOpen 配置保持现有双均线策略信号、fill 数量和最终持仓；费用必须进入 canonical AccountDelta、现金与净值。
 - **AC-BAR-002**：覆盖 ack/reject/cancel/expire/partial/full fill、Fee、entry/response latency 和 local/exchange 双状态。
 - **AC-BAR-003**：验证 `on_bar` 新单不能使用当前 Bar high/low，正延迟能正确错过 next open。
 - **AC-BAR-004**：InMemory 与 Chunked/Parquet feed 的 callback、history 和结果逐事件一致。

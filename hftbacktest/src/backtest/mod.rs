@@ -1139,6 +1139,11 @@ where
             }
             result.order_count = order_ids.len() as u64;
         }
+        result.execution_reports.extend(
+            self.shared_exchange_reports
+                .iter()
+                .map(|(_, report)| *report),
+        );
         (result.exchange_final, result.local_delivered_final) = self.shared_account_snapshots();
         result
     }
@@ -2809,6 +2814,7 @@ mod test {
                 result.order_count,
                 result.fill_count,
                 result.reject_count,
+                result.execution_reports.clone(),
                 result.exchange_final.clone(),
                 result.local_delivered_final.clone(),
             );

@@ -44,6 +44,10 @@ Repository = "https://github.com/nkaz001/hftbacktest"
 
 [project.optional-dependencies]
 databento = ["databento"]
+reports = [
+ "pandas >=2.2",
+ "quantstats >=0.0.81, <0.1"
+]
 
 [tool.maturin]
 include = [{ path = "rust-toolchain.toml", format = "sdist" }]

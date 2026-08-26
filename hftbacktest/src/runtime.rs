@@ -2803,24 +2803,13 @@ impl crate::backtest::result::ReusableRuntime for PreparedBarRuntime {
         result.market_event_count = stats.market_event_count;
         result.callback_count = stats.callback_count.to_vec();
         let reports = self.source.execution_reports();
-        let mut order_ids = std::collections::BTreeSet::new();
-        for report in reports {
-            order_ids.insert(report.order_id);
-            match report.kind {
-                crate::backtest::execution::ExecutionReportKind::Rejected => {
-                    result.reject_count += 1
-                }
-                crate::backtest::execution::ExecutionReportKind::Canceled => {
-                    result.cancel_count += 1
-                }
-                crate::backtest::execution::ExecutionReportKind::Expired => {
-                    result.expire_count += 1
-                }
-                crate::backtest::execution::ExecutionReportKind::Fill => result.fill_count += 1,
-                crate::backtest::execution::ExecutionReportKind::Accepted => {}
-            }
-        }
-        result.order_count = order_ids.len() as u64;
+        let counts = crate::backtest::result::execution_report_counts(reports);
+        result.order_count = counts.order_count;
+        result.fill_count += counts.fill_count;
+        result.reject_count += counts.reject_count;
+        result.cancel_count += counts.cancel_count;
+        result.expire_count += counts.expire_count;
+        result.execution_reports.extend_from_slice(reports);
         for report in self.source.funding_reports().iter().copied() {
             result.record_funding(report);
         }
@@ -3091,6 +3080,7 @@ mod tests {
                 result.callback_count.clone(),
                 result.order_count,
                 result.fill_count,
+                result.execution_reports.clone(),
             );
             if let Some(expected) = &expected {
                 assert_eq!(&core, expected);
