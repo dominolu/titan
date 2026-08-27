@@ -11,14 +11,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ./python/titan-strategy-sdk ./python/titan-reporting
+      - run: python -m unittest discover -s python/titan-reporting/tests -v
+      - run: python -m compileall -q python/titan-strategy-sdk python/titan-reporting strategies
+
   quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.91.1
+      - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ./python/titan-strategy-sdk
+      - run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
       - name: Clippy
         run: >-
@@ -50,6 +66,11 @@ jobs:
           - cargo test -p connector --features hyperliquid
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.91.1
+      - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install ./python/titan-strategy-sdk
+      - run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}

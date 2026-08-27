@@ -2,7 +2,10 @@ use std::{env, fs};
 
 use serde::Deserialize;
 
-pub const MAX_PAYLOAD_SIZE: usize = 512;
+pub const CONTROL_PAYLOAD_SIZE: usize = 512;
+pub const MAX_FEED_BATCH_EVENTS: usize = 1024;
+pub const MAX_PAYLOAD_SIZE: usize =
+    std::mem::size_of::<crate::types::Event>() * MAX_FEED_BATCH_EVENTS;
 const MAX_BOTS_PER_CONNECTOR: usize = 200;
 const CHANNEL_BUFFER_SIZE: usize = 10000;
 

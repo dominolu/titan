@@ -1,0 +1,7 @@
+[
+  {"asset_no":0,"timeframe_ns":60000000000,"open_ts":0,"close_ts":60000000000,"open":10.0,"high":10.5,"low":9.5,"close":10.0,"volume":100.0},
+  {"asset_no":0,"timeframe_ns":60000000000,"open_ts":60000000000,"close_ts":120000000000,"open":10.0,"high":11.5,"low":9.8,"close":11.0,"volume":110.0},
+  {"asset_no":0,"timeframe_ns":60000000000,"open_ts":120000000000,"close_ts":180000000000,"open":11.0,"high":12.5,"low":10.8,"close":12.0,"volume":120.0},
+  {"asset_no":0,"timeframe_ns":60000000000,"open_ts":180000000000,"close_ts":240000000000,"open":12.0,"high":13.5,"low":11.8,"close":13.0,"volume":130.0},
+  {"asset_no":0,"timeframe_ns":60000000000,"open_ts":240000000000,"close_ts":300000000000,"open":13.0,"high":14.5,"low":12.8,"close":14.0,"volume":140.0}
+]

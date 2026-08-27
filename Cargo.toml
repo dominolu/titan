@@ -3,7 +3,10 @@ resolver = "2"
 members = [
   "hftbacktest",
   "hftbacktest-derive",
-  "py-hftbacktest",
+  "crates/titan-runtime-abi",
+  "crates/titan-runtime",
+  "crates/titan-python-host",
+  "crates/titan-cli",
   "collector",
   "connector",
   "examples"]

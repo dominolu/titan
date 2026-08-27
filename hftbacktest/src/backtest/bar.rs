@@ -24,9 +24,9 @@ use crate::{
         scheduler::{EventKey, EventPhase, GlobalScheduler},
     },
     market_data::{BAR_COMPLETE, BAR_EMPTY, BAR_PARTIAL},
-    runtime::{BarItem, FillEvent, OrderCommand, TimedBarItem},
     types::{OrdType, Side, Status, TimeInForce},
 };
+use titan_runtime_abi::{BarItem, FillEvent, OrderCommand, TimedBarItem};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BarBatchMeta {
@@ -752,7 +752,7 @@ impl BarExecutionState {
                 qty: report.exec_qty,
                 venue_no: report.venue_id.0,
                 instrument_id: report.instrument_id.0,
-                reason: crate::runtime::execution_reason_code(report.reason),
+                reason: crate::backtest::execution::execution_reason_code(report.reason),
                 side: report.side as i8,
                 maker: u8::from(report.maker),
                 _reserved: [0; 2],
@@ -2255,141 +2255,6 @@ mod tests {
         assert_eq!(fills.len(), 2);
         assert_eq!(fills[0].exec_qty, 1.0);
         assert_eq!(fills[1].exec_qty, 1.0);
-    }
-
-    #[test]
-    fn response_latency_can_cross_later_bar_close_without_time_reversal() {
-        use crate::runtime::{
-            MaterializedBarSource, ORDER_COMMAND_SUBMIT, RuntimeEventSource, StrategyEventKind,
-            StrategyRuntimeContext,
-        };
-
-        let records = [record(0, 10), record(0, 20)];
-        let mut source = MaterializedBarSource::new(&records, 4).unwrap();
-        let currency = CurrencyId(0);
-        source
-            .configure_execution(
-                vec![SharedTickExecutionConfig::new(
-                    InstrumentSpec {
-                        instrument_id: InstrumentId(1),
-                        asset_no: 0,
-                        venue_id: VenueId(0),
-                        tick_size: 1.0,
-                        lot_size: 1.0,
-                        min_qty: 1.0,
-                        max_qty: 10.0,
-                        min_notional: 0.0,
-                        contract_size: 1.0,
-                        price_currency: currency,
-                        settlement_currency: currency,
-                        margin_currency: currency,
-                        instrument_type: InstrumentType::Spot,
-                        cash_flow_mode: crate::backtest::execution::CashFlowMode::LegacyNotional,
-                        version: 1,
-                    },
-                    crate::backtest::execution::NoFee { currency },
-                )],
-                15,
-            )
-            .unwrap();
-        let mut ctx = StrategyRuntimeContext::default();
-        source.configure_context(&mut ctx);
-
-        let (first_kind, first_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!((first_kind, first_now), (StrategyEventKind::Bar as u32, 10));
-        unsafe {
-            *ctx.commands_ptr = OrderCommand {
-                kind: ORDER_COMMAND_SUBMIT,
-                side: 1,
-                time_in_force: 3,
-                order_type: 1,
-                asset_no: 0,
-                order_id: 99,
-                qty: 1.0,
-                ..OrderCommand::default()
-            };
-        }
-        ctx.num_commands = 1;
-        ctx.now = 10;
-        source.after_callback(first_kind, &mut ctx).unwrap();
-
-        let (second_kind, second_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!(
-            (second_kind, second_now),
-            (StrategyEventKind::Bar as u32, 20)
-        );
-        source.after_callback(second_kind, &mut ctx).unwrap();
-        let response = source.next_event().unwrap().unwrap();
-        assert_eq!(response.kind, StrategyEventKind::Order as u32);
-        assert_eq!(response.now, 25);
-    }
-
-    #[test]
-    fn entry_latency_accepts_at_arrival_and_skips_missed_open() {
-        use crate::runtime::{
-            MaterializedBarSource, ORDER_COMMAND_SUBMIT, RuntimeEventSource, StrategyEventKind,
-            StrategyRuntimeContext,
-        };
-
-        let records = [record(0, 10), record(0, 20), record(0, 30)];
-        let mut source = MaterializedBarSource::new(&records, 4).unwrap();
-        source.configure_transport(5, 0).unwrap();
-        let mut ctx = StrategyRuntimeContext::default();
-        source.configure_context(&mut ctx);
-        let (first_kind, first_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!((first_kind, first_now), (StrategyEventKind::Bar as u32, 10));
-        unsafe {
-            *ctx.commands_ptr = OrderCommand {
-                kind: ORDER_COMMAND_SUBMIT,
-                side: 1,
-                time_in_force: 3,
-                order_type: 1,
-                asset_no: 0,
-                order_id: 101,
-                qty: 1.0,
-                ..OrderCommand::default()
-            };
-        }
-        ctx.num_commands = 1;
-        ctx.now = 10;
-        source.after_callback(first_kind, &mut ctx).unwrap();
-
-        let (second_kind, second_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!(
-            (second_kind, second_now),
-            (StrategyEventKind::Order as u32, 15)
-        );
-        source.after_callback(second_kind, &mut ctx).unwrap();
-        let (second_kind, second_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!(
-            (second_kind, second_now),
-            (StrategyEventKind::Bar as u32, 20)
-        );
-        source.after_callback(second_kind, &mut ctx).unwrap();
-
-        let (fill_kind, fill_now) = {
-            let event = source.next_event().unwrap().unwrap();
-            (event.kind, event.now)
-        };
-        assert_eq!((fill_kind, fill_now), (StrategyEventKind::Order as u32, 20));
-        let reports = source.execution_reports();
-        assert_eq!(reports[0].exchange_ts, 15);
-        assert_eq!(reports.last().unwrap().exchange_ts, 20);
     }
 
     #[test]

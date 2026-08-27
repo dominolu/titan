@@ -3,6 +3,7 @@ use std::{
     marker::PhantomData,
     rc::Rc,
     string::FromUtf8Error,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -21,18 +22,27 @@ use crate::{
         BotError, Instrument,
         ipc::{
             Channel,
-            config::{ChannelConfig, MAX_PAYLOAD_SIZE},
+            config::{
+                CONTROL_PAYLOAD_SIZE, ChannelConfig, MAX_FEED_BATCH_EVENTS, MAX_PAYLOAD_SIZE,
+            },
+            instrument_id,
         },
     },
     prelude::{LiveEvent, LiveRequest},
-    types::BuildError,
+    types::{BuildError, Event},
 };
+
+const WIRE_KIND_BINCODE: u64 = 0;
+const WIRE_KIND_FEED_BATCH: u64 = 1;
 
 #[derive(Default, Debug, ZeroCopySend)]
 #[repr(C)]
 pub struct CustomHeader {
     pub id: u64,
     pub len: usize,
+    pub wire_kind: u64,
+    pub instrument_id: u64,
+    pub item_count: usize,
 }
 
 #[derive(Error, Debug)]
@@ -51,6 +61,8 @@ pub enum ChannelError {
     Encode(#[from] EncodeError),
     #[error("{0:?}")]
     FromUtf8(#[from] FromUtf8Error),
+    #[error("Invalid fixed-layout feed batch: {0}")]
+    InvalidFeedBatch(&'static str),
 }
 
 pub struct IceoryxBuilder {
@@ -164,7 +176,7 @@ where
     T: Encode,
 {
     pub fn send(&self, id: u64, data: &T) -> Result<(), ChannelError> {
-        let sample = self.publisher.loan_slice_uninit(MAX_PAYLOAD_SIZE)?;
+        let sample = self.publisher.loan_slice_uninit(CONTROL_PAYLOAD_SIZE)?;
         let mut sample = unsafe { sample.assume_init() };
 
         let payload = sample.payload_mut();
@@ -172,9 +184,48 @@ where
 
         sample.user_header_mut().id = id;
         sample.user_header_mut().len = length;
+        sample.user_header_mut().wire_kind = WIRE_KIND_BINCODE;
+        sample.user_header_mut().instrument_id = 0;
+        sample.user_header_mut().item_count = 0;
 
         sample.send()?;
 
+        Ok(())
+    }
+}
+
+impl IceoryxSender<LiveEvent> {
+    pub fn send_feed_batch(
+        &self,
+        id: u64,
+        instrument_id: u64,
+        events: &[Event],
+    ) -> Result<(), ChannelError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        if events.len() > MAX_FEED_BATCH_EVENTS {
+            return Err(ChannelError::InvalidFeedBatch(
+                "event count exceeds configured maximum",
+            ));
+        }
+
+        let length = std::mem::size_of_val(events);
+        let sample = self.publisher.loan_slice_uninit(length)?;
+        let mut sample = unsafe { sample.assume_init() };
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                events.as_ptr().cast::<u8>(),
+                sample.payload_mut().as_mut_ptr(),
+                length,
+            );
+        }
+        sample.user_header_mut().id = id;
+        sample.user_header_mut().len = length;
+        sample.user_header_mut().wire_kind = WIRE_KIND_FEED_BATCH;
+        sample.user_header_mut().instrument_id = instrument_id;
+        sample.user_header_mut().item_count = events.len();
+        sample.send()?;
         Ok(())
     }
 }
@@ -204,10 +255,127 @@ where
     }
 }
 
+fn decode_feed_batch(header: &CustomHeader, payload: &[u8]) -> Result<LiveEvent, ChannelError> {
+    if header.item_count == 0 || header.item_count > MAX_FEED_BATCH_EVENTS {
+        return Err(ChannelError::InvalidFeedBatch("invalid event count"));
+    }
+    let expected_len = header
+        .item_count
+        .checked_mul(std::mem::size_of::<Event>())
+        .ok_or(ChannelError::InvalidFeedBatch("payload length overflow"))?;
+    if header.len != expected_len || expected_len > payload.len() {
+        return Err(ChannelError::InvalidFeedBatch("payload length mismatch"));
+    }
+
+    let mut events = Vec::<Event>::with_capacity(header.item_count);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            payload.as_ptr(),
+            events.as_mut_ptr().cast::<u8>(),
+            expected_len,
+        );
+        events.set_len(header.item_count);
+    }
+    Ok(LiveEvent::FeedBatch {
+        instrument_id: header.instrument_id,
+        events,
+    })
+}
+
+impl IceoryxReceiver<LiveEvent> {
+    fn receive_live(&self) -> Result<Option<(u64, LiveEvent)>, ChannelError> {
+        let Some(sample) = self.subscriber.receive()? else {
+            return Ok(None);
+        };
+        let header = sample.user_header();
+        if header.wire_kind == WIRE_KIND_BINCODE {
+            if header.len > sample.payload().len() {
+                return Err(ChannelError::InvalidFeedBatch(
+                    "control payload is truncated",
+                ));
+            }
+            let (decoded, _len) =
+                bincode::decode_from_slice(&sample.payload()[..header.len], config::standard())?;
+            return Ok(Some((header.id, decoded)));
+        }
+        if header.wire_kind != WIRE_KIND_FEED_BATCH {
+            return Err(ChannelError::InvalidFeedBatch("unknown wire kind"));
+        }
+        Ok(Some((
+            header.id,
+            decode_feed_batch(header, sample.payload())?,
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(ev: u64, px: f64) -> Event {
+        Event {
+            ev,
+            exch_ts: 10,
+            local_ts: 20,
+            px,
+            qty: 3.0,
+            order_id: 0,
+            ival: 0,
+            fval: 0.0,
+        }
+    }
+
+    #[test]
+    fn fixed_layout_feed_batch_round_trips_without_bincode() {
+        let expected = vec![event(1, 100.0), event(2, 101.0)];
+        let payload = unsafe {
+            std::slice::from_raw_parts(
+                expected.as_ptr().cast::<u8>(),
+                std::mem::size_of_val(expected.as_slice()),
+            )
+        };
+        let header = CustomHeader {
+            id: 7,
+            len: payload.len(),
+            wire_kind: WIRE_KIND_FEED_BATCH,
+            instrument_id: 42,
+            item_count: expected.len(),
+        };
+
+        let decoded = decode_feed_batch(&header, payload).unwrap();
+        match decoded {
+            LiveEvent::FeedBatch {
+                instrument_id,
+                events,
+            } => {
+                assert_eq!(instrument_id, 42);
+                assert_eq!(events, expected);
+            }
+            _ => panic!("expected feed batch"),
+        }
+    }
+
+    #[test]
+    fn fixed_layout_feed_batch_rejects_truncated_payload() {
+        let header = CustomHeader {
+            len: std::mem::size_of::<Event>(),
+            wire_kind: WIRE_KIND_FEED_BATCH,
+            instrument_id: 42,
+            item_count: 1,
+            ..CustomHeader::default()
+        };
+        assert!(matches!(
+            decode_feed_batch(&header, &[]),
+            Err(ChannelError::InvalidFeedBatch("payload length mismatch"))
+        ));
+    }
+}
+
 pub struct IceoryxChannel<S, R> {
     publisher: IceoryxSender<S>,
     subscriber: IceoryxReceiver<R>,
     symbol_to_inst_no: HashMap<String, usize>,
+    instrument_id_to_inst_no: HashMap<u64, usize>,
 }
 
 impl<S, R> IceoryxChannel<S, R>
@@ -223,14 +391,19 @@ where
             publisher,
             subscriber,
             symbol_to_inst_no: Default::default(),
+            instrument_id_to_inst_no: Default::default(),
         })
     }
 
     pub fn register(&mut self, inst_no: usize, symbol: &str) -> bool {
-        if self.symbol_to_inst_no.contains_key(symbol) {
+        let instrument_id = instrument_id(symbol);
+        if self.symbol_to_inst_no.contains_key(symbol)
+            || self.instrument_id_to_inst_no.contains_key(&instrument_id)
+        {
             return false;
         }
         self.symbol_to_inst_no.insert(symbol.to_string(), inst_no);
+        self.instrument_id_to_inst_no.insert(instrument_id, inst_no);
         true
     }
 
@@ -243,11 +416,17 @@ where
     }
 }
 
+impl IceoryxChannel<LiveRequest, LiveEvent> {
+    fn receive_live(&self) -> Result<Option<(u64, LiveEvent)>, ChannelError> {
+        self.subscriber.receive_live()
+    }
+}
+
 pub struct IceoryxUnifiedChannel {
     channel: Vec<Rc<IceoryxChannel<LiveRequest, LiveEvent>>>,
     unique_channel: Vec<Rc<IceoryxChannel<LiveRequest, LiveEvent>>>,
     ch_i: usize,
-    node: Node<ipc::Service>,
+    _node: Node<ipc::Service>,
 }
 
 impl IceoryxUnifiedChannel {
@@ -275,7 +454,7 @@ impl IceoryxUnifiedChannel {
             channel,
             unique_channel,
             ch_i: 0,
-            node,
+            _node: node,
         })
     }
 }
@@ -323,48 +502,56 @@ impl Channel for IceoryxUnifiedChannel {
     fn recv_timeout(&mut self, id: u64, timeout: Duration) -> Result<(usize, LiveEvent), BotError> {
         let instant = Instant::now();
         loop {
-            let elapsed = instant.elapsed();
-            if elapsed > timeout {
-                return Err(BotError::Timeout);
-            }
+            // Drain every channel before waiting again. In the hot path the next invocation of
+            // `recv_timeout` therefore consumes an already queued sample directly instead of
+            // paying for one `Node::wait` call per live event.
+            for _ in 0..self.unique_channel.len() {
+                let ch = unsafe { self.unique_channel.get_unchecked(self.ch_i) };
 
-            // todo: this needs to retrieve Iox2Event without waiting.
-            match self.node.wait(Duration::from_nanos(1)) {
-                Ok(()) => {
-                    let ch = unsafe { self.unique_channel.get_unchecked(self.ch_i) };
+                self.ch_i += 1;
+                if self.ch_i == self.unique_channel.len() {
+                    self.ch_i = 0;
+                }
 
-                    self.ch_i += 1;
-                    if self.ch_i == self.unique_channel.len() {
-                        self.ch_i = 0;
-                    }
-
-                    if let Some((dst_id, ev)) = ch
-                        .receive()
-                        .map_err(|err| BotError::Custom(err.to_string()))?
-                        && (dst_id == 0 || dst_id == id)
-                    {
-                        match &ev {
-                            LiveEvent::BatchStart | LiveEvent::BatchEnd | LiveEvent::Error(_) => {
-                                // todo: it may cause incorrect usage.
-                                return Ok((0, ev));
+                if let Some((dst_id, ev)) = ch
+                    .receive_live()
+                    .map_err(|err| BotError::Custom(err.to_string()))?
+                    && (dst_id == 0 || dst_id == id)
+                {
+                    match &ev {
+                        LiveEvent::BatchStart | LiveEvent::BatchEnd | LiveEvent::Error(_) => {
+                            // todo: it may cause incorrect usage.
+                            return Ok((0, ev));
+                        }
+                        LiveEvent::Feed { symbol, .. }
+                        | LiveEvent::Order { symbol, .. }
+                        | LiveEvent::Position { symbol, .. }
+                        | LiveEvent::Funding { symbol, .. }
+                        | LiveEvent::FundingSettlement { symbol, .. }
+                        | LiveEvent::ExecutionReport { symbol, .. } => {
+                            if let Some(inst_no) = ch.symbol_to_inst_no.get(symbol) {
+                                return Ok((*inst_no, ev));
                             }
-                            LiveEvent::Feed { symbol, .. }
-                            | LiveEvent::Order { symbol, .. }
-                            | LiveEvent::Position { symbol, .. }
-                            | LiveEvent::Funding { symbol, .. }
-                            | LiveEvent::FundingSettlement { symbol, .. }
-                            | LiveEvent::ExecutionReport { symbol, .. } => {
-                                if let Some(inst_no) = ch.symbol_to_inst_no.get(symbol) {
-                                    return Ok((*inst_no, ev));
-                                }
+                        }
+                        LiveEvent::FeedBatch { instrument_id, .. } => {
+                            if let Some(inst_no) = ch.instrument_id_to_inst_no.get(instrument_id) {
+                                return Ok((*inst_no, ev));
                             }
                         }
                     }
                 }
-                Err(_error) => {
-                    return Err(BotError::Interrupted);
-                }
             }
+
+            if instant.elapsed() > timeout {
+                return Err(BotError::Timeout);
+            }
+
+            // `Node::wait` owns process-signal handling and can remain blocked when the Titan
+            // worker installs its cooperative SIGINT/SIGTERM handlers. Poll the non-blocking
+            // subscribers at a bounded cadence instead so Runtime stop is observed at the next
+            // frame boundary even when no connector is publishing.
+            let remaining = timeout.saturating_sub(instant.elapsed());
+            thread::sleep(remaining.min(Duration::from_micros(100)));
         }
     }
 

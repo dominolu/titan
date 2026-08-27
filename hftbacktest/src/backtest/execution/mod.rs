@@ -4,6 +4,7 @@
 //! through these shared account, report, risk and projection components via compatibility
 //! adapters.
 
+mod abi_adapter;
 mod account;
 mod capabilities;
 mod command;
@@ -27,6 +28,10 @@ mod tick_adapter;
 mod tick_coordinator;
 mod transport;
 
+pub use abi_adapter::{
+    execution_reason_code, execution_reason_from_code, project_execution_report,
+    project_order_response,
+};
 pub use account::{
     AccountDelta, AccountError, AccountReport, ExchangeAccountState, ExchangePortfolio,
     LocalAccountView, PortfolioLedger, PositionLedger, VenueAccount,

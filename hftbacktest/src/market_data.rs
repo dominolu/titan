@@ -5,68 +5,7 @@
 
 use crate::types::{BUY_EVENT, Event};
 
-/// The bar is complete and may be delivered to a strategy.
-pub const BAR_COMPLETE: u64 = 1 << 0;
-/// The bar contains no trades.
-pub const BAR_EMPTY: u64 = 1 << 1;
-/// The bar was synthesized by a configured empty-bar policy.
-pub const BAR_SYNTHETIC: u64 = 1 << 2;
-/// The bar came from an exchange-native candle source.
-pub const BAR_NATIVE: u64 = 1 << 3;
-/// The bar is partial and must not be delivered as a normal close event.
-pub const BAR_PARTIAL: u64 = 1 << 4;
-
-/// Canonical closed OHLCV bar.
-///
-/// The covered interval is always `[open_ts, close_ts)`. A trade at exactly
-/// `close_ts` belongs to the next bar. Timestamps are Unix epoch nanoseconds.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bar {
-    pub open_ts: i64,
-    pub close_ts: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    /// Base-asset quantity (or the venue's documented contract quantity).
-    pub volume: f64,
-    pub quote_volume: f64,
-    /// Quantity initiated by buyers.
-    pub buy_volume: f64,
-    pub trade_count: u64,
-    pub flags: u64,
-}
-
-impl Default for Bar {
-    fn default() -> Self {
-        Self {
-            open_ts: 0,
-            close_ts: 0,
-            open: f64::NAN,
-            high: f64::NAN,
-            low: f64::NAN,
-            close: f64::NAN,
-            volume: 0.0,
-            quote_volume: 0.0,
-            buy_volume: 0.0,
-            trade_count: 0,
-            flags: 0,
-        }
-    }
-}
-
-impl Bar {
-    #[inline(always)]
-    pub fn is_complete(&self) -> bool {
-        self.flags & BAR_COMPLETE != 0 && self.flags & BAR_PARTIAL == 0
-    }
-
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.flags & BAR_EMPTY != 0
-    }
-}
+pub use titan_runtime_abi::{BAR_COMPLETE, BAR_EMPTY, BAR_NATIVE, BAR_PARTIAL, BAR_SYNTHETIC, Bar};
 
 /// How missing fixed intervals are represented by a canonical builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

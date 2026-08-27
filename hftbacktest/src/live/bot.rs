@@ -17,13 +17,13 @@ use crate::{
     },
     depth::{L2MarketDepth, MarketDepth},
     live::{Instrument, ipc::Channel},
-    runtime::RuntimeFunding,
     types::{
         Bot, BuildError, ElapseResult, Event, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_EVENT,
         LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveError, LiveEvent, LiveRequest, OrdType,
         Order, OrderId, OrderRequest, Side, StateValues, Status, TimeInForce, WaitOrderResponse,
     },
 };
+use titan_runtime_abi::RuntimeFunding;
 
 #[derive(Error, Debug)]
 pub enum BotError {
@@ -260,6 +260,28 @@ where
         }
     }
 
+    #[inline]
+    fn process_feed_event(&mut self, inst_no: usize, event: Event) {
+        if self.runtime_capture_enabled {
+            self.runtime_feed_events.push((inst_no, event.clone()));
+        }
+        let instrument = unsafe { self.instruments.get_unchecked_mut(inst_no) };
+        instrument.last_feed_latency = Some((event.exch_ts, event.local_ts));
+        if event.is(LOCAL_BID_DEPTH_EVENT) {
+            instrument
+                .depth
+                .update_bid_depth(event.px, event.qty, event.exch_ts);
+        } else if event.is(LOCAL_ASK_DEPTH_EVENT) {
+            instrument
+                .depth
+                .update_ask_depth(event.px, event.qty, event.exch_ts);
+        } else if (event.is(LOCAL_BUY_TRADE_EVENT) || event.is(LOCAL_SELL_TRADE_EVENT))
+            && instrument.last_trades.capacity() > 0
+        {
+            instrument.last_trades.push(event);
+        }
+    }
+
     fn process_event<const WAIT_NEXT_FEED: bool>(
         &mut self,
         inst_no: usize,
@@ -268,23 +290,14 @@ where
     ) -> Result<ElapseResult, BotError> {
         match ev {
             LiveEvent::Feed { event, .. } => {
-                if self.runtime_capture_enabled {
-                    self.runtime_feed_events.push((inst_no, event.clone()));
+                self.process_feed_event(inst_no, event);
+                if WAIT_NEXT_FEED {
+                    return Ok(ElapseResult::MarketFeed);
                 }
-                let instrument = unsafe { self.instruments.get_unchecked_mut(inst_no) };
-                instrument.last_feed_latency = Some((event.exch_ts, event.local_ts));
-                if event.is(LOCAL_BID_DEPTH_EVENT) {
-                    instrument
-                        .depth
-                        .update_bid_depth(event.px, event.qty, event.exch_ts);
-                } else if event.is(LOCAL_ASK_DEPTH_EVENT) {
-                    instrument
-                        .depth
-                        .update_ask_depth(event.px, event.qty, event.exch_ts);
-                } else if (event.is(LOCAL_BUY_TRADE_EVENT) || event.is(LOCAL_SELL_TRADE_EVENT))
-                    && instrument.last_trades.capacity() > 0
-                {
-                    instrument.last_trades.push(event);
+            }
+            LiveEvent::FeedBatch { events, .. } => {
+                for event in events {
+                    self.process_feed_event(inst_no, event);
                 }
                 if WAIT_NEXT_FEED {
                     return Ok(ElapseResult::MarketFeed);
@@ -509,7 +522,7 @@ where
                             delivery_ts,
                             sequence,
                             status,
-                            reason: crate::runtime::execution_reason_from_code(reason),
+                            reason: crate::backtest::execution::execution_reason_from_code(reason),
                             side,
                             order_price,
                             order_qty,
@@ -1219,6 +1232,52 @@ mod tests {
 
         let error = bot.modify(0, 1, 100.0, 1.0, false).unwrap_err();
         assert!(matches!(error, BotError::UnsupportedOperation(_)));
+    }
+
+    #[test]
+    fn live_feed_batch_is_applied_and_captured_as_one_boundary() {
+        let mut bot = LiveBotBuilder::new()
+            .register(Instrument::new(
+                "test",
+                "BTC",
+                0.1,
+                0.001,
+                HashMapMarketDepth::new(0.1, 0.001),
+                0,
+            ))
+            .build::<TestChannel>()
+            .unwrap();
+        bot.set_runtime_capture(true);
+        let bid = Event {
+            ev: LOCAL_BID_DEPTH_EVENT,
+            exch_ts: 10,
+            local_ts: 20,
+            px: 100.0,
+            qty: 1.0,
+            order_id: 0,
+            ival: 0,
+            fval: 0.0,
+        };
+        let ask = Event {
+            ev: LOCAL_ASK_DEPTH_EVENT,
+            px: 101.0,
+            ..bid.clone()
+        };
+
+        assert_eq!(
+            bot.process_event::<true>(
+                0,
+                LiveEvent::FeedBatch {
+                    instrument_id: 42,
+                    events: vec![bid.clone(), ask.clone()],
+                },
+                WaitOrderResponse::None,
+            )
+            .unwrap(),
+            ElapseResult::MarketFeed
+        );
+        assert_eq!(bot.runtime_feed_events(), &[(0, bid), (0, ask)]);
+        assert_eq!(bot.feed_latency(0), Some((10, 20)));
     }
 
     #[test]

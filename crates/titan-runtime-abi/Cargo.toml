@@ -1,0 +1,9 @@
+[package]
+name = "titan-runtime-abi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+bincode = { version = "2.0.1", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }

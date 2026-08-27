@@ -1,0 +1,15 @@
+[package]
+name = "titan-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[features]
+default = ["backtest", "live"]
+backtest = ["hftbacktest/backtest"]
+live = ["hftbacktest/live"]
+
+[dependencies]
+hftbacktest = { path = "../../hftbacktest", default-features = false }
+titan-runtime-abi = { path = "../titan-runtime-abi" }
+thiserror = "2"

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use crate::{
     backtest::execution::InstrumentId,
     market_data::{BAR_COMPLETE, BAR_EMPTY, BAR_SYNTHETIC, Bar},
-    runtime::TimedBarItem,
 };
+use titan_runtime_abi::TimedBarItem;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LiveBarOrigin {

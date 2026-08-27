@@ -12,8 +12,9 @@ use std::{
 use clap::Parser;
 use hftbacktest::{
     live::ipc::{
-        TO_ALL,
+        MAX_FEED_BATCH_EVENTS, TO_ALL,
         iceoryx::{ChannelError, IceoryxBuilder},
+        instrument_id,
     },
     prelude::*,
 };
@@ -200,6 +201,16 @@ async fn run_publish_task(
                             bot_tx.send(TO_ALL, &ev)?;
                         }
                     }
+                    PublishEvent::FeedBatch { symbol, events } => {
+                        let mut fused = Vec::with_capacity(events.len());
+                        for event in events {
+                            fused.extend(handle_feed_event(&symbol, event, &mut depth));
+                        }
+                        let instrument_id = instrument_id(&symbol);
+                        for events in fused.chunks(MAX_FEED_BATCH_EVENTS) {
+                            bot_tx.send_feed_batch(TO_ALL, instrument_id, events)?;
+                        }
+                    }
                     PublishEvent::BatchStart(id) => {
                         bot_tx.send(id, &LiveEvent::BatchStart)?;
                     }
@@ -211,6 +222,41 @@ async fn run_publish_task(
         }
     }
     Ok(())
+}
+
+fn handle_feed_event(
+    symbol: &str,
+    event: Event,
+    depth: &mut HashMap<String, FusedHashMapMarketDepth>,
+) -> Vec<Event> {
+    if event.is(BUY_EVENT | DEPTH_EVENT) {
+        let Some(depth) = depth.get_mut(symbol) else {
+            return vec![];
+        };
+        depth.update_bid_depth(event)
+    } else if event.is(SELL_EVENT | DEPTH_EVENT) {
+        let Some(depth) = depth.get_mut(symbol) else {
+            return vec![];
+        };
+        depth.update_ask_depth(event)
+    } else if event.is(BUY_EVENT | DEPTH_BBO_EVENT) {
+        let Some(depth) = depth.get_mut(symbol) else {
+            return vec![];
+        };
+        depth.update_best_bid(event)
+    } else if event.is(SELL_EVENT | DEPTH_BBO_EVENT) {
+        let Some(depth) = depth.get_mut(symbol) else {
+            return vec![];
+        };
+        depth.update_best_ask(event)
+    } else {
+        if event.is(DEPTH_CLEAR_EVENT)
+            && let Some(depth) = depth.get_mut(symbol)
+        {
+            depth.clear_depth(Side::None, 0.0, 0);
+        }
+        vec![event]
+    }
 }
 
 /// Maintains the market depth for all added instruments, allowing another bot to request the same
@@ -228,75 +274,13 @@ fn handle_ev(
 ) -> Vec<LiveEvent> {
     match &ev {
         LiveEvent::Feed { symbol, event } => {
-            if event.is(BUY_EVENT | DEPTH_EVENT) {
-                let depth_ = {
-                    match depth.get_mut(symbol) {
-                        Some(d) => d,
-                        None => return vec![],
-                    }
-                };
-                return depth_
-                    .update_bid_depth(event.clone())
-                    .iter()
-                    .map(|event| LiveEvent::Feed {
-                        symbol: symbol.clone(),
-                        event: event.clone(),
-                    })
-                    .collect();
-            } else if event.is(SELL_EVENT | DEPTH_EVENT) {
-                let depth_ = {
-                    match depth.get_mut(symbol) {
-                        Some(d) => d,
-                        None => return vec![],
-                    }
-                };
-                return depth_
-                    .update_ask_depth(event.clone())
-                    .iter()
-                    .map(|event| LiveEvent::Feed {
-                        symbol: symbol.clone(),
-                        event: event.clone(),
-                    })
-                    .collect();
-            } else if event.is(BUY_EVENT | DEPTH_BBO_EVENT) {
-                let depth_ = {
-                    match depth.get_mut(symbol) {
-                        Some(d) => d,
-                        None => return vec![],
-                    }
-                };
-                return depth_
-                    .update_best_bid(event.clone())
-                    .iter()
-                    .map(|event| LiveEvent::Feed {
-                        symbol: symbol.clone(),
-                        event: event.clone(),
-                    })
-                    .collect();
-            } else if event.is(SELL_EVENT | DEPTH_BBO_EVENT) {
-                let depth_ = {
-                    match depth.get_mut(symbol) {
-                        Some(d) => d,
-                        None => return vec![],
-                    }
-                };
-                return depth_
-                    .update_best_ask(event.clone())
-                    .iter()
-                    .map(|event| LiveEvent::Feed {
-                        symbol: symbol.clone(),
-                        event: event.clone(),
-                    })
-                    .collect();
-            } else if event.is(DEPTH_CLEAR_EVENT) {
-                let depth_ = {
-                    match depth.get_mut(symbol) {
-                        Some(d) => d,
-                        None => return vec![],
-                    }
-                };
-                depth_.clear_depth(Side::None, 0.0, 0);
-            }
+            return handle_feed_event(symbol, event.clone(), depth)
+                .into_iter()
+                .map(|event| LiveEvent::Feed {
+                    symbol: symbol.clone(),
+                    event,
+                })
+                .collect();
         }
         LiveEvent::Position {
             symbol,

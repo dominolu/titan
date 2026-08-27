@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "entrypoint": "event_counter.strategy:build",
+    "parameters": {},
+    "python_paths": ["python/titan-strategy-sdk", "strategies"]
+  },
+  "backend": {
+    "kind": "live",
+    "instruments": [
+      {"connector":"dry-run-connector","symbol":"BTCUSDT","tick_size":0.1,"lot_size":0.001}
+    ],
+    "frame_interval_ns":10000000,
+    "max_tick_batch":1024,
+    "bot_id":42
+  }
+}
