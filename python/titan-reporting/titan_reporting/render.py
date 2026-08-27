@@ -26,21 +26,31 @@ def render_html(bundle: ResultBundle, output: str | Path) -> Path:
 
 def render_quantstats(bundle: ResultBundle, output: str | Path) -> Path:
     """Optional QuantStats appendix; failure never mutates the verified native Bundle."""
+    returns = bundle.result.get("returns")
+    if not isinstance(returns, list):
+        raise RuntimeError("ResultBundle has no canonical returns table")
+    output = Path(output)
+    if not returns:
+        title = html.escape(f"Titan {bundle.manifest['run_id']} — QuantStats")
+        document = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>body{{font:15px system-ui;margin:2rem;max-width:800px}}</style>
+</head><body><h1>{title}</h1><p>No canonical return observations were recorded by the Rust Runtime.</p>
+<p>No performance statistics were inferred by the renderer.</p></body></html>"""
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_suffix(output.suffix + ".tmp")
+        temporary.write_text(document, encoding="utf-8")
+        temporary.replace(output)
+        return output
     try:
         import pandas as pd
         import quantstats as qs
     except ImportError as error:
         raise RuntimeError("QuantStats renderer requires pandas and quantstats") from error
-    returns = bundle.result.get("returns")
-    if not isinstance(returns, list):
-        raise RuntimeError("ResultBundle has no canonical returns table")
-    if not returns:
-        raise RuntimeError("ResultBundle canonical returns table is empty")
     series = pd.Series(
         [float(item["return"]) for item in returns],
         index=pd.to_datetime([int(item["timestamp_ns"]) for item in returns], unit="ns", utc=True),
     )
-    output = Path(output)
     temporary = output.with_suffix(output.suffix + ".tmp")
     qs.reports.html(series, output=str(temporary), title=f"Titan {bundle.manifest['run_id']}")
     temporary.replace(output)

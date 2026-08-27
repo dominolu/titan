@@ -130,7 +130,7 @@ def on_bar(s):
 
 当前 CLI 从 TOML 引用规范化的 Bar/Tick JSON 数据；底层引擎仍使用统一事件和 NumPy 数据布局。原始 WebSocket 数据可通过 `collector` 采集并归一化。
 
-worker 完成后原子提交带 SHA-256 manifest 的 ResultBundle。`titan report <run-id>` 读取权威结果；指定 `--output` 时才启动 Python renderer。报告只能写到 ResultBundle 目录之外，且不会重新计算成交、费用、资金费或 PnL。格式说明见 [`docs/result_bundle_schema.md`](docs/result_bundle_schema.md)。
+worker 完成后原子提交带 SHA-256 manifest 的 ResultBundle。`titan report <run-id>` 读取权威结果；指定 `--output` 时才启动 Python renderer。报告只能写到 ResultBundle 目录之外，且不会重新计算成交、费用、资金费或 PnL；没有 canonical returns 时，QuantStats 输出 no-data 页面。格式说明见 [`docs/result_bundle_schema.md`](docs/result_bundle_schema.md)。
 
 ## 测试
 

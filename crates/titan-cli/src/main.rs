@@ -733,7 +733,7 @@ enum CliError {
     Callback(#[from] titan_runtime::RuntimeError),
     #[error("invalid Bar input: {0}")]
     Bar(#[from] titan_runtime::MaterializedBarError),
-    #[error("Tick/Hybrid engine configuration failed: {0}")]
+    #[error("invalid configuration: {0}")]
     Engine(String),
     #[error("result serialization failed: {0}")]
     ResultJson(#[source] serde_json::Error),
@@ -741,6 +741,8 @@ enum CliError {
     Registry(#[from] rusqlite::Error),
     #[error("run {0} was not found")]
     RunNotFound(String),
+    #[error("strategy {0} was not found")]
+    StrategyNotFound(String),
     #[error("run {0} is not running")]
     NotRunning(String),
     #[error("cannot signal worker {pid}: {source}")]
@@ -762,6 +764,7 @@ impl CliError {
             Self::ReportFailed(_) => "REPORT_FAILED",
             Self::Registry(_) => "REGISTRY_FAILED",
             Self::RunNotFound(_) => "RUN_NOT_FOUND",
+            Self::StrategyNotFound(_) => "STRATEGY_NOT_FOUND",
             Self::NotRunning(_) => "RUN_NOT_ACTIVE",
             Self::Signal { .. } => "SIGNAL_FAILED",
             Self::Read { .. } => "READ_FAILED",
@@ -784,7 +787,7 @@ impl CliError {
             Self::WorkerFailed(_) => 31,
             Self::ReportFailed(_) => 32,
             Self::Registry(_) => 40,
-            Self::RunNotFound(_) | Self::NotRunning(_) => 41,
+            Self::RunNotFound(_) | Self::StrategyNotFound(_) | Self::NotRunning(_) => 41,
             Self::Signal { .. } => 42,
             Self::Read { .. } | Self::Spawn(_) | Self::ResultJson(_) => 50,
         }
@@ -979,6 +982,12 @@ fn load_strategy_manifest(name: &str) -> Result<StrategyManifest, CliError> {
         return Err(CliError::Engine("invalid strategy id".into()));
     }
     let path = strategy_manifest_path(name);
+    if !path.try_exists().map_err(|source| CliError::Read {
+        path: path.clone(),
+        source,
+    })? {
+        return Err(CliError::StrategyNotFound(name.into()));
+    }
     let bytes = fs::read(&path).map_err(|source| CliError::Read {
         path: path.clone(),
         source,
@@ -2530,6 +2539,8 @@ fn stop_run(run_id: &str, json: bool) -> Result<(), CliError> {
                     "pid": null
                 })
             );
+        } else {
+            println!("CANCELLED");
         }
         return Ok(());
     }
@@ -2564,6 +2575,8 @@ fn stop_run(run_id: &str, json: bool) -> Result<(), CliError> {
                 "pid": pid
             })
         );
+    } else {
+        println!("STOP_REQUESTED");
     }
     Ok(())
 }

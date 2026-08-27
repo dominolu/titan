@@ -232,6 +232,12 @@ fn invalid_mode_is_rejected_as_stable_json_before_python_starts() {
             .unwrap()
             .contains("does not support event mode")
     );
+    assert!(
+        !error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Tick/Hybrid engine")
+    );
 
     let usage = Command::new(env!("CARGO_BIN_EXE_titan"))
         .current_dir(workspace())
@@ -241,6 +247,15 @@ fn invalid_mode_is_rejected_as_stable_json_before_python_starts() {
     assert_eq!(usage.status.code(), Some(2));
     let usage: serde_json::Value = serde_json::from_slice(&usage.stderr).unwrap();
     assert_eq!(usage["error"]["code"], "CLI_USAGE");
+
+    let missing = Command::new(env!("CARGO_BIN_EXE_titan"))
+        .current_dir(workspace())
+        .args(["strategy", "show", "missing_strategy", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(41));
+    let missing: serde_json::Value = serde_json::from_slice(&missing.stderr).unwrap();
+    assert_eq!(missing["error"]["code"], "STRATEGY_NOT_FOUND");
 }
 
 #[test]
@@ -424,8 +439,8 @@ fn report_verifies_the_rust_authored_bundle_before_reading_it() {
     assert!(result["execution_reports"].is_array());
 
     let python = std::env::var("PYO3_PYTHON").unwrap_or_else(|_| "python3".into());
-    let unavailable_path = titan_home.join("quantstats-report.html");
-    let failed_report = Command::new(env!("CARGO_BIN_EXE_titan"))
+    let quantstats_path = titan_home.join("quantstats-report.html");
+    let quantstats_report = Command::new(env!("CARGO_BIN_EXE_titan"))
         .current_dir(&root)
         .env("TITAN_HOME", &titan_home)
         .env("TITAN_REPORT_PYTHON", &python)
@@ -436,23 +451,33 @@ fn report_verifies_the_rust_authored_bundle_before_reading_it() {
             "--renderer",
             "quantstats",
             "--output",
-            unavailable_path.to_str().unwrap(),
+            quantstats_path.to_str().unwrap(),
             "--json",
         ])
         .output()
         .unwrap();
-    assert_eq!(failed_report.status.code(), Some(32));
-    let failed: serde_json::Value = serde_json::from_slice(&failed_report.stderr).unwrap();
-    assert_eq!(failed["error"]["code"], "REPORT_FAILED");
-    let failed_state = Command::new(env!("CARGO_BIN_EXE_titan"))
+    assert!(
+        quantstats_report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&quantstats_report.stderr)
+    );
+    let quantstats: serde_json::Value = serde_json::from_slice(&quantstats_report.stdout).unwrap();
+    assert_eq!(quantstats["renderer"], "quantstats");
+    assert!(
+        std::fs::read_to_string(&quantstats_path)
+            .unwrap()
+            .contains("No canonical return observations")
+    );
+    let quantstats_state = Command::new(env!("CARGO_BIN_EXE_titan"))
         .current_dir(&root)
         .env("TITAN_HOME", &titan_home)
         .args(["show", run_id, "--json"])
         .output()
         .unwrap();
-    let failed_state: serde_json::Value = serde_json::from_slice(&failed_state.stdout).unwrap();
-    assert_eq!(failed_state["run"]["state"], "COMPLETED");
-    assert_eq!(failed_state["run"]["report_state"], "FAILED");
+    let quantstats_state: serde_json::Value =
+        serde_json::from_slice(&quantstats_state.stdout).unwrap();
+    assert_eq!(quantstats_state["run"]["state"], "COMPLETED");
+    assert_eq!(quantstats_state["run"]["report_state"], "READY");
 
     let report_path = titan_home.join("native-report.html");
     let rendered = Command::new(env!("CARGO_BIN_EXE_titan"))
@@ -613,6 +638,78 @@ fn detached_worker_has_an_independent_session_and_show_reconciles_a_crash() {
             Instant::now() < deadline,
             "show did not reconcile dead worker"
         );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn text_stop_confirms_the_requested_transition() {
+    let root = workspace();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let titan_home = std::env::temp_dir().join(format!(
+        "titan-cli-stop-text-{}-{nonce}",
+        std::process::id()
+    ));
+    let started = Command::new(env!("CARGO_BIN_EXE_titan"))
+        .current_dir(&root)
+        .env("TITAN_HOME", &titan_home)
+        .args([
+            "run",
+            "event_counter",
+            "-e",
+            "live",
+            "-m",
+            "tick",
+            "-c",
+            "crates/titan-cli/tests/fixtures/live.toml",
+            "--detach",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(started.status.success());
+    let started: serde_json::Value = serde_json::from_slice(&started.stdout).unwrap();
+    let run_id = started["run_id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let shown = Command::new(env!("CARGO_BIN_EXE_titan"))
+            .current_dir(&root)
+            .env("TITAN_HOME", &titan_home)
+            .args(["show", run_id, "--json"])
+            .output()
+            .unwrap();
+        let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+        if shown["run"]["state"] == "RUNNING" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker did not enter RUNNING");
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let stopped = Command::new(env!("CARGO_BIN_EXE_titan"))
+        .current_dir(&root)
+        .env("TITAN_HOME", &titan_home)
+        .args(["stop", run_id])
+        .output()
+        .unwrap();
+    assert!(stopped.status.success());
+    assert_eq!(stopped.stdout, b"STOP_REQUESTED\n");
+    loop {
+        let shown = Command::new(env!("CARGO_BIN_EXE_titan"))
+            .current_dir(&root)
+            .env("TITAN_HOME", &titan_home)
+            .args(["show", run_id, "--json"])
+            .output()
+            .unwrap();
+        let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+        if shown["run"]["state"] == "STOPPED" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker did not stop");
         thread::sleep(Duration::from_millis(50));
     }
 }
