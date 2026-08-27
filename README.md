@@ -98,7 +98,8 @@ cargo clippy --workspace --all-targets --all-features
 
 ## 文档
 
-- [重构后的 CLI 与 Runtime 设计](docs/rust_cli_numba_strategy_refactoring.md)
+- [公开文档索引](docs/README.md)
+- [Bar/Tick 与 Numba 策略接口](docs/bar_tick_numba_strategy.md)
 - [ResultBundle schema](docs/result_bundle_schema.md)
 - [连接器说明](connector/README.md)
 
