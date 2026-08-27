@@ -1,0 +1,16 @@
+schema_version = 1
+history_capacity = 1024
+
+[strategy.parameters]
+fast = 20
+slow = 50
+
+[live]
+frame_interval_ns = 10000000
+max_tick_batch = 65536
+
+[[live.instruments]]
+connector = "my-binance-futures"
+symbol = "BTCUSDT"
+tick_size = 0.1
+lot_size = 0.001

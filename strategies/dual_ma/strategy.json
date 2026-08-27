@@ -3,6 +3,12 @@
   "strategy_id": "dual_ma",
   "strategy_version": "1.0.0",
   "entrypoint": "dual_ma.strategy:build",
-  "capabilities": ["bar"],
+  "events": ["bar", "tick"],
+  "environments": ["backtest", "live"],
+  "capabilities": [],
+  "parameters": {
+    "fast": {"type": "integer", "default": 2, "minimum": 1},
+    "slow": {"type": "integer", "default": 4, "minimum": 2}
+  },
   "python_paths": []
 }

@@ -1,0 +1,5 @@
+schema_version = 1
+history_capacity = 16
+
+[backtest]
+data = "bars.json"
