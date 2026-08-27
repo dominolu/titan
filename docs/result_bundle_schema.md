@@ -17,7 +17,8 @@ execution, accounts, positions, fees, funding, PnL, or equity.
 `local_delivered_final` contain the two explicit visibility boundaries; account fields include
 balance, position, fees, funding, realized/unrealized PnL, and margin. `returns` is always present:
 it is empty when the selected backend did not record a canonical equity series, and renderers must
-not manufacture one from fills or final balances.
+not manufacture one from fills or final balances. In that case the QuantStats renderer emits a
+verified no-data page instead of inventing statistics or failing the report command.
 
 Schema evolution is additive within v1. A breaking field, ordering, unit, or valuation change
 requires a new integer schema version and an explicit migration reader.

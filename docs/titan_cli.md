@@ -94,6 +94,7 @@ titan report <run-id> --renderer quantstats --output quantstats.html
 
 Rust Runtime 是执行和账户事实的唯一来源。Python reporting 会重新校验 ResultBundle，只负责渲染，不重新计算成交、费用、资金费、PnL 或收益率。报告失败不会改变已完成任务的状态。
 报告输出必须位于 ResultBundle 目录之外；同一个 run 同一时间只允许一个 renderer 写入。
+若 Runtime 没有记录 canonical returns，QuantStats 会生成明确的 no-data 页面，不推导或伪造收益率。
 
 ## Agent 调用
 
