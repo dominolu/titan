@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "strategy_id": "dual_ma",
+  "strategy_version": "1.0.0",
+  "entrypoint": "dual_ma.strategy:build",
+  "capabilities": ["bar"],
+  "python_paths": []
+}

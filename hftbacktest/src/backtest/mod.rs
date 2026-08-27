@@ -1349,7 +1349,7 @@ where
                         asset_no,
                         AuditKind::ExecutionReport,
                         report.order_id,
-                        crate::runtime::execution_reason_code(report.reason),
+                        crate::backtest::execution::execution_reason_code(report.reason),
                         report.exec_price,
                         report.exec_qty,
                     );
@@ -1744,7 +1744,7 @@ where
                 },
                 kind: AuditKind::ExecutionReport,
                 order_id: report.order_id,
-                code: crate::runtime::execution_reason_code(report.reason),
+                code: crate::backtest::execution::execution_reason_code(report.reason),
                 value0: 0.0,
                 value1: 0.0,
             });
@@ -1817,7 +1817,9 @@ where
                 asset_no,
                 AuditKind::RiskDecision,
                 order_id,
-                crate::runtime::execution_reason_code(ExecutionReason::DuplicateOrderId),
+                crate::backtest::execution::execution_reason_code(
+                    ExecutionReason::DuplicateOrderId,
+                ),
                 0.0,
                 0.0,
             );
@@ -1839,7 +1841,7 @@ where
                     },
                     kind: AuditKind::ExecutionReport,
                     order_id: report.order_id,
-                    code: crate::runtime::execution_reason_code(report.reason),
+                    code: crate::backtest::execution::execution_reason_code(report.reason),
                     value0: 0.0,
                     value1: 0.0,
                 });
@@ -1863,7 +1865,7 @@ where
                 asset_no,
                 AuditKind::RiskDecision,
                 order_id,
-                crate::runtime::execution_reason_code(reason),
+                crate::backtest::execution::execution_reason_code(reason),
                 0.0,
                 0.0,
             );
@@ -2700,7 +2702,9 @@ mod test {
                 && record.order_id == 77
                 && record.kind == AuditKind::RiskDecision
                 && record.code
-                    == crate::runtime::execution_reason_code(ExecutionReason::PositionLimit)
+                    == crate::backtest::execution::execution_reason_code(
+                        ExecutionReason::PositionLimit,
+                    )
         }));
 
         Ok(())
@@ -2796,7 +2800,7 @@ mod test {
                     git_revision: "test".into(),
                     strategy_id: "tick-reset".into(),
                     strategy_version: "1".into(),
-                    runtime_abi_version: crate::runtime::STRATEGY_ABI_VERSION,
+                    runtime_abi_version: titan_runtime_abi::STRATEGY_ABI_VERSION,
                     phase_contract_version: crate::backtest::scheduler::PHASE_CONTRACT_VERSION,
                     data_manifest_hash: 1,
                     config_hash: 2,

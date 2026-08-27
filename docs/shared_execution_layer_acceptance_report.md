@@ -64,7 +64,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace --all-targets
 cargo build --release -p py-hftbacktest
-py-hftbacktest/.venv/bin/python -m unittest discover -s py-hftbacktest/tests -v
+.venv/bin/python -m unittest discover -s py-hftbacktest/tests -v
 ```
 
 最终结果：Rust 核心共享执行库 125 项测试通过；Python 37 项通过、1 项依赖外部行情 fixture 的测试按定义

@@ -5,7 +5,7 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use hftbacktest::{live::ipc::TO_ALL, prelude::*};
+use hftbacktest::prelude::*;
 use tokio::{
     select,
     sync::{
@@ -61,7 +61,12 @@ impl MarketDataStream {
         }
     }
 
-    fn process_message(&mut self, stream: EventStream) {
+    /// Processes one decoded WebSocket push.
+    ///
+    /// `ws_recv_ts` is captured immediately after tungstenite yields the text frame, before JSON
+    /// decoding.  Keeping that timestamp on every feed event lets a strategy measure the complete
+    /// in-process path from WS ingress, through the connector and IPC, to `on_tick`.
+    fn process_message(&mut self, stream: EventStream, ws_recv_ts: i64) {
         match stream {
             EventStream::DepthUpdate(data) => {
                 let prev_u_val = self.prev_u.get_mut(&data.symbol);
@@ -103,45 +108,37 @@ impl MarketDataStream {
 
                 match parse_depth(data.bids, data.asks) {
                     Ok((bids, asks)) => {
-                        self.ev_tx.send(PublishEvent::BatchStart(TO_ALL)).unwrap();
-
+                        let mut events = Vec::with_capacity(bids.len() + asks.len());
                         for (px, qty) in bids {
-                            self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                                    symbol: data.symbol.clone(),
-                                    event: Event {
-                                        ev: LOCAL_BID_DEPTH_EVENT,
-                                        exch_ts: data.transaction_time * 1_000_000,
-                                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                        order_id: 0,
-                                        px,
-                                        qty,
-                                        ival: 0,
-                                        fval: 0.0,
-                                    },
-                                }))
-                                .unwrap();
+                            events.push(Event {
+                                ev: LOCAL_BID_DEPTH_EVENT,
+                                exch_ts: data.transaction_time * 1_000_000,
+                                local_ts: ws_recv_ts,
+                                order_id: 0,
+                                px,
+                                qty,
+                                ival: 0,
+                                fval: 0.0,
+                            });
                         }
-
                         for (px, qty) in asks {
-                            self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                                    symbol: data.symbol.clone(),
-                                    event: Event {
-                                        ev: LOCAL_ASK_DEPTH_EVENT,
-                                        exch_ts: data.transaction_time * 1_000_000,
-                                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                        order_id: 0,
-                                        px,
-                                        qty,
-                                        ival: 0,
-                                        fval: 0.0,
-                                    },
-                                }))
-                                .unwrap();
+                            events.push(Event {
+                                ev: LOCAL_ASK_DEPTH_EVENT,
+                                exch_ts: data.transaction_time * 1_000_000,
+                                local_ts: ws_recv_ts,
+                                order_id: 0,
+                                px,
+                                qty,
+                                ival: 0,
+                                fval: 0.0,
+                            });
                         }
-
-                        self.ev_tx.send(PublishEvent::BatchEnd(TO_ALL)).unwrap();
+                        self.ev_tx
+                            .send(PublishEvent::FeedBatch {
+                                symbol: data.symbol,
+                                events,
+                            })
+                            .unwrap();
                     }
                     Err(error) => {
                         error!(?error, "Couldn't parse DepthUpdate stream.");
@@ -164,9 +161,9 @@ impl MarketDataStream {
                         return;
                     }
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                        .send(PublishEvent::FeedBatch {
                             symbol: data.symbol,
-                            event: Event {
+                            events: vec![Event {
                                 ev: {
                                     if data.is_the_buyer_the_market_maker {
                                         LOCAL_SELL_TRADE_EVENT
@@ -175,14 +172,14 @@ impl MarketDataStream {
                                     }
                                 },
                                 exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                                local_ts: ws_recv_ts,
                                 order_id: 0,
                                 px,
                                 qty,
                                 ival: 0,
                                 fval: 0.0,
-                            },
-                        }))
+                            }],
+                        })
                         .unwrap();
                 }
                 Err(e) => {
@@ -190,39 +187,38 @@ impl MarketDataStream {
                 }
             },
             EventStream::BookTicker(data) => {
-                let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
+                let local_ts = ws_recv_ts;
+                let mut events = Vec::with_capacity(2);
                 if data.bid_price > 0.0 {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: data.symbol.clone(),
-                            event: Event {
-                                ev: LOCAL_BID_DEPTH_BBO_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts,
-                                order_id: 0,
-                                px: data.bid_price,
-                                qty: data.bid_qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
+                    events.push(Event {
+                        ev: LOCAL_BID_DEPTH_BBO_EVENT,
+                        exch_ts: data.transaction_time * 1_000_000,
+                        local_ts,
+                        order_id: 0,
+                        px: data.bid_price,
+                        qty: data.bid_qty,
+                        ival: 0,
+                        fval: 0.0,
+                    });
                 }
                 if data.ask_price > 0.0 {
+                    events.push(Event {
+                        ev: LOCAL_ASK_DEPTH_BBO_EVENT,
+                        exch_ts: data.transaction_time * 1_000_000,
+                        local_ts,
+                        order_id: 0,
+                        px: data.ask_price,
+                        qty: data.ask_qty,
+                        ival: 0,
+                        fval: 0.0,
+                    });
+                }
+                if !events.is_empty() {
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                        .send(PublishEvent::FeedBatch {
                             symbol: data.symbol,
-                            event: Event {
-                                ev: LOCAL_ASK_DEPTH_BBO_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts,
-                                order_id: 0,
-                                px: data.ask_price,
-                                qty: data.ask_qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
+                            events,
+                        })
                         .unwrap();
                 }
             }
@@ -233,45 +229,34 @@ impl MarketDataStream {
     fn process_snapshot(&self, symbol: String, data: rest::Depth) {
         match parse_depth(data.bids, data.asks) {
             Ok((bids, asks)) => {
-                self.ev_tx.send(PublishEvent::BatchStart(TO_ALL)).unwrap();
-
+                let mut events = Vec::with_capacity(bids.len() + asks.len());
                 for (px, qty) in bids {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: symbol.clone(),
-                            event: Event {
-                                ev: LOCAL_BID_DEPTH_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                order_id: 0,
-                                px,
-                                qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
+                    events.push(Event {
+                        ev: LOCAL_BID_DEPTH_EVENT,
+                        exch_ts: data.transaction_time * 1_000_000,
+                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        order_id: 0,
+                        px,
+                        qty,
+                        ival: 0,
+                        fval: 0.0,
+                    });
                 }
-
                 for (px, qty) in asks {
-                    self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                            symbol: symbol.clone(),
-                            event: Event {
-                                ev: LOCAL_ASK_DEPTH_EVENT,
-                                exch_ts: data.transaction_time * 1_000_000,
-                                local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
-                                order_id: 0,
-                                px,
-                                qty,
-                                ival: 0,
-                                fval: 0.0,
-                            },
-                        }))
-                        .unwrap();
+                    events.push(Event {
+                        ev: LOCAL_ASK_DEPTH_EVENT,
+                        exch_ts: data.transaction_time * 1_000_000,
+                        local_ts: Utc::now().timestamp_nanos_opt().unwrap(),
+                        order_id: 0,
+                        px,
+                        qty,
+                        ival: 0,
+                        fval: 0.0,
+                    });
                 }
-
-                self.ev_tx.send(PublishEvent::BatchEnd(TO_ALL)).unwrap();
+                self.ev_tx
+                    .send(PublishEvent::FeedBatch { symbol, events })
+                    .unwrap();
             }
             Err(error) => {
                 error!(?error, "Couldn't parse Depth response.");
@@ -349,9 +334,10 @@ impl MarketDataStream {
                 },
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
+                        let ws_recv_ts = Utc::now().timestamp_nanos_opt().unwrap();
                         match serde_json::from_str::<Stream>(&text) {
                             Ok(Stream::EventStream(stream)) => {
-                                self.process_message(stream);
+                                self.process_message(stream, ws_recv_ts);
                             }
                             Ok(Stream::Result(result)) => {
                                 debug!(?result, "Subscription request response is received.");

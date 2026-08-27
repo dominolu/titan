@@ -44,6 +44,34 @@ Supported exchanges include:
 
 Note: Since Connector communicates with bots via shared memory, both Connector and the bots must run on the same machine.
 
+## Binance WS to `on_tick` latency probe
+
+Run the probe on the target server (not on a separate control machine), because it measures the
+same-host path `WS text frame received -> connector decode/fusion -> iceoryx IPC -> Numba
+on_tick(s)`. Rust owns the live event loop and calls the single-argument `@njit` callback described
+in `docs/bar_tick_numba_strategy.md`; Python is used only for cold-path setup and result reporting:
+
+```console
+connector/scripts/run_binance_ws_to_on_tick_latency.sh
+```
+
+The script uses Binance USD-M **mainnet public market data only**. It supplies no API key and the
+probe does not submit orders. Defaults are `btcusdt`, a 1 ms strategy frame, 5 seconds of warm-up,
+and 60 seconds of measurement. Override them with environment variables:
+
+```console
+SYMBOL=ethusdt TICK_SIZE=0.01 LOT_SIZE=0.001 \
+FRAME_US=1000 WARMUP_SECONDS=10 MEASURE_SECONDS=300 \
+connector/scripts/run_binance_ws_to_on_tick_latency.sh
+```
+
+The final `RESULT_JSON=...` line reports `min`, `p50`, `p90`, `p99`, `p99.9`, `max`, mean and
+standard deviation in microseconds. A Binance depth/BBO push can fan out into multiple TickBatch
+items; items from one WS frame share one ingress timestamp and are sampled once inside
+`@njit def on_tick(s)`. The preallocated `state_i64` sample buffer keeps the callback in Numba
+`nopython` mode without Python lists, dictionaries or `objmode`. Raw probe and connector logs are
+written under `latency_results/` unless `RESULT_DIR` is set.
+
 ## Order safety
 
 Binance Futures, OKX and Hyperliquid refresh an exchange-side scheduled-cancel heartbeat while

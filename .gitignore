@@ -19,6 +19,7 @@ build/
 # Local data and artifacts
 data/
 artifacts/
+backtest_reports/
 *.npz
 *.db
 *.csv

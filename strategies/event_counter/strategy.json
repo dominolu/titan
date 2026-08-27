@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "strategy_id": "event_counter",
+  "strategy_version": "1.0.0",
+  "entrypoint": "event_counter.strategy:build",
+  "capabilities": ["bar", "tick", "hybrid"],
+  "python_paths": []
+}

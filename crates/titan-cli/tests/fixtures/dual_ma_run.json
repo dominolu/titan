@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "entrypoint": "dual_ma.strategy:build",
+    "parameters": {"fast": 2, "slow": 4},
+    "python_paths": [
+      "python/titan-strategy-sdk",
+      "strategies"
+    ]
+  },
+  "backend": {
+    "kind": "bar",
+    "data": "crates/titan-cli/tests/fixtures/bars.json"
+  },
+  "history_capacity": 16
+}

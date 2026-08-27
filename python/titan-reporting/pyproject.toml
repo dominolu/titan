@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "titan-reporting"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Read-only renderer for Rust-authored Titan ResultBundles"
+
+[project.optional-dependencies]
+quantstats = ["pandas>=2", "quantstats>=0.0.77"]
+
+[project.scripts]
+titan-report = "titan_reporting.__main__:main"

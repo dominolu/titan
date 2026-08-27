@@ -12,7 +12,6 @@ use bincode::{
     error::{DecodeError, EncodeError},
 };
 use dyn_clone::DynClone;
-use hftbacktest_derive::NpyDTyped;
 use thiserror::Error;
 
 use crate::{backtest::data::POD, depth::MarketDepth};
@@ -190,6 +189,13 @@ pub enum LiveEvent {
         order_type: u8,
         request: u8,
         account_delta: Option<LiveAccountDelta>,
+    },
+    /// A connector-ingress feed batch. Iceoryx transports this variant as a fixed-layout
+    /// `Event[]` payload; the enum representation remains available to non-Iceoryx channels and
+    /// tests. Appended to preserve the encoded discriminants of existing IPC variants.
+    FeedBatch {
+        instrument_id: u64,
+        events: Vec<Event>,
     },
 }
 
@@ -372,44 +378,33 @@ pub enum WaitOrderResponse {
     Specified { asset_no: usize, order_id: OrderId },
 }
 
-/// Feed event data.
-#[repr(C, align(64))]
-#[derive(Clone, PartialEq, Debug, NpyDTyped, Decode, Encode)]
-pub struct Event {
-    /// Event flag
-    pub ev: u64,
-    /// Exchange timestamp, which is the time at which the event occurs on the exchange.
-    pub exch_ts: i64,
-    /// Local timestamp, which is the time at which the event is received by the local.
-    pub local_ts: i64,
-    /// Price
-    pub px: f64,
-    /// Quantity
-    pub qty: f64,
-    /// Order ID is only for the L3 Market-By-Order feed.
-    pub order_id: u64,
-    /// Reserved for an additional i64 value
-    pub ival: i64,
-    /// Reserved for an additional f64 value
-    pub fval: f64,
-}
+pub use titan_runtime_abi::Event;
 
 unsafe impl POD for Event {}
 
-impl Event {
-    /// Checks if this `Event` corresponds to the given event.
-    #[inline(always)]
-    pub fn is(&self, event: u64) -> bool {
-        if (self.ev & event) != event {
-            false
+impl crate::backtest::data::NpyDTyped for Event {
+    fn descr() -> Vec<crate::backtest::data::Field> {
+        let endian = if cfg!(target_endian = "little") {
+            "<"
         } else {
-            let event_kind = event & 0xff;
-            if event_kind == 0 {
-                true
-            } else {
-                self.ev & 0xff == event_kind
-            }
-        }
+            ">"
+        };
+        [
+            ("ev", "u8"),
+            ("exch_ts", "i8"),
+            ("local_ts", "i8"),
+            ("px", "f8"),
+            ("qty", "f8"),
+            ("order_id", "u8"),
+            ("ival", "i8"),
+            ("fval", "f8"),
+        ]
+        .into_iter()
+        .map(|(name, ty)| crate::backtest::data::Field {
+            name: name.to_owned(),
+            ty: format!("{endian}{ty}"),
+        })
+        .collect()
     }
 }
 

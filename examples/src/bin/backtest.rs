@@ -35,13 +35,13 @@ use hftbacktest::{
         BUY_EVENT, Bot, DEPTH_SNAPSHOT_EVENT, EXCH_EVENT, Event, HashMapMarketDepth, LOCAL_EVENT,
         SELL_EVENT, StrategyCtx, StrategySpec, TRADE_EVENT, run_strategy,
     },
-    runtime::{
-        CallbackRegistry, MaterializedBarSource, StrategyEventKind, StrategyRuntimeContext,
-        TimedBarItem, run_event_runtime,
-    },
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use titan_examples::market_making::MarketMaking;
+use titan_runtime::{
+    CallbackRegistry, MaterializedBarSource, StrategyEventKind, StrategyRuntimeContext,
+    TimedBarItem, run_event_runtime,
+};
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum DataKind {

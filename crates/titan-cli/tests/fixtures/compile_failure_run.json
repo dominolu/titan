@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "entrypoint": "missing_titan_strategy:build",
+    "parameters": {},
+    "python_paths": ["python/titan-strategy-sdk", "strategies"]
+  },
+  "backend": {
+    "kind": "bar",
+    "data": "crates/titan-cli/tests/fixtures/bars.json"
+  }
+}

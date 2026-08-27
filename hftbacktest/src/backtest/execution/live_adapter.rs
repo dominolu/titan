@@ -281,13 +281,13 @@ mod tests {
         let mut backtest_fills = Vec::new();
         let mut live_orders = Vec::new();
         let mut live_fills = Vec::new();
-        crate::runtime::project_execution_report(
+        crate::backtest::execution::project_execution_report(
             &backtest_report,
             0,
             &mut backtest_orders,
             &mut backtest_fills,
         );
-        crate::runtime::project_execution_report(
+        crate::backtest::execution::project_execution_report(
             &live_report,
             0,
             &mut live_orders,

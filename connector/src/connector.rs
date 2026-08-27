@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use hftbacktest::types::{LiveEvent, Order};
+use hftbacktest::types::{Event, LiveEvent, Order};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// A message will be received by the publisher thread and then published to the bots.
@@ -12,6 +12,12 @@ pub enum PublishEvent {
     BatchStart(u64),
     BatchEnd(u64),
     LiveEvent(LiveEvent),
+    /// All normalized feed records produced by one exchange message. Keeping the symbol once per
+    /// batch avoids one MPSC allocation and one symbol clone per price level.
+    FeedBatch {
+        symbol: String,
+        events: Vec<Event>,
+    },
     RegisterInstrument {
         id: u64,
         symbol: String,

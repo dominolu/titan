@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "titan-strategy-sdk"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0,<2.3", "numba~=0.61"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["titan_strategy*"]
