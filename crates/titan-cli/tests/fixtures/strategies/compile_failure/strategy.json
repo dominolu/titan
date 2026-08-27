@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "strategy_id": "compile_failure",
+  "strategy_version": "1.0.0",
+  "entrypoint": "missing_strategy_module:build",
+  "events": ["bar"],
+  "environments": ["backtest"],
+  "capabilities": [],
+  "parameters": {},
+  "python_paths": []
+}

@@ -1,0 +1,10 @@
+schema_version = 1
+history_capacity = 16
+
+[backtest]
+tick_data = "ticks.json"
+bar_data = "bars.json"
+tick_size = 0.01
+lot_size = 0.001
+frame_interval_ns = 60000000000
+max_tick_batch = 1024

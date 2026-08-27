@@ -4263,6 +4263,7 @@ dependencies = [
  "titan-python-host",
  "titan-runtime",
  "titan-runtime-abi",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

@@ -2,6 +2,10 @@
 
 `docs/` 只保存面向使用者和集成方的公开说明。
 
+## CLI
+
+- [Titan CLI 与 Agent 接口](titan_cli.md)
+
 ## 策略接口
 
 - [Bar/Tick 与 Numba 策略接口](bar_tick_numba_strategy.md)

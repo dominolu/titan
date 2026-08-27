@@ -9,6 +9,7 @@ use serde::Serialize;
 use sysinfo::{Pid, System};
 
 const STARTUP_GRACE_NS: i64 = 30_000_000_000;
+const HEARTBEAT_TIMEOUT_NS: i64 = 3_000_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkerProcess {
@@ -16,19 +17,37 @@ pub struct WorkerProcess {
     pub start_time: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopAction {
+    Signal(WorkerProcess),
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RunRecord {
     pub id: String,
+    pub strategy_id: String,
+    pub strategy_version: String,
+    pub environment: String,
+    pub event_mode: String,
     pub state: String,
+    pub health: String,
     pub pid: Option<u32>,
     pub process_start_time: Option<u64>,
     pub spec_path: PathBuf,
+    pub config_path: PathBuf,
+    pub config_sha256: String,
     pub started_at_ns: i64,
     pub heartbeat_ns: i64,
     pub finished_at_ns: Option<i64>,
     pub exit_code: Option<i32>,
     pub result_path: PathBuf,
     pub log_path: PathBuf,
+    pub report_state: String,
+    pub report_path: Option<PathBuf>,
+    pub market_event_count: u64,
+    pub order_count: u64,
+    pub fill_count: u64,
     pub error: Option<String>,
 }
 
@@ -44,27 +63,103 @@ impl Registry {
         }
         let connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
+        let journal_mode: String =
+            connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+        }
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 owner_token TEXT NOT NULL,
+                strategy_id TEXT NOT NULL DEFAULT '',
+                strategy_version TEXT NOT NULL DEFAULT '',
+                environment TEXT NOT NULL DEFAULT '',
+                event_mode TEXT NOT NULL DEFAULT '',
                 state TEXT NOT NULL,
+                health TEXT NOT NULL DEFAULT 'HEALTHY',
                 pid INTEGER,
                 process_start_time INTEGER,
                 spec_path TEXT NOT NULL,
+                config_path TEXT NOT NULL DEFAULT '',
+                config_sha256 TEXT NOT NULL DEFAULT '',
                 started_at_ns INTEGER NOT NULL,
                 heartbeat_ns INTEGER NOT NULL,
                 finished_at_ns INTEGER,
                 exit_code INTEGER,
                 result_path TEXT NOT NULL,
                 log_path TEXT NOT NULL,
+                report_state TEXT NOT NULL DEFAULT 'NONE',
+                report_path TEXT,
+                report_token TEXT,
+                market_event_count INTEGER NOT NULL DEFAULT 0,
+                order_count INTEGER NOT NULL DEFAULT 0,
+                fill_count INTEGER NOT NULL DEFAULT 0,
                 error TEXT
             );
             CREATE INDEX IF NOT EXISTS runs_started ON runs(started_at_ns DESC);",
         )?;
         if !has_column(&connection, "runs", "process_start_time")? {
             connection.execute("ALTER TABLE runs ADD COLUMN process_start_time INTEGER", [])?;
+        }
+        let migrations = [
+            (
+                "strategy_id",
+                "ALTER TABLE runs ADD COLUMN strategy_id TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "strategy_version",
+                "ALTER TABLE runs ADD COLUMN strategy_version TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "environment",
+                "ALTER TABLE runs ADD COLUMN environment TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "event_mode",
+                "ALTER TABLE runs ADD COLUMN event_mode TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "health",
+                "ALTER TABLE runs ADD COLUMN health TEXT NOT NULL DEFAULT 'HEALTHY'",
+            ),
+            (
+                "config_path",
+                "ALTER TABLE runs ADD COLUMN config_path TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "config_sha256",
+                "ALTER TABLE runs ADD COLUMN config_sha256 TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "report_state",
+                "ALTER TABLE runs ADD COLUMN report_state TEXT NOT NULL DEFAULT 'NONE'",
+            ),
+            (
+                "report_path",
+                "ALTER TABLE runs ADD COLUMN report_path TEXT",
+            ),
+            (
+                "report_token",
+                "ALTER TABLE runs ADD COLUMN report_token TEXT",
+            ),
+            (
+                "market_event_count",
+                "ALTER TABLE runs ADD COLUMN market_event_count INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "order_count",
+                "ALTER TABLE runs ADD COLUMN order_count INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "fill_count",
+                "ALTER TABLE runs ADD COLUMN fill_count INTEGER NOT NULL DEFAULT 0",
+            ),
+        ];
+        for (column, sql) in migrations {
+            if !has_column(&connection, "runs", column)? {
+                connection.execute(sql, [])?;
+            }
         }
         Ok(Self { connection })
     }
@@ -73,18 +168,32 @@ impl Registry {
         &self,
         id: &str,
         owner_token: &str,
+        strategy_id: &str,
+        strategy_version: &str,
+        environment: &str,
+        event_mode: &str,
         spec_path: &Path,
+        config_path: &Path,
+        config_sha256: &str,
         result_path: &Path,
         log_path: &Path,
     ) -> rusqlite::Result<()> {
         let now = now_ns();
         self.connection.execute(
-            "INSERT INTO runs(id, owner_token, state, spec_path, started_at_ns, heartbeat_ns,
-             result_path, log_path) VALUES (?1, ?2, 'STARTING', ?3, ?4, ?4, ?5, ?6)",
+            "INSERT INTO runs(id, owner_token, strategy_id, strategy_version, environment,
+             event_mode, state, spec_path, config_path, config_sha256, started_at_ns, heartbeat_ns,
+             result_path, log_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'STARTING', ?7, ?8, ?9,
+             ?10, ?10, ?11, ?12)",
             params![
                 id,
                 owner_token,
+                strategy_id,
+                strategy_version,
+                environment,
+                event_mode,
                 spec_path.to_string_lossy(),
+                config_path.to_string_lossy(),
+                config_sha256,
                 now,
                 result_path.to_string_lossy(),
                 log_path.to_string_lossy()
@@ -115,10 +224,18 @@ impl Registry {
             return Ok(false);
         };
         Ok(self.connection.execute(
-            "UPDATE runs SET state='RUNNING', pid=?3, process_start_time=?4, heartbeat_ns=?5
+            "UPDATE runs SET state='LOADING', pid=?3, process_start_time=?4, heartbeat_ns=?5
              WHERE id=?1 AND owner_token=?2 AND state='STARTING'
                AND (pid IS NULL OR (pid=?3 AND process_start_time=?4))",
             params![id, token, pid, start_time, now_ns()],
+        )? == 1)
+    }
+
+    pub fn transition(&self, id: &str, token: &str, state: &str) -> rusqlite::Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE runs SET state=?3, heartbeat_ns=?4 WHERE id=?1 AND owner_token=?2
+             AND state IN ('LOADING','COMPILING','READY','RUNNING')",
+            params![id, token, state, now_ns()],
         )? == 1)
     }
 
@@ -133,25 +250,26 @@ impl Registry {
         let now = now_ns();
         Ok(self.connection.execute(
             "UPDATE runs SET state=?3, heartbeat_ns=?4, finished_at_ns=?4,
-             exit_code=?5, error=?6 WHERE id=?1 AND owner_token=?2
-             AND state IN ('STARTING','RUNNING','STOP_REQUESTED')",
+             exit_code=?5, error=?6, pid=NULL, process_start_time=NULL WHERE id=?1 AND owner_token=?2
+             AND state IN ('STARTING','LOADING','COMPILING','READY','RUNNING','STOP_REQUESTED')",
             params![id, token, state, now, exit_code, error],
         )? == 1)
     }
 
     pub fn heartbeat(&self, id: &str, token: &str) -> rusqlite::Result<bool> {
         Ok(self.connection.execute(
-            "UPDATE runs SET heartbeat_ns=?3 WHERE id=?1 AND owner_token=?2 AND state='RUNNING'",
+            "UPDATE runs SET heartbeat_ns=?3 WHERE id=?1 AND owner_token=?2
+             AND state IN ('LOADING','COMPILING','READY','RUNNING')",
             params![id, token, now_ns()],
         )? == 1)
     }
 
     pub fn reconcile(&self) -> rusqlite::Result<()> {
         let mut statement = self.connection.prepare(
-            "SELECT id,state,pid,process_start_time,started_at_ns FROM runs
-             WHERE state IN ('STARTING','RUNNING','STOP_REQUESTED')",
+            "SELECT id,state,pid,process_start_time,started_at_ns,heartbeat_ns FROM runs
+             WHERE state IN ('STARTING','LOADING','COMPILING','READY','RUNNING','STOP_REQUESTED')",
         )?;
-        let active: Vec<(String, String, Option<u32>, Option<u64>, i64)> = statement
+        let active: Vec<(String, String, Option<u32>, Option<u64>, i64, i64)> = statement
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,
@@ -159,12 +277,13 @@ impl Registry {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             })?
             .collect::<rusqlite::Result<_>>()?;
         drop(statement);
         let now = now_ns();
-        for (id, state, pid, expected_start_time, started_at_ns) in active {
+        for (id, state, pid, expected_start_time, started_at_ns, heartbeat_ns) in active {
             if state == "STARTING"
                 && pid.is_none()
                 && now.saturating_sub(started_at_ns) < STARTUP_GRACE_NS
@@ -174,11 +293,22 @@ impl Registry {
             let alive = pid
                 .zip(expected_start_time)
                 .is_some_and(|(pid, expected)| process_start_time(pid) == Some(expected));
-            if !alive {
+            if alive {
+                let health = if now.saturating_sub(heartbeat_ns) > HEARTBEAT_TIMEOUT_NS {
+                    "UNRESPONSIVE"
+                } else {
+                    "HEALTHY"
+                };
                 self.connection.execute(
-                    "UPDATE runs SET state='STALE', finished_at_ns=?2, heartbeat_ns=?2,
+                    "UPDATE runs SET health=?2 WHERE id=?1 AND state IN
+                     ('STARTING','LOADING','COMPILING','READY','RUNNING','STOP_REQUESTED')",
+                    params![id, health],
+                )?;
+            } else {
+                self.connection.execute(
+                    "UPDATE runs SET state='STALE', health='STALE', finished_at_ns=?2, heartbeat_ns=?2,
                      error='worker process identity is no longer alive' WHERE id=?1
-                     AND state IN ('STARTING','RUNNING','STOP_REQUESTED')",
+                     AND state IN ('STARTING','LOADING','COMPILING','READY','RUNNING','STOP_REQUESTED')",
                     params![id, now],
                 )?;
             }
@@ -186,33 +316,92 @@ impl Registry {
         Ok(())
     }
 
-    pub fn request_stop(&self, id: &str) -> rusqlite::Result<Option<WorkerProcess>> {
-        let process = self
+    pub fn request_stop(&self, id: &str) -> rusqlite::Result<Option<StopAction>> {
+        let active = self
             .connection
             .query_row(
-                "SELECT pid,process_start_time FROM runs
-                 WHERE id=?1 AND state IN ('STARTING','RUNNING')",
+                "SELECT state,pid,process_start_time FROM runs
+                 WHERE id=?1 AND state IN ('STARTING','LOADING','COMPILING','READY','RUNNING')",
                 [id],
-                |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<u64>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<u32>>(1)?,
+                        row.get::<_, Option<u64>>(2)?,
+                    ))
+                },
             )
-            .optional()?
-            .and_then(|(pid, start_time)| pid.zip(start_time))
-            .map(|(pid, start_time)| WorkerProcess { pid, start_time });
-        if process.is_some() {
+            .optional()?;
+        let Some((state, pid, start_time)) = active else {
+            return Ok(None);
+        };
+        if state == "STARTING" && pid.is_none() {
+            let now = now_ns();
             self.connection.execute(
-                "UPDATE runs SET state='STOP_REQUESTED', heartbeat_ns=?2 WHERE id=?1
-                 AND state IN ('STARTING','RUNNING')",
-                params![id, now_ns()],
+                "UPDATE runs SET state='CANCELLED', heartbeat_ns=?2, finished_at_ns=?2,
+                 exit_code=0 WHERE id=?1 AND state='STARTING' AND pid IS NULL",
+                params![id, now],
             )?;
+            return Ok(Some(StopAction::Cancelled));
         }
-        Ok(process)
+        let Some((pid, start_time)) = pid.zip(start_time) else {
+            return Ok(None);
+        };
+        self.connection.execute(
+            "UPDATE runs SET state='STOP_REQUESTED', heartbeat_ns=?2 WHERE id=?1
+             AND state IN ('STARTING','LOADING','COMPILING','READY','RUNNING')",
+            params![id, now_ns()],
+        )?;
+        Ok(Some(StopAction::Signal(WorkerProcess { pid, start_time })))
+    }
+
+    pub fn update_metrics(
+        &self,
+        id: &str,
+        token: &str,
+        market_event_count: u64,
+        order_count: u64,
+        fill_count: u64,
+    ) -> rusqlite::Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE runs SET market_event_count=?3, order_count=?4, fill_count=?5,
+             heartbeat_ns=?6 WHERE id=?1 AND owner_token=?2
+             AND state IN ('RUNNING','STOP_REQUESTED')",
+            params![
+                id,
+                token,
+                market_event_count,
+                order_count,
+                fill_count,
+                now_ns()
+            ],
+        )? == 1)
+    }
+
+    pub fn report_started(&self, id: &str, token: &str, path: &Path) -> rusqlite::Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE runs SET report_state='GENERATING', report_path=?3, report_token=?2 WHERE id=?1
+             AND state IN ('COMPLETED','STOPPED') AND report_state != 'GENERATING'",
+            params![id, token, path.to_string_lossy()],
+        )? == 1)
+    }
+
+    pub fn report_finished(&self, id: &str, token: &str, success: bool) -> rusqlite::Result<bool> {
+        let state = if success { "READY" } else { "FAILED" };
+        Ok(self.connection.execute(
+            "UPDATE runs SET report_state=?3, report_token=NULL WHERE id=?1
+             AND report_state='GENERATING' AND report_token=?2",
+            params![id, token, state],
+        )? == 1)
     }
 
     pub fn get(&self, id: &str) -> rusqlite::Result<Option<RunRecord>> {
         self.connection
             .query_row(
-                "SELECT id,state,pid,process_start_time,spec_path,started_at_ns,heartbeat_ns,
-             finished_at_ns,exit_code,result_path,log_path,error FROM runs WHERE id=?1",
+                "SELECT id,strategy_id,strategy_version,environment,event_mode,state,health,pid,
+             process_start_time,spec_path,config_path,config_sha256,started_at_ns,heartbeat_ns,
+             finished_at_ns,exit_code,result_path,log_path,report_state,report_path,
+             market_event_count,order_count,fill_count,error FROM runs WHERE id=?1",
                 [id],
                 row_to_record,
             )
@@ -221,8 +410,10 @@ impl Registry {
 
     pub fn list(&self) -> rusqlite::Result<Vec<RunRecord>> {
         let mut statement = self.connection.prepare(
-            "SELECT id,state,pid,process_start_time,spec_path,started_at_ns,heartbeat_ns,
-             finished_at_ns,exit_code,result_path,log_path,error FROM runs ORDER BY started_at_ns DESC",
+            "SELECT id,strategy_id,strategy_version,environment,event_mode,state,health,pid,
+             process_start_time,spec_path,config_path,config_sha256,started_at_ns,heartbeat_ns,
+             finished_at_ns,exit_code,result_path,log_path,report_state,report_path,
+             market_event_count,order_count,fill_count,error FROM runs ORDER BY started_at_ns DESC",
         )?;
         statement.query_map([], row_to_record)?.collect()
     }
@@ -231,17 +422,29 @@ impl Registry {
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRecord> {
     Ok(RunRecord {
         id: row.get(0)?,
-        state: row.get(1)?,
-        pid: row.get(2)?,
-        process_start_time: row.get(3)?,
-        spec_path: PathBuf::from(row.get::<_, String>(4)?),
-        started_at_ns: row.get(5)?,
-        heartbeat_ns: row.get(6)?,
-        finished_at_ns: row.get(7)?,
-        exit_code: row.get(8)?,
-        result_path: PathBuf::from(row.get::<_, String>(9)?),
-        log_path: PathBuf::from(row.get::<_, String>(10)?),
-        error: row.get(11)?,
+        strategy_id: row.get(1)?,
+        strategy_version: row.get(2)?,
+        environment: row.get(3)?,
+        event_mode: row.get(4)?,
+        state: row.get(5)?,
+        health: row.get(6)?,
+        pid: row.get(7)?,
+        process_start_time: row.get(8)?,
+        spec_path: PathBuf::from(row.get::<_, String>(9)?),
+        config_path: PathBuf::from(row.get::<_, String>(10)?),
+        config_sha256: row.get(11)?,
+        started_at_ns: row.get(12)?,
+        heartbeat_ns: row.get(13)?,
+        finished_at_ns: row.get(14)?,
+        exit_code: row.get(15)?,
+        result_path: PathBuf::from(row.get::<_, String>(16)?),
+        log_path: PathBuf::from(row.get::<_, String>(17)?),
+        report_state: row.get(18)?,
+        report_path: row.get::<_, Option<String>>(19)?.map(PathBuf::from),
+        market_event_count: row.get(20)?,
+        order_count: row.get(21)?,
+        fill_count: row.get(22)?,
+        error: row.get(23)?,
     })
 }
 
@@ -322,7 +525,13 @@ mod tests {
             .create(
                 "run",
                 "correct",
+                "strategy",
+                "1.0.0",
+                "backtest",
+                "bar",
                 Path::new("spec.json"),
+                Path::new("config.toml"),
+                "digest",
                 &artifact,
                 &artifact,
             )
@@ -352,7 +561,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create("run", "owner", Path::new("spec.json"), &artifact, &artifact)
+            .create(
+                "run",
+                "owner",
+                "strategy",
+                "1.0.0",
+                "backtest",
+                "bar",
+                Path::new("spec.json"),
+                Path::new("config.toml"),
+                "digest",
+                &artifact,
+                &artifact,
+            )
             .unwrap();
         assert!(
             registry
@@ -383,7 +604,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create("run", "owner", Path::new("spec.json"), &artifact, &artifact)
+            .create(
+                "run",
+                "owner",
+                "strategy",
+                "1.0.0",
+                "backtest",
+                "bar",
+                Path::new("spec.json"),
+                Path::new("config.toml"),
+                "digest",
+                &artifact,
+                &artifact,
+            )
             .unwrap();
         registry.reconcile().unwrap();
         assert_eq!(registry.get("run").unwrap().unwrap().state, "STARTING");
@@ -396,5 +629,117 @@ mod tests {
             .unwrap();
         registry.reconcile().unwrap();
         assert_eq!(registry.get("run").unwrap().unwrap().state, "STALE");
+    }
+
+    #[test]
+    fn report_owner_token_serializes_generation_and_guards_completion() {
+        let path = path("report-owner");
+        let registry = Registry::open(&path).unwrap();
+        let artifact = path.with_extension("json");
+        registry
+            .create(
+                "run",
+                "owner",
+                "strategy",
+                "1.0.0",
+                "backtest",
+                "bar",
+                Path::new("spec.json"),
+                Path::new("config.toml"),
+                "digest",
+                &artifact,
+                &artifact,
+            )
+            .unwrap();
+        registry
+            .connection
+            .execute("UPDATE runs SET state='COMPLETED' WHERE id='run'", [])
+            .unwrap();
+
+        assert!(
+            registry
+                .report_started("run", "report-1", Path::new("one.html"))
+                .unwrap()
+        );
+        assert!(
+            !registry
+                .report_started("run", "report-2", Path::new("two.html"))
+                .unwrap()
+        );
+        assert!(!registry.report_finished("run", "report-2", true).unwrap());
+        assert_eq!(
+            registry.get("run").unwrap().unwrap().report_state,
+            "GENERATING"
+        );
+        assert!(registry.report_finished("run", "report-1", true).unwrap());
+        assert_eq!(registry.get("run").unwrap().unwrap().report_state, "READY");
+    }
+
+    #[test]
+    fn legacy_registry_is_migrated_without_losing_existing_runs() {
+        let path = path("migration");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE runs (
+                    id TEXT PRIMARY KEY,
+                    owner_token TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    pid INTEGER,
+                    process_start_time INTEGER,
+                    spec_path TEXT NOT NULL,
+                    started_at_ns INTEGER NOT NULL,
+                    heartbeat_ns INTEGER NOT NULL,
+                    finished_at_ns INTEGER,
+                    exit_code INTEGER,
+                    result_path TEXT NOT NULL,
+                    log_path TEXT NOT NULL,
+                    error TEXT
+                );
+                INSERT INTO runs(id,owner_token,state,spec_path,started_at_ns,heartbeat_ns,
+                    result_path,log_path) VALUES
+                    ('legacy','owner','COMPLETED','old.json',1,1,'result.json','worker.log');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let registry = Registry::open(&path).unwrap();
+        let legacy = registry.get("legacy").unwrap().unwrap();
+        assert_eq!(legacy.state, "COMPLETED");
+        assert_eq!(legacy.health, "HEALTHY");
+        assert_eq!(legacy.report_state, "NONE");
+        assert_eq!(legacy.market_event_count, 0);
+    }
+
+    #[test]
+    fn unspawned_starting_run_can_be_cancelled() {
+        let path = path("cancel");
+        let registry = Registry::open(&path).unwrap();
+        let artifact = path.with_extension("json");
+        registry
+            .create(
+                "run",
+                "owner",
+                "strategy",
+                "1.0.0",
+                "backtest",
+                "bar",
+                Path::new("spec.json"),
+                Path::new("config.toml"),
+                "digest",
+                &artifact,
+                &artifact,
+            )
+            .unwrap();
+        assert_eq!(
+            registry.request_stop("run").unwrap(),
+            Some(StopAction::Cancelled)
+        );
+        assert_eq!(registry.get("run").unwrap().unwrap().state, "CANCELLED");
+        assert!(
+            !registry
+                .finish("run", "owner", "FAILED", 1, Some("late worker"))
+                .unwrap()
+        );
     }
 }

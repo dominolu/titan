@@ -16,11 +16,7 @@ def build(parameters):
     state_i64 = np.zeros(2, dtype=np.int64)  # ring cursor, observed count
 
     @njit
-    def on_bar(s):
-        bars = s.bars()
-        if len(bars) == 0:
-            return
-        close = bars[0]["bar"]["close"]
+    def update(s, close):
         cursor = s.state_i64[0]
         count = s.state_i64[1]
         if count >= slow:
@@ -39,10 +35,23 @@ def build(parameters):
         s.state_i64[0] = (cursor + 1) % slow
         s.state_i64[1] = next_count
 
+    @njit
+    def on_bar(s):
+        bars = s.bars()
+        if len(bars) != 0:
+            update(s, bars[0]["bar"]["close"])
+
+    @njit
+    def on_tick(s):
+        ticks = s.ticks()
+        for tick in ticks:
+            update(s, tick["event"]["px"])
+
     return SimpleNamespace(
         strategy_id="dual_ma",
         strategy_version="1.0.0",
         on_bar=on_bar,
+        on_tick=on_tick,
         state=state,
         state_i64=state_i64,
         metadata={"fast": fast, "slow": slow},

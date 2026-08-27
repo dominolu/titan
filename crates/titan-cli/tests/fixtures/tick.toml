@@ -1,0 +1,22 @@
+schema_version = 1
+history_capacity = 16
+
+[backtest]
+data = "ticks.json"
+tick_size = 0.01
+lot_size = 0.001
+frame_interval_ns = 60000000000
+max_tick_batch = 1024
+
+[backtest.execution]
+entry_latency_ns = 100
+response_latency_ns = 200
+maker_fee = -0.0001
+taker_fee = 0.0005
+queue_power = 2.5
+queue = "risk_averse"
+exchange = "partial_fill"
+asset = "inverse"
+contract_size = 100.0
+latency_offset_ns = 5
+last_trades_capacity = 32

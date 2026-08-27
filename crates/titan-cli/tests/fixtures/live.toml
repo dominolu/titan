@@ -1,0 +1,12 @@
+schema_version = 1
+history_capacity = 16
+
+[live]
+frame_interval_ns = 10000000
+max_tick_batch = 65536
+
+[[live.instruments]]
+connector = "titan-cli-test"
+symbol = "BTCUSDT"
+tick_size = 0.1
+lot_size = 0.001

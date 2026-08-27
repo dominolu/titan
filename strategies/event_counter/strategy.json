@@ -3,6 +3,9 @@
   "strategy_id": "event_counter",
   "strategy_version": "1.0.0",
   "entrypoint": "event_counter.strategy:build",
-  "capabilities": ["bar", "tick", "hybrid"],
+  "events": ["bar", "tick", "hybrid"],
+  "environments": ["backtest", "live"],
+  "capabilities": [],
+  "parameters": {},
   "python_paths": []
 }

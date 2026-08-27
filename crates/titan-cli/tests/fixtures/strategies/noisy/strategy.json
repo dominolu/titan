@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "strategy_id": "noisy",
+  "strategy_version": "1.0.0",
+  "entrypoint": "noisy.strategy:build",
+  "events": ["bar"],
+  "environments": ["backtest"],
+  "capabilities": [],
+  "parameters": {},
+  "python_paths": []
+}
