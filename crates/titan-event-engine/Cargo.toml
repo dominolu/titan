@@ -1,0 +1,23 @@
+[package]
+name = "titan-event-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+arc-swap = "1.7"
+core_affinity = "0.8"
+crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+titan-plugin-engine = { path = "../titan-plugin-engine" }
+
+[dev-dependencies]
+loom = "0.7"
+semver = "1"
+serde_json = "1"
+
+[[bench]]
+name = "event_engine"
+harness = false

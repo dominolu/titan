@@ -5,6 +5,8 @@ members = [
   "hftbacktest-derive",
   "crates/titan-runtime-abi",
   "crates/titan-runtime",
+  "crates/titan-event-engine",
+  "crates/titan-plugin-engine",
   "crates/titan-python-host",
   "crates/titan-cli",
   "collector",
