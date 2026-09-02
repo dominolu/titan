@@ -5,10 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use hftbacktest::types::{ErrorKind, LiveError, LiveEvent};
 use tokio::{
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -36,7 +33,7 @@ pub struct OrderOp {
 pub struct TradeStream {
     api_key: String,
     secret: String,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     order_rx: Receiver<OrderOp>,
 }
@@ -45,7 +42,7 @@ impl TradeStream {
     pub fn new(
         api_key: String,
         secret: String,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         order_rx: Receiver<OrderOp>,
     ) -> Self {

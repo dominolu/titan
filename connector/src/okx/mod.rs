@@ -18,11 +18,12 @@ use hftbacktest::{
 };
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
+use titan_market_plugin::MarketDataKind;
+use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
 
 use crate::{
-    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
+    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
     okx::{
         ordermanager::{OrderManager, SharedOrderManager},
         rest::OkxClient,
@@ -117,6 +118,16 @@ fn default_safety_timeout_ms() -> u64 {
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
+type SharedMarketSubscriptions = Arc<Mutex<HashMap<String, HashSet<MarketDataKind>>>>;
+
+fn all_market_kinds() -> Vec<MarketDataKind> {
+    vec![
+        MarketDataKind::Depth,
+        MarketDataKind::Trades,
+        MarketDataKind::Bbo,
+        MarketDataKind::FundingRate,
+    ]
+}
 type SharedAssets = Arc<Mutex<HashMap<String, usize>>>;
 
 /// Number of decimal places allowed by the instrument's lot size, e.g. "0.001" -> 3.
@@ -149,6 +160,8 @@ pub struct Okx {
     order_manager: SharedOrderManager,
     client: OkxClient,
     symbol_tx: Sender<String>,
+    market_tx: Sender<MarketDataCommand>,
+    market_subscriptions: SharedMarketSubscriptions,
 }
 
 impl Okx {
@@ -170,10 +183,10 @@ impl Okx {
         });
     }
 
-    fn connect_public_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_public_stream(&self, ev_tx: crate::connector::PublishSender) {
         let public_url = self.config.public_ws_url.clone();
-        let symbol_tx = self.symbol_tx.clone();
-        let symbols = self.symbols.clone();
+        let symbol_tx = self.market_tx.clone();
+        let subscriptions = self.market_subscriptions.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -191,7 +204,7 @@ impl Okx {
                     let mut stream = public_stream::PublicStream::new(
                         ev_tx.clone(),
                         symbol_tx.subscribe(),
-                        symbols.clone(),
+                        subscriptions.clone(),
                     );
                     if let Err(error) = stream.connect(&public_url).await {
                         error!(?error, "A connection error occurred.");
@@ -214,7 +227,7 @@ impl Okx {
         });
     }
 
-    fn connect_private_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_private_stream(&self, ev_tx: crate::connector::PublishSender) {
         let private_url = self.config.private_ws_url.clone();
         let api_key = self.config.api_key.clone();
         let secret = self.config.secret.clone();
@@ -284,6 +297,7 @@ impl ConnectorBuilder for Okx {
             ));
         }
         let (symbol_tx, _) = broadcast::channel(500);
+        let (market_tx, _) = broadcast::channel(500);
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
         let mut builder = reqwest::Client::builder();
         if !config.proxy.is_empty() {
@@ -305,12 +319,20 @@ impl ConnectorBuilder for Okx {
             order_manager,
             client,
             symbol_tx,
+            market_tx,
+            market_subscriptions: Default::default(),
         })
     }
 }
 
 #[async_trait::async_trait]
 impl Connector for Okx {
+    fn register_account(&mut self, symbol: String) {
+        let mut symbols = self.symbols.lock().unwrap();
+        if symbols.insert(symbol.clone()) {
+            let _ = self.symbol_tx.send(symbol);
+        }
+    }
     fn register(&mut self, symbol: String) {
         if symbol.to_uppercase() != symbol {
             error!("OKX symbol must be uppercase, e.g. BTC-USDT-SWAP.");
@@ -318,7 +340,59 @@ impl Connector for Okx {
         let mut symbols = self.symbols.lock().unwrap();
         if !symbols.contains(&symbol) {
             symbols.insert(symbol.clone());
-            self.symbol_tx.send(symbol).unwrap();
+            self.symbol_tx.send(symbol.clone()).unwrap();
+        }
+        drop(symbols);
+        self.subscribe_market_data(symbol, all_market_kinds());
+    }
+
+    fn subscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        self.market_subscriptions
+            .lock()
+            .unwrap()
+            .entry(symbol.clone())
+            .or_default()
+            .extend(kinds.iter().copied());
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Subscribe { symbol, kinds });
+    }
+
+    fn unregister(&mut self, symbol: String) {
+        self.symbols.lock().unwrap().remove(&symbol);
+        let kinds = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .get(&symbol)
+            .map(|v| v.iter().copied().collect())
+            .unwrap_or_default();
+        self.unsubscribe_market_data(symbol, kinds);
+    }
+
+    fn unsubscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        let mut subscriptions = self.market_subscriptions.lock().unwrap();
+        if let Some(active) = subscriptions.get_mut(&symbol) {
+            for kind in &kinds {
+                active.remove(kind);
+            }
+            if active.is_empty() {
+                subscriptions.remove(&symbol);
+            }
+        }
+        drop(subscriptions);
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Unsubscribe { symbol, kinds });
+    }
+
+    fn request_snapshot(&mut self, symbol: String) {
+        let _ = self.market_tx.send(MarketDataCommand::Snapshot { symbol });
+    }
+
+    fn recover_market_data(&mut self, symbols: Vec<String>) {
+        for symbol in symbols {
+            let _ = self.market_tx.send(MarketDataCommand::Snapshot { symbol });
         }
     }
 
@@ -326,7 +400,7 @@ impl Connector for Okx {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_public_stream(ev_tx.clone());
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
             self.connect_private_stream(ev_tx);
@@ -334,7 +408,20 @@ impl Connector for Okx {
         }
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn run_market_data(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_public_stream(ev_tx);
+    }
+
+    fn run_account(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_private_stream(ev_tx);
+        self.start_safety_heartbeat();
+    }
+
+    fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
+        Some(Arc::new(self.client.clone()))
+    }
+
+    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
@@ -467,7 +554,7 @@ impl Connector for Okx {
         });
     }
 
-    fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
 
@@ -554,7 +641,7 @@ fn submit_fail(
     client_order_id: &String,
     order_manager: &SharedOrderManager,
     symbol: &str,
-    tx: &UnboundedSender<PublishEvent>,
+    tx: &crate::connector::PublishSender,
     error: OkxError,
 ) {
     if let Some(order) = order_manager

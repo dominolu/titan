@@ -14,6 +14,12 @@ Implemented boundaries:
 - preallocated subscriber/runtime health and bounded fault signals;
 - `EventReceiver` channels driven by PluginEngine-owned subscriber threads, with callback
   panic/error containment and no Handler ownership inside EventEngine;
+- configurable subscriber `spin_sleep`, actively-woken `park`, and CPU-affined `dedicated`
+  polling modes; subscriber CPU ids are assigned round-robin from the configured list;
+- authorized zero-copy MarketBatch reservations so plugins can encode directly into EventArena;
+- inline FastLane callbacks and grouped asynchronous FastLane workers backed by bounded queues;
+- asynchronous FastLane delivery retains arena leases without copying payloads, preserves order,
+  supports active wake/dedicated CPU modes, and exposes queue drops and maximum depth;
 - allocation-free logarithmic latency histograms for P50/P99/P99.9/max reporting;
 - `TitanCoreRuntime` composition that starts EventEngine before PluginEngine and stops plugins
   before draining EventEngine.
@@ -32,4 +38,5 @@ cargo bench -p titan-event-engine --bench event_engine
 
 Set `TITAN_EVENT_BENCH_EVENTS` to override the default one million events.
 Set `TITAN_EVENT_BENCH_RATE` for a paced load test and `TITAN_EVENT_BENCH_CPU` to run the
-EventLoop in dedicated affinity mode.
+EventLoop in dedicated affinity mode. Set `TITAN_EVENT_BENCH_SUBSCRIBER_CPU` to run the benchmark
+subscriber in dedicated affinity mode on a separate CPU.

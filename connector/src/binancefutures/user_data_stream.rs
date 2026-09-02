@@ -7,10 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::*;
 use tokio::{
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -32,7 +29,7 @@ use crate::{
 pub struct UserDataStream {
     symbols: SharedSymbolSet,
     client: BinanceFuturesClient,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     symbol_rx: Receiver<String>,
 }
@@ -40,7 +37,7 @@ pub struct UserDataStream {
 impl UserDataStream {
     pub fn new(
         client: BinanceFuturesClient,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         symbols: SharedSymbolSet,
         symbol_rx: Receiver<String>,
@@ -120,6 +117,9 @@ impl UserDataStream {
         let request = url.into_client_request()?;
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, mut read) = ws_stream.split();
+        self.ev_tx
+            .send(PublishEvent::PrivateStreamReady)
+            .map_err(|_| BinanceFuturesError::ConnectionInterrupted)?;
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));
 
@@ -242,7 +242,7 @@ pub async fn cancel_all(
     client: BinanceFuturesClient,
     symbol: String,
     order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BinanceFuturesError> {
     // todo: rate-limit throttling.
     client.cancel_all_orders(&symbol).await?;
@@ -261,7 +261,7 @@ pub async fn cancel_all(
 pub async fn get_position_information(
     client: BinanceFuturesClient,
     mut symbols: HashSet<String>,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BinanceFuturesError> {
     // todo: rate-limit throttling.
     let position_information = client.get_position_information().await?;

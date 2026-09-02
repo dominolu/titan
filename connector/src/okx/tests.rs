@@ -200,12 +200,15 @@ fn test_deserialize_cancel_result_with_s_code() {
 #[test]
 fn test_deserialize_books() {
     let books: Books = serde_json::from_str(
-        r#"{"asks":[["64757.6","992.68"]],"bids":[["64757.5","213.28"]],"ts":"1787073009905"}"#,
+        r#"{"asks":[["64757.6","992.68"]],"bids":[["64757.5","213.28"]],"ts":"1787073009905","seqId":42,"prevSeqId":41,"checksum":123}"#,
     )
     .unwrap();
     assert_eq!(books.bids[0][0], "64757.5");
     assert_eq!(books.bids[0][1], "213.28");
     assert_eq!(books.asks[0][0], "64757.6");
+    assert_eq!(books.seq_id, 42);
+    assert_eq!(books.prev_seq_id, 41);
+    assert_eq!(books.checksum, 123);
 }
 
 #[test]
@@ -670,7 +673,7 @@ order_prefix = "titan"
 #[ignore = "requires OKX credentials and network access"]
 async fn e2e_order_roundtrip() {
     let connector = Okx::build_from(&e2e_config()).unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = crate::connector::publish_channel(64);
 
     let order = Order::new(
         9_990_001,

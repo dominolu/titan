@@ -6,10 +6,11 @@ use std::{
 };
 
 use crate::{
-    ActivationGate, BoundServices, ErrorKind, EventControl, PluginBundle, PluginContext,
-    PluginError, PluginIdentity, PluginInit, PluginPlan, PluginRegistry, ResourceScope,
-    RouteTransaction, ServiceKey, ServiceRegistry, StopReason, SubscriptionCandidate,
-    SubscriptionRuntime, ValidationContext, publication_grants, subscription_grants,
+    ActivationGate, BoundServices, ErrorKind, EventControl, EventHandler, EventView, PluginBundle,
+    PluginContext, PluginError, PluginIdentity, PluginInit, PluginPlan, PluginRegistry,
+    ResourceScope, RouteTransaction, ServiceKey, ServiceRegistry, StopReason,
+    SubscriptionCandidate, SubscriptionRuntime, SubscriptionSpec, ValidationContext,
+    publication_grants, subscription_grants,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,8 +88,29 @@ pub struct PreparedRuntime {
     staged_subscriptions: Vec<(
         Arc<str>,
         SubscriptionCandidate,
+        SubscriptionSpec,
         Arc<dyn crate::EventHandler>,
     )>,
+}
+
+struct MailboxHandlers(Vec<(Arc<str>, u32, Arc<dyn EventHandler>)>);
+
+impl EventHandler for MailboxHandlers {
+    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+        let Some((_, _, handler)) = self.0.iter().find(|(event_type, schema_version, _)| {
+            event_type.as_ref() == event.event_type && *schema_version == event.schema_version
+        }) else {
+            return Err(crate::engine_error(
+                ErrorKind::PluginFailed,
+                "dispatch_shared_mailbox",
+                format!(
+                    "no handler for {} schema {}",
+                    event.event_type, event.schema_version
+                ),
+            ));
+        };
+        handler.handle(event)
+    }
 }
 
 #[derive(Default)]
@@ -194,11 +216,16 @@ impl RuntimeHost {
                     panic_error(&entry.identity, LifecycleState::Validated, "validate")
                 })??;
                 for binding in &bundle.subscription_bindings {
-                    let candidate =
-                        events.stage_subscription(transaction, &entry.identity, &binding.spec)?;
+                    let candidate = events.stage_subscription_in_mailbox(
+                        transaction,
+                        &entry.identity,
+                        "plugin-default",
+                        &binding.spec,
+                    )?;
                     staged.push((
                         entry.spec.instance_id.clone(),
                         candidate,
+                        binding.spec.clone(),
                         binding.handler.clone(),
                     ));
                 }
@@ -291,24 +318,49 @@ impl RuntimeHost {
                 "event engine returned an invalid token set",
             ));
         }
-        for ((instance_id, _, handler), subscription) in
+        let mut mailboxes = BTreeMap::<
+            u64,
+            (
+                Arc<str>,
+                Arc<dyn crate::EventReceiver>,
+                Vec<crate::SubscriptionToken>,
+                Vec<(Arc<str>, u32, Arc<dyn EventHandler>)>,
+            ),
+        >::new();
+        for ((instance_id, _, spec, handler), subscription) in
             prepared.staged_subscriptions.into_iter().zip(committed)
         {
+            let mailbox = mailboxes.entry(subscription.mailbox_id).or_insert_with(|| {
+                (
+                    instance_id.clone(),
+                    subscription.receiver.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+            });
+            mailbox.2.push(subscription.token);
+            mailbox
+                .3
+                .push((spec.event_type, spec.schema_version, handler));
+        }
+        for (_, (instance_id, receiver, tokens, handlers)) in mailboxes {
             let slot = self
                 .slots
                 .get_mut(&instance_id)
                 .expect("subscription owner exists");
-            let runtime = match SubscriptionRuntime::start(
+            let runtime = match SubscriptionRuntime::start_group(
                 slot.identity.clone(),
                 slot.gate.clone(),
-                subscription.receiver,
-                handler,
+                receiver,
+                Arc::new(MailboxHandlers(handlers)),
                 events.clone(),
-                subscription.token,
+                tokens.clone(),
             ) {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    let _ = events.retire_subscription(subscription.token);
+                    for token in tokens {
+                        let _ = events.retire_subscription(token);
+                    }
                     self.rollback_start(&started, services, &events, prepared.route_transaction);
                     return Err(error);
                 }

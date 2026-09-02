@@ -1172,6 +1172,7 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
+ "crc32fast",
  "ed25519-dalek",
  "futures-util",
  "hashbrown 0.16.1",
@@ -1183,12 +1184,18 @@ dependencies = [
  "rand 0.9.5",
  "reqwest",
  "rmp-serde",
+ "semver",
  "serde",
  "serde_json",
  "serde_qs",
  "sha2 0.10.9",
  "sha3",
+ "smallvec",
  "thiserror",
+ "titan-account-plugin",
+ "titan-event-engine",
+ "titan-market-plugin",
+ "titan-plugin-engine",
  "tokio",
  "tokio-tungstenite",
  "toml 0.9.12+spec-1.1.0",
@@ -4204,6 +4211,9 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "snap"
@@ -4476,6 +4486,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "titan-account-plugin"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "titan-event-engine",
+ "titan-plugin-engine",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "titan-cli"
 version = "0.1.0"
 dependencies = [
@@ -4523,6 +4546,19 @@ dependencies = [
  "titan-runtime",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "titan-market-plugin"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "titan-event-engine",
+ "titan-plugin-engine",
+ "tracing",
 ]
 
 [[package]]

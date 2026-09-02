@@ -61,6 +61,13 @@ fn main() {
         config.runtime.mode = RuntimeMode::Dedicated;
         config.runtime.cpu_affinity = Some(cpu);
     }
+    if let Some(cpu) = std::env::var("TITAN_EVENT_BENCH_SUBSCRIBER_CPU")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        config.subscribers.runtime_mode = SubscriberRuntimeMode::Dedicated;
+        config.subscribers.cpu_affinity = vec![cpu];
+    }
 
     let engine = EventEngine::new(config).expect("benchmark config must be valid");
     let handle = engine.handle();

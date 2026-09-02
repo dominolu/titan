@@ -2,9 +2,10 @@ use std::{
     collections::{BTreeSet, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    thread::Thread,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,10 @@ use titan_plugin_engine::{
     PluginError, PluginIdentity, SubscriptionSpec,
 };
 
-use crate::{Delivery, EngineMetrics, FaultKind, FaultSignal, SubscriberHealth, SubscriberState};
+use crate::{
+    Delivery, EngineMetrics, FaultKind, FaultSignal, SubscriberHealth, SubscriberRuntimeMode,
+    SubscriberState,
+};
 use crate::{TracePoint, TraceStage};
 
 const ADMISSION_CLOSED: usize = 1_usize << (usize::BITS - 1);
@@ -123,7 +127,12 @@ pub(crate) struct SubscriberChannel {
     health: Arc<SubscriberHealth>,
     admission: AtomicUsize,
     stop: AtomicBool,
+    runtime_mode: SubscriberRuntimeMode,
+    spin_iterations: usize,
     idle_sleep: Duration,
+    cpu_affinity: Option<usize>,
+    affinity_applied: AtomicBool,
+    waiter: Mutex<Option<Thread>>,
     fault_signals: Arc<ArrayQueue<FaultSignal>>,
     trace_ring: Arc<ArrayQueue<TracePoint>>,
     metrics: Arc<EngineMetrics>,
@@ -137,7 +146,10 @@ pub(crate) struct SubscriberChannelArgs {
     pub high_ratio: f64,
     pub low_ratio: f64,
     pub health: Arc<SubscriberHealth>,
+    pub runtime_mode: SubscriberRuntimeMode,
+    pub spin_iterations: usize,
     pub idle_sleep: Duration,
+    pub cpu_affinity: Option<usize>,
     pub fault_signals: Arc<ArrayQueue<FaultSignal>>,
     pub trace_ring: Arc<ArrayQueue<TracePoint>>,
     pub metrics: Arc<EngineMetrics>,
@@ -158,7 +170,12 @@ impl SubscriberChannel {
             health: args.health,
             admission: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
+            runtime_mode: args.runtime_mode,
+            spin_iterations: args.spin_iterations,
             idle_sleep: args.idle_sleep,
+            cpu_affinity: args.cpu_affinity,
+            affinity_applied: AtomicBool::new(false),
+            waiter: Mutex::new(None),
             fault_signals: args.fault_signals,
             trace_ring: args.trace_ring,
             metrics: args.metrics,
@@ -172,12 +189,54 @@ impl EventReceiver for SubscriberChannel {
         handler: &dyn EventHandler,
         idle_wait: Duration,
     ) -> Result<DispatchOutcome, PluginError> {
+        self.apply_affinity_once();
         if self.stop.load(Ordering::Acquire) || self.health.state() == SubscriberState::Failed {
             return Ok(DispatchOutcome::Closed);
         }
-        let Some(tracked) = self.queue.pop().or_else(|| self.latest.pop()) else {
-            std::thread::sleep(idle_wait.max(self.idle_sleep));
-            return Ok(DispatchOutcome::Idle);
+        let tracked = if let Some(tracked) = self.pop_next() {
+            tracked
+        } else {
+            match self.runtime_mode {
+                SubscriberRuntimeMode::Dedicated => {
+                    std::hint::spin_loop();
+                    return Ok(DispatchOutcome::Idle);
+                }
+                SubscriberRuntimeMode::SpinSleep => {
+                    let mut value = None;
+                    for _ in 0..self.spin_iterations {
+                        std::hint::spin_loop();
+                        if let Some(tracked) = self.pop_next() {
+                            value = Some(tracked);
+                            break;
+                        }
+                    }
+                    let Some(tracked) = value else {
+                        std::thread::sleep(idle_wait.max(self.idle_sleep));
+                        return Ok(DispatchOutcome::Idle);
+                    };
+                    tracked
+                }
+                SubscriberRuntimeMode::Park => {
+                    let current = std::thread::current();
+                    *self.waiter.lock().unwrap_or_else(|p| p.into_inner()) = Some(current.clone());
+                    let tracked = self.pop_next().or_else(|| {
+                        std::thread::park_timeout(idle_wait.max(self.idle_sleep));
+                        self.pop_next()
+                    });
+                    let mut waiter = self.waiter.lock().unwrap_or_else(|p| p.into_inner());
+                    if waiter
+                        .as_ref()
+                        .is_some_and(|thread| thread.id() == current.id())
+                    {
+                        *waiter = None;
+                    }
+                    drop(waiter);
+                    let Some(tracked) = tracked else {
+                        return Ok(DispatchOutcome::Idle);
+                    };
+                    tracked
+                }
+            }
         };
         self.health
             .set_channel_depth(self.queue.len() + self.latest.len());
@@ -246,6 +305,33 @@ impl EventReceiver for SubscriberChannel {
 }
 
 impl SubscriberChannel {
+    fn pop_next(&self) -> Option<TrackedDelivery> {
+        self.queue.pop().or_else(|| self.latest.pop())
+    }
+
+    fn apply_affinity_once(&self) {
+        if self
+            .affinity_applied
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            && let Some(core_id) = self.cpu_affinity
+        {
+            let _ = core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
+        }
+    }
+
+    fn wake_waiter(&self) {
+        if self.runtime_mode == SubscriberRuntimeMode::Park
+            && let Some(waiter) = self
+                .waiter
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+        {
+            waiter.unpark();
+        }
+    }
+
     pub(crate) fn try_push_critical(
         &self,
         delivery: TrackedDelivery,
@@ -304,6 +390,7 @@ impl SubscriberChannel {
                     }
                     self.health
                         .set_channel_depth(self.queue.len() + self.latest.len());
+                    self.wake_waiter();
                     return replaced;
                 }
                 Err(returned) => {
@@ -317,6 +404,7 @@ impl SubscriberChannel {
     fn after_enqueue(&self) {
         self.health
             .set_channel_depth(self.queue.len() + self.latest.len());
+        self.wake_waiter();
         if self.queue.len() >= self.high_watermark
             && self
                 .health
@@ -362,6 +450,7 @@ impl SubscriberChannel {
     pub(crate) fn request_stop(&self) {
         self.close_admission_and_wait();
         self.stop.store(true, Ordering::Release);
+        self.wake_waiter();
     }
 
     pub(crate) fn suspend(&self) {

@@ -7,7 +7,7 @@ use std::{
 use hftbacktest::types::{ErrorKind, LiveError, LiveEvent, Order, Value};
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
+use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::error;
 
 use crate::{
@@ -125,7 +125,7 @@ pub struct Bybit {
 }
 
 impl Bybit {
-    fn connect_public_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_public_stream(&self, ev_tx: crate::connector::PublishSender) {
         // Connects to the public stream for the market data.
         let public_url = self.config.public_url.clone();
         let symbol_tx = self.symbol_tx.clone();
@@ -165,7 +165,7 @@ impl Bybit {
         });
     }
 
-    fn connect_private_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_private_stream(&self, ev_tx: crate::connector::PublishSender) {
         // Connects to the private stream for the position and order data.
         let private_url = self.config.private_url.clone();
         let api_key = self.config.api_key.clone();
@@ -220,7 +220,7 @@ impl Bybit {
         });
     }
 
-    fn connect_trade_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_trade_stream(&self, ev_tx: crate::connector::PublishSender) {
         let trade_url = self.config.trade_url.clone();
         let api_key = self.config.api_key.clone();
         let secret = self.config.secret.clone();
@@ -295,13 +295,13 @@ impl Connector for Bybit {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_public_stream(ev_tx.clone());
         self.connect_private_stream(ev_tx.clone());
         self.connect_trade_stream(ev_tx);
     }
 
-    fn submit(&self, asset: String, order: Order, ev_tx: UnboundedSender<PublishEvent>) {
+    fn submit(&self, asset: String, order: Order, ev_tx: crate::connector::PublishSender) {
         match self
             .order_manager
             .lock()
@@ -327,7 +327,7 @@ impl Connector for Bybit {
         }
     }
 
-    fn cancel(&self, asset: String, order: Order, ev_tx: UnboundedSender<PublishEvent>) {
+    fn cancel(&self, asset: String, order: Order, ev_tx: crate::connector::PublishSender) {
         match self.order_manager.lock().unwrap().cancel_order(
             &asset,
             &self.config.category,

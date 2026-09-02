@@ -13,8 +13,11 @@
 //! let ticker = api.get_ticker("BTCUSDT").await?;
 //! ```
 
+pub mod account_plugin;
 pub mod api;
 pub mod connector;
+mod market_event;
+pub mod market_plugin;
 mod utils;
 
 #[cfg(feature = "binancefutures")]

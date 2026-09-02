@@ -22,14 +22,7 @@ use iceoryx2::{
     node::NodeBuilder,
     prelude::{SignalHandlingMode, ipc},
 };
-use tokio::{
-    runtime::Builder,
-    select, signal,
-    sync::{
-        Notify,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    },
-};
+use tokio::{runtime::Builder, select, signal, sync::Notify};
 use tracing::error;
 
 use crate::{
@@ -57,6 +50,7 @@ pub mod okx;
 
 mod api;
 mod connector;
+mod market_event;
 //mod fuse;
 mod utils;
 
@@ -67,7 +61,7 @@ struct Position {
 
 fn run_receive_task(
     name: &str,
-    tx: UnboundedSender<PublishEvent>,
+    tx: crate::connector::PublishSender,
     connector: &mut Box<dyn Connector>,
     shutting_down: &AtomicBool,
 ) -> Result<(), ChannelError> {
@@ -129,7 +123,7 @@ fn run_receive_task(
 async fn run_publish_task(
     name: &str,
     order_manager: Arc<Mutex<dyn GetOrders>>,
-    mut rx: UnboundedReceiver<PublishEvent>,
+    mut rx: crate::connector::PublishReceiver,
     shutdown_signal: Arc<Notify>,
 ) -> Result<(), ChannelError> {
     let mut depth = HashMap::new();
@@ -143,6 +137,9 @@ async fn run_publish_task(
             }
             Some(msg) = rx.recv() => {
                 match msg {
+                    PublishEvent::QueueOverflow { .. } => {
+                        error!("bounded connector queue overflowed; market state requires resync");
+                    }
                     PublishEvent::RegisterInstrument {
                         id,
                         symbol,
@@ -201,7 +198,7 @@ async fn run_publish_task(
                             bot_tx.send(TO_ALL, &ev)?;
                         }
                     }
-                    PublishEvent::FeedBatch { symbol, events } => {
+                    PublishEvent::FeedBatch { symbol, events, .. } => {
                         let mut fused = Vec::with_capacity(events.len());
                         for event in events {
                             fused.extend(handle_feed_event(&symbol, event, &mut depth));
@@ -211,12 +208,16 @@ async fn run_publish_task(
                             bot_tx.send_feed_batch(TO_ALL, instrument_id, events)?;
                         }
                     }
+                    PublishEvent::StreamInvalidated { symbol, epoch } => {
+                        error!(%symbol, epoch, "connector invalidated market stream");
+                    }
                     PublishEvent::BatchStart(id) => {
                         bot_tx.send(id, &LiveEvent::BatchStart)?;
                     }
                     PublishEvent::BatchEnd(id) => {
                         bot_tx.send(id, &LiveEvent::BatchEnd)?;
                     }
+                    PublishEvent::PrivateStreamReady => {}
                 }
             }
         }
@@ -368,7 +369,8 @@ async fn main() {
         shutdown_signal_.notify_waiters();
     });
 
-    let (pub_tx, pub_rx) = unbounded_channel();
+    let (pub_tx, pub_rx) =
+        crate::connector::publish_channel(crate::connector::DEFAULT_PUBLISH_QUEUE_CAPACITY);
 
     let config = read_to_string(&args.config)
         .map_err(|error| {
