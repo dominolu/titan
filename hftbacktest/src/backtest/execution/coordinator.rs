@@ -180,6 +180,7 @@ where
             order_qty: request.qty,
             exec_price: 0.0,
             exec_qty: 0.0,
+            cumulative_filled_qty: 0.0,
             maker: false,
             account_delta: None,
         }
@@ -469,6 +470,7 @@ where
             order_qty: order.request.qty,
             exec_price,
             exec_qty,
+            cumulative_filled_qty: order.filled_qty,
             maker,
             account_delta,
         })

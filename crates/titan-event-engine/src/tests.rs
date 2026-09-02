@@ -82,6 +82,403 @@ struct BlockingHandler {
     release: Receiver<()>,
 }
 
+#[test]
+fn primary_async_lane_owns_handler_and_advances_three_watermarks() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("primary", 1, EventClass::Critical, PoolKind::SmallEvent)
+        .unwrap();
+    engine.start().unwrap();
+
+    let (tx, rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([42]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 4,
+                critical_reserve: 1,
+                reliable_pending_capacity: 4,
+                snapshot_staging_capacity: 4,
+                control_capacity: 4,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let publisher_thread = thread::current().id();
+    let mut request = PublishRequest::new("primary", 1, b"one");
+    request.routing_key = 42;
+    handle.try_publish(request).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"one");
+    wait_until(|| lane.progress().committed_sequence == 1);
+    assert_eq!(
+        lane.progress(),
+        LaneProgress {
+            admitted_sequence: 1,
+            dispatched_sequence: 1,
+            committed_sequence: 1,
+        }
+    );
+    let (worker_tx, worker_rx) = bounded(1);
+    lane.submit_safe_point(move || {
+        worker_tx.send(thread::current().id()).unwrap();
+        Ok(())
+    })
+    .unwrap()
+    .wait(Instant::now() + Duration::from_secs(1))
+    .unwrap();
+    assert_ne!(worker_rx.recv().unwrap(), publisher_thread);
+
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn snapshot_barrier_stages_then_replays_only_newer_tail() {
+    let mut config = test_config();
+    config.arena.snapshot.slots = 16;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-source",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, rx) = bounded(8);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("snapshot-source"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 8,
+                critical_reserve: 1,
+                reliable_pending_capacity: 4,
+                snapshot_staging_capacity: 8,
+                control_capacity: 4,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let barrier = lane
+        .begin_snapshot_barrier(SnapshotBarrierRequest {
+            source_ids: Arc::from([3]),
+            deadline: Instant::now() + Duration::from_secs(1),
+        })
+        .unwrap();
+    for (sequence, payload) in [(9, b"old".as_slice()), (11, b"new".as_slice())] {
+        let mut request = PublishRequest::new("snapshot-source", 1, payload);
+        request.source_id = 3;
+        request.source_sequence = sequence;
+        handle.try_publish(request).unwrap();
+    }
+    assert!(rx.try_recv().is_err());
+    let mut snapshot = PublishRequest::new("snapshot-source", 1, b"snapshot");
+    snapshot.source_id = 3;
+    snapshot.source_sequence = 10;
+    lane.publish_snapshot_fact(barrier, snapshot).unwrap();
+    let replay_watermark = lane
+        .snapshot_provider_complete(
+            barrier,
+            &[StreamBoundary {
+                source_id: 3,
+                stream_epoch: 1,
+                source_sequence: 10,
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"snapshot"
+    );
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"new");
+    wait_until(|| lane.progress().committed_sequence >= replay_watermark);
+    lane.complete_snapshot_barrier(barrier, lane.progress().committed_sequence)
+        .unwrap();
+    assert_eq!(lane.health().state, SubscriberState::Normal);
+    assert!(lane.snapshot_barrier().is_none());
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn overloaded_primary_lane_isolated_from_healthy_lane() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-isolation",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+
+    let subscription = [PrimarySubscriptionSpec {
+        event_type: Arc::from("primary-isolation"),
+        schema_version: 1,
+        qos: EventQos::ReliableOrdered,
+        routing_keys: Arc::from([]),
+    }];
+    let (entered_tx, entered_rx) = bounded(8);
+    let (release_tx, release_rx) = bounded(8);
+    let slow = handle
+        .register_primary_async_lane(
+            &subscription,
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 2,
+                snapshot_staging_capacity: 2,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    let (healthy_tx, healthy_rx) = bounded(8);
+    let healthy = handle
+        .register_primary_async_lane(
+            &subscription,
+            PrimaryAsyncLaneConfig {
+                capacity: 8,
+                critical_reserve: 1,
+                reliable_pending_capacity: 2,
+                snapshot_staging_capacity: 8,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(healthy_tx)),
+        )
+        .unwrap();
+
+    handle
+        .try_publish(PublishRequest::new("primary-isolation", 1, b"0"))
+        .unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"0"
+    );
+    for value in 1_u8..=5 {
+        handle
+            .try_publish(PublishRequest::new("primary-isolation", 1, &[value]))
+            .unwrap();
+    }
+    wait_until(|| slow.health().state == SubscriberState::ResyncRequired);
+    for expected in 0_u8..=5 {
+        assert_eq!(
+            healthy_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            vec![if expected == 0 { b'0' } else { expected }]
+        );
+    }
+    assert_eq!(healthy.health().state, SubscriberState::Normal);
+
+    for _ in 0..6 {
+        let _ = release_tx.try_send(());
+    }
+    assert!(handle.unregister_primary_async_lane(slow.token()));
+    assert!(handle.unregister_primary_async_lane(healthy.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-best-effort",
+            1,
+            EventClass::Market,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (entered_tx, entered_rx) = bounded(4);
+    let (release_tx, release_rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary-best-effort"),
+                schema_version: 1,
+                qos: EventQos::BestEffort,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 1,
+                snapshot_staging_capacity: 2,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"first"))
+        .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"queued"))
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"dropped"))
+        .unwrap();
+    wait_until(|| lane.progress().admitted_sequence == 2);
+    assert_eq!(lane.progress().admitted_sequence, 2);
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn primary_latest_is_coalesced_independently_per_routing_key() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-latest",
+            1,
+            EventClass::Market,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (entered_tx, entered_rx) = bounded(8);
+    let (release_tx, release_rx) = bounded(8);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary-latest"),
+                schema_version: 1,
+                qos: EventQos::Latest,
+                routing_keys: Arc::from([1, 2]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 1,
+                snapshot_staging_capacity: 4,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    let publish = |key, payload| {
+        let mut request = PublishRequest::new("primary-latest", 1, payload);
+        request.routing_key = key;
+        handle.try_publish(request).unwrap();
+    };
+    publish(1, b"first");
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"first"
+    );
+    publish(1, b"queued");
+    publish(1, b"latest-one");
+    publish(2, b"latest-two");
+    for _ in 0..4 {
+        release_tx.send(()).unwrap();
+    }
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"queued"
+    );
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"latest-one"
+    );
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"latest-two"
+    );
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn aborted_snapshot_barrier_releases_staging_and_allows_retry() {
+    let mut config = test_config();
+    config.arena.snapshot.slots = 4;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-abort",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, _rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("snapshot-abort"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig::default(),
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let request = || SnapshotBarrierRequest {
+        source_ids: Arc::from([9]),
+        deadline: Instant::now() + Duration::from_secs(1),
+    };
+    let first = lane.begin_snapshot_barrier(request()).unwrap();
+    let mut staged = PublishRequest::new("snapshot-abort", 1, b"staged");
+    staged.source_id = 9;
+    staged.source_sequence = 1;
+    handle.try_publish(staged).unwrap();
+    wait_until(|| {
+        lane.snapshot_barrier()
+            .is_some_and(|value| value.staged_events == 1)
+    });
+    lane.abort_snapshot_barrier(first).unwrap();
+    assert!(lane.snapshot_barrier().is_none());
+    assert_eq!(lane.health().state, SubscriberState::ResyncRequired);
+    let retry = lane.begin_snapshot_barrier(request()).unwrap();
+    lane.abort_snapshot_barrier(retry).unwrap();
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
 impl EventHandler for BlockingHandler {
     fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
         self.entered

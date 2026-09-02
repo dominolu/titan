@@ -18,8 +18,9 @@ use titan_plugin_engine::{EventHandler, EventQos, EventView, PluginIdentity, Sub
 use crate::{
     EngineClock, EngineError, EngineMetrics, EventArena, EventClass, EventDescriptor, EventHeader,
     EventRecord, FaultKind, FaultSignal, OwnedEvent, PendingAllocation, PendingEntry, PoolKind,
-    PublishError, PublishRequest, ReserveRequest, RuntimeHealth, RuntimeHealthSnapshot,
-    RuntimeMode, SubscriberChannel, SubscriberChannelArgs, SubscriberHealth,
+    PrimaryAsyncLane, PrimaryAsyncLaneConfig, PrimaryAsyncLaneHandle, PrimaryLaneToken,
+    PrimarySubscriptionSpec, PublishError, PublishRequest, ReserveRequest, RuntimeHealth,
+    RuntimeHealthSnapshot, RuntimeMode, SubscriberChannel, SubscriberChannelArgs, SubscriberHealth,
     SubscriberHealthSnapshot, SubscriberRoute, SubscriberRuntimeMode, SubscriberState, TimerSignal,
     TracePoint, TraceStage, TrackedDelivery,
     config::{DrainBudgetConfig, EventEngineConfig},
@@ -84,6 +85,8 @@ pub(crate) struct EngineShared {
     pub event_thread: OnceLock<thread::Thread>,
     fast_lanes: RwLock<BTreeMap<u64, Arc<FastLaneRoute>>>,
     next_fast_lane: AtomicU64,
+    primary_lanes: RwLock<BTreeMap<u64, Arc<PrimaryAsyncLane>>>,
+    next_primary_lane: AtomicU64,
 }
 
 struct FastLaneRoute {
@@ -427,6 +430,23 @@ impl EngineShared {
         }
     }
 
+    fn dispatch_primary_lanes(
+        &self,
+        descriptor: &Arc<EventDescriptor>,
+        header: EventHeader,
+        payload: &OwnedEvent,
+    ) {
+        let lanes = self
+            .primary_lanes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for lane in lanes.values() {
+            if lane.matches(descriptor.id, header.routing_key) {
+                lane.enqueue(descriptor.clone(), header, payload.clone());
+            }
+        }
+    }
+
     pub(crate) fn descriptor(
         &self,
         event_type: &str,
@@ -540,6 +560,8 @@ impl EventEngine {
             event_thread: OnceLock::new(),
             fast_lanes: RwLock::new(BTreeMap::new()),
             next_fast_lane: AtomicU64::new(1),
+            primary_lanes: RwLock::new(BTreeMap::new()),
+            next_primary_lane: AtomicU64::new(1),
             config,
         });
         Ok(Self {
@@ -664,7 +686,23 @@ impl EventEngine {
         for route in fast_lanes.into_values() {
             route.stop();
         }
+        let primary_lanes = std::mem::take(
+            &mut *self
+                .shared
+                .primary_lanes
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for lane in primary_lanes.into_values() {
+            lane.stop_and_join();
+        }
         self.shared.running.store(false, Ordering::Release);
+        // Subscriber runtimes observe channel closure asynchronously. Give a just-returning
+        // handler a bounded chance to drop its final EventLease before reporting a real leak.
+        let lease_deadline = Instant::now() + Duration::from_millis(100);
+        while self.shared.arena.outstanding_blocks() != 0 && Instant::now() < lease_deadline {
+            thread::yield_now();
+        }
         let outstanding = self.shared.arena.outstanding_blocks();
         if outstanding != 0 {
             return Err(EngineError::OutstandingBlocks(outstanding));
@@ -691,6 +729,81 @@ impl Drop for EventEngine {
 }
 
 impl EventEngineHandle {
+    /// Registers an EventEngine-owned PRIMARY async lane. Unlike legacy FastLane registration,
+    /// this route is not mirrored into a caller-owned EventReceiver and the handler is invoked
+    /// only by the lane's isolated worker.
+    pub fn register_primary_async_lane(
+        &self,
+        subscriptions: &[PrimarySubscriptionSpec],
+        config: PrimaryAsyncLaneConfig,
+        handler: Arc<dyn EventHandler>,
+    ) -> Result<PrimaryAsyncLaneHandle, EngineError> {
+        if !self.shared.running.load(Ordering::Acquire) {
+            return Err(EngineError::NotRunning);
+        }
+        if subscriptions.is_empty() {
+            return Err(EngineError::InvalidPrimaryLaneConfig);
+        }
+        let mut resolved = Vec::with_capacity(subscriptions.len());
+        let mut seen = std::collections::BTreeSet::new();
+        for spec in subscriptions {
+            let descriptor = self
+                .shared
+                .descriptor(&spec.event_type, spec.schema_version)
+                .ok_or(EngineError::InvalidEvent)?;
+            if !seen.insert(descriptor.id) {
+                return Err(EngineError::InvalidPrimaryLaneConfig);
+            }
+            let mut normalized = spec.clone();
+            let mut keys = normalized.routing_keys.to_vec();
+            keys.sort_unstable();
+            keys.dedup();
+            normalized.routing_keys = keys.into();
+            resolved.push((descriptor.id, normalized));
+        }
+        let token = self.shared.next_primary_lane.fetch_add(1, Ordering::AcqRel);
+        let lane = PrimaryAsyncLane::start(
+            token,
+            &resolved,
+            config,
+            handler,
+            self.shared.fault_signals.clone(),
+        )?;
+        self.shared
+            .primary_lanes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(token, lane.clone());
+        Ok(PrimaryAsyncLaneHandle {
+            lane,
+            shared: self.shared.clone(),
+        })
+    }
+
+    pub fn unregister_primary_async_lane(&self, token: PrimaryLaneToken) -> bool {
+        self.unregister_primary_async_lane_before(token, Instant::now() + Duration::from_secs(30))
+            .unwrap_or(false)
+    }
+
+    pub fn unregister_primary_async_lane_before(
+        &self,
+        token: PrimaryLaneToken,
+        deadline: Instant,
+    ) -> Result<bool, EngineError> {
+        let lane = self
+            .shared
+            .primary_lanes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&token.0);
+        if let Some(lane) = lane {
+            lane.stop_and_join_until(deadline)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// Registers a synchronous single-consumer route on the publisher thread. The normal
     /// EventEngine route remains active, so this is suitable for a bounded low-latency strategy
     /// callback plus an asynchronous audit/mirror subscriber. A failed or panicking callback is
@@ -897,6 +1010,8 @@ impl EventEngineHandle {
             routing_key: request.routing_key,
             trace: request.trace,
         };
+        self.shared
+            .dispatch_primary_lanes(&descriptor, header, &payload);
         self.shared
             .dispatch_fast_lanes(&descriptor, header, &payload);
         let record = EventRecord {
@@ -1165,6 +1280,8 @@ impl MarketBatchReservation {
 
     pub fn commit(self) -> Result<(), PublishError> {
         let payload = self.reservation.commit();
+        self.shared
+            .dispatch_primary_lanes(&self.descriptor, self.header, &payload);
         self.shared
             .dispatch_fast_lanes(&self.descriptor, self.header, &payload);
         let record = EventRecord {

@@ -77,8 +77,26 @@ pub enum EngineError {
     InvalidEvent,
     #[error("invalid asynchronous FastLane configuration")]
     InvalidFastLaneConfig,
+    #[error("invalid PRIMARY asynchronous lane configuration")]
+    InvalidPrimaryLaneConfig,
+    #[error("safe-point action panicked")]
+    SafePointPanicked,
+    #[error("snapshot barrier request is invalid")]
+    InvalidSnapshotBarrier,
+    #[error("a snapshot barrier is already active")]
+    SnapshotBarrierActive,
+    #[error("snapshot barrier {0} does not exist or is in the wrong state")]
+    UnknownSnapshotBarrier(u64),
+    #[error("snapshot staging capacity is exhausted")]
+    SnapshotStagingFull,
+    #[error("snapshot completion did not provide every stream boundary")]
+    SnapshotBoundaryMissing,
+    #[error("snapshot replay has not reached the committed watermark")]
+    SnapshotReplayNotCommitted,
     #[error("subscriber runtime failed: {0}")]
     SubscriberRuntime(String),
+    #[error("PRIMARY lane {0} did not stop before its deadline")]
+    PrimaryLaneStopTimeout(u64),
     #[error("event arena still has {0} outstanding blocks")]
     OutstandingBlocks(usize),
     #[error("timer queue is full")]

@@ -355,8 +355,9 @@ impl AccountEventPublisher {
         }
         let header = event.header();
         self.validate_header(header)?;
-        let (expected_kind, expected_len) = crate::account_event_layout(T::EVENT_TYPE)
-            .ok_or_else(|| publisher_error("account event type is not authorized"))?;
+        let (expected_kind, expected_len) =
+            crate::account_event_layout_version(T::EVENT_TYPE, T::SCHEMA_VERSION)
+                .ok_or_else(|| publisher_error("account event type is not authorized"))?;
         if header.kind != expected_kind || T::ENCODED_LEN != expected_len {
             return Err(publisher_error(
                 "account event kind or payload length does not match its schema",
@@ -377,7 +378,7 @@ impl AccountEventPublisher {
         let source_sequence = committed.saturating_add(1);
         let mut reservation = self.inner.reserve_event_payload(
             T::EVENT_TYPE,
-            ACCOUNT_EVENT_SCHEMA_VERSION,
+            T::SCHEMA_VERSION,
             T::ENCODED_LEN,
             EventPublishMetadata {
                 source_id: stream.0,

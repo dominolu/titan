@@ -550,6 +550,8 @@ where
                     },
                     0,
                 ],
+                local_account_no: 0,
+                _account_reserved: 0,
                 asset_no,
                 order_id: request.client_order_id,
                 price: request.price,
@@ -1494,7 +1496,7 @@ where
         if !self.position_pending && !self.fills.is_empty() {
             for fill in &self.fills {
                 let position = &mut self.positions[fill.asset_no as usize];
-                *position += fill.qty * f64::from(fill.side);
+                *position += fill.last_fill_qty * f64::from(fill.side);
                 self.report_projected_positions[fill.asset_no as usize] = true;
             }
             self.position_pending = true;

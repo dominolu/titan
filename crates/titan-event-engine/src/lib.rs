@@ -18,6 +18,7 @@ mod error;
 mod health;
 mod metrics;
 mod model;
+mod primary;
 
 pub use arena::*;
 pub use channel::*;
@@ -28,6 +29,7 @@ pub use error::*;
 pub use health::*;
 pub use metrics::*;
 pub use model::*;
+pub use primary::*;
 
 pub use titan_plugin_engine::CORE_RUNTIME_API_VERSION;
 

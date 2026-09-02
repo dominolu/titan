@@ -93,7 +93,8 @@ pub fn project_execution_report(
             local_ts: report.delivery_ts,
             sequence: report.sequence,
             price: report.exec_price,
-            qty: report.exec_qty,
+            last_fill_qty: report.exec_qty,
+            cumulative_filled_qty: report.cumulative_filled_qty,
             venue_no: report.venue_id.0,
             instrument_id: report.instrument_id.0,
             reason,
@@ -140,6 +141,7 @@ pub fn project_order_response(
         order_qty: order.qty,
         exec_price: order.exec_price(),
         exec_qty: order.exec_qty,
+        cumulative_filled_qty: order.qty - order.leaves_qty,
         maker: order.maker,
         account_delta: None,
     };
