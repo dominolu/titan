@@ -15,7 +15,7 @@ use hftbacktest::{
 };
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
+use tokio::sync::{broadcast, broadcast::Sender};
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, warn};
 
@@ -111,7 +111,7 @@ pub struct BinanceSpot {
 }
 
 impl BinanceSpot {
-    pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    pub fn connect_market_data_stream(&mut self, ev_tx: crate::connector::PublishSender) {
         let base_url = self.config.stream_url.clone();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
@@ -146,7 +146,7 @@ impl BinanceSpot {
         });
     }
 
-    pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    pub fn connect_user_data_stream(&self, ev_tx: crate::connector::PublishSender) {
         let base_url = self.config.ws_api_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
@@ -229,7 +229,7 @@ impl Connector for BinanceSpot {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_market_data_stream(ev_tx.clone());
         // Connects to the user stream only if the API key and secret are provided.
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
@@ -237,7 +237,7 @@ impl Connector for BinanceSpot {
         }
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
 
@@ -311,7 +311,7 @@ impl Connector for BinanceSpot {
         });
     }
 
-    fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
 

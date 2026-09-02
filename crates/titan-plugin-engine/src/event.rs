@@ -80,9 +80,17 @@ pub trait EventReceiver: Send + Sync + 'static {
     ) -> Result<DispatchOutcome, PluginError>;
 }
 
+/// An authorized, fixed-size market payload reserved from the runtime event arena.
+/// Dropping without committing returns the reservation without publishing it.
+pub trait EventPayloadReservation: Send {
+    fn payload_mut(&mut self) -> &mut [u8];
+    fn commit(self: Box<Self>) -> Result<(), PluginError>;
+}
+
 #[derive(Clone)]
 pub struct CommittedSubscription {
     pub token: SubscriptionToken,
+    pub mailbox_id: u64,
     pub receiver: Arc<dyn EventReceiver>,
 }
 
@@ -91,6 +99,7 @@ impl std::fmt::Debug for CommittedSubscription {
         formatter
             .debug_struct("CommittedSubscription")
             .field("token", &self.token)
+            .field("mailbox_id", &self.mailbox_id)
             .finish_non_exhaustive()
     }
 }
@@ -105,6 +114,16 @@ pub trait EventControl: Send + Sync + 'static {
         owner: &PluginIdentity,
         spec: &SubscriptionSpec,
     ) -> Result<SubscriptionCandidate, PluginError>;
+    fn stage_subscription_in_mailbox(
+        &self,
+        transaction: RouteTransaction,
+        owner: &PluginIdentity,
+        mailbox: &str,
+        spec: &SubscriptionSpec,
+    ) -> Result<SubscriptionCandidate, PluginError> {
+        let _ = mailbox;
+        self.stage_subscription(transaction, owner, spec)
+    }
     fn commit_at_safe_point(
         &self,
         transaction: RouteTransaction,
@@ -129,6 +148,41 @@ pub trait EventControl: Send + Sync + 'static {
         let _ = metadata;
         self.publish(event_type, schema_version, payload, trace)
     }
+    fn reserve_market_batch(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        let _ = (event_type, schema_version, payload_length, metadata, trace);
+        Err(PluginError::new(
+            ErrorKind::SubscriptionRejected,
+            PluginIdentity::new("titan.core", "event-control"),
+            LifecycleState::Running,
+            "reserve_market_batch",
+            "event control does not support market batch reservations",
+        ))
+    }
+
+    fn reserve_event_payload(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        let _ = (event_type, schema_version, payload_length, metadata, trace);
+        Err(PluginError::new(
+            ErrorKind::SubscriptionRejected,
+            PluginIdentity::new("titan.core", "event-control"),
+            LifecycleState::Running,
+            "reserve_event_payload",
+            "event control does not support event payload reservations",
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -140,6 +194,33 @@ pub struct EventPublisher {
 }
 
 impl EventPublisher {
+    fn authorize(&self, event_type: &str, schema_version: u32) -> Result<(), PluginError> {
+        if !self
+            .allowed
+            .get(event_type)
+            .is_some_and(|versions| versions.contains(&schema_version))
+        {
+            return Err(PluginError::new(
+                ErrorKind::SubscriptionRejected,
+                self.owner.clone(),
+                LifecycleState::Running,
+                "publish_event",
+                format!("event {event_type}@{schema_version} is not authorized"),
+            ));
+        }
+        if !self.gate.is_active() {
+            return Err(PluginError::new(
+                ErrorKind::RuntimeNotActive,
+                self.owner.clone(),
+                LifecycleState::Starting,
+                "publish_event",
+                "activation gate is closed",
+            )
+            .recoverable(true));
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         owner: PluginIdentity,
         allowed: std::collections::BTreeMap<Arc<str>, BTreeSet<u32>>,
@@ -178,31 +259,47 @@ impl EventPublisher {
         metadata: EventPublishMetadata,
         trace: TraceContext,
     ) -> Result<(), PluginError> {
-        if !self
-            .allowed
-            .get(event_type)
-            .is_some_and(|versions| versions.contains(&schema_version))
-        {
-            return Err(PluginError::new(
-                ErrorKind::SubscriptionRejected,
-                self.owner.clone(),
-                LifecycleState::Running,
-                "publish_event",
-                format!("event {event_type}@{schema_version} is not authorized"),
-            ));
-        }
-        if !self.gate.is_active() {
-            return Err(PluginError::new(
-                ErrorKind::RuntimeNotActive,
-                self.owner.clone(),
-                LifecycleState::Starting,
-                "publish_event",
-                "activation gate is closed",
-            )
-            .recoverable(true));
-        }
+        self.authorize(event_type, schema_version)?;
         self.control
             .publish_with_metadata(event_type, schema_version, payload, metadata, trace)
+    }
+
+    pub fn reserve_market_batch(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        self.authorize(event_type, schema_version)?;
+        self.control.reserve_market_batch(
+            event_type,
+            schema_version,
+            payload_length,
+            metadata,
+            trace,
+        )
+    }
+
+    /// Reserves the event's declared arena pool and publishes only when the returned reservation
+    /// is committed. Dropping it rolls the block back without emitting a partial event.
+    pub fn reserve_event_payload(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        self.authorize(event_type, schema_version)?;
+        self.control.reserve_event_payload(
+            event_type,
+            schema_version,
+            payload_length,
+            metadata,
+            trace,
+        )
     }
 }
 
@@ -307,7 +404,7 @@ pub(crate) struct SubscriptionRuntime {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     control: Arc<dyn EventControl>,
-    token: SubscriptionToken,
+    tokens: Vec<SubscriptionToken>,
 }
 
 impl SubscriptionRuntime {
@@ -318,6 +415,17 @@ impl SubscriptionRuntime {
         handler: Arc<dyn EventHandler>,
         control: Arc<dyn EventControl>,
         token: SubscriptionToken,
+    ) -> Result<Self, PluginError> {
+        Self::start_group(identity, gate, receiver, handler, control, vec![token])
+    }
+
+    pub(crate) fn start_group(
+        identity: PluginIdentity,
+        gate: Arc<ActivationGate>,
+        receiver: Arc<dyn EventReceiver>,
+        handler: Arc<dyn EventHandler>,
+        control: Arc<dyn EventControl>,
+        tokens: Vec<SubscriptionToken>,
     ) -> Result<Self, PluginError> {
         let stop = Arc::new(AtomicBool::new(false));
         let runtime_stop = stop.clone();
@@ -349,7 +457,7 @@ impl SubscriptionRuntime {
             stop,
             thread: Some(thread),
             control,
-            token,
+            tokens,
         })
     }
 }
@@ -368,7 +476,13 @@ impl crate::Resource for SubscriptionRuntime {
                 )
             })
         });
-        let retire_result = self.control.retire_subscription(self.token);
+        let retire_result = self
+            .tokens
+            .iter()
+            .copied()
+            .map(|token| self.control.retire_subscription(token))
+            .find(Result::is_err)
+            .unwrap_or(Ok(()));
         if let Some(error) = join_error {
             return Err(error);
         }

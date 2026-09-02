@@ -1,8 +1,8 @@
 # Titan EventEngine 独立技术实现设计
 
-版本：v1.2
+版本：v1.3
 
-状态：技术方案基线
+状态：已实现（含 Inline/Async FastLane）
 
 适用范围：单进程、多线程、插件化实盘交易框架
 
@@ -59,7 +59,8 @@ AccountPlugin
 - MPSC 是 EventEngine 内部的事件汇聚数据结构；
 - SPSC 是 EventEngine 向单个Subscriber Runtime投递事件的内部数据结构；
 - Publisher和Subscriber不直接依赖MPSC、SPSC的具体实现；
-- EventEngine 不直接执行策略或其他业务插件的回调；
+- 正常路由下 EventEngine 不直接执行策略或其他业务插件回调；只有显式注册的 Inline FastLane
+  是 publisher 线程同步回调例外，Async FastLane 则在独立 worker 执行；
 - 下单、撤单和查询通过 Service Call 完成，不包装成事件请求；
 - ACK、Reject、Fill 等已经发生的结果通过 EventEngine 发布。
 
@@ -1338,7 +1339,7 @@ MPSC、SPSC、EventBlock引用计数、Pool回收和生命周期竞争必须使�
 
 ```text
 t0 Market Connector收到网络消息
-t1 MarketPlugin完成标准化并publish
+t1 Market Connector完成交易所语义处理、标准化并publish
 t2 EventEngine取得事件
 t3 EventEngine写入SubscriberChannel
 t4 StrategyRuntime取得EventLease
@@ -1367,6 +1368,70 @@ t8 - t0  行情到Socket发送端到端延迟
 | 关键事件静默丢失 | 0 |
 
 基准必须记录硬件、NUMA、CPU affinity、编译参数、50%/80%/95%负载以及P50、P99、P99.9和最大值。正式目标在目标硬件完成原型测试后冻结为版本化PerformanceEnvelope。
+
+### 19.5 FastLane低延迟扩展
+
+FastLane 是 EventEngine 的显式 opt-in 交付能力，不是默认路由，也不改变 Connector 对 Snapshot、
+sequence、epoch、checksum 和恢复的所有权。发布到 FastLane 的同一事件仍进入正常 EventEngine route，
+供兼容、审计和恢复消费者使用。
+
+#### Inline FastLane
+
+```text
+Publisher -> descriptor/routing-key match -> handler -> normal ingress
+```
+
+Inline 模式在 publisher 线程直接执行 handler，适用于执行时间有严格上界、无阻塞 I/O、无高竞争锁
+的内存内策略。handler error/panic 只停用对应 FastLane route，并写入 `SubscriberFailed` fault signal；
+正常 ingress publication 继续进行。
+
+#### Async FastLane
+
+```text
+Publisher
+    -> clone OwnedEvent handle（EventArena retain）
+    -> bounded priority/normal ArrayQueue
+    -> active wake / dedicated worker
+    -> handler
+
+Publisher -> normal ingress -> EventLoop -> audit Subscriber
+```
+
+一个 Async FastLane group 可匹配多个 `(event_type, schema_version)` 和 routing key，并共享一个 worker。
+队列元素只包含 descriptor、header 和引用计数 arena handle，不复制 payload。实现要求：
+
+- queue capacity 必须为正且有界；publisher 使用非阻塞 push，不等待 handler；
+- 当前 `capacity` 是每个 priority class 的容量；priority/normal 两个 queue 的理论合计上限为
+  `2 * capacity`，`fast_lane_depth_max` 记录合计深度；
+- `Dedicated` 必须配置 CPU affinity；`SpinSleep` 先自旋再 park timeout；`Park` 由 producer 主动
+  `unpark`；
+- priority 和 normal 各自保持 FIFO；priority 可绕过 normal backlog，但正在执行的 handler 不可抢占；
+- 同一要求全序的业务流必须映射到同一 lane 和同一 priority class；跨 priority 不提供全序；
+- handler error/panic 原子关闭 admission、清空未执行队列并记录 `SubscriberFailed`；
+- QueueFull 表示有序 lane 已产生不可修复 gap：增加 `fast_lane_drop_total`，写入
+  `SubscriberBackpressure`，关闭 lane admission，排空 gap 前队列后退出；禁止丢弃一条后继续交付；
+- unregister/stop 关闭 admission、唤醒 worker、排空已接收事件并 join，随后才能验证 EventArena
+  outstanding block 为零；
+- 普通 EventEngine route 与 FastLane 故障隔离，FastLane 过载不得拒绝正常 ingress。
+
+严禁使用每事件 `tokio::spawn`、无界 channel，或在 publisher 上等待 worker 释放队列空间。
+
+新增可观测指标：
+
+```text
+fast_lane_enqueue_total
+fast_lane_drop_total
+fast_lane_depth_max
+fast_lane_enqueue_latency
+fast_lane_latency            # handler执行时间
+```
+
+2026-09-01 Binance Futures production stream 验证环境为 2 个逻辑 CPU、1 个物理核。Inline 模式
+Depth steady 三轮 p50 为 `18.219/19.669/18.211us`。Async 模式在测试 handler 包含时间戳计算、
+payload copy 和 channel send 时，publisher enqueue p50 为 `0.127-0.255us`、p99 约 `1.023us`，
+实盘轮次 `fast_lane_drop_total=0`、`publish_rejected_total=0`。Async consumer 端 Depth steady p50
+约 `29-31us`，并会随 handler 成本产生尾延迟；该模式的首要保证是 publisher 隔离而非保持 Inline
+端到端延迟。正式生产数据必须在 Connector 和 worker 分属不同物理核的机器重新冻结。
 
 ## 20. 实施顺序
 

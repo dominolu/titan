@@ -8,10 +8,7 @@ use hftbacktest::prelude::{
 };
 use tokio::{
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -30,12 +27,12 @@ use crate::{
 };
 
 pub struct PublicStream {
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     symbol_rx: Receiver<String>,
 }
 
 impl PublicStream {
-    pub fn new(ev_tx: UnboundedSender<PublishEvent>, symbol_rx: Receiver<String>) -> Self {
+    pub fn new(ev_tx: crate::connector::PublishSender, symbol_rx: Receiver<String>) -> Self {
         Self { ev_tx, symbol_rx }
     }
 

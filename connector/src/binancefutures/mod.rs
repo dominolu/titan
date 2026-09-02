@@ -16,7 +16,8 @@ use hftbacktest::{
 };
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
+use titan_market_plugin::MarketDataKind;
+use tokio::sync::{broadcast, broadcast::Sender};
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, warn};
 
@@ -25,7 +26,7 @@ use crate::{
         ordermanager::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
-    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
+    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
     utils::{ExponentialBackoff, Retry},
 };
 
@@ -105,6 +106,17 @@ fn default_safety_timeout_ms() -> u64 {
 }
 
 type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
+type SharedMarketSubscriptions = Arc<Mutex<HashMap<String, HashSet<MarketDataKind>>>>;
+
+fn all_market_kinds() -> Vec<MarketDataKind> {
+    vec![
+        MarketDataKind::Depth,
+        MarketDataKind::Trades,
+        MarketDataKind::Bbo,
+        MarketDataKind::MarkPrice,
+        MarketDataKind::FundingRate,
+    ]
+}
 
 /// A connector for Binance USD-m Futures.
 pub struct BinanceFutures {
@@ -113,6 +125,8 @@ pub struct BinanceFutures {
     order_manager: SharedOrderManager,
     client: BinanceFuturesClient,
     symbol_tx: Sender<String>,
+    market_tx: Sender<MarketDataCommand>,
+    market_subscriptions: SharedMarketSubscriptions,
 }
 
 impl BinanceFutures {
@@ -138,10 +152,11 @@ impl BinanceFutures {
         });
     }
 
-    pub fn connect_market_data_stream(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    pub fn connect_market_data_stream(&mut self, ev_tx: crate::connector::PublishSender) {
         let base_url = self.config.stream_url.clone();
         let client = self.client.clone();
-        let symbol_tx = self.symbol_tx.clone();
+        let symbol_tx = self.market_tx.clone();
+        let market_subscriptions = self.market_subscriptions.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -163,6 +178,7 @@ impl BinanceFutures {
                         client.clone(),
                         ev_tx.clone(),
                         symbol_tx.subscribe(),
+                        market_subscriptions.clone(),
                     );
                     debug!("Connecting to the market data stream...");
                     stream.connect(&base_url).await?;
@@ -173,7 +189,7 @@ impl BinanceFutures {
         });
     }
 
-    pub fn connect_user_data_stream(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    pub fn connect_user_data_stream(&self, ev_tx: crate::connector::PublishSender) {
         let base_url = self.config.stream_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
@@ -226,6 +242,7 @@ impl ConnectorBuilder for BinanceFutures {
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
         let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
         let (symbol_tx, _) = broadcast::channel(500);
+        let (market_tx, _) = broadcast::channel(500);
 
         Ok(BinanceFutures {
             config,
@@ -233,12 +250,21 @@ impl ConnectorBuilder for BinanceFutures {
             order_manager,
             client,
             symbol_tx,
+            market_tx,
+            market_subscriptions: Default::default(),
         })
     }
 }
 
 #[async_trait::async_trait]
 impl Connector for BinanceFutures {
+    fn register_account(&mut self, symbol: String) {
+        let symbol = symbol.to_lowercase();
+        let mut symbols = self.symbols.lock().unwrap();
+        if symbols.insert(symbol.clone()) {
+            let _ = self.symbol_tx.send(symbol);
+        }
+    }
     fn register(&mut self, symbol: String) {
         // Binance futures symbols must be lowercase to subscribe to the WebSocket stream.
         if symbol.to_lowercase() != symbol {
@@ -248,7 +274,64 @@ impl Connector for BinanceFutures {
         let mut symbols = self.symbols.lock().unwrap();
         if !symbols.contains(&symbol) {
             symbols.insert(symbol.clone());
-            self.symbol_tx.send(symbol).unwrap();
+            self.symbol_tx.send(symbol.clone()).unwrap();
+        }
+        drop(symbols);
+        self.subscribe_market_data(symbol, all_market_kinds());
+    }
+
+    fn subscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        let symbol = symbol.to_lowercase();
+        self.market_subscriptions
+            .lock()
+            .unwrap()
+            .entry(symbol.clone())
+            .or_default()
+            .extend(kinds.iter().copied());
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Subscribe { symbol, kinds });
+    }
+
+    fn unregister(&mut self, symbol: String) {
+        let symbol = symbol.to_lowercase();
+        self.symbols.lock().unwrap().remove(&symbol);
+        let kinds = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .get(&symbol)
+            .map(|v| v.iter().copied().collect())
+            .unwrap_or_default();
+        self.unsubscribe_market_data(symbol, kinds);
+    }
+
+    fn unsubscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        let symbol = symbol.to_lowercase();
+        let mut subscriptions = self.market_subscriptions.lock().unwrap();
+        if let Some(active) = subscriptions.get_mut(&symbol) {
+            for kind in &kinds {
+                active.remove(kind);
+            }
+            if active.is_empty() {
+                subscriptions.remove(&symbol);
+            }
+        }
+        drop(subscriptions);
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Unsubscribe { symbol, kinds });
+    }
+
+    fn request_snapshot(&mut self, symbol: String) {
+        let _ = self.market_tx.send(MarketDataCommand::Snapshot {
+            symbol: symbol.to_lowercase(),
+        });
+    }
+
+    fn recover_market_data(&mut self, symbols: Vec<String>) {
+        for symbol in symbols {
+            let _ = self.market_tx.send(MarketDataCommand::Snapshot { symbol });
         }
     }
 
@@ -256,7 +339,7 @@ impl Connector for BinanceFutures {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_market_data_stream(ev_tx.clone());
         // Connects to the user stream only if the API key and secret are provided.
         if !self.config.api_key.is_empty() && !self.config.secret.is_empty() {
@@ -265,7 +348,20 @@ impl Connector for BinanceFutures {
         }
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn run_market_data(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_market_data_stream(ev_tx);
+    }
+
+    fn run_account(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_user_data_stream(ev_tx);
+        self.start_safety_heartbeat();
+    }
+
+    fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
+        Some(Arc::new(self.client.clone()))
+    }
+
+    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
 
@@ -339,7 +435,7 @@ impl Connector for BinanceFutures {
         });
     }
 
-    fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
 

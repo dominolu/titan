@@ -1,5 +1,6 @@
 use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
+use smallvec::SmallVec;
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, to_lowercase};
@@ -28,8 +29,8 @@ mod tests {
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
-pub enum Stream {
-    EventStream(EventStream),
+pub enum Stream<'a> {
+    EventStream(#[serde(borrow)] EventStream<'a>),
     Result(Result),
 }
 
@@ -41,9 +42,9 @@ pub struct Result {
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "e")]
-pub enum EventStream {
+pub enum EventStream<'a> {
     #[serde(rename = "depthUpdate")]
-    DepthUpdate(Depth),
+    DepthUpdate(#[serde(borrow)] Depth<'a>),
     #[serde(rename = "markPriceUpdate")]
     MarkPriceUpdate(MarkPriceUpdate),
     #[serde(rename = "trade")]
@@ -61,14 +62,14 @@ pub enum EventStream {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct Depth {
+pub struct Depth<'a> {
     #[serde(rename = "T")]
     pub transaction_time: i64,
     #[serde(rename = "E")]
     pub event_time: i64,
     #[serde(rename = "s")]
-    #[serde(deserialize_with = "to_lowercase")]
-    pub symbol: String,
+    #[serde(borrow)]
+    pub symbol: &'a str,
     // for Coin-M futures
     // #[serde(rename = "ps")]
     // pub pair: String,
@@ -79,9 +80,46 @@ pub struct Depth {
     #[serde(rename = "pu")]
     pub prev_update_id: i64,
     #[serde(rename = "b")]
-    pub bids: Vec<(String, String)>,
+    #[serde(borrow)]
+    pub bids: SmallVec<[(&'a str, &'a str); 64]>,
     #[serde(rename = "a")]
+    #[serde(borrow)]
+    pub asks: SmallVec<[(&'a str, &'a str); 64]>,
+}
+
+#[derive(Debug)]
+pub struct OwnedDepth {
+    pub transaction_time: i64,
+    pub event_time: i64,
+    pub symbol: String,
+    pub first_update_id: i64,
+    pub last_update_id: i64,
+    pub prev_update_id: i64,
+    pub bids: Vec<(String, String)>,
     pub asks: Vec<(String, String)>,
+}
+
+impl Depth<'_> {
+    pub fn into_owned(self, symbol: String) -> OwnedDepth {
+        OwnedDepth {
+            transaction_time: self.transaction_time,
+            event_time: self.event_time,
+            symbol,
+            first_update_id: self.first_update_id,
+            last_update_id: self.last_update_id,
+            prev_update_id: self.prev_update_id,
+            bids: self
+                .bids
+                .into_iter()
+                .map(|(price, quantity)| (price.to_owned(), quantity.to_owned()))
+                .collect(),
+            asks: self
+                .asks
+                .into_iter()
+                .map(|(price, quantity)| (price.to_owned(), quantity.to_owned()))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -112,11 +150,11 @@ pub struct Trade {
     #[serde(rename = "t")]
     pub id: i64,
     #[serde(rename = "p")]
-    pub price: String,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub price: f64,
     #[serde(rename = "q")]
-    pub qty: String,
-    #[serde(rename = "X")]
-    pub type_: String,
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub qty: f64,
     #[serde(rename = "m")]
     pub is_the_buyer_the_market_maker: bool,
 }

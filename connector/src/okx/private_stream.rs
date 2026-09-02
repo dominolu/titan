@@ -1,4 +1,7 @@
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
 use base64::Engine as _;
 use chrono::Utc;
@@ -9,10 +12,7 @@ use sha2::Sha256;
 use tokio::{
     net::TcpStream,
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -40,11 +40,12 @@ pub struct PrivateStream {
     passphrase: String,
     td_mode: String,
     pos_side: Option<String>,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     client: OkxClient,
     symbol_rx: Receiver<String>,
     symbols: SharedSymbolSet,
+    private_subscriptions_remaining: AtomicU8,
 }
 
 impl PrivateStream {
@@ -54,7 +55,7 @@ impl PrivateStream {
         passphrase: String,
         td_mode: String,
         pos_side: Option<String>,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         client: OkxClient,
         symbol_rx: Receiver<String>,
@@ -71,6 +72,7 @@ impl PrivateStream {
             client,
             symbol_rx,
             symbols,
+            private_subscriptions_remaining: AtomicU8::new(0),
         }
     }
 
@@ -102,6 +104,8 @@ impl PrivateStream {
                         };
                         let s = serde_json::to_string(&op).unwrap();
                         write.send(Message::Text(s.into())).await?;
+                        self.private_subscriptions_remaining
+                            .store(2, Ordering::Release);
 
                         // Replays every registered symbol after (re)connect so their cancel-all and
                         // position initialization run again on the fresh connection.
@@ -115,6 +119,23 @@ impl PrivateStream {
                             code: ack.code.unwrap_or_default(),
                             msg: ack.msg.unwrap_or_default(),
                         });
+                    }
+                } else if ack.event.as_deref() == Some("subscribe")
+                    || ack.op.as_deref() == Some("subscribe")
+                {
+                    if ack.code.as_deref().is_some_and(|code| code != "0") {
+                        return Err(OkxError::ConnectionInterrupted);
+                    }
+                    let remaining = self
+                        .private_subscriptions_remaining
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                            value.checked_sub(1)
+                        })
+                        .unwrap_or(0);
+                    if remaining == 1 {
+                        self.ev_tx
+                            .send(PublishEvent::PrivateStreamReady)
+                            .map_err(|_| OkxError::ConnectionInterrupted)?;
                     }
                 }
             }
@@ -252,9 +273,7 @@ impl PrivateStream {
                 message = read.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
-                            if let Err(error) = self.handle_private_stream(&text, &mut write).await {
-                                error!(%text, ?error, "Couldn't properly handle PrivateStreamMsg");
-                            }
+                            self.handle_private_stream(&text, &mut write).await?;
                         }
                         Some(Ok(Message::Ping(_))) => {
                             write.send(Message::Pong(Bytes::default())).await?;
@@ -297,7 +316,7 @@ pub(crate) fn sign_login(secret: &str, timestamp: &str) -> String {
 pub async fn get_position(
     client: OkxClient,
     symbol: String,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), OkxError> {
     let positions = client.get_positions(&symbol).await?;
     for position in positions {
@@ -318,7 +337,7 @@ pub async fn cancel_all(
     pos_side: Option<String>,
     symbol: String,
     order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), OkxError> {
     client
         .cancel_all_orders(&symbol, &td_mode, pos_side.as_deref())

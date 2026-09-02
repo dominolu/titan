@@ -1,22 +1,23 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::Duration,
 };
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use hftbacktest::prelude::{
-    Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
-    LOCAL_BID_DEPTH_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent,
+    Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
+    LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent,
 };
+use titan_market_plugin::MarketDataKind;
 use tokio::{
     net::TcpStream,
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -26,9 +27,9 @@ use tokio_tungstenite::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    connector::PublishEvent,
+    connector::{MarketDataCommand, MarketStreamMetadata, PublishEvent},
     hyperliquid::{
-        HyperliquidError, SharedAssets, SharedSymbolSet,
+        HyperliquidError, SharedAssets, SharedMarketSubscriptions, SharedSymbolSet,
         client::HyperliquidClient,
         msg::{
             BboData, CancelAction, CancelWire, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg,
@@ -79,22 +80,26 @@ fn apply_fill(position: &mut f64, side: &str, sz: f64) {
 }
 
 pub struct HyperliquidWs {
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     assets: SharedAssets,
     symbols: SharedSymbolSet,
     nonce_counter: Arc<Mutex<u64>>,
     positions: Arc<Mutex<HashMap<String, f64>>>,
+    stream_epochs: HashMap<String, u64>,
     account_address: String,
     private_key: [u8; 32],
     is_mainnet: bool,
     client: HyperliquidClient,
-    symbol_rx: Receiver<String>,
+    command_rx: Receiver<MarketDataCommand>,
+    market_subscriptions: SharedMarketSubscriptions,
+    private_channels: bool,
+    private_subscriptions_remaining: AtomicU8,
 }
 
 impl HyperliquidWs {
     pub fn new(
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         assets: SharedAssets,
         symbols: SharedSymbolSet,
@@ -103,7 +108,9 @@ impl HyperliquidWs {
         private_key: [u8; 32],
         is_mainnet: bool,
         client: HyperliquidClient,
-        symbol_rx: Receiver<String>,
+        command_rx: Receiver<MarketDataCommand>,
+        market_subscriptions: SharedMarketSubscriptions,
+        private_channels: bool,
     ) -> Self {
         Self {
             ev_tx,
@@ -112,11 +119,15 @@ impl HyperliquidWs {
             symbols,
             nonce_counter,
             positions: Default::default(),
+            stream_epochs: Default::default(),
             account_address,
             private_key,
             is_mainnet,
             client,
-            symbol_rx,
+            command_rx,
+            market_subscriptions,
+            private_channels,
+            private_subscriptions_remaining: AtomicU8::new(0),
         }
     }
 
@@ -125,6 +136,19 @@ impl HyperliquidWs {
         let channel = msg.channel.clone();
         if channel == "subscriptionResponse" {
             debug!(?msg, "subscription response");
+            if self.private_channels {
+                let remaining = self
+                    .private_subscriptions_remaining
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                        value.checked_sub(1)
+                    })
+                    .unwrap_or(0);
+                if remaining == 1 {
+                    self.ev_tx
+                        .send(PublishEvent::PrivateStreamReady)
+                        .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
+                }
+            }
             return Ok(());
         }
         if channel == "pong" {
@@ -277,48 +301,56 @@ impl HyperliquidWs {
 
     async fn handle_l2_book(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
         let book: L2BookData = serde_json::from_value(data.clone())?;
+        let epoch = {
+            let value = self.stream_epochs.entry(book.coin.clone()).or_insert(0);
+            *value = value.saturating_add(1);
+            *value
+        };
         let exch_ts = (book.time * 1_000_000) as i64;
         let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
 
-        // levels[0] is bids, levels[1] is asks.
+        let mut events = Vec::new();
+        // Hyperliquid l2Book pushes are complete book images; preserve the replacement boundary.
         if let Some(bids) = book.levels.first() {
             for level in bids {
-                self.ev_tx
-                    .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                        symbol: book.coin.clone(),
-                        event: Event {
-                            ev: LOCAL_BID_DEPTH_EVENT,
-                            exch_ts,
-                            local_ts,
-                            order_id: 0,
-                            px: level.px.parse().unwrap_or(0.0),
-                            qty: level.sz.parse().unwrap_or(0.0),
-                            ival: 0,
-                            fval: 0.0,
-                        },
-                    }))
-                    .unwrap();
+                events.push(Event {
+                    ev: LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
+                    exch_ts,
+                    local_ts,
+                    order_id: 0,
+                    px: level.px.parse().unwrap_or(0.0),
+                    qty: level.sz.parse().unwrap_or(0.0),
+                    ival: 0,
+                    fval: 0.0,
+                });
             }
         }
         if let Some(asks) = book.levels.get(1) {
             for level in asks {
-                self.ev_tx
-                    .send(PublishEvent::LiveEvent(LiveEvent::Feed {
-                        symbol: book.coin.clone(),
-                        event: Event {
-                            ev: LOCAL_ASK_DEPTH_EVENT,
-                            exch_ts,
-                            local_ts,
-                            order_id: 0,
-                            px: level.px.parse().unwrap_or(0.0),
-                            qty: level.sz.parse().unwrap_or(0.0),
-                            ival: 0,
-                            fval: 0.0,
-                        },
-                    }))
-                    .unwrap();
+                events.push(Event {
+                    ev: LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
+                    exch_ts,
+                    local_ts,
+                    order_id: 0,
+                    px: level.px.parse().unwrap_or(0.0),
+                    qty: level.sz.parse().unwrap_or(0.0),
+                    ival: 0,
+                    fval: 0.0,
+                });
             }
         }
+        self.ev_tx
+            .send(PublishEvent::FeedBatch {
+                symbol: book.coin,
+                events,
+                stream: Some(MarketStreamMetadata {
+                    epoch,
+                    first_update_sequence: 1,
+                    last_update_sequence: 1,
+                    snapshot: true,
+                }),
+            })
+            .unwrap();
         Ok(())
     }
 
@@ -438,28 +470,61 @@ impl HyperliquidWs {
         &self,
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         symbol: String,
+        kinds: &[MarketDataKind],
     ) -> Result<(), HyperliquidError> {
-        let subscribes = vec![
-            WsSubscribe {
-                method: "subscribe".to_string(),
-                subscription: serde_json::json!({
-                    "type": "l2Book",
-                    "coin": symbol,
-                }),
-            },
-            WsSubscribe {
-                method: "subscribe".to_string(),
-                subscription: serde_json::json!({
-                    "type": "trades",
-                    "coin": symbol,
-                }),
-            },
-        ];
-        for subscribe in subscribes {
-            let s = serde_json::to_string(&subscribe).unwrap();
-            write.send(Message::Text(s.into())).await?;
+        self.send_market_command(write, "subscribe", symbol, kinds)
+            .await
+    }
+
+    async fn unsubscribe_symbol(
+        &self,
+        write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        symbol: String,
+        kinds: &[MarketDataKind],
+    ) -> Result<(), HyperliquidError> {
+        self.send_market_command(write, "unsubscribe", symbol, kinds)
+            .await
+    }
+
+    async fn send_market_command(
+        &self,
+        write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        method: &str,
+        symbol: String,
+        kinds: &[MarketDataKind],
+    ) -> Result<(), HyperliquidError> {
+        let mut channels = Vec::new();
+        for kind in kinds {
+            let channel = match kind {
+                MarketDataKind::Depth | MarketDataKind::Bbo => "l2Book",
+                MarketDataKind::Trades => "trades",
+                _ => continue,
+            };
+            if !channels.contains(&channel) {
+                channels.push(channel);
+            }
         }
-        self.init_symbol(symbol).await;
+        for channel in channels {
+            let request = WsSubscribe {
+                method: method.to_string(),
+                subscription: serde_json::json!({ "type": channel, "coin": symbol }),
+            };
+            write
+                .send(Message::Text(serde_json::to_string(&request)?.into()))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn resubscribe_book(
+        &self,
+        write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        symbol: String,
+    ) -> Result<(), HyperliquidError> {
+        for method in ["unsubscribe", "subscribe"] {
+            self.send_market_command(write, method, symbol.clone(), &[MarketDataKind::Depth])
+                .await?;
+        }
         Ok(())
     }
 
@@ -509,48 +574,43 @@ impl HyperliquidWs {
         let mut gc_interval = time::interval(Duration::from_secs(20));
 
         // Seed the local positions before any fill event can arrive.
-        if let Err(error) = self.seed_positions().await {
-            error!(?error, "Couldn't seed the initial positions.");
+        if self.private_channels {
+            self.private_subscriptions_remaining
+                .store(3, Ordering::Release);
+            if let Err(error) = self.seed_positions().await {
+                error!(?error, "Couldn't seed the initial positions.");
+            }
+            for channel in ["orderUpdates", "userEvents", "userFundings"] {
+                let subscribe = WsSubscribe {
+                    method: "subscribe".to_string(),
+                    subscription: serde_json::json!({
+                        "type": channel,
+                        "user": self.account_address.clone(),
+                    }),
+                };
+                write
+                    .send(Message::Text(serde_json::to_string(&subscribe)?.into()))
+                    .await?;
+            }
         }
-
-        // Subscribes to the private channels once.
-        let subscribe = WsSubscribe {
-            method: "subscribe".to_string(),
-            subscription: serde_json::json!({
-                "type": "orderUpdates",
-                "user": self.account_address.clone(),
-            }),
-        };
-        let s = serde_json::to_string(&subscribe).unwrap();
-        write.send(Message::Text(s.into())).await?;
-
-        let subscribe = WsSubscribe {
-            method: "subscribe".to_string(),
-            subscription: serde_json::json!({
-                "type": "userEvents",
-                "user": self.account_address.clone(),
-            }),
-        };
-        let s = serde_json::to_string(&subscribe).unwrap();
-        write.send(Message::Text(s.into())).await?;
-
-        // Funding payments: the first message is a snapshot of all historical hourly funding
-        // payments, followed by streaming payments on the hour.
-        let subscribe = WsSubscribe {
-            method: "subscribe".to_string(),
-            subscription: serde_json::json!({
-                "type": "userFundings",
-                "user": self.account_address.clone(),
-            }),
-        };
-        let s = serde_json::to_string(&subscribe).unwrap();
-        write.send(Message::Text(s.into())).await?;
 
         // Replays every registered symbol after (re)connect. The broadcast receiver only delivers
         // symbols registered after subscription, so the shared symbol set is the durable source.
-        let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
-        for symbol in symbols {
-            self.subscribe_symbol(&mut write, symbol).await?;
+        let subscriptions: Vec<_> = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(symbol, kinds)| (symbol.clone(), kinds.iter().copied().collect::<Vec<_>>()))
+            .collect();
+        for (symbol, kinds) in subscriptions {
+            self.subscribe_symbol(&mut write, symbol, &kinds).await?;
+        }
+        if self.private_channels {
+            let trading_symbols: Vec<_> = self.symbols.lock().unwrap().iter().cloned().collect();
+            for symbol in trading_symbols {
+                self.init_symbol(symbol).await;
+            }
         }
 
         loop {
@@ -562,10 +622,18 @@ impl HyperliquidWs {
                 _ = gc_interval.tick() => {
                     self.order_manager.lock().unwrap().gc();
                 }
-                msg = self.symbol_rx.recv() => match msg {
-                    Ok(symbol) => {
-                        self.subscribe_symbol(&mut write, symbol).await?;
+                msg = self.command_rx.recv() => match msg {
+                    Ok(MarketDataCommand::Subscribe { symbol, kinds }) => self.subscribe_symbol(&mut write, symbol, &kinds).await?,
+                    Ok(MarketDataCommand::Unsubscribe { symbol, kinds }) => self.unsubscribe_symbol(&mut write, symbol, &kinds).await?,
+                    Ok(MarketDataCommand::Snapshot { symbol }) => {
+                        let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
+                            epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
+                            symbol: symbol.clone(),
+                        });
+                        self.resubscribe_book(&mut write, symbol).await?;
                     }
+                    Ok(MarketDataCommand::InitializeTrading { symbol }) if self.private_channels => self.init_symbol(symbol).await,
+                    Ok(MarketDataCommand::InitializeTrading { .. }) => {}
                     Err(RecvError::Closed) => {
                         return Ok(());
                     }
@@ -613,7 +681,7 @@ async fn cancel_open_orders(
     assets: SharedAssets,
     nonce_counter: Arc<Mutex<u64>>,
     order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), HyperliquidError> {
     if assets.lock().unwrap().is_empty() {
         super::ensure_assets(&client, &assets).await?;
@@ -663,7 +731,7 @@ async fn get_position(
     client: HyperliquidClient,
     account_address: String,
     symbol: String,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     positions: Arc<Mutex<HashMap<String, f64>>>,
     _assets: SharedAssets,
 ) -> Result<(), HyperliquidError> {

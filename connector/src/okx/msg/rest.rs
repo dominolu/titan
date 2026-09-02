@@ -86,6 +86,12 @@ pub struct Books {
     pub bids: Vec<Vec<String>>,
     #[serde(default)]
     pub ts: String,
+    #[serde(default, rename = "seqId")]
+    pub seq_id: i64,
+    #[serde(default, rename = "prevSeqId")]
+    pub prev_seq_id: i64,
+    #[serde(default)]
+    pub checksum: i64,
 }
 
 #[derive(Deserialize, Debug)]

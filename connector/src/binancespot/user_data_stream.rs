@@ -7,10 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use hftbacktest::prelude::*;
 use tokio::{
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -35,7 +32,7 @@ use crate::{
 pub struct UserDataStream {
     symbols: SharedSymbolSet,
     client: BinanceSpotClient,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     symbol_rx: Receiver<String>,
 }
@@ -43,7 +40,7 @@ pub struct UserDataStream {
 impl UserDataStream {
     pub fn new(
         client: BinanceSpotClient,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         symbols: SharedSymbolSet,
         symbol_rx: Receiver<String>,
@@ -247,7 +244,7 @@ pub async fn cancel_all(
     client: BinanceSpotClient,
     symbol: String,
     order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BinanceSpotError> {
     // todo: rate-limit throttling.
     client.cancel_all_orders(&symbol).await?;
@@ -266,7 +263,7 @@ pub async fn cancel_all(
 pub async fn get_position_information(
     client: BinanceSpotClient,
     mut symbols: HashSet<String>,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BinanceSpotError> {
     // todo: rate-limit throttling.
     let account_infomation = client.get_account_information().await?;

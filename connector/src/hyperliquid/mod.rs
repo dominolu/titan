@@ -17,12 +17,13 @@ use hftbacktest::{
 };
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::{broadcast, broadcast::Sender, mpsc::UnboundedSender};
+use titan_market_plugin::MarketDataKind;
+use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
 
 use crate::{
     api::BrokerApi,
-    connector::{Connector, ConnectorBuilder, GetOrders, PublishEvent},
+    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
     hyperliquid::{
         client::HyperliquidClient,
         msg::{
@@ -104,6 +105,11 @@ pub struct AssetInfo {
 
 pub type SharedAssets = Arc<Mutex<HashMap<String, AssetInfo>>>;
 pub type SharedSymbolSet = Arc<Mutex<HashSet<String>>>;
+pub type SharedMarketSubscriptions = Arc<Mutex<HashMap<String, HashSet<MarketDataKind>>>>;
+
+fn all_market_kinds() -> Vec<MarketDataKind> {
+    vec![MarketDataKind::Depth, MarketDataKind::Trades]
+}
 
 pub struct Hyperliquid {
     config: Config,
@@ -114,7 +120,8 @@ pub struct Hyperliquid {
     assets: SharedAssets,
     order_manager: SharedOrderManager,
     client: HyperliquidClient,
-    symbol_tx: Sender<String>,
+    market_tx: Sender<MarketDataCommand>,
+    market_subscriptions: SharedMarketSubscriptions,
 }
 
 async fn ensure_assets(
@@ -188,7 +195,7 @@ impl Hyperliquid {
         });
     }
 
-    fn connect_ws(&self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn connect_ws(&self, ev_tx: crate::connector::PublishSender, private_channels: bool) {
         let ws_url = self.config.ws_url.clone();
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
@@ -198,7 +205,8 @@ impl Hyperliquid {
         let private_key = self.private_key;
         let is_mainnet = self.config.is_mainnet;
         let client = self.client.clone();
-        let symbol_tx = self.symbol_tx.clone();
+        let market_tx = self.market_tx.clone();
+        let market_subscriptions = self.market_subscriptions.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -223,7 +231,9 @@ impl Hyperliquid {
                         private_key,
                         is_mainnet,
                         client.clone(),
-                        symbol_tx.subscribe(),
+                        market_tx.subscribe(),
+                        market_subscriptions.clone(),
+                        private_channels,
                     );
                     if let Err(error) = stream.connect(&ws_url).await {
                         error!(?error, "A connection error occurred.");
@@ -295,7 +305,7 @@ impl ConnectorBuilder for Hyperliquid {
             config.account_address.clone()
         };
 
-        let (symbol_tx, _) = broadcast::channel(500);
+        let (market_tx, _) = broadcast::channel(500);
         let order_manager = Arc::new(Mutex::new(OrderManager::new()));
         let client = HyperliquidClient::new(&config.info_url, &config.exchange_url).with_signer(
             private_key,
@@ -311,13 +321,21 @@ impl ConnectorBuilder for Hyperliquid {
             assets: Default::default(),
             order_manager,
             client,
-            symbol_tx,
+            market_tx,
+            market_subscriptions: Default::default(),
         })
     }
 }
 
 #[async_trait::async_trait]
 impl Connector for Hyperliquid {
+    fn register_account(&mut self, symbol: String) {
+        if self.symbols.lock().unwrap().insert(symbol.clone()) {
+            let _ = self
+                .market_tx
+                .send(MarketDataCommand::InitializeTrading { symbol });
+        }
+    }
     fn register(&mut self, symbol: String) {
         if symbol.to_uppercase() != symbol {
             error!("Hyperliquid coin must be uppercase, e.g. BTC.");
@@ -325,7 +343,61 @@ impl Connector for Hyperliquid {
         let mut symbols = self.symbols.lock().unwrap();
         if !symbols.contains(&symbol) {
             symbols.insert(symbol.clone());
-            self.symbol_tx.send(symbol).unwrap();
+            let _ = self.market_tx.send(MarketDataCommand::InitializeTrading {
+                symbol: symbol.clone(),
+            });
+        }
+        drop(symbols);
+        self.subscribe_market_data(symbol, all_market_kinds());
+    }
+
+    fn subscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        self.market_subscriptions
+            .lock()
+            .unwrap()
+            .entry(symbol.clone())
+            .or_default()
+            .extend(kinds.iter().copied());
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Subscribe { symbol, kinds });
+    }
+
+    fn unregister(&mut self, symbol: String) {
+        self.symbols.lock().unwrap().remove(&symbol);
+        let kinds = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .get(&symbol)
+            .map(|v| v.iter().copied().collect())
+            .unwrap_or_default();
+        self.unsubscribe_market_data(symbol, kinds);
+    }
+
+    fn unsubscribe_market_data(&mut self, symbol: String, kinds: Vec<MarketDataKind>) {
+        let mut subscriptions = self.market_subscriptions.lock().unwrap();
+        if let Some(active) = subscriptions.get_mut(&symbol) {
+            for kind in &kinds {
+                active.remove(kind);
+            }
+            if active.is_empty() {
+                subscriptions.remove(&symbol);
+            }
+        }
+        drop(subscriptions);
+        let _ = self
+            .market_tx
+            .send(MarketDataCommand::Unsubscribe { symbol, kinds });
+    }
+
+    fn request_snapshot(&mut self, symbol: String) {
+        let _ = self.market_tx.send(MarketDataCommand::Snapshot { symbol });
+    }
+
+    fn recover_market_data(&mut self, symbols: Vec<String>) {
+        for symbol in symbols {
+            let _ = self.market_tx.send(MarketDataCommand::Snapshot { symbol });
         }
     }
 
@@ -333,13 +405,28 @@ impl Connector for Hyperliquid {
         self.order_manager.clone()
     }
 
-    fn run(&mut self, ev_tx: UnboundedSender<PublishEvent>) {
+    fn run(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_assets_loader();
-        self.connect_ws(ev_tx);
+        self.connect_ws(ev_tx, true);
         self.start_safety_heartbeat();
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn run_market_data(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_assets_loader();
+        self.connect_ws(ev_tx, false);
+    }
+
+    fn run_account(&mut self, ev_tx: crate::connector::PublishSender) {
+        self.connect_assets_loader();
+        self.connect_ws(ev_tx, true);
+        self.start_safety_heartbeat();
+    }
+
+    fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
+        Some(Arc::new(self.client.clone()))
+    }
+
+    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
@@ -448,7 +535,7 @@ impl Connector for Hyperliquid {
         });
     }
 
-    fn cancel(&self, symbol: String, order: Order, tx: UnboundedSender<PublishEvent>) {
+    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
@@ -724,7 +811,7 @@ fn submit_fail(
     cloid: &String,
     order_manager: &SharedOrderManager,
     symbol: &str,
-    tx: &UnboundedSender<PublishEvent>,
+    tx: &crate::connector::PublishSender,
     error: HyperliquidError,
 ) {
     if let Some(order) = order_manager
@@ -756,7 +843,6 @@ mod e2e_tests {
     use super::*;
     use hftbacktest::types::{OrdType, TimeInForce};
     use std::time::Duration;
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     fn testnet_config() -> String {
         let private_key = std::env::var("HYPERLIQUID_TEST_PRIVATE_KEY")
@@ -774,7 +860,7 @@ is_mainnet = false
     }
 
     async fn wait_order_event(
-        rx: &mut UnboundedReceiver<PublishEvent>,
+        rx: &mut crate::connector::PublishReceiver,
         timeout: Duration,
     ) -> Order {
         tokio::time::timeout(timeout, async {
@@ -800,7 +886,7 @@ is_mainnet = false
     #[ignore = "requires a funded Hyperliquid testnet account and env vars"]
     async fn e2e_testnet_order_roundtrip() {
         let connector = Hyperliquid::build_from(&testnet_config()).unwrap();
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = crate::connector::publish_channel(64);
 
         // A resting buy GTC at 63,000 (well below the ~64,200 market), so it rests on the book.
         // Testnet BTC trades with a 1.0 tick; integer prices are always valid.

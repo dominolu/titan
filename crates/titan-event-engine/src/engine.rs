@@ -4,7 +4,7 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
@@ -13,19 +13,21 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use crossbeam_queue::ArrayQueue;
-use titan_plugin_engine::{EventQos, PluginIdentity, SubscriptionSpec};
+use titan_plugin_engine::{EventHandler, EventQos, EventView, PluginIdentity, SubscriptionSpec};
 
 use crate::{
     EngineClock, EngineError, EngineMetrics, EventArena, EventClass, EventDescriptor, EventHeader,
-    EventRecord, FaultKind, FaultSignal, PendingAllocation, PendingEntry, PoolKind, PublishError,
-    PublishRequest, ReserveRequest, RuntimeHealth, RuntimeHealthSnapshot, RuntimeMode,
-    SubscriberChannel, SubscriberChannelArgs, SubscriberHealth, SubscriberHealthSnapshot,
-    SubscriberRoute, SubscriberState, TimerSignal, TracePoint, TraceStage, TrackedDelivery,
+    EventRecord, FaultKind, FaultSignal, OwnedEvent, PendingAllocation, PendingEntry, PoolKind,
+    PublishError, PublishRequest, ReserveRequest, RuntimeHealth, RuntimeHealthSnapshot,
+    RuntimeMode, SubscriberChannel, SubscriberChannelArgs, SubscriberHealth,
+    SubscriberHealthSnapshot, SubscriberRoute, SubscriberRuntimeMode, SubscriberState, TimerSignal,
+    TracePoint, TraceStage, TrackedDelivery,
     config::{DrainBudgetConfig, EventEngineConfig},
 };
 
 pub(crate) struct StagedSubscription {
     pub owner: PluginIdentity,
+    pub mailbox: Option<Arc<str>>,
     pub spec: SubscriptionSpec,
 }
 
@@ -33,11 +35,11 @@ pub(crate) enum ControlCommand {
     Commit {
         base_version: u64,
         staged: Vec<StagedSubscription>,
-        reply: Sender<Result<(u64, Vec<(u64, Arc<SubscriberChannel>)>), EngineError>>,
+        reply: Sender<Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError>>,
     },
     Retire {
         token: u64,
-        reply: Sender<Result<Arc<SubscriberChannel>, EngineError>>,
+        reply: Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>,
     },
     Recover {
         token: u64,
@@ -79,6 +81,271 @@ pub(crate) struct EngineShared {
     pub trace_ring: Arc<ArrayQueue<TracePoint>>,
     pub pending_depth: AtomicUsize,
     pub pressure_scan_cursor: AtomicU64,
+    pub event_thread: OnceLock<thread::Thread>,
+    fast_lanes: RwLock<BTreeMap<u64, Arc<FastLaneRoute>>>,
+    next_fast_lane: AtomicU64,
+}
+
+struct FastLaneRoute {
+    descriptor_ids: Arc<[u32]>,
+    routing_keys: Arc<[u64]>,
+    dispatch: FastLaneDispatch,
+    active: Arc<AtomicBool>,
+}
+
+enum FastLaneDispatch {
+    Inline(Arc<dyn EventHandler>),
+    Async(Arc<AsyncFastLane>),
+}
+
+struct AsyncFastLaneEvent {
+    descriptor: Arc<EventDescriptor>,
+    header: EventHeader,
+    payload: OwnedEvent,
+}
+
+struct AsyncFastLane {
+    token: u64,
+    priority_queue: ArrayQueue<AsyncFastLaneEvent>,
+    normal_queue: ArrayQueue<AsyncFastLaneEvent>,
+    priority_descriptor_ids: Arc<[u32]>,
+    handler: Arc<dyn EventHandler>,
+    active: Arc<AtomicBool>,
+    stopping: AtomicBool,
+    runtime_mode: SubscriberRuntimeMode,
+    spin_iterations: usize,
+    idle_sleep: Duration,
+    cpu_affinity: Option<usize>,
+    worker: OnceLock<thread::Thread>,
+    join: Mutex<Option<JoinHandle<()>>>,
+    fault_signals: Arc<ArrayQueue<FaultSignal>>,
+    metrics: Arc<EngineMetrics>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AsyncFastLaneConfig {
+    pub capacity: usize,
+    /// Event types in this group that may bypass queued normal-priority events. Ordering remains
+    /// FIFO within each priority class.
+    pub priority_event_types: Vec<Arc<str>>,
+    pub runtime_mode: SubscriberRuntimeMode,
+    pub spin_iterations: usize,
+    pub idle_sleep: Duration,
+    pub cpu_affinity: Option<usize>,
+}
+
+impl Default for AsyncFastLaneConfig {
+    fn default() -> Self {
+        Self {
+            capacity: 16_384,
+            priority_event_types: Vec::new(),
+            runtime_mode: SubscriberRuntimeMode::SpinSleep,
+            spin_iterations: 256,
+            idle_sleep: Duration::from_micros(10),
+            cpu_affinity: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FastLaneToken(pub u64);
+
+impl AsyncFastLane {
+    fn start(
+        token: u64,
+        config: AsyncFastLaneConfig,
+        handler: Arc<dyn EventHandler>,
+        active: Arc<AtomicBool>,
+        priority_descriptor_ids: Arc<[u32]>,
+        fault_signals: Arc<ArrayQueue<FaultSignal>>,
+        metrics: Arc<EngineMetrics>,
+    ) -> Result<Arc<Self>, EngineError> {
+        if config.capacity == 0 || config.idle_sleep.is_zero() {
+            return Err(EngineError::InvalidFastLaneConfig);
+        }
+        if config.runtime_mode == SubscriberRuntimeMode::Dedicated && config.cpu_affinity.is_none()
+        {
+            return Err(EngineError::InvalidFastLaneConfig);
+        }
+        let lane = Arc::new(Self {
+            token,
+            priority_queue: ArrayQueue::new(config.capacity),
+            normal_queue: ArrayQueue::new(config.capacity),
+            priority_descriptor_ids,
+            handler,
+            active,
+            stopping: AtomicBool::new(false),
+            runtime_mode: config.runtime_mode,
+            spin_iterations: config.spin_iterations,
+            idle_sleep: config.idle_sleep,
+            cpu_affinity: config.cpu_affinity,
+            worker: OnceLock::new(),
+            join: Mutex::new(None),
+            fault_signals,
+            metrics,
+        });
+        let worker_lane = lane.clone();
+        let join = thread::Builder::new()
+            .name(format!("event-fast-lane-{token}"))
+            .spawn(move || worker_lane.run())
+            .map_err(|error| EngineError::SubscriberRuntime(error.to_string()))?;
+        *lane
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(join);
+        Ok(lane)
+    }
+
+    fn enqueue(&self, event: AsyncFastLaneEvent) {
+        if self.stopping.load(Ordering::Acquire) || !self.active.load(Ordering::Acquire) {
+            return;
+        }
+        let sequence = event.header.source_sequence;
+        let descriptor_id = event.descriptor.id;
+        let priority = self
+            .priority_descriptor_ids
+            .binary_search(&descriptor_id)
+            .is_ok();
+        let queue = if priority {
+            &self.priority_queue
+        } else {
+            &self.normal_queue
+        };
+        if queue.push(event).is_err() {
+            // A gap makes an ordered FastLane unsafe to continue. Disable only this lane, drain
+            // events that preceded the gap, and leave the normal EventEngine mirror untouched.
+            self.active.store(false, Ordering::Release);
+            self.stopping.store(true, Ordering::Release);
+            self.metrics
+                .fast_lane_drop_total
+                .fetch_add(1, Ordering::Relaxed);
+            if self
+                .fault_signals
+                .push(FaultSignal {
+                    kind: FaultKind::SubscriberBackpressure,
+                    subscriber_id: self.token,
+                    sequence,
+                    detail: descriptor_id as u64,
+                })
+                .is_err()
+            {
+                self.metrics
+                    .fault_signal_drop_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(worker) = self.worker.get() {
+                worker.unpark();
+            }
+            return;
+        }
+        self.metrics
+            .fast_lane_enqueue_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .fast_lane_depth_max
+            .fetch_max(self.depth() as u64, Ordering::Relaxed);
+        if self.runtime_mode != SubscriberRuntimeMode::Dedicated
+            && let Some(worker) = self.worker.get()
+        {
+            worker.unpark();
+        }
+    }
+
+    fn run(self: Arc<Self>) {
+        let _ = self.worker.set(thread::current());
+        if let Some(core_id) = self.cpu_affinity {
+            let _ = core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
+        }
+        loop {
+            if let Some(event) = self
+                .priority_queue
+                .pop()
+                .or_else(|| self.normal_queue.pop())
+            {
+                let started = Instant::now();
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    self.handler.handle(EventView {
+                        event_type: event.descriptor.event_type.as_ref(),
+                        schema_version: event.descriptor.schema_version,
+                        payload: event.payload.payload(),
+                        trace: event.header.trace,
+                    })
+                }));
+                self.metrics
+                    .fast_lane_latency
+                    .record(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+                if !matches!(result, Ok(Ok(()))) {
+                    self.active.store(false, Ordering::Release);
+                    if self
+                        .fault_signals
+                        .push(FaultSignal {
+                            kind: FaultKind::SubscriberFailed,
+                            subscriber_id: self.token,
+                            sequence: event.header.source_sequence,
+                            detail: event.descriptor.id as u64,
+                        })
+                        .is_err()
+                    {
+                        self.metrics
+                            .fault_signal_drop_total
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    while self.priority_queue.pop().is_some() {}
+                    while self.normal_queue.pop().is_some() {}
+                    break;
+                }
+                continue;
+            }
+            if self.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            match self.runtime_mode {
+                SubscriberRuntimeMode::Dedicated => std::hint::spin_loop(),
+                SubscriberRuntimeMode::SpinSleep => {
+                    let mut found = false;
+                    for _ in 0..self.spin_iterations {
+                        std::hint::spin_loop();
+                        if self.depth() != 0 {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        thread::park_timeout(self.idle_sleep);
+                    }
+                }
+                SubscriberRuntimeMode::Park => thread::park_timeout(self.idle_sleep),
+            }
+        }
+    }
+
+    fn stop_and_join(&self) {
+        self.stopping.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.get() {
+            worker.unpark();
+        }
+        if let Some(join) = self
+            .join
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = join.join();
+        }
+    }
+
+    fn depth(&self) -> usize {
+        self.priority_queue.len() + self.normal_queue.len()
+    }
+}
+
+impl FastLaneRoute {
+    fn stop(&self) {
+        self.active.store(false, Ordering::Release);
+        if let FastLaneDispatch::Async(lane) = &self.dispatch {
+            lane.stop_and_join();
+        }
+    }
 }
 
 impl EngineShared {
@@ -95,6 +362,68 @@ impl EngineShared {
             self.metrics
                 .trace_ring_drop_total
                 .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn wake_event_loop(&self) {
+        if let Some(thread) = self.event_thread.get() {
+            thread.unpark();
+        }
+    }
+
+    fn dispatch_fast_lanes(
+        &self,
+        descriptor: &Arc<EventDescriptor>,
+        header: EventHeader,
+        payload: &OwnedEvent,
+    ) {
+        let routes = self
+            .fast_lanes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (token, route) in routes.iter() {
+            if !route.active.load(Ordering::Acquire)
+                || route.descriptor_ids.binary_search(&descriptor.id).is_err()
+                || (!route.routing_keys.is_empty()
+                    && route
+                        .routing_keys
+                        .binary_search(&header.routing_key)
+                        .is_err())
+            {
+                continue;
+            }
+            match &route.dispatch {
+                FastLaneDispatch::Inline(handler) => {
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        handler.handle(EventView {
+                            event_type: descriptor.event_type.as_ref(),
+                            schema_version: descriptor.schema_version,
+                            payload: payload.payload(),
+                            trace: header.trace,
+                        })
+                    }));
+                    if !matches!(result, Ok(Ok(()))) {
+                        route.active.store(false, Ordering::Release);
+                        self.signal(FaultSignal {
+                            kind: FaultKind::SubscriberFailed,
+                            subscriber_id: *token,
+                            sequence: header.source_sequence,
+                            detail: descriptor.id as u64,
+                        });
+                    }
+                }
+                FastLaneDispatch::Async(lane) => {
+                    let started = Instant::now();
+                    lane.enqueue(AsyncFastLaneEvent {
+                        descriptor: descriptor.clone(),
+                        header,
+                        payload: payload.clone(),
+                    });
+                    self.metrics
+                        .fast_lane_enqueue_latency
+                        .record(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+                }
+            }
         }
     }
 
@@ -131,6 +460,9 @@ impl EngineShared {
         };
         match result {
             Ok(()) => {
+                if self.config.runtime.mode == RuntimeMode::SpinSleep {
+                    self.wake_event_loop();
+                }
                 self.metrics.publish_total.fetch_add(1, Ordering::Relaxed);
                 self.trace(TracePoint {
                     trace,
@@ -205,6 +537,9 @@ impl EventEngine {
             trace_ring: Arc::new(ArrayQueue::new(config.diagnostics.trace_ring_capacity)),
             pending_depth: AtomicUsize::new(0),
             pressure_scan_cursor: AtomicU64::new(0),
+            event_thread: OnceLock::new(),
+            fast_lanes: RwLock::new(BTreeMap::new()),
+            next_fast_lane: AtomicU64::new(1),
             config,
         });
         Ok(Self {
@@ -319,6 +654,16 @@ impl EventEngine {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
+        let fast_lanes = std::mem::take(
+            &mut *self
+                .shared
+                .fast_lanes
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for route in fast_lanes.into_values() {
+            route.stop();
+        }
         self.shared.running.store(false, Ordering::Release);
         let outstanding = self.shared.arena.outstanding_blocks();
         if outstanding != 0 {
@@ -346,6 +691,123 @@ impl Drop for EventEngine {
 }
 
 impl EventEngineHandle {
+    /// Registers a synchronous single-consumer route on the publisher thread. The normal
+    /// EventEngine route remains active, so this is suitable for a bounded low-latency strategy
+    /// callback plus an asynchronous audit/mirror subscriber. A failed or panicking callback is
+    /// disabled without rejecting the normal publication.
+    pub fn register_fast_lane(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        mut routing_keys: Vec<u64>,
+        handler: Arc<dyn EventHandler>,
+    ) -> Result<FastLaneToken, EngineError> {
+        if !self.shared.running.load(Ordering::Acquire) {
+            return Err(EngineError::NotRunning);
+        }
+        let descriptor = self
+            .shared
+            .descriptor(event_type, schema_version)
+            .ok_or(EngineError::InvalidEvent)?;
+        routing_keys.sort_unstable();
+        routing_keys.dedup();
+        let token = self.shared.next_fast_lane.fetch_add(1, Ordering::Relaxed);
+        self.shared
+            .fast_lanes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                token,
+                Arc::new(FastLaneRoute {
+                    descriptor_ids: Arc::from([descriptor.id]),
+                    routing_keys: routing_keys.into(),
+                    dispatch: FastLaneDispatch::Inline(handler),
+                    active: Arc::new(AtomicBool::new(true)),
+                }),
+            );
+        Ok(FastLaneToken(token))
+    }
+
+    /// Registers one asynchronous, ordered FastLane worker for a group of event descriptors.
+    /// Publishers only retain and enqueue the immutable arena block; the handler runs on the
+    /// worker and the normal EventEngine route remains active as an audit/mirror path.
+    pub fn register_async_fast_lane(
+        &self,
+        events: &[(&str, u32)],
+        mut routing_keys: Vec<u64>,
+        config: AsyncFastLaneConfig,
+        handler: Arc<dyn EventHandler>,
+    ) -> Result<FastLaneToken, EngineError> {
+        if !self.shared.running.load(Ordering::Acquire) {
+            return Err(EngineError::NotRunning);
+        }
+        if events.is_empty() {
+            return Err(EngineError::InvalidFastLaneConfig);
+        }
+        let mut descriptor_ids = Vec::with_capacity(events.len());
+        let mut priority_descriptor_ids = Vec::new();
+        for (event_type, schema_version) in events {
+            let descriptor = self
+                .shared
+                .descriptor(event_type, *schema_version)
+                .ok_or(EngineError::InvalidEvent)?;
+            descriptor_ids.push(descriptor.id);
+            if config
+                .priority_event_types
+                .iter()
+                .any(|priority| priority.as_ref() == *event_type)
+            {
+                priority_descriptor_ids.push(descriptor.id);
+            }
+        }
+        descriptor_ids.sort_unstable();
+        descriptor_ids.dedup();
+        priority_descriptor_ids.sort_unstable();
+        priority_descriptor_ids.dedup();
+        routing_keys.sort_unstable();
+        routing_keys.dedup();
+        let token = self.shared.next_fast_lane.fetch_add(1, Ordering::Relaxed);
+        let active = Arc::new(AtomicBool::new(true));
+        let lane = AsyncFastLane::start(
+            token,
+            config,
+            handler,
+            active.clone(),
+            priority_descriptor_ids.into(),
+            self.shared.fault_signals.clone(),
+            self.shared.metrics.clone(),
+        )?;
+        self.shared
+            .fast_lanes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                token,
+                Arc::new(FastLaneRoute {
+                    descriptor_ids: descriptor_ids.into(),
+                    routing_keys: routing_keys.into(),
+                    dispatch: FastLaneDispatch::Async(lane),
+                    active,
+                }),
+            );
+        Ok(FastLaneToken(token))
+    }
+
+    pub fn unregister_fast_lane(&self, token: FastLaneToken) -> bool {
+        let route = self
+            .shared
+            .fast_lanes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&token.0);
+        if let Some(route) = route {
+            route.stop();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn register_event(
         &self,
         event_type: impl Into<Arc<str>>,
@@ -422,21 +884,24 @@ impl EventEngineHandle {
         };
         reservation.payload_mut().copy_from_slice(request.payload);
         let payload = reservation.commit();
+        let header = EventHeader {
+            source_id: request.source_id,
+            event_type_id: descriptor.id,
+            schema_version: request.schema_version,
+            flags: request.flags,
+            source_sequence: request.source_sequence,
+            local_sequence: 0,
+            exchange_ts: request.exchange_ts,
+            receive_ts: request.receive_ts,
+            publish_ts: request.publish_ts,
+            routing_key: request.routing_key,
+            trace: request.trace,
+        };
+        self.shared
+            .dispatch_fast_lanes(&descriptor, header, &payload);
         let record = EventRecord {
             descriptor: descriptor.clone(),
-            header: EventHeader {
-                source_id: request.source_id,
-                event_type_id: descriptor.id,
-                schema_version: request.schema_version,
-                flags: request.flags,
-                source_sequence: request.source_sequence,
-                local_sequence: 0,
-                exchange_ts: request.exchange_ts,
-                receive_ts: request.receive_ts,
-                publish_ts: request.publish_ts,
-                routing_key: request.routing_key,
-                trace: request.trace,
-            },
+            header,
             payload,
             ingress_at_ns: self.shared.clock.now_ns(),
         };
@@ -475,6 +940,59 @@ impl EventEngineHandle {
                     subscriber_id: 0,
                     sequence: request.source_sequence,
                     detail: PoolKind::MarketBatch as u64,
+                });
+                error
+            })?;
+        Ok(MarketBatchReservation {
+            shared: self.shared.clone(),
+            descriptor: descriptor.clone(),
+            header: EventHeader {
+                source_id: request.source_id,
+                event_type_id: descriptor.id,
+                schema_version: request.schema_version,
+                flags: request.flags,
+                source_sequence: request.source_sequence,
+                local_sequence: 0,
+                exchange_ts: request.exchange_ts,
+                receive_ts: request.receive_ts,
+                publish_ts: request.publish_ts,
+                routing_key: request.routing_key,
+                trace: request.trace,
+            },
+            ingress_at_ns: self.shared.clock.now_ns(),
+            reservation,
+        })
+    }
+
+    /// Reserves payload storage from the pool declared by the registered event descriptor.
+    pub fn reserve_event_payload(
+        &self,
+        request: ReserveRequest<'_>,
+    ) -> Result<MarketBatchReservation, PublishError> {
+        if !self.shared.running.load(Ordering::Acquire) {
+            return Err(PublishError::Stopped);
+        }
+        if request.source_sequence != 0
+            && request.source_id as usize >= self.shared.config.ingress.max_sources
+        {
+            return Err(PublishError::InvalidEvent);
+        }
+        let descriptor = self
+            .shared
+            .descriptor(request.event_type, request.schema_version)
+            .ok_or(PublishError::InvalidEvent)?;
+        let pool = descriptor.pool;
+        let reservation = self
+            .shared
+            .arena
+            .reserve(pool, request.payload_length)
+            .map_err(|error| {
+                self.shared.runtime_health.mark_arena_pressure(pool);
+                self.shared.signal(FaultSignal {
+                    kind: FaultKind::ArenaPressure,
+                    subscriber_id: 0,
+                    sequence: request.source_sequence,
+                    detail: pool as u64,
                 });
                 error
             })?;
@@ -646,10 +1164,13 @@ impl MarketBatchReservation {
     }
 
     pub fn commit(self) -> Result<(), PublishError> {
+        let payload = self.reservation.commit();
+        self.shared
+            .dispatch_fast_lanes(&self.descriptor, self.header, &payload);
         let record = EventRecord {
             descriptor: self.descriptor,
             header: self.header,
-            payload: self.reservation.commit(),
+            payload,
             ingress_at_ns: self.ingress_at_ns,
         };
         self.shared.enqueue_record(record)
@@ -687,7 +1208,7 @@ struct EventLoop {
     control_rx: Receiver<ControlCommand>,
     routes: BTreeMap<u64, SubscriberRoute>,
     route_index: BTreeMap<u32, std::collections::BTreeSet<u64>>,
-    retire_waiters: BTreeMap<u64, Sender<Result<Arc<SubscriberChannel>, EngineError>>>,
+    retire_waiters: BTreeMap<u64, Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>>,
     next_token: u64,
     local_sequence: u64,
     global_pending: usize,
@@ -730,6 +1251,7 @@ impl EventLoop {
     }
 
     fn run(mut self) {
+        let _ = self.shared.event_thread.set(thread::current());
         if let Some(core_id) = self.shared.config.runtime.cpu_affinity {
             let _ = core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
         }
@@ -746,7 +1268,9 @@ impl EventLoop {
                         self.idle_count += 1;
                         std::hint::spin_loop();
                     } else {
-                        thread::sleep(Duration::from_micros(self.shared.config.runtime.sleep_us));
+                        thread::park_timeout(Duration::from_micros(
+                            self.shared.config.runtime.sleep_us,
+                        ));
                     }
                 }
             }
@@ -855,7 +1379,7 @@ impl EventLoop {
         &mut self,
         base_version: u64,
         staged: Vec<StagedSubscription>,
-    ) -> Result<(u64, Vec<(u64, Arc<SubscriberChannel>)>), EngineError> {
+    ) -> Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError> {
         if base_version != self.shared.route_version.load(Ordering::Acquire) {
             return Err(EngineError::StaleRouteVersion);
         }
@@ -894,24 +1418,70 @@ impl EventLoop {
         {
             return Err(EngineError::InvalidSubscriptionCapacity);
         }
+        #[derive(Clone, Hash, PartialEq, Eq)]
+        enum MailboxKey {
+            Shared(PluginIdentity, Arc<str>),
+            Standalone(u64),
+        }
+
+        let shared_capacities = staged
+            .iter()
+            .filter_map(|item| {
+                item.mailbox
+                    .as_ref()
+                    .map(|mailbox| ((item.owner.clone(), mailbox.clone()), item.spec.capacity))
+            })
+            .fold(HashMap::new(), |mut capacities, (key, capacity)| {
+                capacities
+                    .entry(key)
+                    .and_modify(|current: &mut usize| *current = (*current).max(capacity))
+                    .or_insert(capacity);
+                capacities
+            });
+        let mut mailboxes =
+            HashMap::<MailboxKey, (u64, Arc<SubscriberChannel>, Arc<SubscriberHealth>)>::new();
         let mut tokens = Vec::with_capacity(staged.len());
         for item in staged {
             let token = self.next_token;
             self.next_token += 1;
-            let health = Arc::new(SubscriberHealth::default());
-            let channel = SubscriberChannel::new(SubscriberChannelArgs {
-                id: token,
-                owner: item.owner,
-                capacity: item.spec.capacity,
-                critical_reserve: self.shared.config.subscribers.critical_reserve,
-                high_ratio: self.shared.config.subscribers.lagging_high_watermark_ratio,
-                low_ratio: self.shared.config.subscribers.recovery_low_watermark_ratio,
-                health: health.clone(),
-                idle_sleep: Duration::from_micros(self.shared.config.subscribers.idle_sleep_us),
-                fault_signals: self.shared.fault_signals.clone(),
-                trace_ring: self.shared.trace_ring.clone(),
-                metrics: self.shared.metrics.clone(),
+            let mailbox_key = item
+                .mailbox
+                .as_ref()
+                .map_or(MailboxKey::Standalone(token), |mailbox| {
+                    MailboxKey::Shared(item.owner.clone(), mailbox.clone())
+                });
+            let mailbox_capacity = item.mailbox.as_ref().map_or(item.spec.capacity, |mailbox| {
+                shared_capacities[&(item.owner.clone(), mailbox.clone())]
             });
+            let (mailbox_id, channel, health) = mailboxes.entry(mailbox_key).or_insert_with(|| {
+                let subscriber_cpu = (!self.shared.config.subscribers.cpu_affinity.is_empty())
+                    .then(|| {
+                        let index = token.saturating_sub(1) as usize
+                            % self.shared.config.subscribers.cpu_affinity.len();
+                        self.shared.config.subscribers.cpu_affinity[index]
+                    });
+                let health = Arc::new(SubscriberHealth::default());
+                let channel = SubscriberChannel::new(SubscriberChannelArgs {
+                    id: token,
+                    owner: item.owner.clone(),
+                    capacity: mailbox_capacity,
+                    critical_reserve: self.shared.config.subscribers.critical_reserve,
+                    high_ratio: self.shared.config.subscribers.lagging_high_watermark_ratio,
+                    low_ratio: self.shared.config.subscribers.recovery_low_watermark_ratio,
+                    health: health.clone(),
+                    runtime_mode: self.shared.config.subscribers.runtime_mode,
+                    spin_iterations: self.shared.config.subscribers.spin_iterations,
+                    idle_sleep: Duration::from_micros(self.shared.config.subscribers.idle_sleep_us),
+                    cpu_affinity: subscriber_cpu,
+                    fault_signals: self.shared.fault_signals.clone(),
+                    trace_ring: self.shared.trace_ring.clone(),
+                    metrics: self.shared.metrics.clone(),
+                });
+                (token, channel, health)
+            });
+            let mailbox_id = *mailbox_id;
+            let channel = channel.clone();
+            let health = health.clone();
             let descriptor = self
                 .shared
                 .descriptor(&item.spec.event_type, item.spec.schema_version)
@@ -952,7 +1522,7 @@ impl EventLoop {
                 .entry(descriptor.id)
                 .or_default()
                 .insert(token);
-            tokens.push((token, channel));
+            tokens.push((token, mailbox_id, channel));
         }
         let version = self.shared.route_version.fetch_add(1, Ordering::Release) + 1;
         Ok((version, tokens))
@@ -961,7 +1531,7 @@ impl EventLoop {
     fn begin_retire_route(
         &mut self,
         token: u64,
-        reply: Sender<Result<Arc<SubscriberChannel>, EngineError>>,
+        reply: Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>,
     ) -> Result<(), EngineError> {
         if !self.routes.contains_key(&token) || self.retire_waiters.contains_key(&token) {
             return Err(EngineError::UnknownSubscription(token));
@@ -1000,7 +1570,13 @@ impl EventLoop {
                 .remove(&token)
                 .expect("retiring route remains installed until pending is empty");
             self.remove_pending_reservation(&mut route);
-            route.channel.request_stop();
+            let channel_still_used = self
+                .routes
+                .values()
+                .any(|active| Arc::ptr_eq(&active.channel, &route.channel));
+            if !channel_still_used {
+                route.channel.request_stop();
+            }
             self.shared
                 .health_registry
                 .write()
@@ -1012,7 +1588,7 @@ impl EventLoop {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&token);
             if let Some(reply) = self.retire_waiters.remove(&token) {
-                let _ = reply.try_send(Ok(route.channel));
+                let _ = reply.try_send(Ok((route.channel, !channel_still_used)));
             }
         }
         completed
@@ -1071,7 +1647,7 @@ impl EventLoop {
             self.remove_pending_reservation(&mut route);
             route.channel.request_stop();
             if let Some(reply) = retire_waiters.remove(&token) {
-                let _ = reply.try_send(Ok(route.channel.clone()));
+                let _ = reply.try_send(Ok((route.channel.clone(), true)));
             }
             channels.push(route.channel);
         }

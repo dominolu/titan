@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use titan_plugin_engine::{
     ActivationGate, DispatchOutcome, ErrorKind, EventControl, EventHandler, EventPublishMetadata,
     EventQos, EventReceiver, EventView, LifecycleState, PluginError, PluginIdentity,
@@ -41,6 +41,7 @@ fn test_config() -> EventEngineConfig {
     config.subscribers.max_count = 16;
     config.subscribers.default_capacity = 16;
     config.subscribers.critical_reserve = 2;
+    config.subscribers.spin_iterations = 0;
     config.subscribers.idle_sleep_us = 50;
     config.pending_dispatch.per_subscriber_capacity = 4;
     config.pending_dispatch.global_capacity = 32;
@@ -74,6 +75,240 @@ impl EventHandler for RecordingHandler {
             .expect("test receiver remains alive");
         Ok(())
     }
+}
+
+struct BlockingHandler {
+    entered: Sender<Vec<u8>>,
+    release: Receiver<()>,
+}
+
+impl EventHandler for BlockingHandler {
+    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+        self.entered
+            .send(event.payload.to_vec())
+            .expect("test receiver remains alive");
+        self.release
+            .recv()
+            .expect("test controls handler completion");
+        Ok(())
+    }
+}
+
+#[test]
+fn fast_lane_runs_inline_and_keeps_the_normal_route() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("fast", 1, EventClass::Market, PoolKind::MarketBatch)
+        .unwrap();
+    engine.start().unwrap();
+
+    let (fast_tx, fast_rx) = bounded(1);
+    let token = handle
+        .register_fast_lane("fast", 1, vec![7], Arc::new(RecordingHandler(fast_tx)))
+        .unwrap();
+    let transaction = handle
+        .begin_route_update(handle.current_route_version())
+        .unwrap();
+    handle
+        .stage_subscription(
+            transaction,
+            &PluginIdentity::new("test", "mirror"),
+            &SubscriptionSpec {
+                event_type: Arc::from("fast"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                capacity: 8,
+                routing_keys: Arc::from([7]),
+            },
+        )
+        .unwrap();
+    let (_, committed) = handle.commit_at_safe_point(transaction).unwrap();
+
+    let mut request = PublishRequest::new("fast", 1, b"payload");
+    request.routing_key = 7;
+    handle.try_publish(request).unwrap();
+    assert_eq!(fast_rx.try_recv().unwrap(), b"payload");
+
+    let (mirror_tx, mirror_rx) = bounded(1);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while committed[0]
+        .receiver
+        .dispatch_next(&RecordingHandler(mirror_tx.clone()), Duration::ZERO)
+        .unwrap()
+        == DispatchOutcome::Idle
+    {
+        assert!(Instant::now() < deadline);
+    }
+    assert_eq!(mirror_rx.recv().unwrap(), b"payload");
+    assert!(handle.unregister_fast_lane(token));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn async_fast_lane_is_ordered_bounded_and_does_not_block_publishers() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("async-fast", 1, EventClass::Market, PoolKind::MarketBatch)
+        .unwrap();
+    engine.start().unwrap();
+
+    let (entered_tx, entered_rx) = bounded(4);
+    let (release_tx, release_rx) = bounded(4);
+    let token = handle
+        .register_async_fast_lane(
+            &[("async-fast", 1)],
+            vec![9],
+            AsyncFastLaneConfig {
+                capacity: 1,
+                idle_sleep: Duration::from_millis(1),
+                ..AsyncFastLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+
+    let mut first = PublishRequest::new("async-fast", 1, b"first");
+    first.routing_key = 9;
+    handle.try_publish(first).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"first"
+    );
+
+    let mut second = PublishRequest::new("async-fast", 1, b"second");
+    second.routing_key = 9;
+    let started = Instant::now();
+    handle.try_publish(second).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(50));
+
+    let mut overflow = PublishRequest::new("async-fast", 1, b"overflow");
+    overflow.routing_key = 9;
+    handle.try_publish(overflow).unwrap();
+    assert_eq!(engine.metrics().snapshot().fast_lane_drop_total, 1);
+
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"second"
+    );
+    release_tx.send(()).unwrap();
+    assert!(handle.unregister_fast_lane(token));
+    let metrics = engine.metrics().snapshot();
+    assert_eq!(metrics.fast_lane_enqueue_total, 2);
+    assert_eq!(metrics.fast_lane_depth_max, 1);
+    engine.stop().unwrap();
+}
+
+#[test]
+fn async_fast_lane_contains_handler_failure() {
+    struct FailingFastHandler(Arc<AtomicUsize>);
+    impl EventHandler for FailingFastHandler {
+        fn handle(&self, _event: EventView<'_>) -> Result<(), PluginError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(PluginError::new(
+                ErrorKind::PluginFailed,
+                PluginIdentity::new("test", "async-fast-failed"),
+                LifecycleState::Running,
+                "callback",
+                "expected async FastLane failure",
+            ))
+        }
+    }
+
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("async-fail", 1, EventClass::Market, PoolKind::MarketBatch)
+        .unwrap();
+    engine.start().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let token = handle
+        .register_async_fast_lane(
+            &[("async-fail", 1)],
+            vec![],
+            AsyncFastLaneConfig::default(),
+            Arc::new(FailingFastHandler(calls.clone())),
+        )
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("async-fail", 1, b"first"))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while calls.load(Ordering::Acquire) == 0 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    handle
+        .try_publish(PublishRequest::new(
+            "async-fail",
+            1,
+            b"normal-route-survives",
+        ))
+        .unwrap();
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert!(handle.unregister_fast_lane(token));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn async_fast_lane_priority_bypasses_normal_backlog() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    for event_type in ["fast-normal", "fast-priority"] {
+        handle
+            .register_event(event_type, 1, EventClass::Market, PoolKind::MarketBatch)
+            .unwrap();
+    }
+    engine.start().unwrap();
+    let (entered_tx, entered_rx) = bounded(4);
+    let (release_tx, release_rx) = bounded(4);
+    let token = handle
+        .register_async_fast_lane(
+            &[("fast-normal", 1), ("fast-priority", 1)],
+            vec![],
+            AsyncFastLaneConfig {
+                capacity: 2,
+                priority_event_types: vec![Arc::from("fast-priority")],
+                ..AsyncFastLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("fast-normal", 1, b"running"))
+        .unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"running"
+    );
+    handle
+        .try_publish(PublishRequest::new("fast-normal", 1, b"normal"))
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("fast-priority", 1, b"priority"))
+        .unwrap();
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"priority"
+    );
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"normal"
+    );
+    release_tx.send(()).unwrap();
+    assert!(handle.unregister_fast_lane(token));
+    engine.stop().unwrap();
 }
 
 fn drive_receiver(
@@ -140,6 +375,173 @@ fn configuration_rejects_unbounded_or_inconsistent_capacity() {
     config.runtime.mode = RuntimeMode::Dedicated;
     config.runtime.cpu_affinity = None;
     assert_eq!(config.validate(), Err(ConfigError::DedicatedAffinity));
+
+    let mut config = test_config();
+    config.subscribers.runtime_mode = SubscriberRuntimeMode::Dedicated;
+    config.subscribers.cpu_affinity.clear();
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::DedicatedSubscriberAffinity)
+    );
+}
+
+#[test]
+fn parked_subscriber_is_actively_woken_by_publish() {
+    let mut config = test_config();
+    config.subscribers.runtime_mode = SubscriberRuntimeMode::Park;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("wake", 1, EventClass::Market, PoolKind::MarketBatch)
+        .unwrap();
+    engine.start().unwrap();
+    let transaction = handle
+        .begin_route_update(handle.current_route_version())
+        .unwrap();
+    handle
+        .stage_subscription(
+            transaction,
+            &PluginIdentity::new("test", "parked"),
+            &SubscriptionSpec {
+                event_type: Arc::from("wake"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                capacity: 8,
+                routing_keys: Arc::from([]),
+            },
+        )
+        .unwrap();
+    let (_, mut subscriptions) = handle.commit_at_safe_point(transaction).unwrap();
+    let receiver = subscriptions.pop().unwrap().receiver;
+    let (tx, rx) = bounded(1);
+    let consumer = thread::spawn(move || {
+        receiver
+            .dispatch_next(&RecordingHandler(tx), Duration::from_secs(1))
+            .unwrap()
+    });
+    thread::sleep(Duration::from_millis(20));
+    handle
+        .try_publish(PublishRequest::new("wake", 1, b"woken"))
+        .unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_millis(250)).unwrap(),
+        b"woken"
+    );
+    assert_eq!(consumer.join().unwrap(), DispatchOutcome::Delivered);
+    engine.stop().unwrap();
+}
+
+#[test]
+fn subscriptions_from_one_owner_share_a_mailbox_until_the_last_route_retires() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    for event_type in ["shared-a", "shared-b"] {
+        handle
+            .register_event(event_type, 1, EventClass::Market, PoolKind::MarketBatch)
+            .unwrap();
+    }
+    engine.start().unwrap();
+    let transaction = handle
+        .begin_route_update(handle.current_route_version())
+        .unwrap();
+    let owner = PluginIdentity::new("test", "shared-mailbox");
+    for event_type in ["shared-a", "shared-b"] {
+        handle
+            .stage_subscription_in_mailbox(
+                transaction,
+                &owner,
+                "shared",
+                &SubscriptionSpec {
+                    event_type: Arc::from(event_type),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    capacity: 8,
+                    routing_keys: Arc::from([]),
+                },
+            )
+            .unwrap();
+    }
+    let (_, subscriptions) = handle.commit_at_safe_point(transaction).unwrap();
+    assert_eq!(subscriptions.len(), 2);
+    assert_eq!(subscriptions[0].mailbox_id, subscriptions[1].mailbox_id);
+    let receiver = subscriptions[0].receiver.clone();
+    let first_token = subscriptions[0].token;
+    let (tx, rx) = bounded(3);
+    let handler = RecordingHandler(tx);
+
+    handle
+        .try_publish(PublishRequest::new("shared-a", 1, b"a"))
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("shared-b", 1, b"b"))
+        .unwrap();
+    for _ in 0..2 {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while receiver
+            .dispatch_next(&handler, Duration::from_micros(50))
+            .unwrap()
+            == DispatchOutcome::Idle
+        {
+            assert!(
+                Instant::now() < deadline,
+                "shared mailbox delivery timed out"
+            );
+        }
+    }
+    assert_eq!(rx.recv().unwrap(), b"a");
+    assert_eq!(rx.recv().unwrap(), b"b");
+
+    handle.retire_subscription(first_token).unwrap();
+    handle
+        .try_publish(PublishRequest::new("shared-b", 1, b"still-open"))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while receiver
+        .dispatch_next(&handler, Duration::from_micros(50))
+        .unwrap()
+        == DispatchOutcome::Idle
+    {
+        assert!(
+            Instant::now() < deadline,
+            "surviving route delivery timed out"
+        );
+    }
+    assert_eq!(rx.recv().unwrap(), b"still-open");
+    engine.stop().unwrap();
+}
+
+#[test]
+fn plugin_control_market_reservation_publishes_without_copy_api() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("reserved", 1, EventClass::Market, PoolKind::MarketBatch)
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, rx) = bounded(1);
+    let (_, gate) = subscribe(
+        &handle,
+        "reserved",
+        1,
+        EventQos::ReliableOrdered,
+        8,
+        Arc::new(RecordingHandler(tx)),
+    );
+    gate.activate();
+    let mut reservation = EventControl::reserve_market_batch(
+        &handle,
+        "reserved",
+        1,
+        4,
+        EventPublishMetadata::default(),
+        TraceContext::default(),
+    )
+    .unwrap();
+    reservation.payload_mut().copy_from_slice(b"zero");
+    reservation.commit().unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"zero");
+    gate.quiesce();
+    engine.stop().unwrap();
 }
 
 #[test]
@@ -1202,7 +1604,10 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
         high_ratio: 0.8,
         low_ratio: 0.5,
         health: health.clone(),
+        runtime_mode: SubscriberRuntimeMode::SpinSleep,
+        spin_iterations: 0,
         idle_sleep: Duration::from_micros(50),
+        cpu_affinity: None,
         fault_signals: Arc::new(crossbeam_queue::ArrayQueue::new(8)),
         trace_ring: Arc::new(crossbeam_queue::ArrayQueue::new(32)),
         metrics,

@@ -83,7 +83,11 @@ pub struct SubscriberConfig {
     pub critical_reserve: usize,
     pub lagging_high_watermark_ratio: f64,
     pub recovery_low_watermark_ratio: f64,
+    pub runtime_mode: SubscriberRuntimeMode,
+    pub spin_iterations: usize,
     pub idle_sleep_us: u64,
+    /// CPU ids assigned to subscribers in subscription order, wrapping when necessary.
+    pub cpu_affinity: Vec<usize>,
 }
 
 impl Default for SubscriberConfig {
@@ -94,9 +98,24 @@ impl Default for SubscriberConfig {
             critical_reserve: 2_048,
             lagging_high_watermark_ratio: 0.80,
             recovery_low_watermark_ratio: 0.50,
+            runtime_mode: SubscriberRuntimeMode::SpinSleep,
+            spin_iterations: 256,
             idle_sleep_us: 10,
+            cpu_affinity: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriberRuntimeMode {
+    /// Spin briefly, then sleep for `idle_sleep_us` when the queue remains empty.
+    #[default]
+    SpinSleep,
+    /// Park the consumer thread and let producers actively wake it.
+    Park,
+    /// Continuously poll the queue. This mode requires dedicated subscriber CPU affinity.
+    Dedicated,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -268,6 +287,14 @@ impl EventEngineConfig {
         }
         if self.subscribers.max_count == 0 || self.subscribers.default_capacity == 0 {
             return Err(ConfigError::ZeroCapacity("subscribers"));
+        }
+        if self.subscribers.idle_sleep_us == 0 {
+            return Err(ConfigError::ZeroDuration("subscriber idle_sleep_us"));
+        }
+        if self.subscribers.runtime_mode == SubscriberRuntimeMode::Dedicated
+            && self.subscribers.cpu_affinity.is_empty()
+        {
+            return Err(ConfigError::DedicatedSubscriberAffinity);
         }
         if self.subscribers.critical_reserve >= self.subscribers.default_capacity {
             return Err(ConfigError::CriticalReserve);

@@ -10,6 +10,8 @@
 
 - [Core Runtime交互契约](core_runtime_contract.md)
 - [EventEngine 独立技术实现设计](event_engine_technical_design.md)
+- [MarketPlugin 技术实现设计](market_plugin_technical_design.md)
+- [AccountPlugin 技术实现设计](account_plugin_technical_design.md)
 
 ## 1. 文档目标
 
@@ -993,19 +995,19 @@ Titan main读取Core配置
 ```text
 加载MarketSourceDefinition
     -> MarketAdminService.upsert_source()
-    -> MarketPlugin创建或更新MarketRuntime
+    -> MarketPlugin创建或更新MarketConnector实例
 
 加载AccountDefinition
     -> AccountAdminService.upsert_account()
-    -> AccountPlugin创建或更新AccountRuntime
+    -> AccountPlugin创建或更新AccountConnector实例
 
 加载StrategyDefinition
     -> StrategyControlService.create()
     -> AccountService.acquire(account_id)
     -> MarketService.subscribe(MarketSymbol)
     -> 创建并激活策略事件路由
-    -> AccountPlugin启动或复用对应AccountRuntime
-    -> MarketPlugin启动或复用对应MarketRuntime
+    -> AccountPlugin启动或复用对应AccountConnector实例
+    -> MarketPlugin启动或复用对应MarketConnector实例
     -> 激活相应Connector事件源
     -> 等待AccountReady、MarketReady和RiskReady
     -> 启动对应StrategyRuntime回调循环
@@ -1120,8 +1122,8 @@ reporting: optional
 每个Service依赖必须显式声明作用域选择器，不能让ServiceRegistry根据注册或启动顺序随机选择Provider。以下为业务插件示例：
 
 ```text
-account / okx-main   -> AccountPlugin.AccountRuntime[okx-main]
-account / bybit-main -> AccountPlugin.AccountRuntime[bybit-main]
+account / okx-main   -> AccountPlugin.AccountConnector[okx-main]
+account / bybit-main -> AccountPlugin.AccountConnector[bybit-main]
 ```
 
 PluginEngine只处理 `CUSTOM(namespace, key)`，不理解 `account` 的含义。
@@ -1853,9 +1855,9 @@ strategies[]     -> StrategyControlService.create()
 - 文件、数据库和管理API的Runtime Definition适配；
 - AccountExecutionService；
 - 完整Connector能力配置；
-- `account_id -> AccountRuntime`路由；
-- `MarketSymbol -> MarketRuntime`路由；
-- AccountLease和MarketSubscription引用管理；
+- `account_id -> AccountConnector`路由；
+- `MarketSourceHandle -> MarketConnector`路由；
+- Connector自身的MarketSubscription引用管理；
 - AccountReady、MarketReady与策略启动门控；
 
 ### 第四阶段：执行与异常上报
@@ -1929,18 +1931,20 @@ PluginEngine 只负责把插件正确、稳定并高效地装配起来。应用�
 ```text
 MarketPlugin
     ├── MarketService
-    ├── MarketRuntime[]
+    ├── MarketConnectorRegistry
     └── Connector实例[]
 
 AccountPlugin
     ├── AccountService
     ├── AccountExecutionService
-    ├── AccountReconcileService
-    ├── AccountRuntime[]
+    ├── AccountAdminService
+    ├── AccountConnectorRegistry
     └── Connector实例[]
 ```
 
-MarketPlugin负责公共行情连接、订阅、标准化、缺口恢复、MarketView及市场事实发布。AccountPlugin负责账户配置、私有连接、订单发送、账户和成交回报、AccountView、重连与对账。
+MarketPlugin和AccountPlugin只负责Factory、Registry、Service门面和Connector生命周期。公共行情实现、
+缺口恢复和市场事实发布属于MarketConnector；认证、订单状态合流、账户事实发布和对账属于
+AccountConnector。插件本身不维护第二套MarketView、AccountView或交易所状态机。
 
 二者是普通业务插件，不属于Titan Core。它们可以在没有Connector和业务Runtime时进入RUNNING并提供管理Service。
 
@@ -1964,32 +1968,35 @@ AccountPlugin
     -> OkxConnector(ACCOUNT_DATA + ORDER_ENTRY + RECONCILIATION)
 ```
 
-两个实例共享协议实现代码，但不共享连接、可变状态、队列和生命周期。Connector是插件内部Runtime，不是PluginSlot或Service，也不向Consumer暴露。
+两个实例共享协议实现代码，但不共享连接、可变状态、队列和生命周期。Connector是插件管理的业务
+实例，不是PluginSlot或Service，也不向Consumer暴露。
 
-### A.3 统一Service与内部Runtime
+### A.3 统一Service与Connector实例
 
 Service不按账户或市场重复创建，统一Service通过稳定标识路由：
 
 ```text
 AccountService
-    account_id -> AccountRuntime
+    account_id -> AccountConnectorRegistry entry
 
 MarketService
-    MarketSymbol(source_id, symbol) -> MarketRuntime
+    source_handle -> MarketConnectorRegistry entry
 ```
 
 字符串标识在策略或其他业务Runtime创建阶段解析为连续数字RouteHandle，热路径只使用数字Handle。
 
-多个策略可以共享MarketRuntime和AccountRuntime，但订单归属、风险额度及业务订阅必须分别保存。资源使用Lease或引用计数：
+多个策略可以共享Connector实例，但订单归属、风险额度及业务订阅必须分别保存。Market订阅的共享和
+引用计数由具体MarketConnector实现；账户实例生命周期由AccountAdminService显式控制，不由策略引用数
+隐式启停：
 
 ```text
 Strategy启动
-    -> AccountService.acquire(account_id)
+    -> AccountService.resolve(account_id)
     -> MarketService.subscribe(MarketSymbol)
 
 Strategy停止
-    -> 释放AccountLease
     -> 释放MarketSubscription
 ```
 
-MarketRuntime没有订阅者后可以延迟退订。AccountRuntime只有在没有策略引用、没有活动订单、没有待确认或未知订单命令并完成账户对账后，才允许关闭。
+MarketConnector没有订阅者后可以按自身策略延迟退订。AccountConnector只能通过显式管理操作关闭，
+并且必须按shutdown policy处理活动订单、待确认命令和最终账户对账。

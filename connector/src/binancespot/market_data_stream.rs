@@ -35,7 +35,7 @@ use crate::{
 
 pub struct MarketDataStream {
     client: BinanceSpotClient,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     symbol_rx: Receiver<String>,
     pending_depth_messages: HashMap<String, Vec<stream::Depth>>,
     prev_u: HashMap<String, i64>,
@@ -46,7 +46,7 @@ pub struct MarketDataStream {
 impl MarketDataStream {
     pub fn new(
         client: BinanceSpotClient,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         symbol_rx: Receiver<String>,
     ) -> Self {
         let (rest_tx, rest_rx) = unbounded_channel::<(String, rest::Depth)>();

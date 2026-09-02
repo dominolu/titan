@@ -7,6 +7,8 @@ members = [
   "crates/titan-runtime",
   "crates/titan-event-engine",
   "crates/titan-plugin-engine",
+  "crates/titan-market-plugin",
+  "crates/titan-account-plugin",
   "crates/titan-python-host",
   "crates/titan-cli",
   "collector",

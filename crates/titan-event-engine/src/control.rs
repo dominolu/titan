@@ -2,9 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use crossbeam_channel::bounded;
 use titan_plugin_engine::{
-    ApiVersion, CommittedSubscription, ErrorKind, EventControl, EventPublishMetadata,
-    LifecycleState, PluginError, PluginIdentity, RouteTransaction, RouteVersion,
-    SubscriptionCandidate, SubscriptionSpec, SubscriptionToken, TraceContext,
+    ApiVersion, CommittedSubscription, ErrorKind, EventControl, EventPayloadReservation,
+    EventPublishMetadata, LifecycleState, PluginError, PluginIdentity, RouteTransaction,
+    RouteVersion, SubscriptionCandidate, SubscriptionSpec, SubscriptionToken, TraceContext,
 };
 
 use crate::{
@@ -63,42 +63,17 @@ impl EventControl for EventEngineHandle {
         owner: &PluginIdentity,
         spec: &SubscriptionSpec,
     ) -> Result<SubscriptionCandidate, PluginError> {
-        if spec.capacity == 0
-            || spec.capacity <= self.shared.config.subscribers.critical_reserve
-            || spec.capacity > self.shared.config.subscribers.default_capacity
-            || self
-                .shared
-                .descriptor(&spec.event_type, spec.schema_version)
-                .is_none()
-        {
-            return Err(plugin_error(
-                ErrorKind::SubscriptionRejected,
-                "stage_subscription",
-                "event is not registered or subscription capacity is invalid",
-                false,
-            ));
-        }
-        let mut transactions = self
-            .transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (_, staged) = transactions.get_mut(&transaction.0).ok_or_else(|| {
-            plugin_error(
-                ErrorKind::SubscriptionRejected,
-                "stage_subscription",
-                "unknown route transaction",
-                false,
-            )
-        })?;
-        staged.push(StagedSubscription {
-            owner: owner.clone(),
-            spec: spec.clone(),
-        });
-        let candidate = self
-            .shared
-            .next_candidate
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(SubscriptionCandidate(candidate))
+        stage_subscription(self, transaction, owner, None, spec)
+    }
+
+    fn stage_subscription_in_mailbox(
+        &self,
+        transaction: RouteTransaction,
+        owner: &PluginIdentity,
+        mailbox: &str,
+        spec: &SubscriptionSpec,
+    ) -> Result<SubscriptionCandidate, PluginError> {
+        stage_subscription(self, transaction, owner, Some(Arc::from(mailbox)), spec)
     }
 
     fn commit_at_safe_point(
@@ -149,8 +124,9 @@ impl EventControl for EventEngineHandle {
             RouteVersion(version),
             tokens
                 .into_iter()
-                .map(|(token, channel)| CommittedSubscription {
+                .map(|(token, mailbox_id, channel)| CommittedSubscription {
                     token: SubscriptionToken(token),
+                    mailbox_id,
                     receiver: channel,
                 })
                 .collect(),
@@ -180,7 +156,7 @@ impl EventControl for EventEngineHandle {
                     true,
                 )
             })?;
-        let channel = reply_rx
+        let (channel, stop_channel) = reply_rx
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| {
                 plugin_error(
@@ -191,7 +167,9 @@ impl EventControl for EventEngineHandle {
                 )
             })?
             .map_err(engine_plugin_error)?;
-        channel.stop_and_drain();
+        if stop_channel {
+            channel.stop_and_drain();
+        }
         Ok(())
     }
 
@@ -202,9 +180,7 @@ impl EventControl for EventEngineHandle {
         payload: &[u8],
         trace: TraceContext,
     ) -> Result<(), PluginError> {
-        let mut request = PublishRequest::new(event_type, schema_version, payload);
-        request.trace = trace;
-        self.try_publish(request).map_err(publish_plugin_error)
+        publish(self, event_type, schema_version, payload, trace)
     }
 
     fn publish_with_metadata(
@@ -215,16 +191,184 @@ impl EventControl for EventEngineHandle {
         metadata: EventPublishMetadata,
         trace: TraceContext,
     ) -> Result<(), PluginError> {
-        let mut request = PublishRequest::new(event_type, schema_version, payload);
-        request.source_id = metadata.source_id;
-        request.source_sequence = metadata.source_sequence;
-        request.exchange_ts = metadata.exchange_ts;
-        request.receive_ts = metadata.receive_ts;
-        request.publish_ts = metadata.publish_ts;
-        request.routing_key = metadata.routing_key;
-        request.flags = metadata.flags;
-        request.trace = trace;
-        self.try_publish(request).map_err(publish_plugin_error)
+        publish_with_metadata(self, event_type, schema_version, payload, metadata, trace)
+    }
+
+    fn reserve_market_batch(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        reserve_market_batch(
+            self,
+            event_type,
+            schema_version,
+            payload_length,
+            metadata,
+            trace,
+        )
+    }
+
+    fn reserve_event_payload(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload_length: usize,
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+        reserve_event_payload(
+            self,
+            event_type,
+            schema_version,
+            payload_length,
+            metadata,
+            trace,
+        )
+    }
+}
+
+fn stage_subscription(
+    handle: &EventEngineHandle,
+    transaction: RouteTransaction,
+    owner: &PluginIdentity,
+    mailbox: Option<Arc<str>>,
+    spec: &SubscriptionSpec,
+) -> Result<SubscriptionCandidate, PluginError> {
+    if spec.capacity == 0
+        || spec.capacity <= handle.shared.config.subscribers.critical_reserve
+        || spec.capacity > handle.shared.config.subscribers.default_capacity
+        || handle
+            .shared
+            .descriptor(&spec.event_type, spec.schema_version)
+            .is_none()
+    {
+        return Err(plugin_error(
+            ErrorKind::SubscriptionRejected,
+            "stage_subscription",
+            "event is not registered or subscription capacity is invalid",
+            false,
+        ));
+    }
+    let mut transactions = handle
+        .transactions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (_, staged) = transactions.get_mut(&transaction.0).ok_or_else(|| {
+        plugin_error(
+            ErrorKind::SubscriptionRejected,
+            "stage_subscription",
+            "unknown route transaction",
+            false,
+        )
+    })?;
+    staged.push(StagedSubscription {
+        owner: owner.clone(),
+        mailbox,
+        spec: spec.clone(),
+    });
+    let candidate = handle
+        .shared
+        .next_candidate
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(SubscriptionCandidate(candidate))
+}
+
+fn publish(
+    handle: &EventEngineHandle,
+    event_type: &str,
+    schema_version: u32,
+    payload: &[u8],
+    trace: TraceContext,
+) -> Result<(), PluginError> {
+    let mut request = PublishRequest::new(event_type, schema_version, payload);
+    request.trace = trace;
+    handle.try_publish(request).map_err(publish_plugin_error)
+}
+
+fn publish_with_metadata(
+    handle: &EventEngineHandle,
+    event_type: &str,
+    schema_version: u32,
+    payload: &[u8],
+    metadata: EventPublishMetadata,
+    trace: TraceContext,
+) -> Result<(), PluginError> {
+    let mut request = PublishRequest::new(event_type, schema_version, payload);
+    request.source_id = metadata.source_id;
+    request.source_sequence = metadata.source_sequence;
+    request.exchange_ts = metadata.exchange_ts;
+    request.receive_ts = metadata.receive_ts;
+    request.publish_ts = metadata.publish_ts;
+    request.routing_key = metadata.routing_key;
+    request.flags = metadata.flags;
+    request.trace = trace;
+    handle.try_publish(request).map_err(publish_plugin_error)
+}
+
+fn reserve_market_batch(
+    handle: &EventEngineHandle,
+    event_type: &str,
+    schema_version: u32,
+    payload_length: usize,
+    metadata: EventPublishMetadata,
+    trace: TraceContext,
+) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+    let mut request = crate::ReserveRequest::new(event_type, schema_version, payload_length);
+    request.source_id = metadata.source_id;
+    request.source_sequence = metadata.source_sequence;
+    request.exchange_ts = metadata.exchange_ts;
+    request.receive_ts = metadata.receive_ts;
+    request.publish_ts = metadata.publish_ts;
+    request.routing_key = metadata.routing_key;
+    request.flags = metadata.flags;
+    request.trace = trace;
+    let reservation =
+        EventEngineHandle::reserve_market_batch(handle, request).map_err(publish_plugin_error)?;
+    Ok(Box::new(PluginMarketBatchReservation(Some(reservation))))
+}
+
+fn reserve_event_payload(
+    handle: &EventEngineHandle,
+    event_type: &str,
+    schema_version: u32,
+    payload_length: usize,
+    metadata: EventPublishMetadata,
+    trace: TraceContext,
+) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+    let mut request = crate::ReserveRequest::new(event_type, schema_version, payload_length);
+    request.source_id = metadata.source_id;
+    request.source_sequence = metadata.source_sequence;
+    request.exchange_ts = metadata.exchange_ts;
+    request.receive_ts = metadata.receive_ts;
+    request.publish_ts = metadata.publish_ts;
+    request.routing_key = metadata.routing_key;
+    request.flags = metadata.flags;
+    request.trace = trace;
+    let reservation =
+        EventEngineHandle::reserve_event_payload(handle, request).map_err(publish_plugin_error)?;
+    Ok(Box::new(PluginMarketBatchReservation(Some(reservation))))
+}
+
+struct PluginMarketBatchReservation(Option<crate::MarketBatchReservation>);
+
+impl EventPayloadReservation for PluginMarketBatchReservation {
+    fn payload_mut(&mut self) -> &mut [u8] {
+        self.0
+            .as_mut()
+            .expect("reservation is consumed only by commit")
+            .payload_mut()
+    }
+
+    fn commit(mut self: Box<Self>) -> Result<(), PluginError> {
+        self.0
+            .take()
+            .expect("reservation is committed once")
+            .commit()
+            .map_err(publish_plugin_error)
     }
 }
 

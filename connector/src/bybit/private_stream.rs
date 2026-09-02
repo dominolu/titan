@@ -6,10 +6,7 @@ use hftbacktest::prelude::LiveEvent;
 use tokio::{
     net::TcpStream,
     select,
-    sync::{
-        broadcast::{Receiver, error::RecvError},
-        mpsc::UnboundedSender,
-    },
+    sync::broadcast::{Receiver, error::RecvError},
     time,
 };
 use tokio_tungstenite::{
@@ -32,7 +29,7 @@ use crate::{
 pub struct PrivateStream {
     api_key: String,
     secret: String,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     symbols: SharedSymbolSet,
     category: String,
@@ -44,7 +41,7 @@ impl PrivateStream {
     pub fn new(
         api_key: String,
         secret: String,
-        ev_tx: UnboundedSender<PublishEvent>,
+        ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         symbols: SharedSymbolSet,
         category: String,
@@ -361,7 +358,7 @@ pub async fn get_position(
     client: BybitClient,
     category: String,
     symbol: String,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BybitError> {
     // todo: rate-limit throttling.
     let position = client.get_position_information(&category, &symbol).await?;
@@ -392,7 +389,7 @@ pub async fn cancel_all(
     category: String,
     symbol: String,
     order_manager: SharedOrderManager,
-    ev_tx: UnboundedSender<PublishEvent>,
+    ev_tx: crate::connector::PublishSender,
 ) -> Result<(), BybitError> {
     // todo: rate-limit throttling.
     client.cancel_all_orders(&category, &symbol).await?;

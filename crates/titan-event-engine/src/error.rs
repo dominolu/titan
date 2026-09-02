@@ -25,6 +25,8 @@ pub enum ConfigError {
     InvalidBudget(&'static str),
     #[error("dedicated mode requires cpu_affinity")]
     DedicatedAffinity,
+    #[error("dedicated subscriber mode requires at least one subscriber cpu_affinity")]
+    DedicatedSubscriberAffinity,
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -73,6 +75,8 @@ pub enum EngineError {
     RecoveryNotQuiescent(u64),
     #[error("event type or schema is not registered")]
     InvalidEvent,
+    #[error("invalid asynchronous FastLane configuration")]
+    InvalidFastLaneConfig,
     #[error("subscriber runtime failed: {0}")]
     SubscriberRuntime(String),
     #[error("event arena still has {0} outstanding blocks")]
