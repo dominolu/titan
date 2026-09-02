@@ -1,4 +1,4 @@
-//! Cold-path CPython/Numba compiler host used only by `titan run-worker`.
+//! Injectable cold-path, in-process CPython/Numba compiler host.
 
 use pyo3::{
     Bound, Py, PyAny, Python,
@@ -58,7 +58,7 @@ impl LoadedNumbaStrategy {
     }
 }
 
-pub trait StrategyCompiler {
+pub trait StrategyCompiler: Send + Sync {
     fn compile(
         &self,
         spec: &StrategySpec,
@@ -94,7 +94,8 @@ impl EmbeddedPythonCompiler {
     }
 
     /// Prepends import roots before loading the SDK or user strategy. This is deliberately
-    /// worker-local; the controller never initializes Python or mutates its environment.
+    /// process-local; a controller must never transfer the resulting function addresses to a
+    /// different process.
     pub fn with_python_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.python_paths.push(path.into());
         self
@@ -233,7 +234,7 @@ class State:
 class Compiled:
     strategy_id = "fake"
     strategy_version = "1.0.0"
-    abi_version = 8
+    abi_version = 9
     callback_addresses = tuple(range(32))
     capabilities = ("bar",)
     state_f64 = State("float64", 4096, 4)

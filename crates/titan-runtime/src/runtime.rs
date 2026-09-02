@@ -318,6 +318,30 @@ impl CallbackRegistry {
     fn get(&self, event_id: u32) -> Option<StrategyCallback> {
         self.callbacks.get(event_id as usize).copied().flatten()
     }
+
+    /// Invokes one registered callback without changing the strategy generation field. Dynamic
+    /// live runtimes use this entrypoint because generation identifies the managed instance, not
+    /// the number of callbacks it has processed.
+    pub fn invoke(
+        &self,
+        kind: StrategyEventKind,
+        context: &mut StrategyRuntimeContext,
+    ) -> Result<(), RuntimeError> {
+        context.event_kind = kind as u32;
+        let Some(callback) = self.get(kind as u32) else {
+            return Ok(());
+        };
+        let code = unsafe { callback(context) };
+        if code == 0 {
+            Ok(())
+        } else {
+            context.last_error = i64::from(code);
+            Err(RuntimeError::Callback {
+                event_id: kind as u32,
+                code,
+            })
+        }
+    }
 }
 
 /// Borrowed event payload returned by a Rust event source.
@@ -1129,6 +1153,8 @@ impl MaterializedBarSource {
                     },
                     0,
                 ],
+                local_account_no: 0,
+                _account_reserved: 0,
                 asset_no,
                 order_id: request.client_order_id,
                 price: request.price,
@@ -1539,6 +1565,8 @@ impl MaterializedBarSource {
                         time_in_force: 3,
                         order_type: 1,
                         _reserved: [1, 0, 2, 0],
+                        local_account_no: 0,
+                        _account_reserved: 0,
                         asset_no: asset_no as u64,
                         order_id: self.next_risk_order_id,
                         price: 0.0,
@@ -1804,7 +1832,8 @@ impl MaterializedBarSource {
                     local_ts: report.delivery_ts,
                     sequence: report.sequence,
                     price: report.exec_price,
-                    qty: report.exec_qty,
+                    last_fill_qty: report.exec_qty,
+                    cumulative_filled_qty: report.cumulative_filled_qty,
                     venue_no: report.venue_id.0,
                     instrument_id: report.instrument_id.0,
                     reason: execution_reason_code(report.reason),

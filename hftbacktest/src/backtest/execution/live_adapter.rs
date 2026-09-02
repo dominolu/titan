@@ -38,6 +38,7 @@ pub struct LiveExecutionEvent {
     pub order_qty: f64,
     pub exec_price: f64,
     pub exec_qty: f64,
+    pub cumulative_filled_qty: f64,
     pub maker: bool,
     pub account_delta: Option<AccountDelta>,
 }
@@ -114,6 +115,7 @@ impl LiveExecutionAdapter {
             order_qty: event.order_qty,
             exec_price: event.exec_price,
             exec_qty: event.exec_qty,
+            cumulative_filled_qty: event.cumulative_filled_qty,
             maker: event.maker,
             account_delta: event.account_delta,
         }))
@@ -173,6 +175,7 @@ mod tests {
             order_qty: 3.0,
             exec_price: 100.0,
             exec_qty: qty,
+            cumulative_filled_qty: qty,
             maker: false,
             account_delta: Some(AccountDelta {
                 instrument_id: InstrumentId(2),
@@ -253,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_backtest_and_live_reports_project_to_identical_abi_v8_bytes() {
+    fn equivalent_backtest_and_live_reports_project_to_identical_abi_v9_bytes() {
         let live_event = event(99, 7, 1.0);
         let mut adapter = LiveExecutionAdapter::new(LIVE_EXECUTION_ABI_VERSION).unwrap();
         let live_report = adapter.normalize(live_event).unwrap().unwrap();
@@ -274,6 +277,7 @@ mod tests {
             order_qty: live_event.order_qty,
             exec_price: live_event.exec_price,
             exec_qty: live_event.exec_qty,
+            cumulative_filled_qty: live_event.cumulative_filled_qty,
             maker: live_event.maker,
             account_delta: live_event.account_delta,
         };

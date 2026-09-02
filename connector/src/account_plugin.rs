@@ -695,7 +695,7 @@ impl LegacyBridge {
                     .publish_encoded(&changed, TraceContext::default())
                     .map_err(|e| rejected(e.to_string()))?;
                 if order.exec_qty > 0.0 {
-                    let fill = account::FillV1 {
+                    let fill = account::FillV2 {
                         header: self.header(
                             account::event_kind::FILL,
                             account::event_flags::UPSERT,
@@ -705,7 +705,11 @@ impl LegacyBridge {
                         side: side(order.side),
                         liquidity: u8::from(order.maker),
                         price_ticks: order.exec_price_tick,
-                        quantity_lots: to_units(order.exec_qty, binding.quantity_lot)?,
+                        last_fill_quantity_lots: to_units(order.exec_qty, binding.quantity_lot)?,
+                        cumulative_filled_quantity_lots: to_units(
+                            order.qty - order.leaves_qty,
+                            binding.quantity_lot,
+                        )?,
                         venue_order_id: id,
                         ..Default::default()
                     };

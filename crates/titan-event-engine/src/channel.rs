@@ -49,6 +49,7 @@ impl TrackedDelivery {
         health: Arc<SubscriberHealth>,
         clock: EngineClock,
     ) -> Self {
+        health.on_admitted(delivery.header.local_sequence);
         health.on_enqueue(clock.now_ns());
         Self {
             delivery,
@@ -243,6 +244,7 @@ impl EventReceiver for SubscriberChannel {
         self.recover_from_lagging_if_needed();
         self.metrics.observe_subscriber_latency(tracked.age_ns());
         let lease = EventLease { tracked };
+        self.health.on_dispatched(lease.header().local_sequence);
         if self
             .trace_ring
             .push(TracePoint {
@@ -268,7 +270,10 @@ impl EventReceiver for SubscriberChannel {
             })
         }));
         match result {
-            Ok(Ok(())) => Ok(DispatchOutcome::Delivered),
+            Ok(Ok(())) => {
+                self.health.on_committed(lease.header().local_sequence);
+                Ok(DispatchOutcome::Delivered)
+            }
             Ok(Err(_)) | Err(_) => {
                 self.close_admission_and_wait();
                 self.health.set_state(SubscriberState::Failed);

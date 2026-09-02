@@ -55,6 +55,7 @@ pub struct ExecutionReport {
     pub order_qty: f64,
     pub exec_price: f64,
     pub exec_qty: f64,
+    pub cumulative_filled_qty: f64,
     pub maker: bool,
     pub account_delta: Option<AccountDelta>,
 }
@@ -230,6 +231,7 @@ mod tests {
             order_qty: 2.0,
             exec_price: 10.0,
             exec_qty: 2.0,
+            cumulative_filled_qty: 2.0,
             maker: false,
             account_delta: Some(AccountDelta {
                 instrument_id: InstrumentId(2),

@@ -50,7 +50,11 @@ pub static ACCOUNT_PLUGIN_MANIFEST: LazyLock<PluginManifest> = LazyLock::new(|| 
         .iter()
         .map(|e| PublishedEvent {
             event_type: Arc::from(*e),
-            schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
+            schema_version: if *e == FILL_EVENT {
+                FILL_EVENT_SCHEMA_VERSION
+            } else {
+                ACCOUNT_EVENT_SCHEMA_VERSION
+            },
         })
         .collect(),
     subscribes: vec![],

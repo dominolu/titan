@@ -17,6 +17,31 @@ use titan_plugin_engine::{
 
 use crate::*;
 
+#[test]
+fn fill_v2_preserves_last_and_cumulative_quantities() {
+    let value = FillV2 {
+        header: AccountEventHeaderV1 {
+            account_id: 1,
+            kind: event_kind::FILL,
+            account_generation: 2,
+            account_epoch: 3,
+            account_version: 4,
+            ..AccountEventHeaderV1::default()
+        },
+        asset_id: 9,
+        last_fill_quantity_lots: 2,
+        cumulative_filled_quantity_lots: 7,
+        ..FillV2::default()
+    };
+    let mut encoded = vec![0; FillV2::ENCODED_LEN];
+    value.encode_into(&mut encoded).unwrap();
+    assert_eq!(FillV2::decode(&encoded).unwrap(), value);
+    assert_eq!(
+        account_event_layout_version(FILL_EVENT, FILL_EVENT_SCHEMA_VERSION),
+        Some((event_kind::FILL, FillV2::ENCODED_LEN))
+    );
+}
+
 struct TestSecrets;
 impl SecretProvider for TestSecrets {
     fn resolve(&self, reference: &SecretRef) -> Result<SecretValue, AccountConnectorError> {

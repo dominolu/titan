@@ -8,6 +8,7 @@
 
 ## 策略接口
 
+- [StrategyPlugin 技术实现设计](strategy_plugin_technical_design.md)
 - [Bar/Tick 与 Numba 策略接口](bar_tick_numba_strategy.md)
 - [Rust Strategy trait](rust_strategy.md)
 
