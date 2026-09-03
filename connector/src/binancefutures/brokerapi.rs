@@ -22,6 +22,52 @@ use crate::api::{
     OrderBook, OrderInfo, PositionInfo, PriceLevel, Ticker, Trade, UnifiedOrderRequest,
 };
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum EmptyObjectOrMany<T> {
+    Many(Vec<T>),
+    Empty(std::collections::HashMap<String, serde_json::Value>),
+}
+
+impl<T> OneOrMany<T> {
+    fn into_vec(self) -> Vec<T> {
+        match self {
+            Self::One(value) => vec![value],
+            Self::Many(values) => values,
+        }
+    }
+}
+
+fn checked_exchange_value(
+    value: serde_json::Value,
+) -> Result<serde_json::Value, BinanceFuturesError> {
+    let code = value.get("code").and_then(|code| {
+        code.as_i64()
+            .or_else(|| code.as_str().and_then(|code| code.parse().ok()))
+    });
+    if let Some(code) = code.filter(|code| *code != 200) {
+        let message = value
+            .get("msg")
+            .and_then(|msg| msg.as_str())
+            .unwrap_or("Binance request failed");
+        if message.starts_with("No need to change") {
+            return Ok(value);
+        }
+        return Err(BinanceFuturesError::OrderError {
+            code,
+            msg: message.to_owned(),
+        });
+    }
+    Ok(value)
+}
+
 impl From<BinanceFuturesError> for ApiError {
     fn from(e: BinanceFuturesError) -> Self {
         match e {
@@ -46,6 +92,12 @@ impl From<reqwest::Error> for ApiError {
 
 fn f64_or_zero(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
+}
+
+fn symbol_matches(requested: Option<&str>, actual: &str) -> bool {
+    requested
+        .map(|symbol| actual.eq_ignore_ascii_case(symbol))
+        .unwrap_or(true)
 }
 
 fn instrument_from_symbol(si: &m::SymbolInfo) -> InstrumentInfo {
@@ -250,7 +302,9 @@ impl BinanceFuturesClient {
         symbol: Option<&str>,
     ) -> Result<Vec<m::Ticker24h>, BinanceFuturesError> {
         let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
-        Ok(self.get_noauth("/fapi/v1/ticker/24hr", query).await?)
+        let response: OneOrMany<m::Ticker24h> =
+            self.get_noauth("/fapi/v1/ticker/24hr", query).await?;
+        Ok(response.into_vec())
     }
 
     pub async fn get_premium_index(
@@ -258,7 +312,9 @@ impl BinanceFuturesClient {
         symbol: Option<&str>,
     ) -> Result<Vec<m::PremiumIndex>, BinanceFuturesError> {
         let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
-        Ok(self.get_noauth("/fapi/v1/premiumIndex", query).await?)
+        let response: OneOrMany<m::PremiumIndex> =
+            self.get_noauth("/fapi/v1/premiumIndex", query).await?;
+        Ok(response.into_vec())
     }
 
     pub async fn get_ticker_price(
@@ -266,7 +322,9 @@ impl BinanceFuturesClient {
         symbol: Option<&str>,
     ) -> Result<Vec<m::TickerPrice>, BinanceFuturesError> {
         let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
-        Ok(self.get_noauth("/fapi/v1/ticker/price", query).await?)
+        let response: OneOrMany<m::TickerPrice> =
+            self.get_noauth("/fapi/v1/ticker/price", query).await?;
+        Ok(response.into_vec())
     }
 
     pub async fn get_book_ticker(
@@ -274,7 +332,9 @@ impl BinanceFuturesClient {
         symbol: Option<&str>,
     ) -> Result<Vec<m::BookTicker>, BinanceFuturesError> {
         let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
-        Ok(self.get_noauth("/fapi/v1/ticker/bookTicker", query).await?)
+        let response: OneOrMany<m::BookTicker> =
+            self.get_noauth("/fapi/v1/ticker/bookTicker", query).await?;
+        Ok(response.into_vec())
     }
 
     pub async fn get_public_trades(
@@ -296,7 +356,7 @@ impl BinanceFuturesClient {
         if let Some(id) = from_id {
             query.push_str(&format!("&fromId={id}"));
         }
-        Ok(self.get_noauth("/fapi/v1/historicalTrades", query).await?)
+        Ok(self.get_apikey("/fapi/v1/historicalTrades", query).await?)
     }
 
     pub async fn get_agg_trades(
@@ -431,7 +491,7 @@ impl BinanceFuturesClient {
         period: &str,
         limit: u32,
     ) -> Result<Vec<serde_json::Value>, BinanceFuturesError> {
-        let query = format!("pair={pair}&period={period}&limit={limit}");
+        let query = format!("pair={pair}&contractType=PERPETUAL&period={period}&limit={limit}");
         Ok(self.get_noauth("/futures/data/basis", query).await?)
     }
 
@@ -450,7 +510,14 @@ impl BinanceFuturesClient {
         if let Some(id) = client_order_id {
             query.push_str(&format!("&origClientOrderId={id}"));
         }
-        Ok(self.get("/fapi/v1/order", query).await?)
+        let response: m::ApiResponse<m::Order> = self.get("/fapi/v1/order", query).await?;
+        match response {
+            m::ApiResponse::Success(order) => Ok(order),
+            m::ApiResponse::Error(error) => Err(BinanceFuturesError::OrderError {
+                code: error.code,
+                msg: error.msg,
+            }),
+        }
     }
 
     pub async fn get_open_order(
@@ -501,9 +568,17 @@ impl BinanceFuturesClient {
     pub async fn get_order_amendment(
         &self,
         symbol: &str,
+        order_id: Option<i64>,
+        client_order_id: Option<&str>,
         limit: u32,
     ) -> Result<Vec<serde_json::Value>, BinanceFuturesError> {
-        let query = format!("symbol={symbol}&limit={limit}");
+        let mut query = format!("symbol={symbol}&limit={limit}");
+        if let Some(id) = order_id {
+            query.push_str(&format!("&orderId={id}"));
+        }
+        if let Some(id) = client_order_id {
+            query.push_str(&format!("&origClientOrderId={id}"));
+        }
         Ok(self.get("/fapi/v1/orderAmendment", query).await?)
     }
 
@@ -566,13 +641,13 @@ impl BinanceFuturesClient {
         margin_type: &str,
     ) -> Result<(), BinanceFuturesError> {
         let body = format!("symbol={symbol}&marginType={margin_type}");
-        let _: serde_json::Value = self.post("/fapi/v1/marginType", body).await?;
+        checked_exchange_value(self.post("/fapi/v1/marginType", body).await?)?;
         Ok(())
     }
 
     pub async fn set_position_mode(&self, dual: bool) -> Result<(), BinanceFuturesError> {
         let body = format!("dualSidePosition={dual}");
-        let _: serde_json::Value = self.post("/fapi/v1/positionSide/dual", body).await?;
+        checked_exchange_value(self.post("/fapi/v1/positionSide/dual", body).await?)?;
         Ok(())
     }
 
@@ -589,12 +664,12 @@ impl BinanceFuturesClient {
         leverage: u32,
     ) -> Result<serde_json::Value, BinanceFuturesError> {
         let body = format!("symbol={symbol}&leverage={leverage}");
-        Ok(self.post("/fapi/v1/leverage", body).await?)
+        checked_exchange_value(self.post("/fapi/v1/leverage", body).await?)
     }
 
     pub async fn set_multi_assets_mode(&self, enabled: bool) -> Result<(), BinanceFuturesError> {
         let body = format!("multiAssetsMargin={enabled}");
-        let _: serde_json::Value = self.post("/fapi/v1/multiAssetsMargin", body).await?;
+        checked_exchange_value(self.post("/fapi/v1/multiAssetsMargin", body).await?)?;
         Ok(())
     }
 
@@ -615,7 +690,7 @@ impl BinanceFuturesClient {
         let body = format!(
             "symbol={symbol}&amount={amount}&positionSide={position_side}&type={margin_type}"
         );
-        Ok(self.post("/fapi/v1/positionMargin", body).await?)
+        checked_exchange_value(self.post("/fapi/v1/positionMargin", body).await?)
     }
 
     pub async fn get_position_margin_history(
@@ -703,7 +778,20 @@ impl BinanceFuturesClient {
         symbol: Option<&str>,
     ) -> Result<Vec<m::AdlQuantile>, BinanceFuturesError> {
         let query = symbol.map(|s| format!("symbol={s}")).unwrap_or_default();
-        Ok(self.get("/fapi/v1/adlQuantile", query).await?)
+        let response: EmptyObjectOrMany<m::AdlQuantile> =
+            self.get("/fapi/v1/adlQuantile", query).await?;
+        match response {
+            EmptyObjectOrMany::Many(values) => Ok(values),
+            EmptyObjectOrMany::Empty(value) if value.is_empty() => Ok(Vec::new()),
+            EmptyObjectOrMany::Empty(value) => Err(BinanceFuturesError::OrderError {
+                code: value.get("code").and_then(|v| v.as_i64()).unwrap_or(-1),
+                msg: value
+                    .get("msg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unexpected ADL quantile response")
+                    .to_owned(),
+            }),
+        }
     }
 
     pub async fn get_symbol_adl_risk(
@@ -746,20 +834,21 @@ impl BinanceFuturesClient {
         &self,
         body: String,
     ) -> Result<serde_json::Value, BinanceFuturesError> {
-        Ok(self.post("/fapi/v1/algoOrder", body).await?)
+        checked_exchange_value(self.post("/fapi/v1/algoOrder", body).await?)
     }
 
     pub async fn cancel_algo_order(
         &self,
         body: String,
     ) -> Result<serde_json::Value, BinanceFuturesError> {
-        Ok(self.delete("/fapi/v1/algoOrder", body).await?)
+        checked_exchange_value(self.delete("/fapi/v1/algoOrder", body).await?)
     }
 
     pub async fn cancel_all_algo_orders(&self) -> Result<serde_json::Value, BinanceFuturesError> {
-        Ok(self
-            .delete("/fapi/v1/algoOpenOrders", String::new())
-            .await?)
+        checked_exchange_value(
+            self.delete("/fapi/v1/algoOpenOrders", String::new())
+                .await?,
+        )
     }
 
     pub async fn get_algo_order(
@@ -1018,16 +1107,16 @@ impl BrokerApi for BinanceFuturesClient {
         }
         let body = if !order_ids.is_empty() {
             format!(
-                "{{\"symbol\":\"{symbol}\",\"orderIdList\":[{}]}}",
+                "symbol={symbol}&orderIdList=[{}]",
                 order_ids
                     .iter()
-                    .map(|id| format!("\"{id}\""))
+                    .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join(",")
             )
         } else {
             format!(
-                "{{\"symbol\":\"{symbol}\",\"origClientOrderIdList\":[{}]}}",
+                "symbol={symbol}&origClientOrderIdList=[{}]",
                 client_ids
                     .iter()
                     .map(|id| format!("\"{id}\""))
@@ -1035,7 +1124,7 @@ impl BrokerApi for BinanceFuturesClient {
                     .join(",")
             )
         };
-        let resp: Vec<m::OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
+        let resp: Vec<m::OrderResponseResult> = self.delete("/fapi/v1/batchOrders", body).await?;
         resp.into_iter()
             .map(|r| match r {
                 m::OrderResponseResult::Ok(o) => Ok(order_info_from_response(&o)),
@@ -1051,12 +1140,41 @@ impl BrokerApi for BinanceFuturesClient {
     }
 
     async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), ApiError> {
-        let symbol = "*";
-        let _ = self.countdown_cancel_all(symbol, timeout_ms).await?;
+        let symbols = self.registered_symbols();
+        if symbols.is_empty() {
+            return Err(ApiError::new(
+                "binance",
+                "INVALID",
+                "countdown cancel requires at least one registered symbol",
+            ));
+        }
+        for symbol in symbols {
+            let _ = self
+                .countdown_cancel_all(&symbol.to_ascii_uppercase(), timeout_ms)
+                .await?;
+        }
         Ok(())
     }
 
     async fn amend_order(&self, req: &AmendOrderRequest) -> Result<OrderInfo, ApiError> {
+        let mut attempt = 0_u32;
+        let current = loop {
+            match BinanceFuturesClient::get_order(
+                self,
+                &req.symbol,
+                req.order_id.as_deref().and_then(|id| id.parse().ok()),
+                req.client_order_id.as_deref(),
+            )
+            .await
+            {
+                Ok(order) => break order,
+                Err(BinanceFuturesError::OrderError { code: -2013, .. }) if attempt < 5 => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
         let mut body = format!("symbol={}", req.symbol);
         if let Some(id) = &req.order_id {
             body.push_str(&format!("&orderId={id}"));
@@ -1064,12 +1182,15 @@ impl BrokerApi for BinanceFuturesClient {
         if let Some(id) = &req.client_order_id {
             body.push_str(&format!("&origClientOrderId={id}"));
         }
-        if let Some(p) = req.new_price {
-            body.push_str(&format!("&price={p}"));
-        }
-        if let Some(q) = req.new_qty {
-            body.push_str(&format!("&quantity={q}"));
-        }
+        body.push_str(&format!("&side={}", current.side));
+        body.push_str(&format!(
+            "&price={}",
+            decimal_param(req.new_price.unwrap_or(current.price))
+        ));
+        body.push_str(&format!(
+            "&quantity={}",
+            decimal_param(req.new_qty.unwrap_or(current.orig_qty))
+        ));
         let resp: m::OrderResponseResult = self.put("/fapi/v1/order", body).await?;
         match resp {
             m::OrderResponseResult::Ok(o) => Ok(order_info_from_response(&o)),
@@ -1143,7 +1264,7 @@ impl BrokerApi for BinanceFuturesClient {
         let positions = self.get_position_information().await?;
         Ok(positions
             .iter()
-            .filter(|p| symbol.map(|s| p.symbol == s).unwrap_or(true))
+            .filter(|position| symbol_matches(symbol, &position.symbol))
             .map(position_from)
             .collect())
     }
@@ -1157,8 +1278,10 @@ impl BrokerApi for BinanceFuturesClient {
         let resp = self.set_leverage(symbol, leverage as u32).await?;
         let leverage = resp
             .get("leverage")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok())
+            .and_then(|v| {
+                v.as_f64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            })
             .unwrap_or(0.0);
         let margin_type = resp
             .get("marginType")
@@ -1225,20 +1348,30 @@ impl BrokerApi for BinanceFuturesClient {
 // 请求体构建（可单测）
 // ------------------------------------------------------------------
 
+fn decimal_param(value: f64) -> String {
+    let formatted = format!("{value:.12}");
+    let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+    if trimmed == "-0" {
+        "0".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 /// 构建 POST /fapi/v1/order 的 body。
 pub(crate) fn build_submit_body(req: &UnifiedOrderRequest) -> String {
     let mut body = format!(
         "symbol={}&side={}&quantity={}&type={}",
         req.symbol,
         req.side.as_str(),
-        req.qty,
+        decimal_param(req.qty),
         req.order_type.as_str()
     );
     if let Some(id) = &req.client_order_id {
         body.push_str(&format!("&newClientOrderId={id}"));
     }
     if let Some(p) = req.price {
-        body.push_str(&format!("&price={p}"));
+        body.push_str(&format!("&price={}", decimal_param(p)));
     }
     if req.order_type == ApiOrderType::Limit {
         body.push_str(&format!("&timeInForce={}", req.time_in_force.as_str()));
@@ -1250,12 +1383,12 @@ pub(crate) fn build_submit_body(req: &UnifiedOrderRequest) -> String {
         body.push_str(&format!("&positionSide={}", side.as_str()));
     }
     if let Some(sp) = req.stop_price {
-        body.push_str(&format!("&stopPrice={sp}"));
+        body.push_str(&format!("&stopPrice={}", decimal_param(sp)));
     }
     body
 }
 
-/// 构建 POST /fapi/v1/batchOrders 的 body（JSON）。
+/// 构建 POST /fapi/v1/batchOrders 的 form body。
 pub(crate) fn build_batch_submit_body(reqs: &[UnifiedOrderRequest]) -> String {
     let items: Vec<String> = reqs
         .iter()
@@ -1264,14 +1397,14 @@ pub(crate) fn build_batch_submit_body(reqs: &[UnifiedOrderRequest]) -> String {
                 "\"symbol\":\"{}\",\"side\":\"{}\",\"quantity\":\"{}\",\"type\":\"{}\"",
                 req.symbol,
                 req.side.as_str(),
-                req.qty,
+                decimal_param(req.qty),
                 req.order_type.as_str()
             );
             if let Some(id) = &req.client_order_id {
                 inner.push_str(&format!(",\"newClientOrderId\":\"{id}\""));
             }
             if let Some(p) = req.price {
-                inner.push_str(&format!(",\"price\":\"{p}\""));
+                inner.push_str(&format!(",\"price\":\"{}\"", decimal_param(p)));
             }
             if req.order_type == ApiOrderType::Limit {
                 inner.push_str(&format!(
@@ -1286,12 +1419,12 @@ pub(crate) fn build_batch_submit_body(reqs: &[UnifiedOrderRequest]) -> String {
                 inner.push_str(&format!(",\"positionSide\":\"{}\"", side.as_str()));
             }
             if let Some(sp) = req.stop_price {
-                inner.push_str(&format!(",\"stopPrice\":\"{sp}\""));
+                inner.push_str(&format!(",\"stopPrice\":\"{}\"", decimal_param(sp)));
             }
             format!("{{{inner}}}")
         })
         .collect();
-    format!("{{\"batchOrders\":[{}]}}", items.join(","))
+    format!("batchOrders=[{}]", items.join(","))
 }
 
 impl From<Side> for ApiSide {
@@ -1343,18 +1476,18 @@ impl From<TimeInForce> for ApiTimeInForce {
 /// AlgoOrderRequest 转 Binance algoOrder body（STOP_MARKET/TAKE_PROFIT_MARKET 等）。
 pub(crate) fn build_algo_body(req: &AlgoOrderRequest) -> String {
     let mut body = format!(
-        "symbol={}&side={}&quantity={}&type={}&stopPrice={}",
+        "algoType=CONDITIONAL&symbol={}&side={}&quantity={}&type={}&triggerPrice={}",
         req.symbol,
         req.side.as_str(),
-        req.qty,
+        decimal_param(req.qty),
         req.order_type.as_str(),
-        req.trigger_price
+        decimal_param(req.trigger_price)
     );
     if let Some(p) = req.price {
-        body.push_str(&format!("&price={p}"));
+        body.push_str(&format!("&price={}", decimal_param(p)));
     }
     if let Some(id) = &req.client_order_id {
-        body.push_str(&format!("&newClientOrderId={id}"));
+        body.push_str(&format!("&clientAlgoId={id}"));
     }
     if let Some(ro) = req.reduce_only {
         body.push_str(&format!("&reduceOnly={ro}"));
@@ -1384,6 +1517,593 @@ mod tests {
             position_side: Some(ApiPositionSide::Long),
             client_order_id: Some("c1".to_string()),
             stop_price: None,
+        }
+    }
+
+    /// Opt-in mainnet inventory test for every read-only endpoint implemented by the
+    /// Binance USD-M client. Credentials are read from the process environment and
+    /// are never persisted. This test deliberately excludes endpoints that place an
+    /// order or change account configuration; those are covered by the guarded live
+    /// round-trip example.
+    #[tokio::test]
+    #[ignore = "requires explicit Binance mainnet credentials"]
+    async fn live_readonly_endpoint_inventory() {
+        let api_key =
+            std::env::var("BINANCE_FUTURES_API_KEY").expect("BINANCE_FUTURES_API_KEY is required");
+        let secret = std::env::var("BINANCE_FUTURES_API_SECRET")
+            .expect("BINANCE_FUTURES_API_SECRET is required");
+        let api_url = std::env::var("BINANCE_FUTURES_API_URL")
+            .unwrap_or_else(|_| "https://fapi.binance.com".to_owned());
+        let symbol = std::env::var("BINANCE_FUTURES_TEST_SYMBOL")
+            .unwrap_or_else(|_| "XRPUSDT".to_owned())
+            .to_uppercase();
+        let client = BinanceFuturesClient::new(&api_url, &api_key, &secret);
+        let mut failures = Vec::new();
+
+        macro_rules! check {
+            ($name:literal, $future:expr) => {
+                match $future.await {
+                    Ok(_) => println!("PASS {}", $name),
+                    Err(error) => {
+                        let failure = format!("{}: {error}", $name);
+                        println!("FAIL {failure}");
+                        failures.push(failure);
+                    }
+                }
+            };
+        }
+
+        check!("ping", client.ping());
+        check!("server_time", client.get_server_time());
+        check!("exchange_info", client.get_exchange_info());
+        check!("ticker_24h_one", client.get_ticker_24h(Some(&symbol)));
+        check!("ticker_24h_all", client.get_ticker_24h(None));
+        check!("premium_index_one", client.get_premium_index(Some(&symbol)));
+        check!("premium_index_all", client.get_premium_index(None));
+        check!("ticker_price_one", client.get_ticker_price(Some(&symbol)));
+        check!("ticker_price_all", client.get_ticker_price(None));
+        check!("book_ticker_one", client.get_book_ticker(Some(&symbol)));
+        check!("book_ticker_all", client.get_book_ticker(None));
+        check!("depth", client.get_depth(&symbol));
+        check!("public_trades", client.get_public_trades(&symbol, 5));
+        check!(
+            "historical_trades",
+            client.get_historical_trades(&symbol, 5, None)
+        );
+        check!(
+            "aggregate_trades",
+            client.get_agg_trades(&symbol, 5, None, None, None)
+        );
+        check!("klines", client.get_klines(&symbol, "1m", 5, None, None));
+        check!(
+            "funding_rate_history",
+            client.get_funding_rate_records(&symbol, 5, None, None)
+        );
+        check!("funding_info", client.get_funding_info());
+        check!("open_interest", client.get_open_interest(&symbol));
+        check!("insurance_balance", client.get_insurance_balance());
+        check!("index_info", client.get_index_info());
+        check!("asset_index_all", client.get_asset_index(None));
+        check!("constituents", client.get_constituents(&symbol));
+        check!("trading_schedule", client.get_trading_schedule());
+        for (name, path) in [
+            ("open_interest_history", "/futures/data/openInterestHist"),
+            (
+                "top_long_short_account_ratio",
+                "/futures/data/topLongShortAccountRatio",
+            ),
+            (
+                "top_long_short_position_ratio",
+                "/futures/data/topLongShortPositionRatio",
+            ),
+            (
+                "global_long_short_account_ratio",
+                "/futures/data/globalLongShortAccountRatio",
+            ),
+            (
+                "taker_long_short_ratio",
+                "/futures/data/takerlongshortRatio",
+            ),
+        ] {
+            match client.get_data_rows(path, &symbol, "5m", 5).await {
+                Ok(_) => println!("PASS {name}"),
+                Err(error) => {
+                    let failure = format!("{name}: {error}");
+                    println!("FAIL {failure}");
+                    failures.push(failure);
+                }
+            }
+        }
+        check!("delivery_price", client.get_delivery_price(&symbol));
+        check!("basis", client.get_basis(&symbol, "5m", 5));
+
+        check!("open_orders", client.get_open_orders(Some(&symbol)));
+        match client.get_all_orders(&symbol, 5, None, None, None).await {
+            Ok(orders) => {
+                println!("PASS all_orders");
+                if let Some(order) = orders.last() {
+                    check!(
+                        "order_amendment",
+                        client.get_order_amendment(&symbol, Some(order.order_id), None, 5)
+                    );
+                } else {
+                    let failure = "order_amendment: no historical order available".to_owned();
+                    println!("FAIL {failure}");
+                    failures.push(failure);
+                }
+            }
+            Err(error) => {
+                let failure = format!("all_orders: {error}");
+                println!("FAIL {failure}");
+                failures.push(failure);
+            }
+        }
+        check!(
+            "user_trades",
+            client.get_user_trades(&symbol, 5, None, None, None)
+        );
+        check!(
+            "force_orders",
+            client.get_force_orders(Some(&symbol), None, 5)
+        );
+        check!(
+            "test_order",
+            client.submit_test_order(format!("symbol={symbol}&side=BUY&type=MARKET&quantity=3.7"))
+        );
+
+        check!("position_mode", client.get_position_mode());
+        check!("multi_assets_mode", client.get_multi_assets_mode());
+        check!("balance", client.get_balance());
+        check!("account", client.get_account());
+        check!("positions_v2", client.get_position_information());
+        check!("positions_v3", client.get_position_information_v3());
+        check!("commission_rate", client.get_commission_rate(&symbol));
+        check!("account_config", client.get_account_config());
+        check!("symbol_config_one", client.get_symbol_config(Some(&symbol)));
+        check!("symbol_config_all", client.get_symbol_config(None));
+        check!("rate_limit_order", client.get_rate_limit_order());
+        check!(
+            "leverage_bracket",
+            client.get_leverage_bracket(Some(&symbol))
+        );
+        check!("income", client.get_income(Some(&symbol), 5, None, None));
+        check!("api_trading_status", client.get_api_trading_status());
+        check!("adl_quantile", client.get_adl_quantile(Some(&symbol)));
+        check!("symbol_adl_risk", client.get_symbol_adl_risk(Some(&symbol)));
+        check!(
+            "position_margin_history",
+            client.get_position_margin_history(&symbol, 5)
+        );
+        check!(
+            "open_algo_orders",
+            client.get_open_algo_orders(format!("symbol={symbol}"))
+        );
+        check!(
+            "all_algo_orders",
+            client.get_all_algo_orders(format!("symbol={symbol}&limit=5"))
+        );
+
+        match client.start_user_data_stream().await {
+            Ok(listen_key) => {
+                println!("PASS user_stream_start");
+                check!("user_stream_keepalive", client.keepalive_user_data_stream());
+                check!("user_stream_close", client.close_user_data_stream());
+                assert!(!listen_key.is_empty(), "empty listen key");
+            }
+            Err(error) => failures.push(format!("user_stream_start: {error}")),
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{} Binance endpoints failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "changes and restores Binance mainnet account configuration"]
+    async fn live_reversible_endpoint_inventory() {
+        assert_eq!(
+            std::env::var("BINANCE_FUTURES_LIVE_CONFIRM").as_deref(),
+            Ok("I_UNDERSTAND_REAL_ORDERS")
+        );
+        let api_key =
+            std::env::var("BINANCE_FUTURES_API_KEY").expect("BINANCE_FUTURES_API_KEY is required");
+        let secret = std::env::var("BINANCE_FUTURES_API_SECRET")
+            .expect("BINANCE_FUTURES_API_SECRET is required");
+        let api_url = std::env::var("BINANCE_FUTURES_API_URL")
+            .unwrap_or_else(|_| "https://fapi.binance.com".to_owned());
+        let symbol = std::env::var("BINANCE_FUTURES_TEST_SYMBOL")
+            .unwrap_or_else(|_| "XRPUSDT".to_owned())
+            .to_uppercase();
+        let client = BinanceFuturesClient::new(&api_url, &api_key, &secret);
+        let mut failures = Vec::new();
+
+        let original_position_mode = client.get_position_mode().await.unwrap();
+        let original_multi_assets = client.get_multi_assets_mode().await.unwrap();
+        let original_config = client.get_symbol_config(Some(&symbol)).await.unwrap();
+        let config = original_config
+            .as_array()
+            .and_then(|values| values.first())
+            .expect("missing symbol configuration");
+        let original_leverage = config
+            .get("leverage")
+            .and_then(|value| value.as_u64())
+            .expect("missing leverage") as u32;
+        let original_margin = config
+            .get("marginType")
+            .and_then(|value| value.as_str())
+            .expect("missing margin type")
+            .to_owned();
+        assert!(
+            client
+                .get_open_orders(Some(&symbol))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            client
+                .get_position_information()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|position| position.symbol.eq_ignore_ascii_case(&symbol))
+                .all(|position| position.position_amount.abs() < 1e-12)
+        );
+
+        let alternate_leverage = if original_leverage == 6 { 5 } else { 6 };
+        if let Err(error) = client.set_leverage(&symbol, alternate_leverage).await {
+            failures.push(format!("set_leverage: {error}"));
+        }
+        if let Err(error) = client.set_leverage(&symbol, original_leverage).await {
+            panic!("failed to restore leverage: {error}");
+        }
+        println!("PASS set_leverage_restore");
+
+        let alternate_margin = if original_margin == "ISOLATED" {
+            "CROSSED"
+        } else {
+            "ISOLATED"
+        };
+        if original_multi_assets {
+            if let Err(error) = client.set_multi_assets_mode(false).await {
+                failures.push(format!("disable_multi_assets_for_margin_test: {error}"));
+            }
+        }
+        if let Err(error) = client.set_margin_type(&symbol, alternate_margin).await {
+            failures.push(format!("set_margin_type: {error}"));
+        }
+        if let Err(error) = client.set_margin_type(&symbol, &original_margin).await {
+            panic!("failed to restore margin type: {error}");
+        }
+        if original_multi_assets {
+            if let Err(error) = client.set_multi_assets_mode(true).await {
+                panic!("failed to restore multi-assets mode after margin test: {error}");
+            }
+        }
+        println!("PASS set_margin_type_restore");
+
+        if let Err(error) = client.set_position_mode(!original_position_mode).await {
+            failures.push(format!("set_position_mode: {error}"));
+        }
+        if let Err(error) = client.set_position_mode(original_position_mode).await {
+            panic!("failed to restore position mode: {error}");
+        }
+        println!("PASS set_position_mode_restore");
+
+        if let Err(error) = client.set_multi_assets_mode(!original_multi_assets).await {
+            failures.push(format!("set_multi_assets_mode: {error}"));
+        }
+        if let Err(error) = client.set_multi_assets_mode(original_multi_assets).await {
+            panic!("failed to restore multi-assets mode: {error}");
+        }
+        println!("PASS set_multi_assets_mode_restore");
+
+        match client.countdown_cancel_all(&symbol, 5_000).await {
+            Ok(value) if value.countdown_time == 5_000 => println!("PASS countdown_cancel_all_set"),
+            Ok(value) => failures.push(format!(
+                "countdown_cancel_all_set: returned {}",
+                value.countdown_time
+            )),
+            Err(error) => failures.push(format!("countdown_cancel_all_set: {error}")),
+        }
+        if let Err(error) = client.countdown_cancel_all(&symbol, 0).await {
+            panic!("failed to disable countdown cancel: {error}");
+        }
+        println!("PASS countdown_cancel_all_disable");
+
+        let algo_id = format!(
+            "titanalgo{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+        let algo = AlgoOrderRequest {
+            symbol: symbol.clone(),
+            side: ApiSide::Buy,
+            order_type: ApiOrderType::StopMarket,
+            qty: 3.7,
+            price: None,
+            trigger_price: 2.0,
+            stop_price: None,
+            reduce_only: Some(false),
+            client_order_id: Some(algo_id),
+        };
+        match client.submit_algo_order(build_algo_body(&algo)).await {
+            Ok(value) => {
+                if let Some(id) = value.get("algoId").and_then(|value| value.as_i64()) {
+                    match client.get_algo_order(format!("algoId={id}")).await {
+                        Ok(_) => println!("PASS algo_order_query"),
+                        Err(error) => failures.push(format!("algo_order_query: {error}")),
+                    }
+                    match client.cancel_algo_order(format!("algoId={id}")).await {
+                        Ok(_) => println!("PASS algo_order_submit_cancel"),
+                        Err(error) => failures.push(format!("algo_order_cancel: {error}")),
+                    }
+                } else {
+                    failures.push(format!("algo_order_submit: missing algoId in {value}"));
+                }
+            }
+            Err(error) => failures.push(format!("algo_order_submit: {error}")),
+        }
+        match client.cancel_all_algo_orders().await {
+            Ok(_) => println!("PASS cancel_all_algo_orders"),
+            Err(error) => failures.push(format!("cancel_all_algo_orders: {error}")),
+        }
+
+        let ticker = client
+            .get_ticker_24h(Some(&symbol))
+            .await
+            .unwrap()
+            .remove(0);
+        let market_qty = ((5.02 / ticker.last_price) * 10.0).ceil() / 10.0;
+        assert!(ticker.last_price * market_qty <= 5.10);
+        let position_run_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if original_multi_assets {
+            client.set_multi_assets_mode(false).await.unwrap();
+        }
+        client.set_margin_type(&symbol, "ISOLATED").await.unwrap();
+        let opened = BrokerApi::submit_order(
+            &client,
+            &UnifiedOrderRequest {
+                symbol: symbol.clone(),
+                side: ApiSide::Buy,
+                order_type: ApiOrderType::Market,
+                price: None,
+                qty: market_qty,
+                time_in_force: ApiTimeInForce::GTC,
+                reduce_only: false,
+                position_side: None,
+                client_order_id: Some(format!("titanmargin{position_run_id}o")),
+                stop_price: None,
+            },
+        )
+        .await;
+        match opened {
+            Ok(_) => {
+                match client.set_position_margin(&symbol, 0.1, "BOTH", 1).await {
+                    Ok(_) => println!("PASS position_margin_add"),
+                    Err(error) => failures.push(format!("position_margin_add: {error}")),
+                }
+                let mut history_visible = false;
+                for _ in 0..10 {
+                    match client.get_position_margin_history(&symbol, 5).await {
+                        Ok(history) if !history.is_empty() => {
+                            history_visible = true;
+                            break;
+                        }
+                        Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                        Err(error) => {
+                            failures.push(format!("position_margin_history_after_change: {error}"));
+                            break;
+                        }
+                    }
+                }
+                if history_visible {
+                    println!("PASS position_margin_history_after_change");
+                } else if !failures
+                    .iter()
+                    .any(|failure| failure.starts_with("position_margin_history_after_change:"))
+                {
+                    failures.push("position_margin_history_after_change: empty".to_owned());
+                }
+                match client.set_position_margin(&symbol, 0.05, "BOTH", 2).await {
+                    Ok(_) => println!("PASS position_margin_reduce"),
+                    Err(error) => failures.push(format!("position_margin_reduce: {error}")),
+                }
+            }
+            Err(error) => failures.push(format!("position_margin_open: {error}")),
+        }
+        let live_position = client
+            .get_position_information()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|position| {
+                position.symbol.eq_ignore_ascii_case(&symbol)
+                    && position.position_amount.abs() > 1e-12
+            });
+        if let Some(position) = live_position {
+            BrokerApi::submit_order(
+                &client,
+                &UnifiedOrderRequest {
+                    symbol: symbol.clone(),
+                    side: if position.position_amount > 0.0 {
+                        ApiSide::Sell
+                    } else {
+                        ApiSide::Buy
+                    },
+                    order_type: ApiOrderType::Market,
+                    price: None,
+                    qty: position.position_amount.abs(),
+                    time_in_force: ApiTimeInForce::GTC,
+                    reduce_only: true,
+                    position_side: None,
+                    client_order_id: Some(format!("titanmargin{position_run_id}c")),
+                    stop_price: None,
+                },
+            )
+            .await
+            .expect("emergency position-margin test close failed");
+        }
+        client
+            .set_margin_type(&symbol, &original_margin)
+            .await
+            .expect("failed to restore margin after position-margin test");
+        if original_multi_assets {
+            client
+                .set_multi_assets_mode(true)
+                .await
+                .expect("failed to restore multi-assets after position-margin test");
+        }
+        client
+            .set_leverage(&symbol, original_leverage)
+            .await
+            .expect("failed to restore leverage after position-margin test");
+
+        let mut passive_price = (ticker.last_price * 0.98 * 10_000.0).floor() / 10_000.0;
+        let mut passive_qty = ((5.02 / passive_price) * 10.0).ceil() / 10.0;
+        // Lot-size rounding can push the minimal passive size above the 5.10 USDT
+        // hard cap once the reference price rises; step the price down one tick at
+        // a time until the resulting order fits inside the cap.
+        let mut notional_steps = 0;
+        while passive_price * passive_qty > 5.10 && notional_steps < 1_000 {
+            passive_price = ((passive_price * 10_000.0 - 1.0).floor()) / 10_000.0;
+            passive_qty = ((5.02 / passive_price) * 10.0).ceil() / 10.0;
+            notional_steps += 1;
+        }
+        assert!(
+            passive_price > 0.0 && passive_price * passive_qty <= 5.10,
+            "could not fit a passive order under the 5.10 USDT notional cap"
+        );
+        let cancel_all_id = format!("titancancelall{position_run_id}");
+        match BrokerApi::submit_order(
+            &client,
+            &UnifiedOrderRequest {
+                symbol: symbol.clone(),
+                side: ApiSide::Buy,
+                order_type: ApiOrderType::Limit,
+                price: Some(passive_price),
+                qty: passive_qty,
+                time_in_force: ApiTimeInForce::GTC,
+                reduce_only: false,
+                position_side: None,
+                client_order_id: Some(cancel_all_id),
+                stop_price: None,
+            },
+        )
+        .await
+        {
+            Ok(order) => {
+                match client
+                    .get_open_order(&symbol, Some(order.order_id.parse().unwrap()), None)
+                    .await
+                {
+                    Ok(_) => println!("PASS get_open_order"),
+                    Err(error) => failures.push(format!("get_open_order: {error}")),
+                }
+                match client.cancel_all_orders(&symbol).await {
+                    Ok(_) => println!("PASS cancel_all_orders"),
+                    Err(error) => failures.push(format!("cancel_all_orders: {error}")),
+                }
+            }
+            Err(error) => failures.push(format!("cancel_all_test_submit: {error}")),
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        match client.get_income_asyn(now - 3_600_000, now).await {
+            Ok(download) => {
+                println!("PASS income_async_request");
+                match client.get_income_asyn_link(&download.id).await {
+                    Ok(_) => println!("PASS income_async_status"),
+                    Err(error) => failures.push(format!("income_async_status: {error}")),
+                }
+            }
+            Err(error) => failures.push(format!("income_async_request: {error}")),
+        }
+
+        let restored = client.get_symbol_config(Some(&symbol)).await.unwrap();
+        let restored = restored
+            .as_array()
+            .and_then(|values| values.first())
+            .unwrap();
+        assert_eq!(
+            restored.get("leverage").and_then(|value| value.as_u64()),
+            Some(original_leverage as u64)
+        );
+        assert_eq!(
+            restored.get("marginType").and_then(|value| value.as_str()),
+            Some(original_margin.as_str())
+        );
+        assert_eq!(
+            client.get_position_mode().await.unwrap(),
+            original_position_mode
+        );
+        assert_eq!(
+            client.get_multi_assets_mode().await.unwrap(),
+            original_multi_assets
+        );
+        assert!(
+            client
+                .get_open_orders(Some(&symbol))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            client
+                .get_position_information()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|position| position.symbol.eq_ignore_ascii_case(&symbol))
+                .all(|position| position.position_amount.abs() < 1e-12)
+        );
+        assert!(
+            failures.is_empty(),
+            "{} reversible Binance endpoints failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn one_or_many_accepts_binance_symbol_and_all_symbol_shapes() {
+        let one: OneOrMany<m::TickerPrice> =
+            serde_json::from_str(r#"{"symbol":"BTCUSDT","price":"50000","time":1}"#).unwrap();
+        assert_eq!(one.into_vec().len(), 1);
+
+        let many: OneOrMany<m::TickerPrice> =
+            serde_json::from_str(r#"[{"symbol":"BTCUSDT","price":"50000","time":1}]"#).unwrap();
+        assert_eq!(many.into_vec().len(), 1);
+    }
+
+    #[test]
+    fn decimal_params_do_not_leak_binary_float_precision() {
+        assert_eq!(decimal_param(37.0 * 0.1), "3.7");
+        assert_eq!(decimal_param(13_653.0 * 0.0001), "1.3653");
+        assert_eq!(decimal_param(-0.0), "0");
+    }
+
+    #[test]
+    fn server_time_accepts_binance_camel_case_field() {
+        let value: m::ServerTime = serde_json::from_str(r#"{"serverTime":1599518383171}"#).unwrap();
+        assert_eq!(value.server_time, 1_599_518_383_171);
+    }
+
+    #[test]
+    fn order_query_error_is_not_deserialized_as_an_empty_order() {
+        let response: m::ApiResponse<m::Order> =
+            serde_json::from_str(r#"{"code":-2013,"msg":"Order does not exist."}"#).unwrap();
+        match response {
+            m::ApiResponse::Error(error) => assert_eq!(error.code, -2013),
+            m::ApiResponse::Success(_) => panic!("error response was accepted as an order"),
         }
     }
 
@@ -1427,7 +2147,7 @@ mod tests {
     fn test_build_batch_submit_body() {
         let reqs = vec![limit_req(), limit_req()];
         let body = build_batch_submit_body(&reqs);
-        assert!(body.starts_with("{\"batchOrders\":["));
+        assert!(body.starts_with("batchOrders=["));
         assert_eq!(body.matches("BTCUSDT").count(), 2);
         assert!(body.contains("\"timeInForce\":\"GTC\""));
     }
@@ -1447,7 +2167,9 @@ mod tests {
         };
         let body = build_algo_body(&req);
         assert!(body.contains("symbol=BTCUSDT"));
-        assert!(body.contains("stopPrice=51000"));
+        assert!(body.contains("algoType=CONDITIONAL"));
+        assert!(body.contains("triggerPrice=51000"));
+        assert!(body.contains("clientAlgoId=a1"));
         assert!(body.contains("reduceOnly=true"));
     }
 
@@ -1578,6 +2300,8 @@ mod tests {
             "updateTime": 1700000000000
         }"#;
         let pos: m::PositionInformationV2 = serde_json::from_str(json).unwrap();
+        assert!(symbol_matches(Some("BTCUSDT"), &pos.symbol));
+        assert!(!symbol_matches(Some("ETHUSDT"), &pos.symbol));
         let info = position_from(&pos);
         assert_eq!(info.symbol, "btcusdt");
         assert_eq!(info.qty, 1.5);

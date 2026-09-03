@@ -1,0 +1,13 @@
+[package]
+name = "titan-connector-loader"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+semver = "1"
+serde_json = "1"
+sha2 = "0.10"
+titan-account-plugin = { path = "../titan-account-plugin" }
+titan-market-plugin = { path = "../titan-market-plugin" }
+titan-plugin-engine = { path = "../titan-plugin-engine" }

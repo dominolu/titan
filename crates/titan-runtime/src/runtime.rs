@@ -2513,6 +2513,28 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn submit_on_first_bar(ctx: *mut StrategyRuntimeContext) -> i32 {
+        let ctx = unsafe { &mut *ctx };
+        let state = unsafe { &mut *(ctx.user_data as *mut State) };
+        state.calls.push(ctx.event_kind);
+        if state.calls.len() == 1 {
+            unsafe {
+                *ctx.commands_ptr = OrderCommand {
+                    kind: ORDER_COMMAND_SUBMIT,
+                    side: 1,
+                    time_in_force: 3,
+                    order_type: 1,
+                    asset_no: 0,
+                    order_id: 77,
+                    qty: 1.0,
+                    ..OrderCommand::default()
+                };
+            }
+            ctx.num_commands = 1;
+        }
+        0
+    }
+
     struct Source {
         events: Vec<(u32, i64)>,
         next: usize,
@@ -2704,6 +2726,119 @@ mod tests {
         assert_eq!(runner.run_count(), 100);
         assert_eq!(state.history_commits, 0);
         assert_eq!(state.calls.len(), 800);
+    }
+
+    #[test]
+    fn bar_only_has_no_tick_frames_and_callback_order_uses_the_next_bar_open() {
+        let records = [
+            TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 10,
+                bar: Bar {
+                    open_ts: 0,
+                    close_ts: 10,
+                    open: 100.0,
+                    high: 106.0,
+                    low: 99.0,
+                    close: 105.0,
+                    volume: 10.0,
+                    quote_volume: 1_000.0,
+                    buy_volume: 5.0,
+                    trade_count: 2,
+                    flags: BAR_COMPLETE,
+                },
+            },
+            TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 10,
+                bar: Bar {
+                    open_ts: 10,
+                    close_ts: 20,
+                    open: 110.0,
+                    high: 112.0,
+                    low: 109.0,
+                    close: 111.0,
+                    volume: 10.0,
+                    quote_volume: 1_100.0,
+                    buy_volume: 5.0,
+                    trade_count: 2,
+                    flags: BAR_COMPLETE,
+                },
+            },
+        ];
+        let mut source = MaterializedBarSource::new(&records, 2).unwrap();
+        let mut callbacks = CallbackRegistry::default();
+        callbacks.set(StrategyEventKind::Bar, submit_on_first_bar);
+        let mut state = State::default();
+        let mut context = StrategyRuntimeContext {
+            user_data: (&mut state as *mut State).cast(),
+            ..Default::default()
+        };
+        source.configure_context(&mut context);
+        let stats = run_event_runtime_counted(&mut source, &callbacks, &mut context).unwrap();
+
+        assert_eq!(stats.callback_count[StrategyEventKind::Bar.slot()], 2);
+        assert_eq!(stats.callback_count[StrategyEventKind::Tick.slot()], 0);
+        let fill = source
+            .execution_reports()
+            .iter()
+            .find(|report| {
+                report.order_id == 77
+                    && report.kind == hftbacktest::backtest::execution::ExecutionReportKind::Fill
+            })
+            .expect("on_bar order must fill on a later executable bar");
+        assert_eq!(fill.exchange_ts, records[1].bar.open_ts);
+        assert_eq!(fill.exec_price, records[1].bar.open);
+        assert_ne!(fill.exec_price, records[0].bar.close);
+    }
+
+    #[test]
+    fn simultaneous_multi_timeframe_closes_are_delivered_as_distinct_ordered_batches() {
+        #[derive(Default)]
+        struct Observed(Vec<(i64, i64)>);
+        unsafe extern "C" fn observe(ctx: *mut StrategyRuntimeContext) -> i32 {
+            let ctx = unsafe { &mut *ctx };
+            let observed = unsafe { &mut *(ctx.user_data as *mut Observed) };
+            observed.0.push((ctx.bar_close_ts, ctx.bar_timeframe_ns));
+            0
+        }
+
+        let bar = |open_ts| Bar {
+            open_ts,
+            close_ts: 60,
+            open: 100.0,
+            high: 101.0,
+            low: 99.0,
+            close: 100.0,
+            volume: 1.0,
+            quote_volume: 100.0,
+            buy_volume: 0.5,
+            trade_count: 1,
+            flags: BAR_COMPLETE,
+        };
+        let records = [
+            TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 10,
+                bar: bar(50),
+            },
+            TimedBarItem {
+                asset_no: 0,
+                timeframe_ns: 60,
+                bar: bar(0),
+            },
+        ];
+        let mut source = MaterializedBarSource::new(&records, 2).unwrap();
+        let mut callbacks = CallbackRegistry::default();
+        callbacks.set(StrategyEventKind::Bar, observe);
+        let mut observed = Observed::default();
+        let mut context = StrategyRuntimeContext {
+            user_data: (&mut observed as *mut Observed).cast(),
+            ..Default::default()
+        };
+        source.configure_context(&mut context);
+        run_event_runtime(&mut source, &callbacks, &mut context).unwrap();
+        assert_eq!(observed.0, [(60, 10), (60, 60)]);
     }
 
     #[test]

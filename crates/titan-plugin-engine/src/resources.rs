@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{ErrorKind, LifecycleState, PluginError, PluginIdentity};
 
@@ -50,6 +53,15 @@ impl ResourceScope {
             .unwrap_or_else(|p| p.into_inner())
             .entries
             .len()
+    }
+
+    pub fn resource_counts(&self) -> BTreeMap<Arc<str>, usize> {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut counts = BTreeMap::new();
+        for entry in &state.entries {
+            *counts.entry(entry.name.clone()).or_insert(0) += 1;
+        }
+        counts
     }
 
     pub fn close(&mut self) -> Result<(), Vec<PluginError>> {

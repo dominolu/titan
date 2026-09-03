@@ -4,6 +4,11 @@
 
 状态：设计基线，待 EventEngine v1.4 可靠交付契约实现并验收
 
+> 当前实施范围（2026-09-03）：主链采用 Fresh-only profile。StrategyPlugin 只绑定 MarketService、
+> AccountService 和 AccountExecutionService，命令直接进入 AccountExecutionService；不导出或依赖
+> Risk、checkpoint/store、recovery、StreamBoundaryProvider。本文中这些能力的章节作为未来插件化扩展
+> 的设计素材，不属于当前闭环的实现或验收条件。非 Fresh recovery 配置会被明确拒绝。
+
 关联文档：
 
 - [AccountPlugin 技术实现设计](account_plugin_technical_design.md)

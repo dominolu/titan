@@ -23,7 +23,7 @@ use iceoryx2::{
     prelude::{SignalHandlingMode, ipc},
 };
 use tokio::{runtime::Builder, select, signal, sync::Notify};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::{
     binancefutures::BinanceFutures,
@@ -197,6 +197,13 @@ async fn run_publish_task(
                         for ev in handle_ev(ev, &mut depth, &mut position) {
                             bot_tx.send(TO_ALL, &ev)?;
                         }
+                    }
+                    PublishEvent::MarkPrice {
+                        symbol,
+                        mark_price,
+                        exch_ts,
+                    } => {
+                        debug!(%symbol, mark_price, exch_ts, "mark price is available on the MarketPlugin event path");
                     }
                     PublishEvent::FeedBatch { symbol, events, .. } => {
                         let mut fused = Vec::with_capacity(events.len());

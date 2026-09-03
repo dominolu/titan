@@ -1,5 +1,6 @@
 use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 use smallvec::SmallVec;
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
@@ -18,11 +19,30 @@ mod tests {
         match msg {
             Stream::EventStream(EventStream::MarkPriceUpdate(update)) => {
                 assert_eq!(update.symbol, "btcusdt");
+                assert_eq!(update.mark_price, 11794.15);
                 assert_eq!(update.funding_rate, -0.000381);
                 assert_eq!(update.next_funding_time, 1_562_306_400_000);
                 assert_eq!(update.event_time, 1_562_305_380_000);
             }
             _ => panic!("expected a markPriceUpdate message"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_mark_price_alias() {
+        let msg: Stream = serde_json::from_str(
+            r#"{"e":"markPrice","E":1562305380000,"s":"BTCUSDT","p":"11794.15000000","i":"11793.84535841","P":"11780.83846368","r":"-0.00038100","T":1562306400000}"#,
+        )
+        .unwrap();
+        match msg {
+            Stream::EventStream(EventStream::MarkPrice(update)) => {
+                assert_eq!(update.symbol, "btcusdt");
+                assert_eq!(update.mark_price, 11794.15);
+                assert_eq!(update.funding_rate, -0.000381);
+                assert_eq!(update.next_funding_time, 1_562_306_400_000);
+                assert_eq!(update.event_time, 1_562_305_380_000);
+            }
+            _ => panic!("expected a markPrice message"),
         }
     }
 }
@@ -31,13 +51,36 @@ mod tests {
 #[serde(untagged)]
 pub enum Stream<'a> {
     EventStream(#[serde(borrow)] EventStream<'a>),
-    Result(Result),
+    Result(StreamResult),
 }
 
 #[derive(Deserialize, Debug)]
-pub struct Result {
-    pub result: Option<String>,
+pub struct StreamResult {
+    #[serde(default)]
+    pub result: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_request_id")]
     pub id: String,
+    #[serde(default)]
+    pub error: Option<StreamError>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct StreamError {
+    pub code: i64,
+    pub msg: String,
+}
+
+fn deserialize_request_id<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(value) => Ok(value),
+        Value::Number(value) => Ok(value.to_string()),
+        Value::Null => Ok(String::new()),
+        other => Ok(other.to_string()),
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,6 +90,8 @@ pub enum EventStream<'a> {
     DepthUpdate(#[serde(borrow)] Depth<'a>),
     #[serde(rename = "markPriceUpdate")]
     MarkPriceUpdate(MarkPriceUpdate),
+    #[serde(rename = "markPrice")]
+    MarkPrice(MarkPriceUpdate),
     #[serde(rename = "trade")]
     Trade(Trade),
     #[serde(rename = "bookTicker")]
@@ -129,6 +174,10 @@ pub struct MarkPriceUpdate {
     #[serde(rename = "s")]
     #[serde(deserialize_with = "to_lowercase")]
     pub symbol: String,
+    /// Current mark price.
+    #[serde(rename = "p")]
+    #[serde(deserialize_with = "from_str_to_f64")]
+    pub mark_price: f64,
     /// Funding rate of the upcoming settlement.
     #[serde(rename = "r")]
     #[serde(deserialize_with = "from_str_to_f64")]

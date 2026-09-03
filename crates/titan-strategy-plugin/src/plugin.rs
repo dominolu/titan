@@ -14,7 +14,7 @@ use titan_event_engine::{
     SubscriberState,
 };
 use titan_market_plugin::{ConnectorHealth, MarketService};
-use titan_plugin_engine::{ClosureResource, ResourceScope};
+use titan_plugin_engine::{ClosureResource, ResourceScope, ServiceId, ServiceKey, ServiceScope};
 
 use crate::*;
 
@@ -49,7 +49,11 @@ impl Default for StrategyPluginConfig {
                 titan_event_engine::SubscriberRuntimeMode::SpinSleep,
                 titan_event_engine::SubscriberRuntimeMode::Park,
             ],
-            allowed_capabilities: StrategyCapabilities(u64::MAX),
+            allowed_capabilities: StrategyCapabilities(
+                u64::MAX
+                    & !(StrategyCapabilities::READ_RISK.0
+                        | StrategyCapabilities::CHECKPOINT_STATE.0),
+            ),
             max_lane_capacity: 1 << 20,
             max_pending_capacity: 1 << 18,
             max_command_capacity: 4_096,
@@ -65,9 +69,6 @@ pub struct StrategyPluginDependencies {
     pub markets: Arc<dyn MarketService>,
     pub accounts: Arc<dyn AccountService>,
     pub execution: Arc<dyn AccountExecutionService>,
-    pub risk: Arc<dyn RiskService>,
-    pub checkpoint: Arc<CheckpointCoordinator>,
-    pub recovery: Arc<dyn StrategyRecoveryCoordinator>,
 }
 
 pub struct StrategyEntry {
@@ -80,8 +81,20 @@ pub struct StrategyEntry {
     pub gateway: Arc<dyn StrategyCommandGateway>,
     pub activation: Arc<StrategyActivationGate>,
     pub command_gate: Arc<StrategyCommandGate>,
-    recovery_ready: AtomicBool,
     resources: Mutex<Option<ResourceScope>>,
+}
+
+struct DisabledSnapshotSink;
+
+impl StrategyStateSnapshotSink for DisabledSnapshotSink {
+    fn submit(&self, _snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+        Err(StrategyError::new(
+            StrategyErrorKind::UnsupportedCapability,
+            "state_snapshot",
+            "state_snapshot_unavailable",
+            "strategy state snapshots are not part of the current runtime profile",
+        ))
+    }
 }
 
 impl StrategyEntry {
@@ -280,7 +293,7 @@ impl StrategyPluginCore {
             runtime_abi_fingerprint: Arc::from(abi.fingerprint.as_str()),
             target_cpu: Arc::from(std::env::consts::ARCH),
         };
-        let mut artifact = if let Some(value) = self.cache.get(
+        let artifact = if let Some(value) = self.cache.get(
             &key,
             definition.runtime.state_f64_capacity,
             definition.runtime.state_i64_capacity,
@@ -320,26 +333,6 @@ impl StrategyPluginCore {
                 "loaded artifact manifest does not match the inspected manifest",
             ));
         }
-        let restored_checkpoint = self
-            .dependencies
-            .checkpoint
-            .restore(&definition, &manifest)?;
-        if let Some(checkpoint) = restored_checkpoint.as_ref() {
-            if checkpoint.state_f64.len() > artifact.state.f64_values.len()
-                || checkpoint.state_i64.len() > artifact.state.i64_values.len()
-            {
-                return Err(StrategyError::new(
-                    StrategyErrorKind::CheckpointFailed,
-                    "restore",
-                    "state_capacity",
-                    "checkpoint state exceeds configured runtime capacity",
-                ));
-            }
-            artifact.state.f64_values[..checkpoint.state_f64.len()]
-                .copy_from_slice(&checkpoint.state_f64);
-            artifact.state.i64_values[..checkpoint.state_i64.len()]
-                .copy_from_slice(&checkpoint.state_i64);
-        }
         let artifact_id = artifact.id;
         let resolved_markets = self.resolve_markets(&definition)?;
         let resolved_accounts = self.resolve_accounts(&definition)?;
@@ -348,22 +341,11 @@ impl StrategyPluginCore {
         let gateway: Arc<dyn StrategyCommandGateway> =
             Arc::new(StandardStrategyCommandGateway::new(
                 handle,
-                definition.risk_scope.clone(),
                 manifest.capabilities,
                 command_gate.clone(),
                 &resolved_accounts,
-                self.dependencies.risk.clone(),
                 self.dependencies.execution.clone(),
             ));
-        if let Some(checkpoint) = restored_checkpoint.as_ref() {
-            gateway.restore_metadata(
-                handle,
-                &StrategyCommandMetadata {
-                    owned_orders: checkpoint.owned_orders.clone(),
-                    pending_command_ids: checkpoint.pending_command_ids.clone(),
-                },
-            )?;
-        }
         let resources = ResourceScope::new(titan_plugin_engine::PluginIdentity::new(
             "titan.strategy.runtime",
             format!("{}-{}", definition.strategy_id.0, generation),
@@ -377,7 +359,7 @@ impl StrategyPluginCore {
             accounts: resolved_accounts.into(),
             event_adapter,
             command_gateway: gateway.clone(),
-            state_snapshot_sink: self.dependencies.checkpoint.snapshot_sink(),
+            state_snapshot_sink: Arc::new(DisabledSnapshotSink),
             clock: Arc::new(SystemStrategyClock),
             metrics: Arc::new(NoopStrategyMetrics),
             resources: resources.handle(),
@@ -518,7 +500,6 @@ impl StrategyPluginCore {
             gateway,
             activation,
             command_gate,
-            recovery_ready: AtomicBool::new(false),
             resources: Mutex::new(Some(resources)),
         }))
     }
@@ -639,9 +620,6 @@ impl StrategyPluginCore {
             {
                 return Err(dependency_error("account_not_ready"));
             }
-        }
-        if !self.dependencies.risk.ready(&entry.definition.risk_scope) {
-            return Err(dependency_error("risk_not_ready"));
         }
         if entry.lane.health().state != SubscriberState::Normal {
             return Err(dependency_error("subscriber_not_normal"));
@@ -784,13 +762,6 @@ impl StrategyAdminService for StrategyPluginCore {
         self.ensure_accepting()?;
         let entry = self.entry(strategy)?;
         self.ensure_ready(&entry)?;
-        self.dependencies.recovery.synchronize(
-            strategy,
-            &entry.definition,
-            &entry.lane,
-            Instant::now() + entry.definition.runtime.startup_timeout,
-        )?;
-        entry.recovery_ready.store(true, Ordering::Release);
         let local = entry.runtime.prepare()?;
         Ok(self.register_runtime_operation(entry, local, false))
     }
@@ -802,9 +773,6 @@ impl StrategyAdminService for StrategyPluginCore {
             return Err(definition_error("strategy_disabled"));
         }
         self.ensure_ready(&entry)?;
-        if !entry.recovery_ready.load(Ordering::Acquire) {
-            return Err(dependency_error("snapshot_barrier_not_completed"));
-        }
         let local = entry.runtime.start()?;
         Ok(self.register_runtime_operation(entry, local, false))
     }
@@ -822,16 +790,7 @@ impl StrategyAdminService for StrategyPluginCore {
     fn resume(&self, strategy: StrategyHandle) -> LocalResult<StrategyOperationId> {
         self.ensure_accepting()?;
         let entry = self.entry(strategy)?;
-        if entry.lane.health().state != SubscriberState::Normal {
-            self.dependencies.recovery.synchronize(
-                strategy,
-                &entry.definition,
-                &entry.lane,
-                Instant::now() + entry.definition.runtime.startup_timeout,
-            )?;
-        }
         self.ensure_ready(&entry)?;
-        entry.recovery_ready.store(true, Ordering::Release);
         let local = entry.runtime.resume()?;
         Ok(self.register_runtime_operation(entry, local, false))
     }
@@ -874,16 +833,6 @@ impl StrategyAdminService for StrategyPluginCore {
             candidate.cleanup()?;
             return Err(error);
         }
-        if let Err(error) = self.dependencies.recovery.synchronize(
-            candidate.handle,
-            &candidate.definition,
-            &candidate.lane,
-            Instant::now() + candidate.definition.runtime.startup_timeout,
-        ) {
-            candidate.cleanup()?;
-            return Err(error);
-        }
-        candidate.recovery_ready.store(true, Ordering::Release);
         let prepared = match candidate.runtime.prepare() {
             Ok(operation) => operation,
             Err(error) => {
@@ -979,19 +928,6 @@ impl StrategyAdminService for StrategyPluginCore {
         Ok(self.completed_operation(Some(strategy), "removed"))
     }
 
-    fn checkpoint(&self, strategy: StrategyHandle) -> LocalResult<StrategyOperationId> {
-        let entry = self.entry(strategy)?;
-        self.dependencies.checkpoint.checkpoint(
-            &entry.runtime,
-            &entry.lane,
-            &entry.gateway,
-            &entry.definition,
-            &entry.manifest,
-            Instant::now() + entry.definition.runtime.startup_timeout,
-        )?;
-        Ok(self.completed_operation(Some(strategy), "checkpoint_persisted"))
-    }
-
     fn list(&self) -> Arc<[StrategyInstanceSnapshot]> {
         self.registry
             .state
@@ -1076,6 +1012,14 @@ pub(crate) fn validate_definition(
     config: &StrategyPluginConfig,
     definition: &StrategyDefinition,
 ) -> LocalResult<()> {
+    if definition.recovery != StrategyRecoveryPolicy::Fresh {
+        return Err(StrategyError::new(
+            StrategyErrorKind::UnsupportedCapability,
+            "definition",
+            "recovery_plugin_unavailable",
+            "only fresh strategy startup is supported until a recovery plugin is installed",
+        ));
+    }
     if definition.strategy_key.is_empty()
         || definition.strategy_id.0 == 0
         || definition.entrypoint.is_empty()
@@ -1425,6 +1369,7 @@ pub static STRATEGY_PLUGIN_MANIFEST: std::sync::LazyLock<titan_plugin_engine::Pl
             version: Version::new(1, 0, 0),
             engine_api_version: CORE_RUNTIME_API_VERSION,
             abi_version: ApiVersion::new(1, 0),
+            config_schema_version: 1,
             config_schema: Arc::new(serde_json::json!({"type":"object"})),
             provides: vec![
                 ProvidedService {
@@ -1460,18 +1405,6 @@ pub static STRATEGY_PLUGIN_MANIFEST: std::sync::LazyLock<titan_plugin_engine::Pl
                     required: true,
                 },
                 RequiredService {
-                    id: ServiceId::new("titan.risk", "check"),
-                    version: VersionReq::parse("^1").unwrap(),
-                    scope_kind: ScopeKind::Global,
-                    required: true,
-                },
-                RequiredService {
-                    id: ServiceId::new("titan.store", "snapshot"),
-                    version: VersionReq::parse("^1").unwrap(),
-                    scope_kind: ScopeKind::Global,
-                    required: false,
-                },
-                RequiredService {
                     id: ServiceId::new("titan.metrics", "sink"),
                     version: VersionReq::parse("^1").unwrap(),
                     scope_kind: ScopeKind::Global,
@@ -1482,7 +1415,6 @@ pub static STRATEGY_PLUGIN_MANIFEST: std::sync::LazyLock<titan_plugin_engine::Pl
                 "StateChanged",
                 "HealthChanged",
                 "CallbackFault",
-                "CheckpointCompleted",
                 "OperationCompleted",
             ]
             .into_iter()
@@ -1499,16 +1431,32 @@ pub static STRATEGY_PLUGIN_MANIFEST: std::sync::LazyLock<titan_plugin_engine::Pl
 
 pub struct StrategyPluginFactory {
     config: StrategyPluginConfig,
-    dependencies: StrategyPluginDependencies,
+    dependency_source: StrategyDependencySource,
     loaders: Arc<StrategyPackageLoaderRegistry>,
     runtimes: Arc<StrategyRuntimeFactoryRegistry>,
+}
+
+enum StrategyDependencySource {
+    Direct(StrategyPluginDependencies),
+    PluginServices(EventEngineHandle),
 }
 
 impl StrategyPluginFactory {
     pub fn new(config: StrategyPluginConfig, dependencies: StrategyPluginDependencies) -> Self {
         Self {
             config,
-            dependencies,
+            dependency_source: StrategyDependencySource::Direct(dependencies),
+            loaders: Arc::new(StrategyPackageLoaderRegistry::default()),
+            runtimes: Arc::new(StrategyRuntimeFactoryRegistry::default()),
+        }
+    }
+
+    /// Builds a production factory whose Market/Account dependencies are bound from the
+    /// PluginEngine plan during lifecycle start. No RPC or global service locator is involved.
+    pub fn from_plugin_services(config: StrategyPluginConfig, events: EventEngineHandle) -> Self {
+        Self {
+            config,
+            dependency_source: StrategyDependencySource::PluginServices(events),
             loaders: Arc::new(StrategyPackageLoaderRegistry::default()),
             runtimes: Arc::new(StrategyRuntimeFactoryRegistry::default()),
         }
@@ -1538,10 +1486,25 @@ impl titan_plugin_engine::PluginFactory for StrategyPluginFactory {
         _init: titan_plugin_engine::PluginInit,
     ) -> Result<titan_plugin_engine::PluginBundle, titan_plugin_engine::PluginError> {
         use titan_plugin_engine::*;
+        let (dependencies, service_bindings) = match &self.dependency_source {
+            StrategyDependencySource::Direct(dependencies) => (dependencies.clone(), None),
+            StrategyDependencySource::PluginServices(events) => {
+                let bindings = Arc::new(PluginStrategyServices::default());
+                (
+                    StrategyPluginDependencies {
+                        events: events.clone(),
+                        markets: bindings.clone(),
+                        accounts: bindings.clone(),
+                        execution: bindings.clone(),
+                    },
+                    Some(bindings),
+                )
+            }
+        };
         let core = Arc::new(
             StrategyPluginCore::new(
                 self.config.clone(),
-                self.dependencies.clone(),
+                dependencies,
                 self.loaders.clone(),
                 self.runtimes.clone(),
             )
@@ -1550,7 +1513,10 @@ impl titan_plugin_engine::PluginFactory for StrategyPluginFactory {
         let admin: Arc<dyn StrategyAdminService> = core.clone();
         let query: Arc<dyn StrategyService> = core.clone();
         Ok(PluginBundle {
-            lifecycle: Box::new(StrategyPluginLifecycle { core }),
+            lifecycle: Box::new(StrategyPluginLifecycle {
+                core,
+                service_bindings,
+            }),
             service_exports: vec![
                 ServiceExport {
                     service_key: ServiceKey {
@@ -1580,19 +1546,46 @@ impl titan_plugin_engine::PluginFactory for StrategyPluginFactory {
 
 struct StrategyPluginLifecycle {
     core: Arc<StrategyPluginCore>,
+    service_bindings: Option<Arc<PluginStrategyServices>>,
 }
 
 impl titan_plugin_engine::Plugin for StrategyPluginLifecycle {
     fn validate(
         &self,
-        _: &titan_plugin_engine::ValidationContext,
+        context: &titan_plugin_engine::ValidationContext,
     ) -> Result<(), titan_plugin_engine::PluginError> {
+        if self.service_bindings.is_some() {
+            context
+                .services
+                .require::<titan_market_plugin::MarketApi>(&ServiceKey {
+                    id: ServiceId::new("titan.market", "market"),
+                    version: semver::Version::new(1, 0, 0),
+                    scope: ServiceScope::Global,
+                })?;
+            context
+                .services
+                .require::<titan_account_plugin::AccountApi>(&ServiceKey {
+                    id: ServiceId::new("titan.account", "query"),
+                    version: semver::Version::new(1, 0, 0),
+                    scope: ServiceScope::Global,
+                })?;
+            context
+                .services
+                .require::<titan_account_plugin::AccountExecutionApi>(&ServiceKey {
+                    id: ServiceId::new("titan.account", "execution"),
+                    version: semver::Version::new(1, 0, 0),
+                    scope: ServiceScope::Global,
+                })?;
+        }
         Ok(())
     }
     fn start(
         &mut self,
-        _: &mut titan_plugin_engine::PluginContext,
+        context: &mut titan_plugin_engine::PluginContext,
     ) -> Result<(), titan_plugin_engine::PluginError> {
+        if let Some(bindings) = &self.service_bindings {
+            bindings.bind(&context.services)?;
+        }
         Ok(())
     }
     fn quiesce(
@@ -1604,6 +1597,9 @@ impl titan_plugin_engine::Plugin for StrategyPluginLifecycle {
             .map_err(strategy_plugin_error)
     }
     fn stop(&mut self) -> Result<(), titan_plugin_engine::PluginError> {
+        if let Some(bindings) = &self.service_bindings {
+            bindings.clear();
+        }
         Ok(())
     }
 }

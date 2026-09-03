@@ -44,16 +44,48 @@ pub struct MarketSourceDefinition {
     pub definition_version: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct SourceStreamId(pub u32);
 
 #[derive(Clone)]
-pub struct MarketEventPublisher {
+struct CoreMarketEventPublisher {
     inner: EventPublisher,
     market_stream: SourceStreamId,
     control_stream: SourceStreamId,
     source_sequence: Arc<Mutex<u64>>,
+}
+
+/// Backend used by dynamically loaded venue plugins. Implementations live inside the venue
+/// library and translate these calls to the fixed-layout C callbacks supplied by the host.
+pub trait MarketEventSink: Send + Sync + 'static {
+    fn publish_market(
+        &self,
+        event_type: &str,
+        payload: &[u8],
+        asset_id: AssetId,
+        exchange_ts: i64,
+        receive_ts: i64,
+        trace: TraceContext,
+    ) -> Result<(), PluginError>;
+
+    fn publish_control(
+        &self,
+        event_type: &str,
+        payload: &[u8],
+        trace: TraceContext,
+    ) -> Result<(), PluginError>;
+}
+
+#[derive(Clone)]
+enum MarketEventPublisherBackend {
+    Core(CoreMarketEventPublisher),
+    Dynamic(Arc<dyn MarketEventSink>),
+}
+
+#[derive(Clone)]
+pub struct MarketEventPublisher {
+    backend: MarketEventPublisherBackend,
 }
 
 impl MarketEventPublisher {
@@ -63,10 +95,19 @@ impl MarketEventPublisher {
         control_stream: SourceStreamId,
     ) -> Self {
         Self {
-            inner,
-            market_stream,
-            control_stream,
-            source_sequence: Arc::new(Mutex::new(0)),
+            backend: MarketEventPublisherBackend::Core(CoreMarketEventPublisher {
+                inner,
+                market_stream,
+                control_stream,
+                source_sequence: Arc::new(Mutex::new(0)),
+            }),
+        }
+    }
+
+    /// Constructs the plugin-side publisher used by a dynamic Connector implementation.
+    pub fn from_sink(sink: Arc<dyn MarketEventSink>) -> Self {
+        Self {
+            backend: MarketEventPublisherBackend::Dynamic(sink),
         }
     }
 
@@ -79,17 +120,30 @@ impl MarketEventPublisher {
         receive_ts: i64,
         trace: TraceContext,
     ) -> Result<(), PluginError> {
-        let mut committed_sequence = self
+        let MarketEventPublisherBackend::Core(core) = &self.backend else {
+            return match &self.backend {
+                MarketEventPublisherBackend::Dynamic(sink) => sink.publish_market(
+                    event_type,
+                    payload,
+                    asset_id,
+                    exchange_ts,
+                    receive_ts,
+                    trace,
+                ),
+                MarketEventPublisherBackend::Core(_) => unreachable!(),
+            };
+        };
+        let mut committed_sequence = core
             .source_sequence
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let source_sequence = committed_sequence.saturating_add(1);
-        let result = self.inner.publish_with_metadata(
+        let result = core.inner.publish_with_metadata(
             event_type,
             MARKET_EVENT_SCHEMA_VERSION,
             payload,
             EventPublishMetadata {
-                source_id: self.market_stream.0,
+                source_id: core.market_stream.0,
                 source_sequence,
                 exchange_ts,
                 receive_ts,
@@ -116,19 +170,36 @@ impl MarketEventPublisher {
         trace: TraceContext,
         encode: impl FnOnce(&mut [u8]) -> Result<(), ConnectorError>,
     ) -> Result<(), ConnectorError> {
-        let mut committed_sequence = self
+        if let MarketEventPublisherBackend::Dynamic(sink) = &self.backend {
+            let mut payload = vec![0_u8; payload_length];
+            encode(&mut payload)?;
+            return sink
+                .publish_market(
+                    event_type,
+                    &payload,
+                    asset_id,
+                    exchange_ts,
+                    receive_ts,
+                    trace,
+                )
+                .map_err(|error| ConnectorError::new(error.to_string()));
+        }
+        let MarketEventPublisherBackend::Core(core) = &self.backend else {
+            unreachable!()
+        };
+        let mut committed_sequence = core
             .source_sequence
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let source_sequence = committed_sequence.saturating_add(1);
-        let mut reservation = self
+        let mut reservation = core
             .inner
             .reserve_market_batch(
                 event_type,
                 MARKET_EVENT_SCHEMA_VERSION,
                 payload_length,
                 EventPublishMetadata {
-                    source_id: self.market_stream.0,
+                    source_id: core.market_stream.0,
                     source_sequence,
                     exchange_ts,
                     receive_ts,
@@ -152,12 +223,18 @@ impl MarketEventPublisher {
         payload: &[u8],
         trace: TraceContext,
     ) -> Result<(), PluginError> {
-        self.inner.publish_with_metadata(
+        if let MarketEventPublisherBackend::Dynamic(sink) = &self.backend {
+            return sink.publish_control(event_type, payload, trace);
+        }
+        let MarketEventPublisherBackend::Core(core) = &self.backend else {
+            unreachable!()
+        };
+        core.inner.publish_with_metadata(
             event_type,
             MARKET_EVENT_SCHEMA_VERSION,
             payload,
             EventPublishMetadata {
-                source_id: self.control_stream.0,
+                source_id: core.control_stream.0,
                 ..EventPublishMetadata::default()
             },
             trace,
@@ -175,7 +252,7 @@ pub struct MarketConnectorContext {
     pub resources: ResourceScopeHandle,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum MarketDataKind {
     Depth,
     Trades,
@@ -185,49 +262,49 @@ pub enum MarketDataKind {
     FundingRate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarketSubscribeRequest {
     pub asset_id: AssetId,
     pub kinds: Arc<[MarketDataKind]>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct MarketSubscription {
     pub id: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct OperationId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OperationState {
     Pending,
     Succeeded,
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConnectorOperationSnapshot {
     pub id: OperationId,
     pub state: OperationState,
     pub detail: Arc<str>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarketOperationSnapshot {
     pub id: OperationId,
     pub state: OperationState,
     pub detail: Arc<str>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstrumentSnapshot {
     pub native_symbol: Arc<str>,
     pub asset_id: AssetId,
     pub available: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConnectorHealth {
     Created,
     Starting,
@@ -237,14 +314,14 @@ pub enum ConnectorHealth {
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConnectorHealthSnapshot {
     pub state: ConnectorHealth,
     pub message: Arc<str>,
     pub observed_at: SystemTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ConnectorDiagnosticSnapshot {
     pub summary: Arc<str>,
 }

@@ -33,6 +33,7 @@ pub static MARKET_PLUGIN_MANIFEST: LazyLock<PluginManifest> = LazyLock::new(|| P
     version: Version::new(1, 0, 0),
     engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
     abi_version: ApiVersion::new(1, 0),
+    config_schema_version: 1,
     config_schema: Arc::new(serde_json::json!({"type":"object"})),
     provides: vec![
         ProvidedService {

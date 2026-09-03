@@ -58,6 +58,11 @@ impl ApiError {
             status: None,
         }
     }
+
+    /// Whether the request may have reached the exchange despite the observed error.
+    pub fn outcome_unknown(&self) -> bool {
+        self.code == "TRANSPORT" || matches!(self.status, Some(408 | 425 | 429 | 500..=599))
+    }
 }
 
 /// 统一成交方向。
@@ -798,6 +803,11 @@ mod tests {
         assert_eq!(err.exchange, "binance");
         assert_eq!(err.code, "1234");
         assert_eq!(err.to_string(), "[binance] 1234: order rejected");
+        assert!(!err.outcome_unknown());
+        assert!(ApiError::transport("binance", "timeout").outcome_unknown());
+        assert!(ApiError::http("okx", 503, "unavailable").outcome_unknown());
+        assert!(ApiError::http("okx", 429, "limited").outcome_unknown());
+        assert!(!ApiError::http("okx", 400, "bad request").outcome_unknown());
     }
 
     #[test]

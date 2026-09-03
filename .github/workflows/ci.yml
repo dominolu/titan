@@ -74,3 +74,11 @@ jobs:
       - run: python -m pip install ./python/titan-strategy-sdk
       - run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
+
+  dynamic-connectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/test_dynamic_connector_plugins.sh

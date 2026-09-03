@@ -22,7 +22,6 @@ pub trait StrategyAdminService: Send + Sync {
         definition: StrategyDefinition,
     ) -> LocalResult<StrategyHandle>;
     fn remove(&self, strategy: StrategyHandle) -> LocalResult<StrategyOperationId>;
-    fn checkpoint(&self, strategy: StrategyHandle) -> LocalResult<StrategyOperationId>;
     fn list(&self) -> Arc<[StrategyInstanceSnapshot]>;
     fn operation(&self, id: StrategyOperationId) -> StrategyOperationSnapshot;
 }
@@ -47,7 +46,6 @@ pub enum StrategyAdminRequest {
     Stop(StrategyHandle, Instant),
     Replace(StrategyHandle, StrategyDefinition),
     Remove(StrategyHandle),
-    Checkpoint(StrategyHandle),
     List,
     Operation(StrategyOperationId),
 }
@@ -122,10 +120,6 @@ impl TypedServiceEndpoint<StrategyAdminApi> for StrategyAdminEndpoint {
             StrategyAdminRequest::Remove(value) => {
                 self.0.remove(value).map(StrategyAdminResponse::OperationId)
             }
-            StrategyAdminRequest::Checkpoint(value) => self
-                .0
-                .checkpoint(value)
-                .map(StrategyAdminResponse::OperationId),
             StrategyAdminRequest::List => Ok(StrategyAdminResponse::Instances(self.0.list())),
             StrategyAdminRequest::Operation(id) => {
                 Ok(StrategyAdminResponse::Operation(self.0.operation(id)))

@@ -12,6 +12,10 @@ members = [
   "crates/titan-python-host",
   "crates/titan-strategy-plugin",
   "crates/titan-cli",
+  "crates/titan-connector-binance-futures-plugin",
+  "crates/titan-connector-okx-plugin",
+  "crates/titan-connector-hyperliquid-plugin",
+  "crates/titan-connector-loader",
   "collector",
   "connector",
   "examples"]

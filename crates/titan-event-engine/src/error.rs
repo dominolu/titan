@@ -17,6 +17,8 @@ pub enum ConfigError {
     CriticalReserve,
     #[error("invalid pending dispatch capacities")]
     PendingCapacity,
+    #[error("invalid snapshot barrier capacities")]
+    SnapshotBarrierCapacity,
     #[error("invalid ratio {0}; expected 0 <= value < 1")]
     InvalidRatio(&'static str),
     #[error("recovery low watermark must be below lagging high watermark")]
@@ -27,6 +29,10 @@ pub enum ConfigError {
     DedicatedAffinity,
     #[error("dedicated subscriber mode requires at least one subscriber cpu_affinity")]
     DedicatedSubscriberAffinity,
+    #[error("cpu_affinity core {0} is unavailable")]
+    CpuAffinityUnavailable(usize),
+    #[error("cpu_affinity core {0} is assigned to more than one isolated runtime")]
+    CpuAffinityConflict(usize),
 }
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -85,6 +91,8 @@ pub enum EngineError {
     InvalidSnapshotBarrier,
     #[error("a snapshot barrier is already active")]
     SnapshotBarrierActive,
+    #[error("the global snapshot barrier limit is exhausted")]
+    SnapshotBarrierLimit,
     #[error("snapshot barrier {0} does not exist or is in the wrong state")]
     UnknownSnapshotBarrier(u64),
     #[error("snapshot staging capacity is exhausted")]
@@ -95,6 +103,8 @@ pub enum EngineError {
     SnapshotReplayNotCommitted,
     #[error("subscriber runtime failed: {0}")]
     SubscriberRuntime(String),
+    #[error("failed to bind runtime worker to cpu_affinity core {0}")]
+    CpuAffinityFailed(usize),
     #[error("PRIMARY lane {0} did not stop before its deadline")]
     PrimaryLaneStopTimeout(u64),
     #[error("event arena still has {0} outstanding blocks")]

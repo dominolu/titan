@@ -23,6 +23,7 @@ mod primary;
 pub use arena::*;
 pub use channel::*;
 pub use config::*;
+pub use control::V13EventControlAdapter;
 pub use core::*;
 pub use engine::*;
 pub use error::*;

@@ -3,7 +3,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -141,6 +141,53 @@ struct Barrier {
     staged: VecDeque<PrimaryEvent>,
     snapshots: VecDeque<PrimaryEvent>,
     replay_committed_sequence: u64,
+    budget_active: bool,
+    budget_staged: usize,
+}
+
+pub(crate) struct SnapshotBarrierBudget {
+    max_active: usize,
+    staging_capacity: usize,
+    active: AtomicUsize,
+    staged: AtomicUsize,
+}
+
+impl SnapshotBarrierBudget {
+    pub(crate) fn new(max_active: usize, staging_capacity: usize) -> Self {
+        Self {
+            max_active,
+            staging_capacity,
+            active: AtomicUsize::new(0),
+            staged: AtomicUsize::new(0),
+        }
+    }
+
+    fn try_begin(&self) -> bool {
+        reserve_bounded(&self.active, self.max_active)
+    }
+
+    fn try_stage(&self) -> bool {
+        reserve_bounded(&self.staged, self.staging_capacity)
+    }
+
+    fn release(&self, active: bool, staged: usize) {
+        if active {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
+        if staged != 0 {
+            self.staged.fetch_sub(staged, Ordering::AcqRel);
+        }
+    }
+}
+
+fn reserve_bounded(counter: &AtomicUsize, capacity: usize) -> bool {
+    let previous = counter.fetch_add(1, Ordering::AcqRel);
+    if previous < capacity {
+        true
+    } else {
+        counter.fetch_sub(1, Ordering::AcqRel);
+        false
+    }
 }
 
 pub(crate) struct PrimaryAsyncLane {
@@ -156,6 +203,9 @@ pub(crate) struct PrimaryAsyncLane {
     control: ArrayQueue<ControlItem>,
     staging_capacity: usize,
     barrier: Mutex<Option<Barrier>>,
+    barrier_staging: AtomicBool,
+    barrier_clock_origin: Instant,
+    barrier_deadline_ns: AtomicU64,
     next_barrier: AtomicU64,
     next_admitted: AtomicU64,
     health: Arc<SubscriberHealth>,
@@ -169,15 +219,23 @@ pub(crate) struct PrimaryAsyncLane {
     worker: OnceLock<thread::Thread>,
     join: Mutex<Option<JoinHandle<()>>>,
     fault_signals: Arc<ArrayQueue<FaultSignal>>,
+    snapshot_budget: Arc<SnapshotBarrierBudget>,
+    snapshot_timeout: Duration,
 }
 
 impl PrimaryAsyncLane {
+    pub(crate) fn cpu_affinity(&self) -> Option<usize> {
+        self.cpu_affinity
+    }
+
     pub(crate) fn start(
         token: u64,
         subscriptions: &[(u32, PrimarySubscriptionSpec)],
         config: PrimaryAsyncLaneConfig,
         handler: Arc<dyn EventHandler>,
         fault_signals: Arc<ArrayQueue<FaultSignal>>,
+        snapshot_budget: Arc<SnapshotBarrierBudget>,
+        snapshot_timeout: Duration,
     ) -> Result<Arc<Self>, EngineError> {
         if config.capacity == 0
             || config.critical_reserve >= config.capacity
@@ -221,6 +279,9 @@ impl PrimaryAsyncLane {
             control: ArrayQueue::new(config.control_capacity),
             staging_capacity: config.snapshot_staging_capacity,
             barrier: Mutex::new(None),
+            barrier_staging: AtomicBool::new(false),
+            barrier_clock_origin: Instant::now(),
+            barrier_deadline_ns: AtomicU64::new(0),
             next_barrier: AtomicU64::new(1),
             next_admitted: AtomicU64::new(1),
             health,
@@ -234,12 +295,32 @@ impl PrimaryAsyncLane {
             worker: OnceLock::new(),
             join: Mutex::new(None),
             fault_signals,
+            snapshot_budget,
+            snapshot_timeout,
         });
         let worker_lane = lane.clone();
+        let (startup_tx, startup_rx) = sync_channel(1);
+        let cpu_affinity = config.cpu_affinity;
         let join = thread::Builder::new()
             .name(format!("event-primary-lane-{token}"))
-            .spawn(move || worker_lane.run())
+            .spawn(move || {
+                let bound = cpu_affinity.is_none_or(|core_id| {
+                    core_affinity::set_for_current(core_affinity::CoreId { id: core_id })
+                });
+                let _ = startup_tx.send(bound);
+                if bound {
+                    worker_lane.run();
+                }
+            })
             .map_err(|error| EngineError::SubscriberRuntime(error.to_string()))?;
+        if !startup_rx.recv().unwrap_or(false) {
+            let _ = join.join();
+            return Err(EngineError::CpuAffinityFailed(
+                config
+                    .cpu_affinity
+                    .expect("an unbound worker cannot fail binding"),
+            ));
+        }
         *lane.join.lock().unwrap_or_else(|p| p.into_inner()) = Some(join);
         Ok(lane)
     }
@@ -273,12 +354,14 @@ impl PrimaryAsyncLane {
         {
             if Instant::now() >= barrier.deadline
                 || barrier.staged.len() + barrier.snapshots.len() >= self.staging_capacity
+                || !self.snapshot_budget.try_stage()
             {
-                barrier.state = SnapshotBarrierState::Failed;
+                self.fail_barrier(barrier);
                 drop(barrier_guard);
                 self.invalidate(header.source_sequence, FaultKind::PendingFull);
                 return;
             }
+            barrier.budget_staged += 1;
             self.health.on_enqueue(0);
             barrier.staged.push_back(PrimaryEvent {
                 descriptor,
@@ -389,10 +472,8 @@ impl PrimaryAsyncLane {
 
     fn run(self: Arc<Self>) {
         let _ = self.worker.set(thread::current());
-        if let Some(core_id) = self.cpu_affinity {
-            let _ = core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
-        }
         loop {
+            self.expire_barrier_if_needed();
             while let Some(control) = self.control.pop() {
                 let result = catch_unwind(AssertUnwindSafe(control.action))
                     .map_err(|_| EngineError::SafePointPanicked)
@@ -491,6 +572,16 @@ impl PrimaryAsyncLane {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
+        if let Some(mut barrier) = self
+            .barrier
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            self.release_barrier_budget(&mut barrier, true);
+        }
+        self.barrier_deadline_ns.store(0, Ordering::Release);
+        self.barrier_staging.store(false, Ordering::Release);
         while let Some(control) = self.control.pop() {
             let _ = control.reply.try_send(Err(EngineError::NotRunning));
         }
@@ -519,7 +610,11 @@ impl PrimaryAsyncLane {
         request: SnapshotBarrierRequest,
     ) -> Result<SnapshotBarrierId, EngineError> {
         let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
-        if request.source_ids.is_empty() || request.deadline <= Instant::now() {
+        let now = Instant::now();
+        if request.source_ids.is_empty()
+            || request.deadline <= now
+            || request.deadline.saturating_duration_since(now) > self.snapshot_timeout
+        {
             return Err(EngineError::InvalidSnapshotBarrier);
         }
         if !self.queue.is_empty()
@@ -537,6 +632,9 @@ impl PrimaryAsyncLane {
         if guard.is_some() {
             return Err(EngineError::SnapshotBarrierActive);
         }
+        if !self.snapshot_budget.try_begin() {
+            return Err(EngineError::SnapshotBarrierLimit);
+        }
         let id = SnapshotBarrierId(self.next_barrier.fetch_add(1, Ordering::AcqRel));
         *guard = Some(Barrier {
             id,
@@ -546,7 +644,17 @@ impl PrimaryAsyncLane {
             staged: VecDeque::with_capacity(self.staging_capacity),
             snapshots: VecDeque::new(),
             replay_committed_sequence: 0,
+            budget_active: true,
+            budget_staged: 0,
         });
+        let deadline_ns = request
+            .deadline
+            .saturating_duration_since(self.barrier_clock_origin)
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        self.barrier_deadline_ns
+            .store(deadline_ns.max(1), Ordering::Release);
+        self.barrier_staging.store(true, Ordering::Release);
         self.health.set_state(SubscriberState::Recovering);
         self.accepting.store(true, Ordering::Release);
         Ok(id)
@@ -560,10 +668,21 @@ impl PrimaryAsyncLane {
         if barrier.id != id || barrier.state != SnapshotBarrierState::Staging {
             return Err(EngineError::UnknownSnapshotBarrier(id.0));
         }
-        if barrier.snapshots.len() + barrier.staged.len() >= self.staging_capacity {
-            barrier.state = SnapshotBarrierState::Failed;
+        if Instant::now() >= barrier.deadline {
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(0, FaultKind::SnapshotRecoveryAborted);
+            return Err(EngineError::InvalidSnapshotBarrier);
+        }
+        if barrier.snapshots.len() + barrier.staged.len() >= self.staging_capacity
+            || !self.snapshot_budget.try_stage()
+        {
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(0, FaultKind::PendingFull);
             return Err(EngineError::SnapshotStagingFull);
         }
+        barrier.budget_staged += 1;
         barrier.snapshots.push_back(event);
         Ok(())
     }
@@ -581,6 +700,12 @@ impl PrimaryAsyncLane {
         if barrier.id != id || barrier.state != SnapshotBarrierState::Staging {
             return Err(EngineError::UnknownSnapshotBarrier(id.0));
         }
+        if Instant::now() >= barrier.deadline {
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(0, FaultKind::SnapshotRecoveryAborted);
+            return Err(EngineError::InvalidSnapshotBarrier);
+        }
         let by_source = boundaries
             .iter()
             .map(|boundary| {
@@ -597,7 +722,9 @@ impl PrimaryAsyncLane {
                 .iter()
                 .any(|source| !by_source.contains_key(source))
         {
-            barrier.state = SnapshotBarrierState::Failed;
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(0, FaultKind::SnapshotRecoveryAborted);
             return Err(EngineError::SnapshotBoundaryMissing);
         }
         let mut replay = std::mem::take(&mut barrier.snapshots);
@@ -609,9 +736,13 @@ impl PrimaryAsyncLane {
                     && event.header.source_sequence > boundary_sequence)
         }));
         if replay.len() + self.queue.len() > self.capacity {
-            barrier.state = SnapshotBarrierState::Failed;
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(0, FaultKind::PendingFull);
             return Err(EngineError::SnapshotStagingFull);
         }
+        self.snapshot_budget.release(false, barrier.budget_staged);
+        barrier.budget_staged = 0;
         let mut last = self.health.committed_sequence();
         for mut event in replay {
             if event.admitted_sequence == 0 {
@@ -642,12 +773,21 @@ impl PrimaryAsyncLane {
         if barrier.id != id || barrier.state != SnapshotBarrierState::Replaying {
             return Err(EngineError::UnknownSnapshotBarrier(id.0));
         }
+        if Instant::now() >= barrier.deadline {
+            self.fail_barrier(barrier);
+            drop(guard);
+            self.invalidate(committed_sequence, FaultKind::SnapshotRecoveryAborted);
+            return Err(EngineError::InvalidSnapshotBarrier);
+        }
         if committed_sequence < barrier.replay_committed_sequence
             || self.health.committed_sequence() < barrier.replay_committed_sequence
         {
             return Err(EngineError::SnapshotReplayNotCommitted);
         }
         barrier.state = SnapshotBarrierState::Completed;
+        self.barrier_deadline_ns.store(0, Ordering::Release);
+        self.barrier_staging.store(false, Ordering::Release);
+        self.release_barrier_budget(barrier, true);
         self.health.finish_recovery();
         self.accepting.store(true, Ordering::Release);
         *guard = None;
@@ -664,7 +804,10 @@ impl PrimaryAsyncLane {
             return Err(EngineError::UnknownSnapshotBarrier(id.0));
         }
         let sequence = barrier.replay_committed_sequence;
-        *guard = None;
+        let mut barrier = guard.take().expect("barrier existence was checked");
+        self.barrier_deadline_ns.store(0, Ordering::Release);
+        self.barrier_staging.store(false, Ordering::Release);
+        self.release_barrier_budget(&mut barrier, true);
         drop(guard);
         self.invalidate(sequence, FaultKind::SnapshotRecoveryAborted);
         Ok(())
@@ -681,6 +824,55 @@ impl PrimaryAsyncLane {
                 staged_events: barrier.staged.len() + barrier.snapshots.len(),
                 replay_committed_sequence: barrier.replay_committed_sequence,
             })
+    }
+
+    fn release_barrier_budget(&self, barrier: &mut Barrier, release_active: bool) {
+        let active = release_active && barrier.budget_active;
+        if active {
+            barrier.budget_active = false;
+        }
+        let staged = barrier.budget_staged;
+        barrier.budget_staged = 0;
+        self.snapshot_budget.release(active, staged);
+    }
+
+    fn fail_barrier(&self, barrier: &mut Barrier) {
+        barrier.state = SnapshotBarrierState::Failed;
+        self.barrier_deadline_ns.store(0, Ordering::Release);
+        self.barrier_staging.store(false, Ordering::Release);
+        barrier.staged.clear();
+        barrier.snapshots.clear();
+        self.release_barrier_budget(barrier, true);
+    }
+
+    fn expire_barrier_if_needed(&self) {
+        if !self.barrier_staging.load(Ordering::Acquire) {
+            return;
+        }
+        let now_ns = self
+            .barrier_clock_origin
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        if now_ns < self.barrier_deadline_ns.load(Ordering::Acquire) {
+            return;
+        }
+        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let expired = guard.as_ref().is_some_and(|barrier| {
+            matches!(
+                barrier.state,
+                SnapshotBarrierState::Staging | SnapshotBarrierState::Replaying
+            ) && Instant::now() >= barrier.deadline
+        });
+        if !expired {
+            return;
+        }
+        let sequence = guard
+            .as_ref()
+            .map_or(0, |barrier| barrier.replay_committed_sequence);
+        self.fail_barrier(guard.as_mut().expect("expired barrier exists"));
+        drop(guard);
+        self.invalidate(sequence, FaultKind::SnapshotRecoveryAborted);
     }
 }
 

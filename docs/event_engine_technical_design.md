@@ -2,7 +2,7 @@
 
 版本：v1.4
 
-状态：设计基线（v1.3 已实现；v1.4 统一 Async FastLane Primary 交付及可靠性机制待实现）
+状态：v1.4 内部主体能力已实现；跨组件 SnapshotBarrier、Primary 迁移与生产性能验收待完成
 
 适用范围：单进程、多线程、插件化实盘交易框架
 
@@ -39,6 +39,17 @@
 该版本改变 SubscriptionSpec、EventEnvelope metadata 和 consumer 生命周期，必须通过新的 Core Runtime
 Event API major/capability 协商启用；v1.3 Plugin 只能在迁移期继续使用旧 normal consumer，不能被静默
 切换到 v1.4 Primary lane。
+
+### 1.2 当前实施边界
+
+仓库已实现 Primary Async lane、可靠 pending、admitted/dispatched/committed 水位、SubscriberHealth、
+SnapshotBarrier staging/replay 以及显式 v1.3 compatibility adapter。SnapshotBarrierRegistry 现按配置统一
+限制活动 barrier 数、每 barrier staging 和全局 staging 总量；deadline 覆盖 staging/replay 全过程，容量耗尽、
+超时、boundary 缺失、abort 和 lane stop 都会确定性释放 staging lease 与全局额度并保持
+`RESYNC_REQUIRED`。尚未完成的是 Provider 和消费者的
+跨组件迁移：Market `request_snapshot`、Account `reconcile` 仍需携带 barrier/boundary，关键 consumer
+仍需完成独立 Mirror 对比后切换 Primary，目标硬件 P99/P99.9 也尚未冻结。因此内部类型存在不等于
+端到端 v1.4 已验收，旧 SubscriberChannel 业务路径暂不能退休。
 
 ## 2. 核心结论
 
@@ -1802,11 +1813,12 @@ v1.3 的 Arena、Ingress、RouteTable、旧 SubscriberChannel 和 Async mirror �
 
 ### 第三阶段：实现 SnapshotBarrier
 
-- 实现 SnapshotBarrierRegistry、SnapshotStagingPool 和 recovery generation；
+- [x] 实现 SnapshotBarrierRegistry、SnapshotStagingPool 和 recovery generation；
 - 扩展 Market `request_snapshot` 与 Account `reconcile`，传递 barrier ID 并发布 StreamBoundary；
-- 完成多 source boundary、staging 过滤、candidate commit、超时与失败回滚；
+- [x] 完成 EventEngine 内部多 source boundary、staging 过滤、candidate commit、超时与失败回滚；
 - 接入 Strategy、Risk、Account 等消费者的 CommandGate 和恢复状态机；
-- 完成无窗口、旧 generation 隔离和 staging 容量故障注入测试。
+- [x] 完成 EventEngine 内部旧 generation 隔离、每 barrier/全局 staging 容量和 timeout 故障注入测试；
+- 完成 Provider/consumer 接入后的跨组件无窗口验收。
 
 ### 第四阶段：逐 Plugin 切换 Primary Async FastLane
 

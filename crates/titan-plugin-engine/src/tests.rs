@@ -11,6 +11,269 @@ use semver::{Version, VersionReq};
 
 use crate::*;
 
+#[test]
+fn dynamic_buffer_uses_producer_release_on_success_and_rejection() {
+    static RELEASES: AtomicUsize = AtomicUsize::new(0);
+    static OVERSIZED_RELEASES: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn release(data: *mut u8, _len: usize, capacity: usize) {
+        RELEASES.fetch_add(1, Ordering::Relaxed);
+        if !data.is_null() && capacity != 0 {
+            // SAFETY: this fixture receives the allocation tuple produced by `make_buffer`.
+            drop(unsafe { Vec::from_raw_parts(data, 0, capacity) });
+        }
+    }
+
+    unsafe extern "C" fn release_oversized(_data: *mut u8, _len: usize, _capacity: usize) {
+        OVERSIZED_RELEASES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn make_buffer(value: &[u8]) -> TitanBuffer {
+        let mut bytes = value.to_vec();
+        let buffer = TitanBuffer {
+            data: bytes.as_mut_ptr(),
+            len: bytes.len(),
+            capacity: bytes.capacity(),
+            free: Some(release),
+        };
+        std::mem::forget(bytes);
+        buffer
+    }
+
+    RELEASES.store(0, Ordering::Relaxed);
+    let valid = make_buffer(b"titan");
+    // SAFETY: `make_buffer` returns a readable allocation and its matching release callback.
+    assert_eq!(unsafe { valid.copy_and_free() }.unwrap(), b"titan");
+
+    let mut invalid = make_buffer(b"abi");
+    invalid.len = invalid.capacity + 1;
+    // SAFETY: the malformed length is intentional; the producer callback still owns and releases
+    // the exact allocation tuple, and the host must reject it before attempting a read.
+    assert_eq!(
+        unsafe { invalid.copy_and_free() }.unwrap_err().kind,
+        ErrorKind::PluginFailed
+    );
+    assert_eq!(RELEASES.load(Ordering::Relaxed), 2);
+
+    OVERSIZED_RELEASES.store(0, Ordering::Relaxed);
+    let oversized = TitanBuffer {
+        data: std::ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: isize::MAX as usize + 1,
+        capacity: isize::MAX as usize + 1,
+        free: Some(release_oversized),
+    };
+    // SAFETY: the deliberately invalid range is rejected before it is read; the no-op fixture
+    // callback only proves that producer ownership is still discharged on rejection.
+    assert_eq!(
+        unsafe { oversized.copy_and_free() }.unwrap_err().kind,
+        ErrorKind::PluginFailed
+    );
+    assert_eq!(OVERSIZED_RELEASES.load(Ordering::Relaxed), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn dynamic_plugin_loads_package_runs_lifecycle_and_keeps_code_lease() {
+    use std::{fs, process::Command};
+
+    use sha2::{Digest, Sha256};
+
+    let unique = format!(
+        "titan-dynamic-plugin-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let directory = std::env::temp_dir().join(unique);
+    fs::create_dir(&directory).unwrap();
+    let source = directory.join("fixture.c");
+    let library = if cfg!(target_os = "macos") {
+        directory.join("libfixture.dylib")
+    } else {
+        directory.join("libfixture.so")
+    };
+    fs::write(
+        &source,
+        r#"
+#include <string.h>
+#include "titan_plugin_abi_v1.h"
+
+static const uint8_t MANIFEST[] = "{\"plugin_type\":\"fixture\",\"name\":\"fixture\",\"version\":\"1.2.3\",\"engine_api_version\":{\"major\":2,\"minor\":0},\"abi_version\":{\"major\":1,\"minor\":0},\"config_schema_version\":1,\"config_schema\":{},\"provides\":[],\"requires\":[],\"publishes\":[],\"subscribes\":[],\"supported_execution_models\":[\"Passive\"],\"reload_policy\":\"Never\"}";
+static const uint64_t INTERFACE_VALUE = 0xfeedbeef;
+static const uint8_t ERROR_TEXT[] = "fixture failure";
+static const uint8_t* manifest_json(size_t* length) { *length = sizeof(MANIFEST) - 1; return MANIFEST; }
+static TitanStatus create(const uint8_t* config, size_t length, TitanPluginHandle* out) {
+  if (!config || length < 2 || !out) return 1; *out = 7; return 0;
+}
+static TitanStatus destroy(TitanPluginHandle handle) { return handle == 7 ? 0 : 1; }
+static size_t last_error(uint8_t* output, size_t capacity) {
+  size_t length = sizeof(ERROR_TEXT) - 1; if (length > capacity) length = capacity;
+  if (output && length) memcpy(output, ERROR_TEXT, length); return length;
+}
+static TitanStatus validate(TitanPluginHandle handle) { return handle == 7 ? 0 : 1; }
+static TitanStatus start(TitanPluginHandle handle, const TitanHostApiV1* host) {
+  if (handle != 7 || !host || host->magic != 0x544954414e484f53ULL || !host->now_ns) return 1;
+  return host->now_ns(host->context) == 42 ? 0 : 1;
+}
+static TitanStatus quiesce(TitanPluginHandle handle, uint32_t reason) { return handle == 7 && reason <= 2 ? 0 : 1; }
+static TitanStatus stop(TitanPluginHandle handle) { return handle == 7 ? 0 : 1; }
+static TitanStatus query_interface(TitanPluginHandle handle, const uint8_t* name, size_t length, uint16_t major, const void** out) {
+  static const char expected[] = "fixture.api";
+  if (handle != 7 || major != 1 || length != sizeof(expected)-1 || memcmp(name, expected, length) || !out) return 1;
+  *out = &INTERFACE_VALUE; return 0;
+}
+static const PluginApiV1 API = {
+  TITAN_PLUGIN_MAGIC, sizeof(PluginApiV1), TITAN_DYNAMIC_ABI_MAJOR, TITAN_DYNAMIC_ABI_MINOR,
+  TITAN_MANIFEST_SCHEMA_MAJOR, TITAN_MANIFEST_SCHEMA_MINOR, 0, 0,
+  manifest_json, create, destroy, last_error, validate, start, quiesce, stop, query_interface
+};
+#if defined(_WIN32)
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+const PluginApiV1* titan_plugin_entry_v1(void) { return &API; }
+"#,
+    )
+    .unwrap();
+    let mut compiler = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
+    if cfg!(target_os = "macos") {
+        compiler.arg("-dynamiclib");
+    } else {
+        compiler.args(["-shared", "-fPIC"]);
+    }
+    let status = compiler
+        .arg("-I")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/include"))
+        .arg("-O2")
+        .arg(&source)
+        .arg("-o")
+        .arg(&library)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let digest = format!("{:x}", Sha256::digest(fs::read(&library).unwrap()));
+    let package_manifest = directory.join("plugin.json");
+    let mut manifest_value = serde_json::json!({
+        "schema_major": 1,
+        "schema_minor": 0,
+        "package_version": "1.2.3",
+        "library": library.file_name().unwrap().to_string_lossy(),
+        "sha256": "0".repeat(64),
+    });
+    fs::write(
+        &package_manifest,
+        vec![b' '; MAX_DYNAMIC_MANIFEST_BYTES + 1],
+    )
+    .unwrap();
+    let oversized_manifest = DynamicPluginLoader::default()
+        .load_package(&package_manifest)
+        .err()
+        .unwrap();
+    assert_eq!(oversized_manifest.kind, ErrorKind::ManifestInvalid);
+    assert!(oversized_manifest.message.contains("size limit"));
+    fs::write(
+        &package_manifest,
+        serde_json::to_vec(&manifest_value).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        DynamicPluginLoader::default()
+            .load_package(&package_manifest)
+            .err()
+            .unwrap()
+            .kind,
+        ErrorKind::ManifestInvalid
+    );
+    manifest_value["sha256"] = serde_json::Value::String(digest);
+    manifest_value["package_version"] = serde_json::Value::String("9.9.9".into());
+    fs::write(
+        &package_manifest,
+        serde_json::to_vec(&manifest_value).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        DynamicPluginLoader::default()
+            .load_package(&package_manifest)
+            .err()
+            .unwrap()
+            .kind,
+        ErrorKind::ManifestInvalid
+    );
+    manifest_value["package_version"] = serde_json::Value::String("1.2.3".into());
+    fs::write(
+        &package_manifest,
+        serde_json::to_vec(&manifest_value).unwrap(),
+    )
+    .unwrap();
+
+    let package = DynamicPluginLoader::default()
+        .load_package(&package_manifest)
+        .unwrap();
+    assert_eq!(package.package_version, Version::new(1, 2, 3));
+    assert_eq!(package.code.manifest()["plugin_type"], "fixture");
+    let mut incompatible = package.code.api();
+    incompatible.required_feature_bits = 1;
+    assert_eq!(
+        incompatible
+            .validate_descriptor(ApiVersion::new(1, 0), 0, 1)
+            .unwrap_err()
+            .kind,
+        ErrorKind::UnsupportedAbiFeature
+    );
+    let lifecycle_factory = DynamicLifecyclePluginFactory::from_package(LoadedDynamicPackage {
+        manifest_path: package.manifest_path.clone(),
+        package_version: package.package_version.clone(),
+        code: package.code.clone(),
+    })
+    .unwrap();
+    assert_eq!(lifecycle_factory.manifest().plugin_type.as_ref(), "fixture");
+    let code_lease = package.code.clone();
+    let mut instance = package.code.create(br#"{}"#).unwrap();
+    assert_eq!(
+        instance.query_interface("fixture.api", 1).unwrap_err().kind,
+        ErrorKind::RuntimeNotActive
+    );
+    instance.validate().unwrap();
+    instance.validate().unwrap();
+    unsafe extern "C" fn now(_: *mut std::ffi::c_void) -> i64 {
+        42
+    }
+    let host = TitanHostApiV1 {
+        magic: TITAN_HOST_MAGIC,
+        struct_size: std::mem::size_of::<TitanHostApiV1>() as u32,
+        abi_major: 1,
+        abi_minor: 0,
+        context: std::ptr::null_mut(),
+        publish_event: None,
+        log: None,
+        now_ns: Some(now),
+        resolve_secret: None,
+    };
+    // SAFETY: `host` remains alive until after the instance is stopped below.
+    unsafe { instance.start(&host) }.unwrap();
+    assert_eq!(
+        // SAFETY: same host-lifetime invariant as the successful start above.
+        unsafe { instance.start(&host) }.unwrap_err().kind,
+        ErrorKind::RuntimeNotActive
+    );
+    let interface = instance.query_interface("fixture.api", 1).unwrap();
+    // SAFETY: the fixture interface is a static u64 retained by `code_lease`.
+    assert_eq!(unsafe { *interface.cast::<u64>() }, 0xfeedbeef);
+    instance.quiesce(TITAN_STOP_SHUTDOWN).unwrap();
+    instance.quiesce(TITAN_STOP_SHUTDOWN).unwrap();
+    instance.stop().unwrap();
+    instance.stop().unwrap();
+    drop(package);
+    assert!(code_lease.path().is_file());
+    drop(instance);
+    drop(code_lease);
+    fs::remove_dir_all(directory).unwrap();
+}
+
 struct TestPlugin {
     log: Arc<Mutex<Vec<String>>>,
     identity: PluginIdentity,
@@ -92,6 +355,7 @@ fn manifest(
         version: Version::new(1, 0, 0),
         engine_api_version: CORE_RUNTIME_API_VERSION,
         abi_version: ApiVersion::new(1, 0),
+        config_schema_version: 1,
         config_schema: Arc::new(serde_json::json!({})),
         provides,
         requires,
@@ -363,7 +627,9 @@ fn stable_service_handle_observes_gate_unavailability_and_generation_replacement
         version: Version::new(1, 0, 0),
         scope: ServiceScope::Global,
     };
-    let mut registry = ServiceRegistry::default();
+    let recorder = Arc::new(FlightRecorder::new(32));
+    let metrics = Arc::new(PluginEngineMetrics::default());
+    let mut registry = ServiceRegistry::new(recorder.clone(), metrics.clone());
     registry.stage(key.clone(), identity).unwrap();
     let handle = registry.bind(&key).unwrap();
     assert_eq!(
@@ -408,6 +674,31 @@ fn stable_service_handle_observes_gate_unavailability_and_generation_replacement
             .kind,
         ErrorKind::ServiceUnavailable
     );
+    let records = recorder.freeze();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.kind == trace_kind::SERVICE_BEGIN)
+            .count(),
+        4
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.kind == trace_kind::SERVICE_END)
+            .count(),
+        4
+    );
+    assert!(
+        records
+            .iter()
+            .filter(|record| record.kind == trace_kind::SERVICE_END)
+            .any(|record| record.force_keep)
+    );
+    let metric = metrics.service_snapshots().pop().unwrap();
+    assert_eq!(metric.call_success_total, 1);
+    assert_eq!(metric.call_failure_total, 3);
+    assert_eq!(metric.unavailable_total, 3);
 }
 
 #[test]
@@ -526,6 +817,7 @@ fn change_plan_honors_reload_policy_and_execution_changes() {
     let old = spec("live", "one");
     let mut changed = old.clone();
     changed.config = Arc::new(ConfigSnapshot {
+        schema_version: 1,
         version: 2,
         hash: Arc::from("new"),
         loaded_at: std::time::SystemTime::now(),
@@ -565,6 +857,18 @@ fn callback_monitor_detects_budget_and_stalls_and_flight_recorder_is_bounded() {
     assert_eq!(stats.total, 1);
     assert_eq!(stats.budget_exceeded, 1);
     assert!(stats.running_since.is_none());
+    let second = monitor.begin("handler").unwrap();
+    std::thread::sleep(Duration::from_micros(50));
+    second.finish();
+    assert_eq!(
+        monitor.callbacks_over_violation_limit(),
+        vec![Arc::<str>::from("handler")]
+    );
+    let heartbeat = ThreadHeartbeat::new();
+    let now = std::time::Instant::now() + Duration::from_millis(5);
+    assert!(heartbeat.is_stale(now, Duration::from_millis(1)));
+    heartbeat.beat();
+    assert!(!heartbeat.is_stale(std::time::Instant::now(), Duration::from_millis(1)));
     let recorder = FlightRecorder::new(2);
     for value in 1..=3 {
         recorder.record(
@@ -611,6 +915,101 @@ fn cold_and_blocking_executors_enforce_bounded_admission() {
         std::thread::yield_now();
     }
     assert_eq!(count.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn dedicated_executor_waits_for_activation_and_rejects_an_unavailable_cpu() {
+    let identity = PluginIdentity::new("test", "dedicated");
+    let mut scope = ResourceScope::new(identity.clone());
+    let gate = Arc::new(ActivationGate::new());
+    let (ran_tx, ran_rx) = std::sync::mpsc::sync_channel(1);
+    spawn_dedicated(
+        identity.clone(),
+        &scope.handle(),
+        "titan-test-dedicated",
+        None,
+        gate.clone(),
+        move || ran_tx.send(()).unwrap(),
+    )
+    .unwrap();
+    assert!(ran_rx.recv_timeout(Duration::from_millis(10)).is_err());
+    assert!(gate.activate());
+    ran_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    scope.close().unwrap();
+
+    let mut rejected_scope = ResourceScope::new(identity.clone());
+    let error = spawn_dedicated(
+        identity,
+        &rejected_scope.handle(),
+        "titan-test-invalid-cpu",
+        Some(usize::MAX),
+        Arc::new(ActivationGate::new()),
+        || {},
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::ConfigInvalid);
+    assert_eq!(rejected_scope.resource_count(), 0);
+    rejected_scope.close().unwrap();
+}
+
+#[test]
+fn plugin_plan_accepts_each_declared_execution_model_and_validates_budgets() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let all_models = Box::leak(Box::new(PluginManifest {
+        supported_execution_models: BTreeSet::from([
+            ExecutionModel::Dedicated,
+            ExecutionModel::Background,
+            ExecutionModel::Passive,
+        ]),
+        ..manifest("execution-models", vec![], vec![]).clone()
+    }));
+    let mut registry = PluginRegistry::default();
+    registry
+        .register(
+            Arc::new(TestFactory {
+                manifest: all_models,
+                log,
+                fail_instance: None,
+            }),
+            Version::new(1, 0, 0),
+            "test",
+            CORE_RUNTIME_API_VERSION,
+            ApiVersion::new(1, 0),
+        )
+        .unwrap();
+
+    for (index, model) in [
+        ExecutionModel::Dedicated,
+        ExecutionModel::Background,
+        ExecutionModel::Passive,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut value = spec("execution-models", &format!("model-{index}"));
+        value.execution.model = model;
+        value.execution.callback_budget = Some(CallbackBudget {
+            soft_budget_us: 10,
+            stall_threshold_us: 40,
+            max_consecutive_violations: 2,
+        });
+        let plan = compile_plugin_plan(&[value], &registry, index as u64 + 1).unwrap();
+        assert_eq!(plan.entries().next().unwrap().spec.execution.model, model);
+    }
+
+    let mut invalid = spec("execution-models", "invalid-budget");
+    invalid.execution.model = ExecutionModel::Dedicated;
+    invalid.execution.callback_budget = Some(CallbackBudget {
+        soft_budget_us: 10,
+        stall_threshold_us: 9,
+        max_consecutive_violations: 1,
+    });
+    assert_eq!(
+        compile_plugin_plan(&[invalid], &registry, 4)
+            .unwrap_err()
+            .kind,
+        ErrorKind::ConfigInvalid
+    );
 }
 
 #[test]
@@ -688,6 +1087,16 @@ fn plugin_configuration_is_validated_against_manifest_schema() {
         .unwrap();
     assert_eq!(
         compile_plugin_plan(&[spec("constrained", "bad")], &registry, 1)
+            .unwrap_err()
+            .kind,
+        ErrorKind::ConfigInvalid
+    );
+
+    let mut wrong_version = spec("constrained", "wrong-version");
+    wrong_version.config =
+        Arc::new(ConfigSnapshot::new(2, serde_json::json!({"value": 1})).with_schema_version(2));
+    assert_eq!(
+        compile_plugin_plan(&[wrong_version], &registry, 1)
             .unwrap_err()
             .kind,
         ErrorKind::ConfigInvalid

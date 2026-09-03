@@ -1,6 +1,11 @@
 use chrono::Utc;
 use hftbacktest::types::{OrdType, Side, TimeInForce};
 use serde::Deserialize;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use super::msg::{rest, rest::PositionInformationV2};
 use crate::{
@@ -20,16 +25,36 @@ pub struct BinanceFuturesClient {
     url: String,
     api_key: String,
     secret: String,
+    registered_symbols: Arc<Mutex<HashSet<String>>>,
 }
 
 impl BinanceFuturesClient {
     pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("static Binance HTTP client configuration is valid"),
             url: url.to_string(),
             api_key: api_key.to_string(),
             secret: secret.to_string(),
+            registered_symbols: Default::default(),
         }
+    }
+
+    pub(crate) fn with_registered_symbols(mut self, symbols: Arc<Mutex<HashSet<String>>>) -> Self {
+        self.registered_symbols = symbols;
+        self
+    }
+
+    pub(crate) fn registered_symbols(&self) -> Vec<String> {
+        self.registered_symbols
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub(crate) async fn get_noauth<T: for<'a> Deserialize<'a>>(
@@ -46,6 +71,22 @@ impl BinanceFuturesClient {
             .json()
             .await?;
         Ok(resp)
+    }
+
+    /// Public-data request that Binance nevertheless requires an API-key header for.
+    pub(crate) async fn get_apikey<T: for<'a> Deserialize<'a>>(
+        &self,
+        path: &str,
+        query: String,
+    ) -> Result<T, reqwest::Error> {
+        self.client
+            .get(format!("{}{}?{}", self.url, path, query))
+            .header("Accept", "application/json")
+            .header("X-MBX-APIKEY", &self.api_key)
+            .send()
+            .await?
+            .json()
+            .await
     }
 
     pub(crate) async fn get<T: for<'a> Deserialize<'a>>(
@@ -203,7 +244,7 @@ impl BinanceFuturesClient {
             return Err(BinanceFuturesError::InvalidRequest);
         }
         let mut body = String::with_capacity(2000 * orders.len());
-        body.push_str("{\"batchOrders\":[");
+        body.push_str("batchOrders=[");
         for (i, order) in orders.iter().enumerate() {
             if i > 0 {
                 body.push(',');
@@ -224,7 +265,7 @@ impl BinanceFuturesClient {
             body.push_str(order.7.as_ref());
             body.push_str("\"}");
         }
-        body.push_str("]}");
+        body.push(']');
 
         let resp: Vec<OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
         Ok(resp
@@ -300,9 +341,9 @@ impl BinanceFuturesClient {
             return Err(BinanceFuturesError::InvalidRequest);
         }
         let mut body = String::with_capacity(100);
-        body.push_str("{\"symbol\":\"");
+        body.push_str("symbol=");
         body.push_str(symbol);
-        body.push_str("\",\"origClientOrderIdList\":[");
+        body.push_str("&origClientOrderIdList=[");
         for (i, client_order_id) in client_order_ids.iter().enumerate() {
             if i > 0 {
                 body.push(',');
@@ -311,8 +352,8 @@ impl BinanceFuturesClient {
             body.push_str(client_order_id);
             body.push('\"');
         }
-        body.push_str("]}");
-        let resp: Vec<OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
+        body.push(']');
+        let resp: Vec<OrderResponseResult> = self.delete("/fapi/v1/batchOrders", body).await?;
         Ok(resp
             .into_iter()
             .map(|resp| match resp {

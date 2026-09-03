@@ -20,9 +20,9 @@ use crate::{
     EventRecord, FaultKind, FaultSignal, OwnedEvent, PendingAllocation, PendingEntry, PoolKind,
     PrimaryAsyncLane, PrimaryAsyncLaneConfig, PrimaryAsyncLaneHandle, PrimaryLaneToken,
     PrimarySubscriptionSpec, PublishError, PublishRequest, ReserveRequest, RuntimeHealth,
-    RuntimeHealthSnapshot, RuntimeMode, SubscriberChannel, SubscriberChannelArgs, SubscriberHealth,
-    SubscriberHealthSnapshot, SubscriberRoute, SubscriberRuntimeMode, SubscriberState, TimerSignal,
-    TracePoint, TraceStage, TrackedDelivery,
+    RuntimeHealthSnapshot, RuntimeMode, SnapshotBarrierBudget, SubscriberChannel,
+    SubscriberChannelArgs, SubscriberHealth, SubscriberHealthSnapshot, SubscriberRoute,
+    SubscriberRuntimeMode, SubscriberState, TimerSignal, TracePoint, TraceStage, TrackedDelivery,
     config::{DrainBudgetConfig, EventEngineConfig},
 };
 
@@ -86,7 +86,9 @@ pub(crate) struct EngineShared {
     fast_lanes: RwLock<BTreeMap<u64, Arc<FastLaneRoute>>>,
     next_fast_lane: AtomicU64,
     primary_lanes: RwLock<BTreeMap<u64, Arc<PrimaryAsyncLane>>>,
+    reserved_cpu_affinities: Mutex<std::collections::BTreeSet<usize>>,
     next_primary_lane: AtomicU64,
+    snapshot_barrier_budget: Arc<SnapshotBarrierBudget>,
 }
 
 struct FastLaneRoute {
@@ -561,7 +563,20 @@ impl EventEngine {
             fast_lanes: RwLock::new(BTreeMap::new()),
             next_fast_lane: AtomicU64::new(1),
             primary_lanes: RwLock::new(BTreeMap::new()),
+            reserved_cpu_affinities: Mutex::new(
+                config
+                    .runtime
+                    .cpu_affinity
+                    .iter()
+                    .copied()
+                    .chain(config.subscribers.cpu_affinity.iter().copied())
+                    .collect(),
+            ),
             next_primary_lane: AtomicU64::new(1),
+            snapshot_barrier_budget: Arc::new(SnapshotBarrierBudget::new(
+                config.snapshot_barriers.max_active,
+                config.snapshot_barriers.global_staging_capacity,
+            )),
             config,
         });
         Ok(Self {
@@ -595,9 +610,19 @@ impl EventEngine {
             .ok_or(EngineError::AlreadyStarted)?;
         let shared = self.shared.clone();
         let thread_shared = shared.clone();
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
+        let cpu_affinity = self.shared.config.runtime.cpu_affinity;
         let runtime = thread::Builder::new()
             .name("titan-event-engine".into())
             .spawn(move || {
+                let bound = cpu_affinity.is_none_or(|core_id| {
+                    core_affinity::set_for_current(core_affinity::CoreId { id: core_id })
+                });
+                let _ = startup_tx.send(bound);
+                if !bound {
+                    thread_shared.running.store(false, Ordering::Release);
+                    return;
+                }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     EventLoop::new(thread_shared.clone(), control_rx).run()
                 }));
@@ -624,6 +649,13 @@ impl EventEngine {
                 shared.running.store(false, Ordering::Release);
                 EngineError::SubscriberRuntime(error.to_string())
             })?;
+        if !startup_rx.recv().unwrap_or(false) {
+            let _ = runtime.join();
+            shared.running.store(false, Ordering::Release);
+            return Err(EngineError::CpuAffinityFailed(
+                cpu_affinity.expect("an unbound worker cannot fail binding"),
+            ));
+        }
         *self
             .runtime
             .lock()
@@ -744,6 +776,15 @@ impl EventEngineHandle {
         if subscriptions.is_empty() {
             return Err(EngineError::InvalidPrimaryLaneConfig);
         }
+        if config.snapshot_staging_capacity
+            > self
+                .shared
+                .config
+                .snapshot_barriers
+                .per_barrier_staging_capacity
+        {
+            return Err(EngineError::InvalidPrimaryLaneConfig);
+        }
         let mut resolved = Vec::with_capacity(subscriptions.len());
         let mut seen = std::collections::BTreeSet::new();
         for spec in subscriptions {
@@ -761,14 +802,45 @@ impl EventEngineHandle {
             normalized.routing_keys = keys.into();
             resolved.push((descriptor.id, normalized));
         }
+        let reserved_affinity = config.cpu_affinity;
+        if let Some(core) = reserved_affinity {
+            let available = core_affinity::get_core_ids()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|candidate| candidate.id == core);
+            if !available
+                || !self
+                    .shared
+                    .reserved_cpu_affinities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(core)
+            {
+                return Err(EngineError::InvalidPrimaryLaneConfig);
+            }
+        }
         let token = self.shared.next_primary_lane.fetch_add(1, Ordering::AcqRel);
-        let lane = PrimaryAsyncLane::start(
+        let lane = match PrimaryAsyncLane::start(
             token,
             &resolved,
             config,
             handler,
             self.shared.fault_signals.clone(),
-        )?;
+            self.shared.snapshot_barrier_budget.clone(),
+            Duration::from_millis(self.shared.config.snapshot_barriers.timeout_ms),
+        ) {
+            Ok(lane) => lane,
+            Err(error) => {
+                if let Some(core) = reserved_affinity {
+                    self.shared
+                        .reserved_cpu_affinities
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&core);
+                }
+                return Err(error);
+            }
+        };
         self.shared
             .primary_lanes
             .write()
@@ -798,6 +870,13 @@ impl EventEngineHandle {
             .remove(&token.0);
         if let Some(lane) = lane {
             lane.stop_and_join_until(deadline)?;
+            if let Some(core) = lane.cpu_affinity() {
+                self.shared
+                    .reserved_cpu_affinities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&core);
+            }
             Ok(true)
         } else {
             Ok(false)
@@ -1369,9 +1448,6 @@ impl EventLoop {
 
     fn run(mut self) {
         let _ = self.shared.event_thread.set(thread::current());
-        if let Some(core_id) = self.shared.config.runtime.cpu_affinity {
-            let _ = core_affinity::set_for_current(core_affinity::CoreId { id: core_id });
-        }
         while !self.shutdown {
             let work = self.drain_once();
             if work > 0 {

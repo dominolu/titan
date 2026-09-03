@@ -2,7 +2,7 @@ use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
-use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
+use crate::utils::{from_str_to_f64, from_str_to_f64_opt, from_str_to_i64, to_lowercase};
 
 // ------------------------------------------------------------------
 // 全量 REST 端点响应结构（对照官方文档）
@@ -10,6 +10,7 @@ use crate::utils::{from_str_to_f64, from_str_to_f64_opt, to_lowercase};
 
 /// GET /fapi/v1/ping 与 /fapi/v1/time 共用。
 #[derive(Deserialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerTime {
     pub server_time: i64,
 }
@@ -151,16 +152,21 @@ pub struct PublicTrade {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AggTrade {
+    #[serde(rename = "a")]
     pub agg_id: i64,
+    #[serde(rename = "p")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub price: f64,
+    #[serde(rename = "q")]
     #[serde(deserialize_with = "from_str_to_f64")]
     pub qty: f64,
-    #[serde(default)]
+    #[serde(rename = "f", default)]
     pub first_id: i64,
-    #[serde(default)]
+    #[serde(rename = "l", default)]
     pub last_id: i64,
+    #[serde(rename = "T")]
     pub time: i64,
+    #[serde(rename = "m")]
     pub is_buyer_maker: bool,
 }
 
@@ -305,8 +311,8 @@ pub struct Balance {
     pub cross_un_pnl: f64,
     #[serde(default, deserialize_with = "from_str_to_f64")]
     pub available_balance: f64,
-    #[serde(default, deserialize_with = "from_str_to_f64")]
-    pub margin_available: f64,
+    #[serde(default)]
+    pub margin_available: bool,
     #[serde(default)]
     pub update_time: i64,
 }
@@ -402,6 +408,7 @@ pub struct Bracket {
 #[serde(rename_all = "camelCase")]
 pub struct CountdownCancelAll {
     pub symbol: String,
+    #[serde(deserialize_with = "from_str_to_i64")]
     pub countdown_time: i64,
 }
 
@@ -426,6 +433,7 @@ pub struct AdlQuantile {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DataRow {
+    #[serde(default)]
     pub symbol: String,
     #[serde(default)]
     pub sum_open_interest: String,
@@ -433,12 +441,29 @@ pub struct DataRow {
     pub sum_open_interest_value: String,
     #[serde(default)]
     pub timestamp: i64,
+    #[serde(default)]
+    pub long_short_ratio: String,
+    #[serde(default)]
+    pub long_account: String,
+    #[serde(default)]
+    pub short_account: String,
+    #[serde(default)]
+    pub long_position: String,
+    #[serde(default)]
+    pub short_position: String,
+    #[serde(default)]
+    pub buy_sell_ratio: String,
+    #[serde(default)]
+    pub buy_vol: String,
+    #[serde(default)]
+    pub sell_vol: String,
 }
 
 /// GET /fapi/v1/income/asyn 与 /fapi/v1/order/asyn、/fapi/v1/trade/asyn
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AsyncDownloadId {
+    #[serde(rename = "downloadId", alias = "id")]
     pub id: String,
     #[serde(default)]
     pub expired_timestamp: i64,
@@ -558,6 +583,13 @@ pub struct OrderResponse {
 pub struct ErrorResponse {
     pub code: i64,
     pub msg: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub enum ApiResponse<T> {
+    Error(ErrorResponse),
+    Success(T),
 }
 
 #[derive(Deserialize, Debug)]

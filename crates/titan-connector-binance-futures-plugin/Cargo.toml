@@ -1,0 +1,13 @@
+[package]
+name = "titan-connector-binance-futures-plugin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+connector = { path = "../../connector", default-features = false, features = ["binancefutures"] }
+serde_json = "1"
+titan-plugin-engine = { path = "../titan-plugin-engine" }

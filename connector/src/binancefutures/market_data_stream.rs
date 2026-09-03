@@ -1,11 +1,13 @@
 use std::{
     collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use hftbacktest::prelude::*;
+use serde_json::Value;
 use titan_market_plugin::MarketDataKind;
 use tokio::{
     net::TcpStream,
@@ -20,6 +22,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Message, client::IntoClientRequest},
 };
+use tracing::info;
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -34,8 +37,41 @@ use crate::{
     connector::{
         MarketDataCommand, MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent,
     },
-    utils::{generate_rand_string, parse_depth},
+    utils::parse_depth,
 };
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MarketStreamRoute {
+    /// Legacy and test endpoints that still accept every stream on one connection.
+    All,
+    /// Binance's high-frequency public route (depth, trade and book ticker).
+    Public,
+    /// Binance's regular market route (mark price and funding rate).
+    Market,
+}
+
+impl MarketStreamRoute {
+    fn includes(self, kind: MarketDataKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Public => matches!(
+                kind,
+                MarketDataKind::Depth
+                    | MarketDataKind::Trades
+                    | MarketDataKind::Bbo
+                    | MarketDataKind::Ticker
+            ),
+            Self::Market => {
+                matches!(
+                    kind,
+                    MarketDataKind::MarkPrice | MarketDataKind::FundingRate
+                )
+            }
+        }
+    }
+}
 
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
@@ -48,6 +84,51 @@ pub struct MarketDataStream {
     canonical_symbols: HashMap<String, String>,
     rest_tx: QueueSender<(String, rest::Depth)>,
     rest_rx: QueueReceiver<(String, rest::Depth)>,
+    route: MarketStreamRoute,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MarkPriceStreamMode {
+    MarkPriceWith1s,
+    MarkPrice,
+    Both,
+}
+
+impl MarkPriceStreamMode {
+    fn from_env() -> Self {
+        match std::env::var("BINANCE_FUTURES_MARK_PRICE_STREAM_FORM")
+            .unwrap_or_else(|_| "1s".to_string())
+            .as_str()
+        {
+            "markPrice" => Self::MarkPrice,
+            "both" => Self::Both,
+            "1s" | "markPrice@1s" => Self::MarkPriceWith1s,
+            _ => Self::MarkPriceWith1s,
+        }
+    }
+
+    fn stream_names(self, symbol: &str) -> Vec<String> {
+        match self {
+            Self::MarkPriceWith1s => vec![format!("{symbol}@markPrice@1s")],
+            Self::MarkPrice => vec![format!("{symbol}@markPrice")],
+            Self::Both => vec![
+                format!("{symbol}@markPrice@1s"),
+                format!("{symbol}@markPrice"),
+            ],
+        }
+    }
+
+    fn from_env_name() -> &'static str {
+        match std::env::var("BINANCE_FUTURES_MARK_PRICE_STREAM_FORM")
+            .unwrap_or_else(|_| "1s".to_string())
+            .as_str()
+        {
+            "markPrice" => "markPrice",
+            "both" => "both",
+            "1s" | "markPrice@1s" => "1s",
+            _ => "1s",
+        }
+    }
 }
 
 impl MarketDataStream {
@@ -56,6 +137,7 @@ impl MarketDataStream {
         ev_tx: crate::connector::PublishSender,
         command_rx: Receiver<MarketDataCommand>,
         subscriptions: SharedMarketSubscriptions,
+        route: MarketStreamRoute,
     ) -> Self {
         let (rest_tx, rest_rx) = channel::<(String, rest::Depth)>(64);
         Self {
@@ -69,6 +151,7 @@ impl MarketDataStream {
             canonical_symbols: Default::default(),
             rest_tx,
             rest_rx,
+            route,
         }
     }
 
@@ -87,16 +170,33 @@ impl MarketDataStream {
         });
     }
 
-    fn streams(symbol: &str, kinds: &[MarketDataKind]) -> Vec<String> {
+    fn streams(&self, symbol: &str, kinds: &[MarketDataKind]) -> Vec<String> {
         let mut streams = Vec::new();
+        let mark_price_mode = MarkPriceStreamMode::from_env();
         for kind in kinds {
-            let stream = match kind {
+            if !self.route.includes(*kind) {
+                continue;
+            }
+            match kind {
                 MarketDataKind::Depth => format!("{symbol}@depth@0ms"),
                 MarketDataKind::Trades => format!("{symbol}@trade"),
                 MarketDataKind::Bbo | MarketDataKind::Ticker => format!("{symbol}@bookTicker"),
                 MarketDataKind::MarkPrice | MarketDataKind::FundingRate => {
-                    format!("{symbol}@markPrice")
+                    let signatures = mark_price_mode.stream_names(symbol);
+                    for stream in signatures {
+                        if !streams.contains(&stream) {
+                            streams.push(stream);
+                        }
+                    }
+                    continue;
                 }
+            };
+            let stream = if let MarketDataKind::Depth = kind {
+                format!("{symbol}@depth@0ms")
+            } else if let MarketDataKind::Trades = kind {
+                format!("{symbol}@trade")
+            } else {
+                format!("{symbol}@bookTicker")
             };
             if !streams.contains(&stream) {
                 streams.push(stream);
@@ -105,25 +205,91 @@ impl MarketDataStream {
         streams
     }
 
-    async fn send_subscription(
+    async fn send_request(
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         method: &str,
-        symbol: &str,
-        kinds: &[MarketDataKind],
-    ) -> Result<(), BinanceFuturesError> {
-        let params = Self::streams(symbol, kinds);
-        if params.is_empty() {
-            return Ok(());
-        }
+        params: Vec<String>,
+    ) -> Result<String, BinanceFuturesError> {
+        let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        debug!(%method, ?params, "sending Binance market stream request");
         let request = serde_json::json!({
             "method": method,
             "params": params,
-            "id": generate_rand_string(16),
+            "id": request_id,
         });
         write
             .send(Message::Text(request.to_string().into()))
             .await?;
-        Ok(())
+        Ok(request_id.to_string())
+    }
+
+    async fn send_subscription(
+        &self,
+        write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+        method: &str,
+        symbol: &str,
+        kinds: &[MarketDataKind],
+    ) -> Result<String, BinanceFuturesError> {
+        let params = self.streams(symbol, kinds);
+        if params.is_empty() {
+            return Ok(String::new());
+        }
+        Self::send_request(write, method, params).await
+    }
+
+    fn maybe_process_mark_price_payload(
+        &mut self,
+        text: &str,
+        value: &Value,
+        ws_recv_ts: i64,
+    ) -> bool {
+        if let Some(event) = value.get("e").and_then(Value::as_str) {
+            if event.eq_ignore_ascii_case("markprice")
+                || event.eq_ignore_ascii_case("markpriceupdate")
+            {
+                debug!(
+                    event,
+                    text = %text,
+                "received markPrice-like stream payload that did not match strict parser"
+                    );
+                match serde_json::from_value::<stream::MarkPriceUpdate>(value.clone()) {
+                    Ok(stream) => {
+                        self.process_message(EventStream::MarkPriceUpdate(stream), ws_recv_ts);
+                        return true;
+                    }
+                    Err(error) => {
+                        warn!(?error, %text, "markPrice payload still failed to parse");
+                    }
+                }
+            }
+            return false;
+        }
+
+        if let Some(stream_name) = value.get("stream").and_then(Value::as_str) {
+            if stream_name.contains("markPrice") {
+                if let Some(data) = value.get("data") {
+                    debug!(
+                        stream = %stream_name,
+                        "received wrapped markPrice stream payload for fallback parsing"
+                    );
+                    match serde_json::from_value::<stream::MarkPriceUpdate>(data.clone()) {
+                        Ok(stream) => {
+                            self.process_message(EventStream::MarkPriceUpdate(stream), ws_recv_ts);
+                            return true;
+                        }
+                        Err(error) => {
+                            warn!(
+                                ?error,
+                                stream = %stream_name,
+                                data = ?data,
+                                "wrapped markPrice payload failed to parse"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn publish_depth_update(&self, data: stream::OwnedDepth, receive_ts: i64) {
@@ -256,17 +422,35 @@ impl MarketDataStream {
                     }
                 }
             }
-            EventStream::MarkPriceUpdate(data) => {
-                self.ev_tx
+            EventStream::MarkPriceUpdate(data) | EventStream::MarkPrice(data) => {
+                let symbol = data.symbol.clone();
+                if self
+                    .ev_tx
+                    .send(PublishEvent::MarkPrice {
+                        symbol: symbol.clone(),
+                        mark_price: data.mark_price,
+                        exch_ts: data.event_time * 1_000_000,
+                    })
+                    .is_err()
+                {
+                    warn!(symbol = %symbol, "market data sender closed while publishing mark price");
+                    return;
+                }
+                if self
+                    .ev_tx
                     .send(PublishEvent::LiveEvent(LiveEvent::Funding {
-                        symbol: data.symbol,
+                        symbol: symbol.clone(),
                         funding_rate: data.funding_rate,
                         next_funding_time: data.next_funding_time * 1_000_000,
                         exch_ts: data.event_time * 1_000_000,
                     }))
-                    .unwrap();
+                    .is_err()
+                {
+                    warn!(symbol = %symbol, "market data sender closed while publishing funding event");
+                }
             }
             EventStream::Trade(data) => {
+                let symbol = data.symbol.clone();
                 if self.ev_tx.try_send_native_market(NativeMarketBatch::Trade {
                     symbol: &data.symbol,
                     price: data.price,
@@ -277,9 +461,10 @@ impl MarketDataStream {
                 }) {
                     return;
                 }
-                self.ev_tx
+                if self
+                    .ev_tx
                     .send(PublishEvent::FeedBatch {
-                        symbol: data.symbol,
+                        symbol: symbol.clone(),
                         events: vec![Event {
                             ev: {
                                 if data.is_the_buyer_the_market_maker {
@@ -298,9 +483,13 @@ impl MarketDataStream {
                         }],
                         stream: None,
                     })
-                    .unwrap();
+                    .is_err()
+                {
+                    warn!(symbol = %symbol, "market data sender closed while publishing trade batch");
+                }
             }
             EventStream::BookTicker(data) => {
+                let symbol = data.symbol.clone();
                 if self.ev_tx.try_send_native_market(NativeMarketBatch::Bbo {
                     symbol: &data.symbol,
                     bid_price: data.bid_price,
@@ -339,13 +528,17 @@ impl MarketDataStream {
                     });
                 }
                 if !events.is_empty() {
-                    self.ev_tx
+                    if self
+                        .ev_tx
                         .send(PublishEvent::FeedBatch {
-                            symbol: data.symbol,
+                            symbol: symbol.clone(),
                             events,
                             stream: None,
                         })
-                        .unwrap();
+                        .is_err()
+                    {
+                        warn!(symbol = %symbol, "market data sender closed while publishing bbo batch");
+                    }
                 }
             }
             _ => unreachable!(),
@@ -403,7 +596,8 @@ impl MarketDataStream {
                         fval: 0.0,
                     });
                 }
-                self.ev_tx
+                if self
+                    .ev_tx
                     .send(PublishEvent::FeedBatch {
                         symbol: symbol.clone(),
                         events,
@@ -414,7 +608,11 @@ impl MarketDataStream {
                             snapshot: true,
                         }),
                     })
-                    .unwrap();
+                    .is_err()
+                {
+                    warn!(symbol = %symbol, "market data sender closed while publishing snapshot batch");
+                    self.pending_depth_messages.remove(&symbol);
+                }
             }
             Err(error) => {
                 error!(?error, "Couldn't parse Depth response.");
@@ -461,6 +659,7 @@ impl MarketDataStream {
         let (mut write, mut read) = ws_stream.split();
         let mut ping_checker = time::interval(Duration::from_secs(10));
         let mut last_ping = Instant::now();
+        let mut pending_requests: HashMap<String, String> = HashMap::new();
 
         let subscriptions: Vec<_> = self
             .subscriptions
@@ -470,9 +669,47 @@ impl MarketDataStream {
             .map(|(symbol, kinds)| (symbol.clone(), kinds.iter().copied().collect::<Vec<_>>()))
             .collect();
         for (symbol, kinds) in subscriptions {
-            self.canonical_symbols
-                .insert(symbol.to_ascii_uppercase(), symbol.clone());
-            Self::send_subscription(&mut write, "SUBSCRIBE", &symbol, &kinds).await?;
+            let request_id = self
+                .send_subscription(&mut write, "SUBSCRIBE", &symbol, &kinds)
+                .await?;
+            if !request_id.is_empty() {
+                self.canonical_symbols
+                    .insert(symbol.to_ascii_uppercase(), symbol.clone());
+                pending_requests.insert(
+                    request_id,
+                    format!("SUBSCRIBE symbol={symbol} kinds={kinds:?}"),
+                );
+            }
+            debug!(
+                %symbol,
+                kinds = ?kinds,
+                mode = %MarkPriceStreamMode::from_env_name(),
+                "bootstrap subscription prepared"
+            );
+        }
+        let request_id =
+            Self::send_request(&mut write, "LIST_SUBSCRIPTIONS", Vec::<String>::new()).await?;
+        pending_requests.insert(request_id, "LIST_SUBSCRIPTIONS".to_string());
+
+        let mark_price_signals: Vec<String> = {
+            let profile = MarkPriceStreamMode::from_env();
+            let symbols = self.canonical_symbols.values().cloned().collect::<Vec<_>>();
+            let mut list = Vec::new();
+            for symbol in symbols {
+                for mode_stream in profile.stream_names(&symbol) {
+                    if mode_stream.contains("markPrice") {
+                        list.push(mode_stream);
+                    }
+                }
+            }
+            list
+        };
+        if !mark_price_signals.is_empty() {
+            debug!(
+                ws_url = %url,
+                mark_price_streams = ?mark_price_signals,
+                "expected Binance markPrice subscriptions"
+            );
         }
 
         loop {
@@ -488,19 +725,38 @@ impl MarketDataStream {
                 }
                 msg = self.command_rx.recv() => match msg {
                     Ok(MarketDataCommand::Subscribe { symbol, kinds }) => {
-                        self.canonical_symbols
-                            .insert(symbol.to_ascii_uppercase(), symbol.clone());
-                        Self::send_subscription(&mut write, "SUBSCRIBE", &symbol, &kinds).await?;
+                        let request_id =
+                            self.send_subscription(&mut write, "SUBSCRIBE", &symbol, &kinds).await?;
+                        if !request_id.is_empty() {
+                            self.canonical_symbols
+                                .insert(symbol.to_ascii_uppercase(), symbol.clone());
+                            pending_requests.insert(
+                                request_id,
+                                format!("SUBSCRIBE symbol={symbol} kinds={kinds:?}"),
+                            );
+                        }
                     }
                     Ok(MarketDataCommand::Unsubscribe { symbol, kinds }) => {
-                        Self::send_subscription(&mut write, "UNSUBSCRIBE", &symbol, &kinds).await?;
-                        if kinds.contains(&MarketDataKind::Depth) {
+                        let request_id =
+                            self.send_subscription(&mut write, "UNSUBSCRIBE", &symbol, &kinds).await?;
+                        if !request_id.is_empty() {
+                            pending_requests.insert(
+                                request_id,
+                                format!("UNSUBSCRIBE symbol={symbol} kinds={kinds:?}"),
+                            );
+                        }
+                        if self.route.includes(MarketDataKind::Depth)
+                            && kinds.contains(&MarketDataKind::Depth)
+                        {
                             self.prev_u.remove(&symbol);
                             self.pending_depth_messages.remove(&symbol);
                             self.canonical_symbols.remove(&symbol.to_ascii_uppercase());
                         }
                     }
                     Ok(MarketDataCommand::Snapshot { symbol }) => {
+                        if !self.route.includes(MarketDataKind::Depth) {
+                            continue;
+                        }
                         let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                             symbol: symbol.clone(),
@@ -520,6 +776,10 @@ impl MarketDataStream {
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
                         let ws_recv_ts = Utc::now().timestamp_nanos_opt().unwrap();
+                        let text_contains_mark = text.contains("\"markPrice\"") || text.contains("\"markprice\"");
+                        if text_contains_mark {
+                            info!(ws_url = %url, stream_key = self.canonical_symbols.keys().next().map(|v| v.as_str()).unwrap_or(""), raw = %text, "raw frame includes markPrice marker");
+                        }
                         if text.as_bytes().starts_with(br#"{"e":"depthUpdate"#) {
                             match serde_json::from_str::<stream::Depth>(&text) {
                                 Ok(depth) => self.process_message(
@@ -532,14 +792,57 @@ impl MarketDataStream {
                             }
                             continue;
                         }
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if self.maybe_process_mark_price_payload(&text, &value, ws_recv_ts) {
+                                continue;
+                            }
+                        }
                         match serde_json::from_str::<Stream>(&text) {
                             Ok(Stream::EventStream(stream)) => {
                                 self.process_message(stream, ws_recv_ts);
                             }
                             Ok(Stream::Result(result)) => {
-                                debug!(?result, "Subscription request response is received.");
+                                if let Some(label) = pending_requests.remove(&result.id) {
+                                    debug!(request_id = %result.id, %label, ?result.result, ?result.error, "subscription response received");
+                                } else {
+                                    debug!(
+                                        request_id = %result.id,
+                                        ?result.result,
+                                        ?result.error,
+                                        "subscription response received (untracked request)"
+                                    );
+                                }
+                                if let Some(error) = result.error {
+                                    error!(
+                                        request_id = %result.id,
+                                        code = error.code,
+                                        message = %error.msg,
+                                        "subscription response error"
+                                    );
+                                }
+                                if let Some(raw_result) = result.result.as_ref() {
+                                    if raw_result.is_array() {
+                                        if let Some(streams) = raw_result.as_array() {
+                                            let mark_price_streams: Vec<_> = streams
+                                                .iter()
+                                                .filter_map(|item| item.as_str())
+                                                .filter(|item| item.contains("markPrice"))
+                                                .collect();
+                                            if !mark_price_streams.is_empty() {
+                                                debug!(
+                                                    request_id = %result.id,
+                                                    mark_price_streams = ?mark_price_streams,
+                                                    "markPrice appears in LIST_SUBSCRIPTIONS response"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Err(error) => {
+                                if text_contains_mark {
+                                    warn!(?error, %text, "Couldn't parse stream message for markPrice payload");
+                                }
                                 error!(?error, %text, "Couldn't parse Stream.");
                             }
                         }
@@ -571,7 +874,144 @@ impl MarketDataStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
+
+    #[test]
+    fn split_routes_accept_only_their_assigned_market_kinds() {
+        assert!(MarketStreamRoute::Public.includes(MarketDataKind::Depth));
+        assert!(MarketStreamRoute::Public.includes(MarketDataKind::Trades));
+        assert!(MarketStreamRoute::Public.includes(MarketDataKind::Bbo));
+        assert!(!MarketStreamRoute::Public.includes(MarketDataKind::MarkPrice));
+        assert!(!MarketStreamRoute::Public.includes(MarketDataKind::FundingRate));
+        assert!(MarketStreamRoute::Market.includes(MarketDataKind::MarkPrice));
+        assert!(MarketStreamRoute::Market.includes(MarketDataKind::FundingRate));
+        assert!(!MarketStreamRoute::Market.includes(MarketDataKind::Depth));
+    }
+
+    #[tokio::test]
+    async fn mark_price_frame_publishes_price_and_funding_independently() {
+        let client = BinanceFuturesClient::new("http://localhost", "", "");
+        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut market_stream = MarketDataStream::new(
+            client,
+            events,
+            command_rx,
+            Arc::new(Mutex::new(HashMap::new())),
+            MarketStreamRoute::Market,
+        );
+        let update = serde_json::from_str::<EventStream<'_>>(
+            r#"{"e":"markPriceUpdate","E":1562305380000,"s":"BTCUSDT","p":"11794.15000000","i":"11793.84535841","P":"11780.83846368","r":"-0.00038100","T":1562306400000}"#,
+        )
+        .unwrap();
+        market_stream.process_message(update, 0);
+
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::MarkPrice {
+                symbol,
+                mark_price,
+                exch_ts: 1_562_305_380_000_000_000,
+            }) if symbol == "btcusdt" && mark_price == 11_794.15
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::LiveEvent(LiveEvent::Funding {
+                symbol,
+                funding_rate,
+                next_funding_time: 1_562_306_400_000_000_000,
+                exch_ts: 1_562_305_380_000_000_000,
+            })) if symbol == "btcusdt" && funding_rate == -0.000381
+        ));
+    }
+
+    #[tokio::test]
+    async fn rest_snapshot_and_contiguous_delta_preserve_sequence_and_advance_epoch() {
+        let client = BinanceFuturesClient::new("http://localhost", "", "");
+        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut stream = MarketDataStream::new(
+            client,
+            events,
+            command_rx,
+            Arc::new(Mutex::new(HashMap::new())),
+            MarketStreamRoute::All,
+        );
+        stream
+            .canonical_symbols
+            .insert("BTCUSDT".to_owned(), "btcusdt".to_owned());
+        stream.process_snapshot(
+            "btcusdt".to_owned(),
+            rest::Depth {
+                last_update_id: 10,
+                event_time: 1,
+                transaction_time: 1,
+                bids: vec![("100".to_owned(), "1".to_owned())],
+                asks: vec![("101".to_owned(), "2".to_owned())],
+            },
+        );
+        let first = match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                stream: Some(stream),
+                ..
+            } => stream,
+            _ => panic!("expected Binance Futures snapshot"),
+        };
+        assert!(first.snapshot);
+        assert_eq!(first.epoch, 1);
+        assert_eq!(first.last_update_sequence, 10);
+
+        let delta = serde_json::from_str::<EventStream<'_>>(
+            r#"{"e":"depthUpdate","E":2,"T":2,"s":"BTCUSDT","U":11,"u":11,"pu":10,"b":[["100","3"]],"a":[]}"#,
+        )
+        .unwrap();
+        stream.process_message(delta, 3);
+        let delta = match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                stream: Some(stream),
+                ..
+            } => stream,
+            _ => panic!("expected Binance Futures delta"),
+        };
+        assert!(!delta.snapshot);
+        assert_eq!(delta.epoch, 1);
+        assert_eq!(delta.first_update_sequence, 11);
+        assert_eq!(delta.last_update_sequence, 11);
+
+        let gap = serde_json::from_str::<EventStream<'_>>(
+            r#"{"e":"depthUpdate","E":3,"T":3,"s":"BTCUSDT","U":12,"u":12,"pu":9,"b":[],"a":[]}"#,
+        )
+        .unwrap();
+        stream.process_message(gap, 4);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
+        ));
+
+        stream.process_snapshot(
+            "btcusdt".to_owned(),
+            rest::Depth {
+                last_update_id: 20,
+                event_time: 4,
+                transaction_time: 4,
+                bids: vec![],
+                asks: vec![],
+            },
+        );
+        let recovered = match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                stream: Some(stream),
+                ..
+            } => stream,
+            _ => panic!("expected Binance Futures recovery snapshot"),
+        };
+        assert!(recovered.snapshot);
+        assert_eq!(recovered.epoch, 2);
+        assert_eq!(recovered.last_update_sequence, 20);
+    }
 
     /// 实盘冒烟：连接 Binance USD-M 测试网 WS，订阅 btcusdt 的
     /// trade/depth@0ms/markPrice/bookTicker，验证收到深度、成交、资金费与 BBO 事件。
@@ -591,7 +1031,13 @@ mod tests {
                 MarketDataKind::FundingRate,
             ]),
         )])));
-        let mut stream = MarketDataStream::new(client, ev_tx, symbol_tx.subscribe(), subscriptions);
+        let mut stream = MarketDataStream::new(
+            client,
+            ev_tx,
+            symbol_tx.subscribe(),
+            subscriptions,
+            MarketStreamRoute::All,
+        );
 
         let handle = tokio::spawn(async move {
             let mut last_err = None;
