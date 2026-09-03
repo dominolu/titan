@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use thiserror::Error;
-use titan_plugin_engine::{ApiVersion, PluginEngine, PluginError, StopReason};
+use titan_plugin_engine::{ApiVersion, PluginEngine, PluginError, PluginSpec, StopReason};
 
 use crate::{EngineError, EventEngine, EventEngineConfig, EventEngineHandle};
 
@@ -40,6 +40,22 @@ impl TitanCoreRuntime {
     /// Starts EventEngine before any plugin plan is applied.
     pub fn start(&self) -> Result<(), CoreRuntimeError> {
         self.events.start()?;
+        Ok(())
+    }
+
+    /// Performs the Core Runtime startup transaction in contract order: prepare and validate all
+    /// plugin bundles while their gates are closed, start EventEngine, then commit and activate the
+    /// prepared plugin graph. Either startup failure rolls back every prepared local resource.
+    pub fn start_with_plugins(&mut self, specs: &[PluginSpec]) -> Result<(), CoreRuntimeError> {
+        self.plugins.prepare(specs)?;
+        if let Err(error) = self.events.start() {
+            self.plugins.abort_prepared();
+            return Err(error.into());
+        }
+        if let Err(error) = self.plugins.start_prepared() {
+            let _ = self.events.stop();
+            return Err(error.into());
+        }
         Ok(())
     }
 

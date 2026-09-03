@@ -1,5 +1,9 @@
 # Strategy ABI v8 migration
 
+> 历史迁移文档：当前 Rust Runtime 与 Python Host 使用 Strategy ABI v9。新代码请参阅
+> [Strategy ABI v9 migration](strategy_abi_v9_migration.md)。本文仅用于解释从 v7 到 v8 的 Funding
+> 布局变化。
+
 ABI v8 makes Funding semantics explicit and identical across Tick, Bar, Hybrid and live event
 projection. Rust owns settlement ordering and account mutation; Numba still receives one
 `on_funding(s)` callback and does not run an event loop.
@@ -31,8 +35,8 @@ callers that leave the new integer fields at zero retain mark-price, before-boun
 instrument-notional and nearest-rounding behavior. The Python adapter normalizes a zero
 `rounding_increment` to `1e-12` for this compatibility path.
 
-Rust and Python both require ABI version `8`. A v7 strategy fails at startup before callbacks run;
-there is no unsafe struct-size fallback.
+ABI v8 发布时 Rust 和 Python 均要求版本 `8`；当前实现已经升级到 v9。旧版本策略仍会在 callback
+运行前失败，不存在不安全的结构体尺寸回退。
 
 Order and fill layouts introduced by ABI v7 are unchanged. See
 [`strategy_abi_v7_migration.md`](strategy_abi_v7_migration.md) for those fields.

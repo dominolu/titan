@@ -12,25 +12,12 @@ use titan_runtime_abi::{ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand
 
 use crate::*;
 
-#[derive(Clone, Debug)]
-pub struct StrategyRiskRequest {
-    pub strategy: StrategyHandle,
-    pub risk_scope: RiskScopeRef,
-    pub account: AccountHandle,
-    pub asset_id: u32,
-    pub command: OrderCommand,
-}
-
-pub trait RiskService: Send + Sync {
-    fn ready(&self, scope: &RiskScopeRef) -> bool;
-    fn check_and_reserve(&self, request: &StrategyRiskRequest) -> LocalResult<()>;
-}
-
 pub trait StrategyCommandGateway: Send + Sync {
     fn execute(
         &self,
         strategy: StrategyHandle,
         command: OrderCommand,
+        trace: TraceContext,
     ) -> LocalResult<AccountCommandReceipt>;
     fn metadata(&self, strategy: StrategyHandle) -> StrategyCommandMetadata;
     fn restore_metadata(
@@ -58,11 +45,9 @@ pub struct StrategyOwnedOrder {
 
 pub struct StandardStrategyCommandGateway {
     strategy: StrategyHandle,
-    risk_scope: RiskScopeRef,
     capabilities: StrategyCapabilities,
     command_gate: Arc<StrategyCommandGate>,
     accounts: BTreeMap<u32, (AccountHandle, BTreeMap<u64, u32>)>,
-    risk: Arc<dyn RiskService>,
     execution: Arc<dyn AccountExecutionService>,
     owned_orders: Mutex<Vec<StrategyOwnedOrder>>,
     pending_commands: Mutex<Vec<Id128>>,
@@ -71,11 +56,9 @@ pub struct StandardStrategyCommandGateway {
 impl StandardStrategyCommandGateway {
     pub fn new(
         strategy: StrategyHandle,
-        risk_scope: RiskScopeRef,
         capabilities: StrategyCapabilities,
         command_gate: Arc<StrategyCommandGate>,
         accounts: &[ResolvedAccountBinding],
-        risk: Arc<dyn RiskService>,
         execution: Arc<dyn AccountExecutionService>,
     ) -> Self {
         let accounts = accounts
@@ -96,11 +79,9 @@ impl StandardStrategyCommandGateway {
             .collect();
         Self {
             strategy,
-            risk_scope,
             capabilities,
             command_gate,
             accounts,
-            risk,
             execution,
             owned_orders: Mutex::new(Vec::new()),
             pending_commands: Mutex::new(Vec::new()),
@@ -113,6 +94,7 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
         &self,
         strategy: StrategyHandle,
         command: OrderCommand,
+        trace: TraceContext,
     ) -> LocalResult<AccountCommandReceipt> {
         if strategy != self.strategy || self.command_gate.owner() != strategy {
             return Err(gateway_error(
@@ -182,49 +164,39 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
             }
             pending.push(command_id);
         }
-        let risk_request = StrategyRiskRequest {
-            strategy,
-            risk_scope: self.risk_scope.clone(),
-            account: *account,
-            asset_id,
-            command,
+        let result = match command.kind {
+            ORDER_COMMAND_SUBMIT => self
+                .execution
+                .submit(
+                    *account,
+                    SubmitOrderCommand {
+                        command_id,
+                        client_order_id: Some(client_order_id),
+                        asset_id: AssetId(asset_id),
+                        side: command.side as u8,
+                        order_type: command.order_type,
+                        time_in_force: command.time_in_force,
+                        price_ticks: exact_i64(command.price, "price")?,
+                        quantity_lots: exact_i64(command.qty, "quantity")?,
+                        trace,
+                    },
+                )
+                .map_err(account_error),
+            ORDER_COMMAND_CANCEL => self
+                .execution
+                .cancel(
+                    *account,
+                    CancelOrderCommand {
+                        command_id,
+                        asset_id: AssetId(asset_id),
+                        client_order_id: Some(client_order_id),
+                        venue_order_id: None,
+                        trace,
+                    },
+                )
+                .map_err(account_error),
+            _ => unreachable!(),
         };
-        let result = self
-            .risk
-            .check_and_reserve(&risk_request)
-            .and_then(|()| match command.kind {
-                ORDER_COMMAND_SUBMIT => self
-                    .execution
-                    .submit(
-                        *account,
-                        SubmitOrderCommand {
-                            command_id,
-                            client_order_id: Some(client_order_id),
-                            asset_id: AssetId(asset_id),
-                            side: command.side as u8,
-                            order_type: command.order_type,
-                            time_in_force: command.time_in_force,
-                            price_ticks: exact_i64(command.price, "price")?,
-                            quantity_lots: exact_i64(command.qty, "quantity")?,
-                            trace: TraceContext::default(),
-                        },
-                    )
-                    .map_err(account_error),
-                ORDER_COMMAND_CANCEL => self
-                    .execution
-                    .cancel(
-                        *account,
-                        CancelOrderCommand {
-                            command_id,
-                            asset_id: AssetId(asset_id),
-                            client_order_id: Some(client_order_id),
-                            venue_order_id: None,
-                            trace: TraceContext::default(),
-                        },
-                    )
-                    .map_err(account_error),
-                _ => unreachable!(),
-            });
         self.pending_commands
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -318,23 +290,9 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         for owned_order in owned {
+            let trace = TraceContext::default();
             let client_order_id = owned_order.client_order_id;
             let order_id = u64::from_le_bytes(client_order_id.0[8..16].try_into().unwrap());
-            let command = OrderCommand {
-                kind: ORDER_COMMAND_CANCEL,
-                local_account_no: owned_order.local_account_no,
-                asset_no: owned_order.local_asset_no,
-                order_id,
-                qty: 1.0,
-                ..OrderCommand::default()
-            };
-            self.risk.check_and_reserve(&StrategyRiskRequest {
-                strategy,
-                risk_scope: self.risk_scope.clone(),
-                account: owned_order.account,
-                asset_id: owned_order.asset_id,
-                command,
-            })?;
             self.execution
                 .cancel(
                     owned_order.account,
@@ -343,7 +301,7 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
                         asset_id: AssetId(owned_order.asset_id),
                         client_order_id: Some(client_order_id),
                         venue_order_id: None,
-                        trace: TraceContext::default(),
+                        trace,
                     },
                 )
                 .map_err(account_error)?;

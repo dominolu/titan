@@ -220,12 +220,18 @@ Bar 时必须显式附加预处理 Bar Feed 或 `CanonicalBarBuilder`，不得�
 多品种同一周期、同一 `close_ts` 应组成一个批次，只调用一次 `on_bar(s)`。行情缺失不能
 把多个周期合并成一根 Bar。空 Bar 是生成显式空记录还是省略，必须由订阅配置确定。
 
+新 Core 链路使用 `titan.market.BarBatch` schema v1 承载该批次。payload 为稳定 little-endian
+`BarBatchV1`，批次头声明 `timeframe_ns`、`close_ts` 和条目数，每条记录包含 `asset_id` 与完整
+`Bar` 字段。接收端必须拒绝 partial、周期不匹配或关闭时间不一致的记录，随后一次性填充策略 ABI
+的 `bars_ptr`、`num_bars`、`bar_timeframe_ns` 和 `bar_close_ts`。
+
 ## 实盘模式
 
 ### Tick
 
-连接器通过共享内存 IPC 将归一化成交、BBO 和深度事件交给 Rust `LiveBot`；Rust 填充
-Tick 上下文后，由已经编译的 Numba 循环直接调用 `on_tick(s)`。
+MarketConnector 将归一化成交、BBO 和深度事件发布到 EventEngine。每个策略的 Primary Async lane
+在隔离 worker 上调用 StrategyRuntime handler；handler 填充 Tick 上下文后，直接调用已编译的
+Numba `on_tick(s)`。CLI 不再创建 `LiveBot` 或 Iceoryx 实盘运行时。
 
 ### 本地 Canonical Bar
 
@@ -281,6 +287,23 @@ submit 与 cancel；不支持 modify，修改订单必须显式 cancel/replace�
 全局 TickBatch 使用显式 `max_tick_batch` 上限；达到上限时 Rust 终止运行并报告 overflow，
 不得无界扩容、静默丢 Tick 或拆批改变同一帧语义。生产环境应结合连接器环形队列容量、
 `frame_interval` 与监控指标设置该值。
+
+### 可重复回调边界基准
+
+仓库提供 `titan-python-host` 的 `numba_rust_callback_benchmark` Release example。它使用同一个
+`StrategyRuntimeContext` ABI、相同的单指针函数签名和相同的 `state_f64[0] += 1` 工作量，对比原生 Rust
+回调与通过正式 `EmbeddedPythonCompiler` 生成的 Numba `@njit` 回调。每轮测量前预热 1,000,000 次，默认
+采集 10,000 个样本、每个样本批量调用 1,000 次，并在结束时校验状态增量，防止空调用或错误代码参与结果。
+
+```bash
+cargo run --release -p titan-python-host --example numba_rust_callback_benchmark
+```
+
+Apple M1 Pro / aarch64 macOS 的当前实测报告保存在
+[`numba_rust_callback_benchmark_m1_pro.json`](numba_rust_callback_benchmark_m1_pro.json)：Rust 回调 P50/P99/P99.9
+为 3.375/3.750/4.458 ns，Numba 回调为 28.750/31.375/35.416 ns。该结果只度量已编译回调的稳定 ABI
+边界，不包含 EventEngine、策略业务计算、下单或交易所网络延迟；不同目标硬件必须重新执行，不能复用该
+机器结果作为 PerformanceEnvelope。
 
 ## 历史数据访问
 

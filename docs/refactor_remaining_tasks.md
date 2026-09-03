@@ -1,0 +1,325 @@
+# Titan 项目重构剩余任务清单
+
+状态：当前闭环已完成；外部实盘验收、目标硬件调优及未来插件仍待执行
+
+更新时间：2026-09-03
+
+## 1. 范围
+
+本清单只整理以下现有设计文档已经明确提出、但尚未完成或尚未完成全链路验收的工作：
+
+- [AccountPlugin 技术实现设计](account_plugin_technical_design.md)
+- [MarketPlugin 技术实现设计](market_plugin_technical_design.md)
+- [Core Runtime 交互契约](core_runtime_contract.md)
+- [EventEngine 独立技术实现设计](event_engine_technical_design.md)
+- [PluginEngine 独立技术实现设计](plugin_engine_technical_design.md)
+- [Bar/Tick 回测与实盘统一策略接口](bar_tick_numba_strategy.md)
+- [Strategy ABI v8 migration](strategy_abi_v8_migration.md)
+
+当前闭环明确采用 `Fresh` 启动，不提供 Risk、checkpoint/store、recovery 或
+`StreamBoundaryProvider` 能力，也不以 no-op 或内存占位实现冒充这些能力。它们只记录在本文末尾的
+“未来插件待办”中；独立设计完成前，不进入当前闭环的实现或验收条件。
+
+ConnectorFactory 不由 Titan main 或 CLI 静态逐个注册。Binance Futures、OKX、Hyperliquid
+对应的 ConnectorFactory 应由各自插件提供，并通过 PluginEngine 的动态插件和插件包机制加载。
+
+## 2. 当前判断
+
+当前状态是“新的 Core Runtime 主链已经完成装配和切换”：
+
+- EventEngine、PluginEngine、MarketPlugin、AccountPlugin 的主要类型、生命周期和单元测试已经存在；
+- Binance Futures、OKX、Hyperliquid 的 MarketConnector/AccountConnector 适配代码已经存在；
+- EventEngine 已实现 Primary Async lane、可靠 pending、水位、SubscriberHealth 和 SnapshotBarrier
+  的主要内部能力；
+- Bar/Tick/Hybrid 回测运行时、Numba 单参数回调和 ABI 布局校验已经存在；
+- `titan` CLI 实盘入口、前台/后台 worker、stop/status 和信号关闭均已进入
+  `TitanCoreRuntime -> PluginEngine -> Plugin -> EventEngine` 链路；
+- PluginEngine 已形成动态 ABI、校验、代码 Lease 和三家交易所 ConnectorFactory 插件包链路；CLI 能在
+  Core 配置中加载 Numba strategy package，并通过类型化的 Market、Account 与 Execution Service 完成绑定。
+
+当前未勾选项的执行前提：
+
+- 目标机已确定为 `43.165.184.116`：Ubuntu 24.04.4 LTS、2 vCPU（AMD EPYC 9754）、约
+  1.9 GiB RAM 和 1.9 GiB swap。Rust/Cargo 1.94.0 位于 `/home/ubuntu/.cargo/bin`；非交互 SSH
+  必须显式补充该 PATH。主机上已有三套 Titan Cargo 工作区/构建目录，但截至 2026-09-03 没有
+  Titan systemd/user service、容器或常驻进程在运行。
+- Binance Futures 主网已完成 58 项公开/私有 REST 接口验收，覆盖行情与合约元数据、账户/余额/仓位、
+  普通订单与批量订单、订单修改、条件单、listenKey、账户模式与杠杆/保证金设置、持仓保证金、成交/收益及
+  异步导出。5.10 USDT 硬上限的小额真实订单闭环已通过：批量限价单 submit/amend/cancel、普通 GTX 限价单
+  submit/query/cancel、市价开仓、reduce-only 平仓和 fills 均成功；可逆配置操作均恢复原值。真实动态插件库
+  还连续完成 generation 1/2 的 listenKey、私有 WebSocket、READY、Full reconcile、事件发布和干净 stop。
+  最终全账户复核为零仓位、零普通挂单、零条件单、零保证金占用；XRPUSDT 恢复为 CROSSED、5x，账户恢复
+  单向持仓与 Multi-Assets 模式。目标机 production 公共流已通过：2026-09-03 按 Binance 实际路由拆分为
+  高频 `wss://fstream.binance.com/public/ws`（Depth/Trade/BBO）与常规
+  `wss://fstream.binance.com/market/ws`（markPrice/Funding）两条连接后，XRPUSDT/BTCUSDT 均实时收到
+  Depth snapshot/delta、Trade、BBO、MarkPrice 与 Funding 事件；旧组合端点 `/ws` 上
+  `@markPrice@1s` 仅 ACK 无推送的问题不再出现。
+  OKX、Hyperliquid 凭据和资金环境仍待提供。
+- 容量调优和 P99/P99.9 冻结已有目标硬件，但目标负载仍需通过该机器的可持续峰值探测后确定
+  50%/80%/95% 档位；在测量完成前不虚构生产门槛。
+
+## 3. P0：跑通完整链路
+
+以下任务完成后，才能认为新架构已经形成一条可执行的闭环。
+
+### 3.1 Core Runtime API 与启动装配
+
+- [x] 按 EventEngine v1.4 的 Subscription、Primary lane 和消费者生命周期语义升级
+  `core_runtime_api_version`。
+- [x] 增加对应的 capability/兼容矩阵；保留文档要求的显式 v1.3 compatibility adapter，禁止旧
+  consumer 被静默接入新语义。
+- [x] 在 Titan main/CLI 中创建并启动 `TitanCoreRuntime`，由它统一持有 EventEngine 和
+  PluginEngine。
+- [x] 将运行配置通过 ConfigurationAdapter 转成 `PluginSpec[]`、MarketSourceDefinition 和
+  AccountDefinition，并在插件创建前完成配置版本迁移和校验。当前已定义的应用/插件配置版本均为
+  v1，因此迁移为 v1 标准化；未知版本在创建 Factory 前显式拒绝。
+- [x] 按 Core Runtime 契约完成版本协商、PluginPlan 编译、route/endpoint 暂存、ActivationGate
+  激活、失败回滚和反向停止。
+- [x] 验证停止 EventEngine 前全部订阅已退休、handler 已退出且 EventArena 引用归零。
+
+### 3.2 动态插件和 ConnectorFactory 加载
+
+- [x] 完成 PluginEngine 设计中的动态插件加载入口 `titan_plugin_entry_v1()`，不只停留在 ABI
+  descriptor 校验。
+- [x] 完成插件包 Manifest、ABI、Schema、feature bits、配置版本和 capability 校验。底层
+  `load_package` 会在建立进程级 code lease 前统一核对包版本与动态库内嵌 Manifest 版本；所有通用及
+  Market/Account Connector C ABI 输入范围在构造 Rust slice 前拒绝空指针和超过 `isize::MAX` 的长度，
+  producer-owned 异常输出仍调用匹配的释放函数，避免损坏描述符造成越界读取或泄漏。插件包与动态库
+  SHA-256 校验使用固定 64 KiB 缓冲流式读取，不再按文件大小分配内存；三家 venue 导出的 root create
+  均经共享 FFI panic boundary 完成输入校验、JSON 解码和实例创建。
+- [x] 实现动态库代码 Lease；活动 EndpointLease、线程或 EventLease 存在时不得卸载动态库。
+- [x] 将 Binance Futures ConnectorFactory 放入对应交易所插件，由该插件加载和注册。
+- [x] 将 OKX ConnectorFactory 放入对应交易所插件，由该插件加载和注册。
+- [x] 将 Hyperliquid ConnectorFactory 放入对应交易所插件，由该插件加载和注册。
+- [x] Titan main/CLI 只加载配置指定的插件包，不包含三个交易所 ConnectorFactory 的静态注册逻辑。
+- [x] 验证新增 Connector 只需新增并加载插件包，不需要修改 MarketPlugin、AccountPlugin 或 Titan
+  main。
+
+### 3.3 切换实盘运行入口
+
+- [x] 将 CLI 实盘入口从旧 `LiveBotBuilder/IceoryxUnifiedChannel` 切换到 `TitanCoreRuntime`；前台和 detached
+  worker 共用相同 Core 装配。
+- [x] 接通行情事实路径：Exchange -> MarketConnector -> EventPublisher -> EventEngine -> Strategy
+  consumer。
+- [x] 接通命令路径：Strategy -> AccountExecutionService -> AccountConnector -> Exchange。
+- [x] 接通账户事实返回路径：Exchange -> AccountConnector -> EventPublisher -> EventEngine -> Strategy
+  consumer。
+- [x] 接通 AccountReady、MarketReady 与策略启动门控；Gate 打开前不得执行 handler、发布业务事件或
+  接受下单命令。
+- [x] 正确传播 `TraceContext`，保证事件、Service Command 和账户结果可关联；Fake 全链路已验证
+  Market Event -> Strategy callback -> AccountExecutionService command -> account result 保留同一 trace，
+  causation 按直接原因推进。
+- [x] 统一处理 SIGINT、SIGTERM、正常停止、插件启动失败和 Connector 停止超时；CLI registry 只管理
+  Core worker 进程，插件和 Connector 生命周期统一由 `TitanCoreRuntime` 反向关闭。
+
+### 3.4 EventEngine v1.4 恢复扩展边界
+
+EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commit、超时/失败回滚和 generation
+隔离能力及测试已经完成。当前 Fresh-only 主链不调用 SnapshotBarrier recovery，也不要求 Market/Account
+提供跨组件 `StreamBoundary`。该扩展不会阻塞当前主链，等独立恢复插件设计后再接入。
+
+### 3.5 Numba 与 Bar/Tick/Hybrid 接入新链路
+
+- [x] 在新的生产链路中由 StrategyPlugin 的 `numba-python` loader 加载 Numba `nopython` 单参数回调。
+- [x] 保证回测和实盘加载同一份 `on_tick(s)` / `on_bar(s)` 策略文件和同一 ABI descriptor。
+- [x] 接通实盘 Tick 模式。
+- [x] 接通设计中已有的 VenueNative、Canonical 和 REST recovery Bar 输入及去重规则。
+- [x] 接通实盘 Bar 和 Hybrid 模式；CLI 会按 StrategyDefinition 的 data mode 校验选择模式。
+- [x] 验证稳态事件热路径不进入 Python 解释器。
+
+### 3.6 最小端到端自动化验收
+
+- [x] 使用测试插件包验证动态插件发现、ABI/Manifest 校验和 ConnectorFactory 注册。
+- [x] 使用 Fake MarketConnector 发布 Tick，经 EventEngine Primary Async lane 到达 Numba 策略。
+- [x] 使用设计规定的 Bar 输入发布 Bar，经 EventEngine Primary Async lane 到达 Numba 策略；
+  `BarBatchV1` 使用稳定 little-endian 编码并校验 complete/timeframe/close_ts，Strategy adapter 将同周期
+  批次映射为 ABI `bars_ptr/num_bars`，Fake MarketConnector 的 Hybrid 测试已验证同一 Numba 策略依次收到
+  Tick 与 Bar。
+- [x] 验证策略命令经 AccountExecutionService 到达 Fake AccountConnector。
+- [x] 验证 Fake AccountConnector 发布 Order、Fill、Position、Balance，并由策略 consumer 收到。
+- [x] 覆盖 route commit 失败、Endpoint 激活失败和 Connector 启动失败的完整回滚。
+- [x] 覆盖正常 shutdown：停止新命令、收敛账户事实、退休订阅、释放 Connector 和 EventBlock。
+
+## 4. P1：完成现有设计的验收与旧路径退休
+
+### 4.1 AccountPlugin 与三家 AccountConnector
+
+- [x] 为 Binance Futures、OKX、Hyperliquid 完成完整 epoch/reconcile 状态机验收。
+  公共真实 Connector adapter 已覆盖 Full reconcile 的单 epoch/version 提交、READY 门控、失败保持
+  invalidated、ManagedOnly/ObserveAll；三家私有流断线或不可解析消息均进入 `AccountPublication::Error ->
+  StreamInvalidated -> Full reconcile`。OKX 与 Hyperliquid 的私有订阅 ACK 按频道去重，公共或重复 ACK 不会
+  提前打开 READY；Binance Futures 以交易所时间拒绝旧 WS 状态，并验证 REST/WS 终态乱序只发布一次。
+  对不提供可靠账户 sequence 的流，任何无法证明连续性的连接错误都会建立新 reconcile epoch 并由权威 REST
+  orders/positions/balances 补齐后重新 READY。
+- [x] 完成有界内存 command journal、稳定 client order id、未知网络结果按订单 ID 查询，以及相同
+  command 的重复 admission/冲突处理；未引入超出 V1 范围的持久化 journal。
+- [x] 完成外部订单策略和 ManagedOnly 诊断：前缀内订单与 journal 已知订单进入托管视图，其他订单计入
+  `external_order_count`；`ObserveAll` 不过滤外部订单。
+- [x] READY 前完成 orders、positions、balances 全量 reconcile；私有流 ready 只触发 `Full` reconcile，
+  三类快照和 `ReconcileCompleted` 发布成功后才发布 READY 并打开命令条件。
+- [x] QueueFull、私有流 error/gap 或账户事实发布失败后关闭 READY、发布 `StreamInvalidated`，并向有界
+  per-account lane 调度 `Full` reconcile；reconcile 失败保持失效并继续有界恢复。
+- [x] 消除新 AccountPlugin 路径的 `PublishEvent::LiveEvent` bridge：三家私有流通过
+  `AccountPublication` 同步直达 per-account encoder 并编码进入 EventEngine；旧 CLI 队列所需兼容转换仅保留
+  在 `PublishSender` 边界，随旧 CLI 一并退休。
+- [ ] 删除旧账户发布入口和重复账户缓存。
+- [x] 完成故障注入、长稳、stop/restart、shutdown policy 和资源泄漏测试。
+  shutdown policy 的 LeaveOpen/CancelAll/CancelAllAfter 选择、venue reject、deadline 传播，以及 Market
+  runtime 非协作 shutdown 的有界返回与后续 JoinHandle 回收已覆盖；Account 本地长稳测试已连续执行
+  2,000 轮 Full reconcile（每十轮注入一次 REST transport failure），验证 READY 反复关闭/恢复且订单、余额、
+  ID interner 不增长；10,000 次 operation churn 也验证终态历史严格受 1,024 上限约束。真实 per-account
+  runtime 线程另行验证正常 stop 幂等、停止后 restart 拒绝、deadline 超时后保留并二次回收 JoinHandle，及
+  runtime/ResourceScope 释放后 Weak 无法升级。真实网络故障与交易对账归入下方独立实盘验收项。
+- [x] 完成只读 Shadow reconcile：replacement candidate 使用关闭的 publisher admission 完成私有流与
+  全量 reconcile，旧 generation 停止并原子 swap 后才打开新 publisher，再发布新 generation 全量事实。
+- [ ] 完成小额 submit/cancel/partial-fill/reconnect 以及最终 orders/positions/balances 对账。
+  Binance Futures 已在目标机完成真实主网订单闭环：XRPUSDT、单笔名义金额不超过 5.10 USDT；被动限价单
+  `NEW -> query -> CANCELED`，批量限价单 `NEW -> amend -> CANCELED`，3.7 XRP 市价开仓与 reduce-only
+  平仓均为 `FILLED`，成交明细、手续费和 realized PnL 可查询。58 项主网接口检查还真实覆盖历史成交、
+  聚合成交、Kline、资金费率、持仓量与合约统计、账户与交易状态、普通/条件单查询及撤销、listenKey、
+  leverage/margin type/position mode/multi-assets mode、countdown cancel、isolated position margin 和
+  income async download；所有可逆设置都已恢复。真实动态插件的两代连接均完成私有流 READY 和两轮 Full
+  reconcile。实测同时修复了 serverTime/单对象响应解析、聚合成交短字段、布尔字段、浮点参数精度、
+  API-key-only 公共请求、批量请求编码与 HTTP method、修改订单必填字段与可见性窗口、条件单新参数、
+  symbol 大小写过滤、错误对象误解析为空订单、未绑定 symbol 触发 reconcile 风暴，以及私有流连接时误执行
+  cancel-all 等问题。最终独立原始接口全账户复核为零仓位、零普通挂单、零条件单和零保证金占用；XRPUSDT
+  为 CROSSED/5x，账户为单向持仓并开启 Multi-Assets。该总项继续保持未完成：5 USDT 最小订单无法
+  确定性制造部分成交，且 OKX、Hyperliquid 的真实账户验收尚未执行。
+
+### 4.2 MarketPlugin 与三家 MarketConnector
+
+- [x] 分别完成 Binance Futures、OKX、Hyperliquid 的统一 Connector 合约测试。
+  三家真实 Factory 已分别通过不联网的统一合约层测试：公开行情配置创建、instrument view、空 kind/未知
+  asset 拒绝、重复 kind 归一、未启动 snapshot 拒绝、unsubscribe operation 终态、幂等 stop 和 ResourceScope
+  释放；各 venue 的 sequence/checksum/recovery 解析测试也已覆盖。三家 production public stream 均已真实
+  连接；此外使用真实本地 TCP/WebSocket 握手逐家强制 peer-side disconnect，验证指数退避重连后从共享
+  desired state 完整重放订阅（Hyperliquid 的 l2Book/trades 双帧也逐连接完整验证）。统一 runtime 的 stop
+  deadline、JoinHandle 保留/回收及资源释放测试共同覆盖关闭契约。
+- [x] 覆盖 subscribe/unsubscribe/request_snapshot、订阅共享和新 consumer Snapshot：相同 asset/kind
+  只建立一次 venue subscription，最后一个引用释放才退订；纯共享或部分共享的新 consumer 会在其
+  EventEngine route 已建立后向具体 Connector 请求完整 Snapshot，适配层不缓存或伪造 stream 坐标。
+- [x] 覆盖 Snapshot/Delta、epoch、sequence、checksum、gap 和 QueueFull 恢复：Binance Futures 验证
+  REST snapshot、连续 delta、gap invalidation 与恢复 epoch；OKX 验证 snapshot/delta、sequence gap、checksum
+  失败及恢复 epoch（并修复失效后 epoch 被重置的问题）；Hyperliquid 的 l2Book 全量图像验证每次均为 snapshot
+  且 epoch 单调递增；共享适配器验证 EventEngine 发布失败后降级并请求 venue snapshot/recovery。
+- [x] 覆盖 stop deadline、失败回滚、压力和资源泄漏。统一 runtime 已验证非协作 shutdown 在 deadline
+  内返回并保留 JoinHandle 供后续回收、venue shutdown error 不误报 Stopped、停止后 restart 拒绝不残留
+  admission；阻塞 snapshot 下 command queue 明确暴露有界压力，stop 将 pending operation 全部终态化，
+  ResourceScope 关闭后 runtime 的 Weak 引用无法升级。
+- [x] 三家 Connector 均通过真实 PluginEngine/EventEngine 路径验证，不能只验证旧 Connector 入口。
+  当前动态 Core smoke 已实际加载三家插件包、创建 disabled MarketConnector、通过 `titan.market` Service
+  resolve 并跨 ABI 读取 instrument view，再验证统一 shutdown。Binance Futures 已用 release 构建连接真实
+  production public stream，经 MarketPlugin、PluginEngine 和 EventEngine FastLane 收到 snapshot/delta/trade/
+  BBO/funding，连续性正确且 drop/resync/rejected 均为 0。Hyperliquid 也已连接 production public stream，
+  真实 Depth/Trade 均通过相同三层路径到达 FastLane 并完成统一关闭。OKX 主站在当前网络不可达后，通过
+  测试支持的 `OKX_TEST_PUBLIC_WS_URL` 切换到官方美国区域 public endpoint；Depth/Trade 在 7.42 秒内到达
+  EventEngine，并完成 Connector、PluginEngine、FastLane 和 EventEngine 的统一关闭。测试同时支持
+  `OKX_TEST_PROXY`，网络失败时输出完整 health/counts。
+  2026-09-03 在目标机复验 Binance production 公共流时发现：旧组合端点 `/ws` 上 Depth/Trade/BBO
+  可达，但 `@markPrice@1s` 订阅 ACK/LIST_SUBSCRIPTIONS 可见后仍无推送。将生产连接按 Binance 路由拆分为
+  `public/ws`（Depth/Trade/BBO）与 `market/ws`（markPrice/Funding）后复测：XRPUSDT、BTCUSDT 均实时
+  收到 `titan.market.MarkPrice` 与 Funding 事件，Depth snapshot/delta、Trade、BBO 保持通过，Mark
+  Price/Funding 实时流因此更新为通过；独立 Python WebSocket 与 connector 探针结论一致。
+- [ ] 完成新入口切换后删除旧行情发布入口和重复 bridge。
+
+### 4.3 PluginEngine 剩余设计项
+
+- [x] 完成已有契约可落地的文件与管理 API 到 Runtime Definition 适配：`ConfigurationAdapter` 从 TOML
+  生成 Market/Account Definition，Core 在插件 RUNNING 后通过各自 Admin Service 串行创建/启动。
+  设计只声明配置“可来自数据库/配置服务”，未定义数据库或远程管理协议，因此不在本清单虚构对应适配器。
+- [x] 完成配置版本、ChangePlan 和插件包替换流程的集成验收；包版本/来源已进入不可变
+  `PluginPlan`，稳定 `ServiceHandle` 可观察新 Endpoint generation，候选包启动失败会恢复旧包和旧配置。
+- [x] 完成 DEDICATED、BACKGROUND、PASSIVE、ColdAsyncRuntime 的组合测试：三种声明模型进入
+  PluginPlan；PASSIVE 拒绝订阅任务；DEDICATED 使用独立线程并执行 Gate/CPU affinity；BACKGROUND
+  subscriber 进入 RuntimeHost 共享的有界 ColdAsyncRuntime，异步等待 Gate，停止时等待任务退出并退休
+  SubscriptionToken；BlockingExecutor 同样验证有界准入。
+- [x] 完成 CPU affinity、callback budget、Watchdog、线程心跳和 STALLED 状态验收。
+  CPU 可用性/Gate 已在真实 DEDICATED 创建边界校验；CallbackMonitor 覆盖 soft budget、连续超限阈值
+  和运行中 stall 扫描，ThreadHeartbeat 提供 age/stale 判定。RuntimeHost 为声明 callback budget 的订阅运行时
+  启动独立 Watchdog，以不大于 stall threshold 四分之一的周期扫描；卡死后关闭共享 Gate、使 Endpoint
+  不可用、发布 `PluginCallbackStalled`/`PluginHealthChanged`，并在诊断中呈现 `FAILED/STALLED`。
+- [x] 完成结构化运行异常、`PluginHealthChanged`、Endpoint generation 切换和不可用处理；Core 目录注册
+  固定 schema 事件，故障事件保留 TraceContext，失败实例 Gate 与服务立即关闭。
+- [x] 完成 TraceContext、Flight Recorder、后台导出、完整指标和诊断工具的生产接入。
+  TraceContext 已贯穿 Event/Service；PluginEngine 现以固定槽位、原子覆盖且写冲突不等待的有界
+  FlightRecorder 记录 callback、Service 调用及 lifecycle fault，错误、拒绝、超预算和卡死记录强制保留，
+  异常快照通过有界队列交给独立后台 exporter，热路径不取得全局锁、不执行格式化或同步 I/O；并发测试验证
+  多写者快照不会出现字段撕裂，写冲突通过 `dropped_records` 显式计数。已增加无锁热路径的 per-plugin/
+  per-service 原子指标、provider/
+  consumer 标签，以及聚合 profile/route/plugin/service 的冷路径快照；实例诊断已包含依赖、订阅、execution、
+  heartbeat、callback budget、queue/pending/outstanding、按类型资源计数和最近错误；failure reason 与
+  resource type 失败计数也作为独立标签快照提供。Runtime Definition 的版本/状态继续由对应 Market/Account
+  插件诊断负责，PluginEngine 不复制插件内部权威状态。
+
+### 4.4 EventEngine 性能和可靠性验收
+
+- [x] 消除 `pending_retry_preserves_fifo_after_gate_opens` 在全工作区并行测试中的偶发失败。
+- [x] 固定运行 Async lane、pending、health、EventLease 和生命周期竞争的 loom/等价模型测试。
+- [x] 完成多 Broker、多 Primary lane 峰值压测和单 handler 卡死隔离测试。四个独立 source/routing
+  domain 各突发发布 1,024 条可靠事件到四个 Primary lane，验证无跨路由、三水位全部提交、lane health
+  保持 NORMAL 且 shutdown 后 EventArena 无残留；独立阻塞 handler 的测试验证其 lane 进入
+  RESYNC_REQUIRED 时健康 lane 仍完整提交全部事件。
+- [x] 验证 Dedicated、SpinSleep、Park、CPU affinity 和物理核心隔离。三种 policy 均在独立命名
+  worker 上完成实际投递；Dedicated 强制配置 affinity。启动配置会拒绝不存在的 core，以及 EventLoop、
+  普通 subscriber core pool 间的重复绑定；动态 Primary lane 对显式 affinity 执行独占预约，重复绑定失败，
+  lane 退休后才释放 core 供下一 generation 使用。Worker 启动通过握手确认操作系统 affinity 调用成功，
+  不支持线程绑核的平台（如当前 macOS runner）会明确返回 `CpuAffinityFailed`，不会伪报隔离成功。
+- [ ] 调优 Arena、Ingress、Async lane、pending 和 staging 的有界容量。
+  机制层已经具备配置化边界：`snapshot_barriers` 统一限制活动 barrier 数、每 barrier staging、全局
+  staging 总量和最大 deadline；跨 lane 的容量耗尽、staging/replay 超时、abort、unregister/stop 均已通过
+  故障注入验证额度和 EventLease 会释放。这里保留未完成，仅指仍需依据目标硬件、Broker 峰值与恢复窗口
+  计算并冻结生产容量，不把设计示例值误报为已调优结果。
+- [ ] 在目标硬件冻结 publisher admission、worker dispatch、handler commit 的 P99/P99.9
+  PerformanceEnvelope，并建立 CI 回归门槛。
+
+### 4.5 Bar/Tick/Hybrid 最终验收
+
+- [x] 同一份逐笔数据经过离线和流式 Builder 后生成完全一致的 Bar。
+- [x] 验证 Bar-only 不进入 1 ms 帧循环，且 `on_bar(s)` 订单不能在刚关闭的 Bar 中成交。
+- [x] 覆盖整点成交、空周期、行情断档和多周期同时关闭。
+- [x] 验证实盘迟到成交不修改已发布 Bar，REST 补齐不重复触发。
+- [x] 提供 Numba 策略与纯 Rust 策略的稳态性能对比。Release 基准使用相同 ABI、相同状态增量和相同
+  1,000,000 次预热，分别执行 10,000 × 1,000 次调用并校验最终状态；Apple M1 Pro 实测 Rust
+  P50/P99/P99.9 为 3.375/3.750/4.458 ns，Numba 为 28.750/31.375/35.416 ns。工具与 JSON 报告均已入库，
+  并明确该数字只代表回调 ABI 边界，不替代目标生产硬件的全链路 PerformanceEnvelope。
+
+### 4.6 构建、回归和旧代码清理
+
+- [x] 固化 Python 动态库的构建/运行环境，使工作区测试和 `titan` 命令无需人工临时设置
+  `DYLD_LIBRARY_PATH`。
+- [x] 将完整 workspace、全 feature Connector、动态插件和端到端链路测试纳入 CI。
+- [x] 删除 CLI 的旧 LiveBot/Iceoryx 启动路径。
+- [ ] 删除 Connector 中不再使用的旧 PublishSender、PublishEvent 和重复 Runtime 管理代码。
+- [ ] 确认同一业务事实不存在新旧路径双重发布或双重消费。
+
+## 5. ABI 与文档同步
+
+- [x] Strategy ABI v8 Funding 配置字段、布局和冲突校验已实现。
+- [x] Rust 和 Python SDK 已执行严格 ABI 版本校验，不存在结构体尺寸回退。
+- [x] 将 Strategy ABI v8 文档标记为历史迁移文档。
+- [x] 补充当前 ABI v9 的迁移说明；当前 Rust 和 Python SDK 实际版本均为 9。
+- [x] 更新 AccountPlugin 文档的“待实现”状态，使其反映主体代码已经落地、Phase 5 和实盘验收仍待完成。
+- [x] 更新 EventEngine 实施记录，区分内部能力已实现与 v1.4 跨组件迁移尚未完成。
+
+## 6. 剩余任务执行顺序与前置条件
+
+Core API、动态插件、三家交易所插件包、Core 装配、Fresh-only StrategyPlugin、Numba 和 Fake 端到端闭环
+已经完成。剩余工作不阻塞当前软件闭环，按外部条件推进：
+
+1. 在明确提供的测试账户、凭据和小额资金环境中完成三家交易所 submit/cancel/partial-fill/reconnect 与
+   最终对账；凭据不得写入仓库或测试输出。
+2. 在指定目标硬件和目标负载上调优有界容量，冻结 publisher admission、worker dispatch、handler commit
+   的 P99/P99.9，并据实设置 CI 回归门槛。
+3. 删除 Connector 内部仅供旧 Connector trait 兼容的 `PublishSender/PublishEvent`、重复账户缓存和 Runtime
+   管理代码，最后验证不存在事实双重发布或消费；CLI 的旧 LiveBot/Iceoryx 路径已经删除。
+
+## 7. 未来插件待办（不阻塞当前闭环）
+
+- [ ] Risk 插件：独立设计完成后提供风险决策 Service，并由 StrategyPlugin 选择性绑定。
+- [ ] Checkpoint/Store 插件：独立设计持久化、版本和失败语义后提供状态快照存储。
+- [ ] Recovery 插件：独立设计恢复 generation、协调和启动策略后扩展当前 Fresh-only profile。
+- [ ] StreamBoundary Provider 插件：独立定义 Market/Account boundary 取得与发布契约后接入
+  EventEngine SnapshotBarrier。
+
+上述插件未安装时，当前实现不会导出对应 Service，不会声明对应依赖；非 Fresh recovery 配置会在创建策略
+时明确拒绝。

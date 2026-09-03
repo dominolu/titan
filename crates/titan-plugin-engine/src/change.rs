@@ -66,7 +66,9 @@ pub fn compile_change_plan(
             (Some(_), None) => ChangeKind::Removed,
             (Some(old), Some(new))
                 if old.spec.plugin_type != new.spec.plugin_type
-                    || old.spec.execution != new.spec.execution =>
+                    || old.spec.execution != new.spec.execution
+                    || old.package_version != new.package_version
+                    || old.package_source != new.package_source =>
             {
                 ChangeKind::RestartPlugin
             }

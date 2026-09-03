@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -27,7 +24,7 @@ use tokio_tungstenite::{
 use tracing::{debug, error, warn};
 
 use crate::{
-    connector::{MarketDataCommand, MarketStreamMetadata, PublishEvent},
+    connector::{AccountPublication, MarketDataCommand, MarketStreamMetadata, PublishEvent},
     hyperliquid::{
         HyperliquidError, SharedAssets, SharedMarketSubscriptions, SharedSymbolSet,
         client::HyperliquidClient,
@@ -94,7 +91,7 @@ pub struct HyperliquidWs {
     command_rx: Receiver<MarketDataCommand>,
     market_subscriptions: SharedMarketSubscriptions,
     private_channels: bool,
-    private_subscriptions_remaining: AtomicU8,
+    pending_private_subscriptions: HashSet<String>,
 }
 
 impl HyperliquidWs {
@@ -127,8 +124,24 @@ impl HyperliquidWs {
             command_rx,
             market_subscriptions,
             private_channels,
-            private_subscriptions_remaining: AtomicU8::new(0),
+            pending_private_subscriptions: HashSet::new(),
         }
+    }
+
+    fn reset_private_subscriptions(&mut self) {
+        self.pending_private_subscriptions = HashSet::from([
+            "orderUpdates".to_string(),
+            "userEvents".to_string(),
+            "userFundings".to_string(),
+        ]);
+    }
+
+    fn subscription_response_type(msg: &WsMsg) -> Option<&str> {
+        msg.subscription
+            .as_ref()
+            .or_else(|| msg.data.as_ref()?.get("subscription"))?
+            .get("type")?
+            .as_str()
     }
 
     async fn handle_msg(&mut self, text: &str) -> Result<(), HyperliquidError> {
@@ -137,13 +150,10 @@ impl HyperliquidWs {
         if channel == "subscriptionResponse" {
             debug!(?msg, "subscription response");
             if self.private_channels {
-                let remaining = self
-                    .private_subscriptions_remaining
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                        value.checked_sub(1)
-                    })
-                    .unwrap_or(0);
-                if remaining == 1 {
+                let ready = Self::subscription_response_type(&msg)
+                    .is_some_and(|kind| self.pending_private_subscriptions.remove(kind))
+                    && self.pending_private_subscriptions.is_empty();
+                if ready {
                     self.ev_tx
                         .send(PublishEvent::PrivateStreamReady)
                         .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
@@ -156,7 +166,7 @@ impl HyperliquidWs {
         }
         if channel == "error" {
             error!(?msg, "WebSocket error.");
-            return Ok(());
+            return Err(HyperliquidError::ConnectionInterrupted);
         }
         let Some(data) = msg.data.as_ref() else {
             debug!(%channel, "Message without data.");
@@ -405,7 +415,7 @@ impl HyperliquidWs {
             match order_manager.update_from_ws(&update.order, &update.status) {
                 Ok(Some(order)) => {
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
+                        .send_account(AccountPublication::Order { symbol, order })
                         .unwrap();
                 }
                 Ok(None) => {}
@@ -440,11 +450,11 @@ impl HyperliquidWs {
                 let qty = *position;
                 drop(positions);
                 self.ev_tx
-                    .send(PublishEvent::LiveEvent(LiveEvent::Position {
+                    .send_account(AccountPublication::Position {
                         symbol: fill.coin.clone(),
                         qty,
                         exch_ts: (fill.time * 1_000_000) as i64,
-                    }))
+                    })
                     .unwrap();
             }
         }
@@ -575,8 +585,7 @@ impl HyperliquidWs {
 
         // Seed the local positions before any fill event can arrive.
         if self.private_channels {
-            self.private_subscriptions_remaining
-                .store(3, Ordering::Release);
+            self.reset_private_subscriptions();
             if let Err(error) = self.seed_positions().await {
                 error!(?error, "Couldn't seed the initial positions.");
             }
@@ -644,9 +653,7 @@ impl HyperliquidWs {
                 message = read.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
-                            if let Err(error) = self.handle_msg(&text).await {
-                                error!(?error, %text, "Couldn't handle the WebSocket message.");
-                            }
+                            self.handle_msg(&text).await?;
                         }
                         Some(Ok(Message::Ping(_))) => {
                             write.send(Message::Pong(Bytes::default())).await?;
@@ -718,10 +725,10 @@ async fn cancel_open_orders(
     let orders = order_manager.lock().unwrap().cancel_all(&symbol);
     for order in orders {
         ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Order {
+            .send_account(AccountPublication::Order {
                 symbol: symbol.clone(),
                 order,
-            }))
+            })
             .unwrap();
     }
     Ok(())
@@ -744,11 +751,11 @@ async fn get_position(
         let qty: f64 = position.szi.parse().unwrap_or(0.0);
         positions.lock().unwrap().insert(symbol.clone(), qty);
         ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Position {
+            .send_account(AccountPublication::Position {
                 symbol: position.coin,
                 qty,
                 exch_ts: (position.update_time * 1_000_000) as i64,
-            }))
+            })
             .unwrap();
     }
     Ok(())
@@ -757,6 +764,133 @@ async fn get_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
+        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Arc::new(Mutex::new(
+                crate::hyperliquid::ordermanager::OrderManager::default(),
+            )),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashSet::from(["BTC".to_owned()]))),
+            Arc::new(Mutex::new(0)),
+            String::new(),
+            [0; 32],
+            false,
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Arc::new(Mutex::new(HashMap::new())),
+            false,
+        );
+        let image = serde_json::json!({
+            "coin": "BTC",
+            "time": 1,
+            "levels": [
+                [{"px": "100", "sz": "2", "n": 1}],
+                [{"px": "101", "sz": "3", "n": 1}]
+            ]
+        });
+
+        for expected_epoch in 1..=2 {
+            ws.handle_l2_book(&image).await.unwrap();
+            match receiver.recv().await.unwrap() {
+                PublishEvent::FeedBatch {
+                    symbol,
+                    events,
+                    stream: Some(stream),
+                } => {
+                    assert_eq!(symbol, "BTC");
+                    assert_eq!(events.len(), 2);
+                    assert!(stream.snapshot);
+                    assert_eq!(stream.epoch, expected_epoch);
+                    assert_eq!(stream.first_update_sequence, 1);
+                    assert_eq!(stream.last_update_sequence, 1);
+                }
+                _ => panic!("expected Hyperliquid depth snapshot"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn private_ready_ignores_public_and_duplicate_subscription_responses() {
+        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Arc::new(Mutex::new(
+                crate::hyperliquid::ordermanager::OrderManager::default(),
+            )),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            [0; 32],
+            false,
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Default::default(),
+            true,
+        );
+        ws.reset_private_subscriptions();
+
+        for kind in ["l2Book", "orderUpdates", "orderUpdates", "userEvents"] {
+            let message = serde_json::json!({
+                "channel": "subscriptionResponse",
+                "data": {"subscription": {"type": kind}}
+            });
+            ws.handle_msg(&message.to_string()).await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(1), receiver.recv())
+                    .await
+                    .is_err()
+            );
+        }
+
+        let final_ack = serde_json::json!({
+            "channel": "subscriptionResponse",
+            "data": {"subscription": {"type": "userFundings"}}
+        });
+        ws.handle_msg(&final_ack.to_string()).await.unwrap();
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            PublishEvent::PrivateStreamReady
+        ));
+
+        ws.handle_msg(&final_ack.to_string()).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_error_invalidates_the_connection() {
+        let (events, _receiver) = crate::connector::publish_channel(4);
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            [0; 32],
+            false,
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Default::default(),
+            true,
+        );
+        let error = ws
+            .handle_msg(r#"{"channel":"error","error":"bad subscription"}"#)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HyperliquidError::ConnectionInterrupted));
+    }
 
     #[test]
     fn test_classify_channel() {

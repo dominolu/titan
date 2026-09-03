@@ -23,7 +23,9 @@ use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
 
 use crate::{
-    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
+    connector::{
+        AccountPublication, Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent,
+    },
     okx::{
         ordermanager::{OrderManager, SharedOrderManager},
         rest::OkxClient,
@@ -247,10 +249,10 @@ impl Okx {
                         "An error occurred in the private stream connection."
                     );
                     ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        .send_account(AccountPublication::Error(LiveError::with(
                             ErrorKind::ConnectionInterrupted,
                             error.to_value(),
-                        ))))
+                        )))
                         .unwrap();
                     Ok(())
                 })
@@ -299,7 +301,9 @@ impl ConnectorBuilder for Okx {
         let (symbol_tx, _) = broadcast::channel(500);
         let (market_tx, _) = broadcast::channel(500);
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10));
         if !config.proxy.is_empty() {
             builder = builder.proxy(reqwest::Proxy::all(&config.proxy)?);
         }
@@ -664,3 +668,37 @@ fn submit_fail(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn public_stream_reconnects_and_replays_desired_subscription() {
+        let (url, mut subscriptions, server) =
+            crate::connector::reconnecting_websocket_server(1).await;
+        let config = format!(
+            "rest_url = \"http://127.0.0.1:9\"\npublic_ws_url = {url:?}\nprivate_ws_url = {url:?}\napi_key = \"\"\nsecret = \"\"\npassphrase = \"\"\norder_prefix = \"test\"\nsafety_timeout_ms = 0\n"
+        );
+        let mut connector = Okx::build_from(&config).unwrap();
+        connector.subscribe_market_data(
+            "BTC-USDT-SWAP".to_owned(),
+            vec![MarketDataKind::Depth, MarketDataKind::Trades],
+        );
+        let (events, _event_receiver) = crate::connector::publish_channel(16);
+        connector.run_market_data(events);
+
+        for _ in 0..2 {
+            let subscription =
+                tokio::time::timeout(std::time::Duration::from_secs(3), subscriptions.recv())
+                    .await
+                    .expect("connector did not reconnect before deadline")
+                    .expect("websocket fixture ended before reconnect");
+            assert!(subscription.contains("subscribe"));
+            assert!(subscription.contains("BTC-USDT-SWAP"));
+            assert!(subscription.contains("books"));
+            assert!(subscription.contains("trades"));
+        }
+        server.await.unwrap();
+    }
+}

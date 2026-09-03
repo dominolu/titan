@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use crate::hyperliquid::{
@@ -26,7 +27,11 @@ pub struct HyperliquidClient {
 impl HyperliquidClient {
     pub fn new(info_url: &str, exchange_url: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
+                .build()
+                .expect("static Hyperliquid HTTP client configuration is valid"),
             info_url: info_url.to_string(),
             exchange_url: exchange_url.to_string(),
             private_key: None,

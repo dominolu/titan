@@ -1,12 +1,37 @@
 schema_version = 1
-history_capacity = 16
+connector_plugin_packages = []
 
-[live]
-frame_interval_ns = 10000000
-max_tick_batch = 65536
+[[plugins]]
+instance_id = "market"
+plugin_type = "titan.market"
+config = {}
 
-[[live.instruments]]
-connector = "titan-cli-test"
-symbol = "BTCUSDT"
-tick_size = 0.1
-lot_size = 0.001
+[[plugins]]
+instance_id = "account"
+plugin_type = "titan.account"
+config = {}
+
+[[plugins]]
+instance_id = "strategy"
+plugin_type = "titan.strategy"
+config = { allowed_artifact_roots = ["../../../../strategies"], python_paths = ["../../../../strategies", "../../../../python/titan-strategy-sdk"] }
+
+[plugins.execution]
+model = "Dedicated"
+
+[[strategies]]
+strategy_key = "event_counter"
+strategy_id = 701
+package = { loader_type = "numba-python", uri = "file://../../../../strategies/event_counter", expected_digest = [196, 208, 8, 89, 144, 161, 123, 205, 18, 167, 187, 75, 229, 255, 113, 78, 196, 50, 231, 95, 87, 201, 52, 66, 31, 153, 185, 99, 235, 46, 192, 187] }
+entrypoint = "event_counter.strategy:build"
+parameters = [123, 125]
+parameter_schema_version = 1
+markets = []
+accounts = []
+subscriptions = [{ event_type = "titan.market.TradeBatch", schema_version = 1, routing_keys = [1], qos = "ReliableOrdered" }]
+risk_scope = "unused"
+runtime = { async_lane_capacity = 64, critical_reserve = 8, reliable_pending_capacity = 16, worker_policy = "spin_sleep", command_capacity = 16, timer_capacity = 16, state_f64_capacity = 16, state_i64_capacity = 16, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+recovery = "fresh"
+shutdown = "leave_owned_orders"
+enabled = true
+definition_version = 1

@@ -11,8 +11,8 @@ use std::{
 
 use crossbeam_queue::ArrayQueue;
 use titan_plugin_engine::{
-    DispatchOutcome, ErrorKind, EventHandler, EventQos, EventReceiver, EventView, LifecycleState,
-    PluginError, PluginIdentity, SubscriptionSpec,
+    DispatchOutcome, ErrorKind, EventHandler, EventQos, EventReceiver, EventReceiverDiagnostics,
+    EventView, LifecycleState, PluginError, PluginIdentity, SubscriptionSpec,
 };
 
 use crate::{
@@ -305,6 +305,15 @@ impl EventReceiver for SubscriberChannel {
                     "subscriber handler failed or panicked",
                 ))
             }
+        }
+    }
+
+    fn diagnostics(&self) -> EventReceiverDiagnostics {
+        let snapshot = self.health.snapshot();
+        EventReceiverDiagnostics {
+            channel_depth: snapshot.channel_depth,
+            pending_depth: snapshot.pending_depth,
+            outstanding_handles: snapshot.outstanding_handles,
         }
     }
 }

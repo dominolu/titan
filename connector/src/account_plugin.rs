@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hftbacktest::types::{LiveEvent, OrdType, Side, Status, TimeInForce};
+use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use titan_account_plugin as account;
 use titan_account_plugin::SecretValue;
 use titan_plugin_engine::{ClosureResource, TraceContext};
@@ -27,7 +27,8 @@ use crate::{
         UnifiedOrderRequest,
     },
     connector::{
-        Connector, ConnectorBuilder, DirectPublication, PublishEvent, direct_publish_sender,
+        AccountPublication, Connector, ConnectorBuilder, DirectPublication, PublishEvent,
+        direct_publish_sender,
     },
 };
 
@@ -48,12 +49,123 @@ struct Running {
     command: mpsc::Sender<Command>,
     stop: Option<oneshot::Sender<Instant>>,
     thread: Option<JoinHandle<()>>,
+    shutdown_result: Arc<Mutex<Option<Result<(), account::AccountConnectorError>>>>,
+}
+
+#[async_trait::async_trait]
+trait ShutdownActions: Send + Sync {
+    async fn cancel_all(&self) -> Result<(), String>;
+    async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+trait ReconcileApi: Send + Sync {
+    async fn open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError>;
+    async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError>;
+    async fn account(&self) -> Result<crate::api::AccountInfo, crate::api::ApiError>;
+}
+
+#[async_trait::async_trait]
+impl<T: BrokerApi + ?Sized> ReconcileApi for T {
+    async fn open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError> {
+        self.get_open_orders(symbol).await
+    }
+
+    async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError> {
+        self.get_positions(None).await
+    }
+
+    async fn account(&self) -> Result<crate::api::AccountInfo, crate::api::ApiError> {
+        self.get_account().await
+    }
+}
+
+struct VenueShutdownActions<'a> {
+    connector: &'a dyn Connector,
+    api: &'a dyn BrokerApi,
+}
+
+#[async_trait::async_trait]
+impl ShutdownActions for VenueShutdownActions<'_> {
+    async fn cancel_all(&self) -> Result<(), String> {
+        self.connector.shutdown().await
+    }
+
+    async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), String> {
+        self.api
+            .cancel_all_after(timeout_ms)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+async fn execute_shutdown_policy(
+    actions: &impl ShutdownActions,
+    policy: &account::ShutdownOrderPolicy,
+    deadline: Instant,
+) -> Result<(), account::AccountConnectorError> {
+    match policy {
+        account::ShutdownOrderPolicy::LeaveOpen => Ok(()),
+        account::ShutdownOrderPolicy::CancelAll => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, actions.cancel_all()).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(account::AccountConnectorError::rejected(error)),
+                Err(_) => Err(account::AccountConnectorError::new(
+                    account::AccountErrorKind::DeadlineExceeded,
+                    "account connector shutdown deadline exceeded",
+                )),
+            }
+        }
+        account::ShutdownOrderPolicy::CancelAllAfter { timeout_ms } => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, actions.cancel_all_after(*timeout_ms)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(account::AccountConnectorError::rejected(error)),
+                Err(_) => Err(account::AccountConnectorError::new(
+                    account::AccountErrorKind::DeadlineExceeded,
+                    "cancel-all-after shutdown deadline exceeded",
+                )),
+            }
+        }
+    }
 }
 
 #[derive(Default)]
 struct Operations {
     values: HashMap<account::OperationId, account::AccountConnectorOperationSnapshot>,
     terminal: VecDeque<account::OperationId>,
+}
+
+struct CommandJournal {
+    values: HashMap<account::CommandId, (Command, account::AccountCommandReceipt)>,
+    order: VecDeque<account::CommandId>,
+    capacity: usize,
+}
+
+impl CommandJournal {
+    fn new(capacity: usize) -> Self {
+        Self {
+            values: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn insert(
+        &mut self,
+        id: account::CommandId,
+        command: Command,
+        receipt: account::AccountCommandReceipt,
+    ) {
+        while self.values.len() >= self.capacity {
+            if let Some(expired) = self.order.pop_front() {
+                self.values.remove(&expired);
+            }
+        }
+        self.order.push_back(id);
+        self.values.insert(id, (command, receipt));
+    }
 }
 impl Operations {
     fn set(
@@ -140,7 +252,7 @@ struct AccountRuntime {
     positions: Arc<Mutex<Arc<[account::PositionSnapshot]>>>,
     balances: Arc<Mutex<Arc<[account::BalanceSnapshot]>>>,
     external_order_count: Arc<AtomicU64>,
-    journal: Mutex<HashMap<account::CommandId, (Command, account::AccountCommandReceipt)>>,
+    journal: Mutex<CommandJournal>,
     ids: Arc<Mutex<IdInterner>>,
 }
 
@@ -151,6 +263,7 @@ impl AccountRuntime {
         shutdown_policy: account::ShutdownOrderPolicy,
         context: account::AccountConnectorContext,
     ) -> Arc<Self> {
+        let journal_capacity = context.command_queue_capacity.max(1);
         let value = Arc::new(Self {
             context,
             shutdown_policy,
@@ -168,7 +281,7 @@ impl AccountRuntime {
             positions: Arc::new(Mutex::new(Arc::from([]))),
             balances: Arc::new(Mutex::new(Arc::from([]))),
             external_order_count: Arc::new(AtomicU64::new(0)),
-            journal: Mutex::new(HashMap::new()),
+            journal: Mutex::new(CommandJournal::new(journal_capacity)),
             ids: Arc::new(Mutex::new(IdInterner::default())),
         });
         let weak = Arc::downgrade(&value);
@@ -201,7 +314,7 @@ impl AccountRuntime {
         command: Command,
     ) -> Result<account::AccountCommandReceipt, account::AccountConnectorError> {
         let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((old, receipt)) = journal.get(&id) {
+        if let Some((old, receipt)) = journal.values.get(&id) {
             return if old == &command {
                 Ok(receipt.clone())
             } else {
@@ -234,7 +347,7 @@ impl AccountRuntime {
             ),
         })?;
         let receipt = Self::receipt(id, client, self.context.account);
-        journal.insert(id, (command, receipt.clone()));
+        journal.insert(id, command, receipt.clone());
         Ok(receipt)
     }
     fn snapshot<T>(&self, items: Arc<[T]>) -> account::AccountStateSnapshot<T> {
@@ -271,17 +384,37 @@ impl account::AccountConnector for AccountRuntime {
         if self.active.swap(true, Ordering::AcqRel) {
             return Err(rejected("account connector already running"));
         }
-        let mut connector = self
+        let mut connector = match self
             .connector
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
-            .ok_or_else(|| {
-                rejected("account connector cannot restart after resources were released")
-            })?;
+        {
+            Some(connector) => connector,
+            None => {
+                self.active.store(false, Ordering::Release);
+                return Err(rejected(
+                    "account connector cannot restart after resources were released",
+                ));
+            }
+        };
         for b in self.context.instruments.iter() {
             connector.register_account(b.native_symbol.to_string());
         }
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                *self.connector.lock().unwrap_or_else(|p| p.into_inner()) = Some(connector);
+                self.active.store(false, Ordering::Release);
+                return Err(rejected(format!(
+                    "cannot create account async runtime: {error}"
+                )));
+            }
+        };
         let api = self.api.clone();
         let context = self.context.clone();
         let epoch = self.epoch.clone();
@@ -296,43 +429,44 @@ impl account::AccountConnector for AccountRuntime {
         let ids = self.ids.clone();
         let shutdown_policy = self.shutdown_policy.clone();
         let (command_tx, mut command_rx) = mpsc::channel(context.command_queue_capacity);
-        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let (stop_tx, mut stop_rx) = oneshot::channel::<Instant>();
+        let shutdown_result = Arc::new(Mutex::new(None));
+        let thread_shutdown_result = shutdown_result.clone();
         let recovery_tx = command_tx.clone();
         let thread = std::thread::Builder::new()
             .name(format!("account-{}", context.account.account_id.0))
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()
-                    .expect("account tokio runtime");
                 runtime.block_on(async move {
                     reconciling.store(true, Ordering::Release);
-                    let bridge = Arc::new(LegacyBridge {
+                    let encoder = Arc::new(AccountEventEncoder {
                         context: context.clone(),
                         epoch: epoch.clone(),
                         version: version.clone(),
                         ready: ready.clone(),
                         reconciling: reconciling.clone(),
                         ids: ids.clone(),
-                        pending: Mutex::new(Vec::new()),
+                        pending: Mutex::new(VecDeque::with_capacity(
+                            context.command_queue_capacity,
+                        )),
+                        pending_capacity: context.command_queue_capacity,
                     });
-                    let bridge_events = bridge.clone();
+                    let account_events = encoder.clone();
                     let event_recovery = recovery_tx.clone();
                     let tx = direct_publish_sender(move |publication| {
-                        let DirectPublication::Event(event) = publication else {
-                            return;
-                        };
-                        match event {
-                            PublishEvent::PrivateStreamReady => {
+                        match publication {
+                            DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
                                 let _ = event_recovery.try_send(Command::PrivateStreamReady);
                             }
-                            PublishEvent::LiveEvent(LiveEvent::Error(_)) => {
-                                bridge_events.invalidate(1);
+                            DirectPublication::Account(AccountPublication::Error(_)) => {
+                                account_events.invalidate(1);
+                                let _ = event_recovery.try_send(Command::Reconcile(
+                                    account::ReconcileScope::Full,
+                                    account::OperationId(0),
+                                ));
                             }
-                            PublishEvent::LiveEvent(event) => {
-                                if bridge_events.publish_live(event).is_err() {
-                                    bridge_events.invalidate(2);
+                            DirectPublication::Account(event) => {
+                                if account_events.publish(event).is_err() {
+                                    account_events.invalidate(2);
                                     let _ = event_recovery.try_send(Command::Reconcile(
                                         account::ReconcileScope::Full,
                                         account::OperationId(0),
@@ -346,21 +480,21 @@ impl account::AccountConnector for AccountRuntime {
                     loop {
                         tokio::select! {
                             deadline = &mut stop_rx => {
-                                let deadline = deadline.unwrap_or_else(|_| Instant::now());
-                                let remaining = deadline.saturating_duration_since(Instant::now());
-                                match shutdown_policy {
-                                    account::ShutdownOrderPolicy::LeaveOpen => {}
-                                    account::ShutdownOrderPolicy::CancelAll => {
-                                        let _ = tokio::time::timeout(remaining, connector.shutdown()).await;
-                                    }
-                                    account::ShutdownOrderPolicy::CancelAllAfter { timeout_ms } => {
-                                        let _ = tokio::time::timeout(
-                                            remaining,
-                                            api.cancel_all_after(timeout_ms),
-                                        )
-                                        .await;
-                                    }
-                                }
+                                let result = match deadline {
+                                    Err(_) => Err(account::AccountConnectorError::new(
+                                        account::AccountErrorKind::ResourceReleaseFailed,
+                                        "account stop signal was dropped",
+                                    )),
+                                    Ok(deadline) => execute_shutdown_policy(
+                                        &VenueShutdownActions {
+                                            connector: connector.as_ref(),
+                                            api: api.as_ref(),
+                                        },
+                                        &shutdown_policy,
+                                        deadline,
+                                    ).await,
+                                };
+                                *thread_shutdown_result.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
                                 break;
                             }
                             command = command_rx.recv() => match command {
@@ -382,8 +516,8 @@ impl account::AccountConnector for AccountRuntime {
                                         &recovery_tx,
                                     )
                                     .await;
-                                    if bridge.replay().is_err() {
-                                        bridge.invalidate(2);
+                                    if encoder.replay().is_err() {
+                                        encoder.invalidate(2);
                                         schedule_reconcile(recovery_tx.clone());
                                     }
                                 }
@@ -393,11 +527,15 @@ impl account::AccountConnector for AccountRuntime {
                     }
                 });
             })
-            .map_err(|e| rejected(e.to_string()))?;
+            .map_err(|error| {
+                self.active.store(false, Ordering::Release);
+                rejected(error.to_string())
+            })?;
         *self.running.lock().unwrap_or_else(|p| p.into_inner()) = Some(Running {
             command: command_tx,
             stop: Some(stop_tx),
             thread: Some(thread),
+            shutdown_result,
         });
         Ok(())
     }
@@ -406,8 +544,13 @@ impl account::AccountConnector for AccountRuntime {
     }
     fn submit(
         &self,
-        c: account::SubmitOrderCommand,
+        mut c: account::SubmitOrderCommand,
     ) -> Result<account::AccountCommandReceipt, account::AccountConnectorError> {
+        // All supported venues accept the 32 hexadecimal characters produced by Id128. Reusing
+        // command_id makes a retry queryable without generating a second exchange order.
+        if c.client_order_id.is_none() {
+            c.client_order_id = Some(c.command_id);
+        }
         let id = c.command_id;
         let client = c.client_order_id;
         self.admit(id, client, Command::Submit(c))
@@ -588,6 +731,7 @@ impl AccountRuntime {
     fn stop_inner(&self, deadline: Instant) -> Result<(), account::AccountConnectorError> {
         self.ready.store(false, Ordering::Release);
         self.active.store(false, Ordering::Release);
+        self.context.event_publisher.close();
         let Some(mut running) = self
             .running
             .lock()
@@ -615,21 +759,32 @@ impl AccountRuntime {
                 .join()
                 .map_err(|_| rejected("account runtime thread panicked"))?;
         }
-        self.context.event_publisher.close();
-        Ok(())
+        let result = running
+            .shutdown_result
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .unwrap_or_else(|| {
+                Err(account::AccountConnectorError::new(
+                    account::AccountErrorKind::ResourceReleaseFailed,
+                    "account runtime exited without shutdown result",
+                ))
+            });
+        result
     }
 }
 
-struct LegacyBridge {
+struct AccountEventEncoder {
     context: account::AccountConnectorContext,
     epoch: Arc<AtomicU64>,
     version: Arc<AtomicU64>,
     ready: Arc<AtomicBool>,
     reconciling: Arc<AtomicBool>,
     ids: Arc<Mutex<IdInterner>>,
-    pending: Mutex<Vec<LiveEvent>>,
+    pending: Mutex<VecDeque<AccountPublication>>,
+    pending_capacity: usize,
 }
-impl LegacyBridge {
+impl AccountEventEncoder {
     fn header(&self, kind: u16, flags: u16, ts: i64) -> account::AccountEventHeaderV1 {
         account::AccountEventHeaderV1 {
             account_id: self.context.account.account_id.0,
@@ -642,18 +797,22 @@ impl LegacyBridge {
             receive_ts: now_ns(),
         }
     }
-    fn publish_live(&self, event: &LiveEvent) -> Result<(), account::AccountConnectorError> {
+    fn publish(&self, event: &AccountPublication) -> Result<(), account::AccountConnectorError> {
         if (self.reconciling.load(Ordering::Acquire) || !self.context.event_publisher.is_open())
-            && !matches!(event, LiveEvent::Error(_))
+            && !matches!(event, AccountPublication::Error(_))
         {
-            self.pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(event.clone());
+            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if pending.len() == self.pending_capacity {
+                return Err(account::AccountConnectorError::new(
+                    account::AccountErrorKind::QueueFull,
+                    "account fact staging queue is full",
+                ));
+            }
+            pending.push_back(event.clone());
             return Ok(());
         }
         match event {
-            LiveEvent::Order { symbol, order } => {
+            AccountPublication::Order { symbol, order } => {
                 let binding = self
                     .context
                     .instruments
@@ -720,7 +879,7 @@ impl LegacyBridge {
                 }
                 Ok(())
             }
-            LiveEvent::Position {
+            AccountPublication::Position {
                 symbol,
                 qty,
                 exch_ts,
@@ -747,11 +906,10 @@ impl LegacyBridge {
                     .publish_encoded(&event, TraceContext::default())
                     .map_err(|e| rejected(e.to_string()))
             }
-            LiveEvent::Error(_) => {
+            AccountPublication::Error(_) => {
                 self.invalidate(1);
                 Ok(())
             }
-            _ => Ok(()),
         }
     }
 
@@ -762,12 +920,17 @@ impl LegacyBridge {
         let pending = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
         let mut iter = pending.into_iter();
         while let Some(event) = iter.next() {
-            if let Err(error) = self.publish_live(&event) {
-                let mut retained = Vec::with_capacity(iter.len() + 1);
-                retained.push(event);
+            if let Err(error) = self.publish(&event) {
+                let mut retained = VecDeque::with_capacity(iter.len() + 1);
+                retained.push_back(event);
                 retained.extend(iter);
                 let mut queue = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-                retained.append(&mut *queue);
+                while retained.len() < self.pending_capacity {
+                    let Some(event) = queue.pop_front() else {
+                        break;
+                    };
+                    retained.push_back(event);
+                }
                 *queue = retained;
                 return Err(error);
             }
@@ -782,9 +945,9 @@ impl LegacyBridge {
     }
 }
 
-async fn reconcile(
+async fn reconcile<A: ReconcileApi + ?Sized>(
     context: &account::AccountConnectorContext,
-    api: &dyn BrokerApi,
+    api: &A,
     scope: account::ReconcileScope,
     epoch: &AtomicU64,
     version: &AtomicU64,
@@ -831,21 +994,13 @@ async fn reconcile(
         let mut external = 0_u64;
         for binding in context.instruments.iter() {
             for value in api
-                .get_open_orders(&binding.native_symbol)
+                .open_orders(&binding.native_symbol)
                 .await
                 .map_err(api_error)?
             {
-                if let account::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } =
-                    &context.ownership
-                {
-                    let known = ids
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .contains_text(&value.client_order_id);
-                    if !known && !value.client_order_id.starts_with(client_id_prefix.as_ref()) {
-                        external = external.saturating_add(1);
-                        continue;
-                    }
+                if is_external_order(&context.ownership, ids, &value.client_order_id) {
+                    external = external.saturating_add(1);
+                    continue;
                 }
                 let snapshot = order_snapshot(&value, binding, ids)?;
                 if publish {
@@ -856,6 +1011,7 @@ async fn reconcile(
                         &snapshot,
                         &value,
                         account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
+                        TraceContext::default(),
                     )?;
                 }
                 next_orders.push(snapshot);
@@ -869,7 +1025,7 @@ async fn reconcile(
         account::ReconcileScope::Full | account::ReconcileScope::Positions
     ) {
         let mut next_positions = Vec::new();
-        for value in api.get_positions(None).await.map_err(api_error)? {
+        for value in api.positions().await.map_err(api_error)? {
             if let Some(binding) = context
                 .instruments
                 .iter()
@@ -902,7 +1058,7 @@ async fn reconcile(
         scope,
         account::ReconcileScope::Full | account::ReconcileScope::Balances
     ) {
-        let info = api.get_account().await.map_err(api_error)?;
+        let info = api.account().await.map_err(api_error)?;
         let mut next_balances = Vec::new();
         for value in &info.balances {
             if let Some(binding) = context
@@ -974,6 +1130,23 @@ async fn reconcile(
     reconciling.store(false, Ordering::Release);
     ready.store(true, Ordering::Release);
     Ok(())
+}
+
+fn is_external_order(
+    ownership: &account::OrderOwnershipPolicy,
+    ids: &Mutex<IdInterner>,
+    client_order_id: &str,
+) -> bool {
+    match ownership {
+        account::OrderOwnershipPolicy::ObserveAll => false,
+        account::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } => {
+            !client_order_id.starts_with(client_id_prefix.as_ref())
+                && !ids
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .contains_text(client_order_id)
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1053,7 +1226,7 @@ async fn handle_command(
         }
         command => command,
     };
-    let (id, client, trace, result): (
+    let (id, client, trace, mut result): (
         account::CommandId,
         Option<account::ClientOrderId>,
         TraceContext,
@@ -1159,15 +1332,43 @@ async fn handle_command(
         ),
         Command::Reconcile(..) | Command::PrivateStreamReady => unreachable!(),
     };
-    let outcome = if result.is_ok() { 1 } else { 2 };
+    let initially_unknown = result
+        .as_ref()
+        .err()
+        .is_some_and(crate::api::ApiError::outcome_unknown);
+    if initially_unknown
+        && let Some((symbol, order_id, client_order_id)) =
+            command_query_target(&command, context, ids)
+        && let Ok(order) = api
+            .get_order(&symbol, order_id.as_deref(), client_order_id.as_deref())
+            .await
+    {
+        result = Ok(Some(order));
+    }
+    let unknown = result
+        .as_ref()
+        .err()
+        .is_some_and(crate::api::ApiError::outcome_unknown);
+    if unknown {
+        ready.store(false, Ordering::Release);
+        publish_invalidated(context, epoch, version, 3);
+        schedule_reconcile(recovery_tx.clone());
+    }
+    let outcome = if result.is_ok() {
+        1
+    } else if unknown {
+        0
+    } else {
+        2
+    };
     let event = account::CommandResultV1 {
         header: header(
             context,
             epoch,
             version,
             account::event_kind::COMMAND_RESULT,
-            if result.is_ok() {
-                account::event_flags::FINAL
+            if unknown {
+                0
             } else {
                 account::event_flags::FINAL
             },
@@ -1176,18 +1377,25 @@ async fn handle_command(
         command_id: id,
         client_order_id: client.unwrap_or_default(),
         outcome,
-        final_result: 1,
+        final_result: u8::from(!unknown),
         reason_code: u32::from(result.is_err()),
     };
-    let _ = context.event_publisher.publish_encoded(&event, trace);
+    let mut publication_failed = context
+        .event_publisher
+        .publish_encoded(&event, trace)
+        .is_err();
     if let Ok(Some(value)) = result {
         if let Some(binding) = context
             .instruments
             .iter()
             .find(|b| b.native_symbol.eq_ignore_ascii_case(&value.symbol))
         {
-            if let Ok(snapshot) = order_snapshot(&value, binding, ids) {
-                let _ = publish_order_snapshot(
+            if let Ok(mut snapshot) = order_snapshot(&value, binding, ids) {
+                snapshot.command_id = id;
+                if let Some(client_order_id) = client {
+                    snapshot.client_order_id = client_order_id;
+                }
+                publication_failed |= publish_order_snapshot(
                     context,
                     epoch,
                     version,
@@ -1204,10 +1412,45 @@ async fn handle_command(
                     } else {
                         account::event_flags::UPSERT
                     },
-                );
+                    trace,
+                )
+                .is_err();
             }
         }
     }
+    if publication_failed && !unknown {
+        ready.store(false, Ordering::Release);
+        publish_invalidated(context, epoch, version, 4);
+        schedule_reconcile(recovery_tx.clone());
+    }
+}
+
+fn command_query_target(
+    command: &Command,
+    context: &account::AccountConnectorContext,
+    ids: &Mutex<IdInterner>,
+) -> Option<(String, Option<String>, Option<String>)> {
+    let (asset_id, venue_order_id, client_order_id) = match command {
+        Command::Submit(value) => (value.asset_id, None, value.client_order_id),
+        Command::Amend(value) => (value.asset_id, value.venue_order_id, value.client_order_id),
+        Command::Cancel(value) => (value.asset_id, value.venue_order_id, value.client_order_id),
+        Command::CancelAll(_)
+        | Command::CancelAllAfter(_)
+        | Command::Reconcile(..)
+        | Command::PrivateStreamReady => return None,
+    };
+    let symbol = context
+        .instruments
+        .iter()
+        .find(|binding| binding.asset_id == asset_id)?
+        .native_symbol
+        .to_string();
+    let ids = ids.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Some((
+        symbol,
+        venue_order_id.map(|id| ids.resolve(id)),
+        client_order_id.map(|id| ids.resolve(id)),
+    ))
 }
 
 fn schedule_reconcile(tx: mpsc::Sender<Command>) {
@@ -1271,6 +1514,7 @@ fn publish_order_snapshot(
     s: &account::OrderSnapshot,
     source: &OrderInfo,
     flags: u16,
+    trace: TraceContext,
 ) -> Result<(), account::AccountConnectorError> {
     let event = account::OrderChangedV1 {
         header: header(
@@ -1296,7 +1540,7 @@ fn publish_order_snapshot(
     };
     context
         .event_publisher
-        .publish_encoded(&event, TraceContext::default())
+        .publish_encoded(&event, trace)
         .map_err(|e| rejected(e.to_string()))
 }
 fn order_snapshot(
@@ -1522,14 +1766,6 @@ impl account::AccountConnectorFactory for VenueAccountConnectorFactory {
         definition: &account::AccountDefinition,
         context: account::AccountConnectorContext,
     ) -> Result<Arc<dyn account::AccountConnector>, account::AccountConnectorError> {
-        if matches!(
-            definition.ownership,
-            account::OrderOwnershipPolicy::ObserveAll
-        ) {
-            return Err(rejected(
-                "legacy venue adapter does not support ObserveAll ownership",
-            ));
-        }
         let secret = context.secrets.resolve(&definition.credential_ref)?;
         let config = merged_toml(&definition.connector_config, &secret)?;
         let connector = (self.build)(&config).map_err(rejected)?;
@@ -1620,6 +1856,292 @@ pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory
 #[cfg(test)]
 mod tests {
     use super::*;
+    use titan_account_plugin::AccountConnector as _;
+
+    #[derive(Default)]
+    struct NoopOrders;
+
+    impl crate::connector::GetOrders for NoopOrders {
+        fn orders(&self, _: Option<String>) -> Vec<hftbacktest::types::Order> {
+            Vec::new()
+        }
+    }
+
+    struct LifecycleConnector {
+        orders: Arc<Mutex<NoopOrders>>,
+        shutdown_delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for LifecycleConnector {
+        fn register(&mut self, _: String) {}
+
+        fn order_manager(&self) -> Arc<Mutex<dyn crate::connector::GetOrders + Send + 'static>> {
+            self.orders.clone()
+        }
+
+        fn run(&mut self, _: crate::connector::PublishSender) {}
+
+        fn submit(
+            &self,
+            _: String,
+            _: hftbacktest::types::Order,
+            _: crate::connector::PublishSender,
+        ) {
+        }
+
+        fn cancel(
+            &self,
+            _: String,
+            _: hftbacktest::types::Order,
+            _: crate::connector::PublishSender,
+        ) {
+        }
+
+        async fn shutdown(&self) -> Result<(), String> {
+            tokio::time::sleep(self.shutdown_delay).await;
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct ShutdownProbe {
+        calls: Mutex<Vec<String>>,
+        delay: Duration,
+        error: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl ShutdownActions for ShutdownProbe {
+        async fn cancel_all(&self) -> Result<(), String> {
+            self.calls.lock().unwrap().push("cancel_all".into());
+            tokio::time::sleep(self.delay).await;
+            self.error.clone().map_or(Ok(()), Err)
+        }
+
+        async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("cancel_all_after:{timeout_ms}"));
+            tokio::time::sleep(self.delay).await;
+            self.error.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    struct NoopAccountSink;
+    impl account::AccountEventSink for NoopAccountSink {
+        fn publish(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: TraceContext,
+        ) -> Result<(), titan_plugin_engine::PluginError> {
+            Ok(())
+        }
+    }
+
+    struct RecordingAccountSink(Mutex<Vec<String>>);
+    impl account::AccountEventSink for RecordingAccountSink {
+        fn publish(
+            &self,
+            event_type: &str,
+            _: &[u8],
+            _: TraceContext,
+        ) -> Result<(), titan_plugin_engine::PluginError> {
+            self.0.lock().unwrap().push(event_type.to_owned());
+            Ok(())
+        }
+    }
+
+    struct ReconcileProbe {
+        order: OrderInfo,
+        fail_orders: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ReconcileApi for ReconcileProbe {
+        async fn open_orders(&self, _: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError> {
+            if self.fail_orders {
+                Err(crate::api::ApiError::transport("test", "injected"))
+            } else {
+                Ok(vec![self.order.clone()])
+            }
+        }
+
+        async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError> {
+            Ok(Vec::new())
+        }
+
+        async fn account(&self) -> Result<crate::api::AccountInfo, crate::api::ApiError> {
+            Ok(crate::api::AccountInfo {
+                total_wallet_balance: 10.0,
+                total_margin_balance: 10.0,
+                total_unrealized_pnl: 0.0,
+                available_balance: 10.0,
+                balances: vec![Balance {
+                    asset: "USDT".into(),
+                    wallet_balance: 10.0,
+                    available_balance: 10.0,
+                    unrealized_pnl: 0.0,
+                    margin_balance: 10.0,
+                }],
+                timestamp: 20,
+            })
+        }
+    }
+
+    fn reconciliation_context(
+        ownership: account::OrderOwnershipPolicy,
+        sink: Arc<dyn account::AccountEventSink>,
+    ) -> account::AccountConnectorContext {
+        let account_handle = account::AccountHandle {
+            account_id: account::AccountId(7),
+            generation: 1,
+        };
+        let scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "account-reconcile"),
+        );
+        let unit: account::DecimalUnit = "0.1".parse().unwrap();
+        account::AccountConnectorContext {
+            account: account_handle,
+            instruments: Arc::from([account::AccountInstrumentBinding {
+                native_symbol: Arc::from("BTCUSDT"),
+                asset_id: account::AssetId(11),
+                price_tick: unit,
+                quantity_lot: unit,
+                contract_multiplier: "1".parse().unwrap(),
+            }]),
+            currencies: Arc::from([account::AccountCurrencyBinding {
+                native_currency: Arc::from("USDT"),
+                currency_id: account::CurrencyId(1),
+                amount_unit: unit,
+            }]),
+            ownership,
+            account_stream: account::SourceStreamId(1),
+            control_stream: account::SourceStreamId(2),
+            event_publisher: account::AccountEventPublisher::from_sink(account_handle, sink),
+            resources: scope.handle(),
+            secrets: account::ScopedSecretResolver::scoped(
+                account::SecretRef::new("secret://test/account"),
+                Arc::new(account::UnavailableSecretProvider),
+            ),
+            command_queue_capacity: 8,
+        }
+    }
+
+    fn lifecycle_context(
+        resources: titan_plugin_engine::ResourceScopeHandle,
+    ) -> account::AccountConnectorContext {
+        let account_handle = account::AccountHandle {
+            account_id: account::AccountId(9),
+            generation: 1,
+        };
+        account::AccountConnectorContext {
+            account: account_handle,
+            instruments: Arc::from([]),
+            currencies: Arc::from([]),
+            ownership: account::OrderOwnershipPolicy::ObserveAll,
+            account_stream: account::SourceStreamId(1),
+            control_stream: account::SourceStreamId(2),
+            event_publisher: account::AccountEventPublisher::from_sink(
+                account_handle,
+                Arc::new(NoopAccountSink),
+            ),
+            resources,
+            secrets: account::ScopedSecretResolver::scoped(
+                account::SecretRef::new("secret://test/account"),
+                Arc::new(account::UnavailableSecretProvider),
+            ),
+            command_queue_capacity: 2,
+        }
+    }
+
+    fn lifecycle_runtime(
+        scope: &titan_plugin_engine::ResourceScope,
+        shutdown_policy: account::ShutdownOrderPolicy,
+        shutdown_delay: Duration,
+    ) -> Arc<AccountRuntime> {
+        let venue = crate::binancefutures::BinanceFutures::build_from(
+            "stream_url = \"ws://127.0.0.1:1\"\napi_url = \"http://127.0.0.1:1\"\n",
+        )
+        .unwrap();
+        let api = venue.broker_api().unwrap();
+        AccountRuntime::new(
+            Box::new(LifecycleConnector {
+                orders: Arc::new(Mutex::new(NoopOrders)),
+                shutdown_delay,
+            }),
+            api,
+            shutdown_policy,
+            lifecycle_context(scope.handle()),
+        )
+    }
+
+    fn external_order() -> OrderInfo {
+        OrderInfo {
+            symbol: "BTCUSDT".into(),
+            order_id: "venue-1".into(),
+            client_order_id: "manual-1".into(),
+            side: ApiSide::Buy,
+            order_type: ApiOrderType::Limit,
+            status: ApiOrderStatus::New,
+            price: 100.0,
+            qty: 1.0,
+            executed_qty: 0.0,
+            avg_price: 0.0,
+            leaves_qty: 1.0,
+            time_in_force: ApiTimeInForce::GTC,
+            reduce_only: false,
+            position_side: ApiPositionSide::Long,
+            create_time: 10,
+            update_time: 11,
+            stop_price: None,
+        }
+    }
+
+    async fn run_reconcile_probe(
+        context: &account::AccountConnectorContext,
+        api: &ReconcileProbe,
+    ) -> (
+        Result<(), account::AccountConnectorError>,
+        bool,
+        bool,
+        Arc<[account::OrderSnapshot]>,
+        u64,
+    ) {
+        let epoch = AtomicU64::new(0);
+        let version = AtomicU64::new(0);
+        let reconciling = AtomicBool::new(false);
+        let ready = AtomicBool::new(false);
+        let orders = Mutex::new(Arc::from([]));
+        let positions = Mutex::new(Arc::from([]));
+        let balances = Mutex::new(Arc::from([]));
+        let external = AtomicU64::new(0);
+        let ids = Mutex::new(IdInterner::default());
+        let result = reconcile(
+            context,
+            api,
+            account::ReconcileScope::Full,
+            &epoch,
+            &version,
+            &reconciling,
+            &ready,
+            &orders,
+            &positions,
+            &balances,
+            &external,
+            &ids,
+        )
+        .await;
+        (
+            result,
+            ready.into_inner(),
+            reconciling.into_inner(),
+            orders.into_inner().unwrap(),
+            external.into_inner(),
+        )
+    }
 
     #[test]
     fn decimal_conversion_rejects_non_representable_values() {
@@ -1663,5 +2185,398 @@ safety_timeout_ms = 5000
         assert_eq!(reconcile_scope_code(account::ReconcileScope::Orders), 1);
         assert_eq!(reconcile_scope_code(account::ReconcileScope::Positions), 2);
         assert_eq!(reconcile_scope_code(account::ReconcileScope::Balances), 3);
+    }
+
+    #[test]
+    fn command_journal_is_bounded_and_preserves_the_latest_receipts() {
+        let command = |id: u8| {
+            Command::CancelAllAfter(account::CancelAllAfterCommand {
+                command_id: account::Id128([id; 16]),
+                timeout_ms: 1,
+                trace: TraceContext::default(),
+            })
+        };
+        let receipt = |id: u8| account::AccountCommandReceipt {
+            account: account::AccountHandle {
+                account_id: account::AccountId(1),
+                generation: 1,
+            },
+            command_id: account::Id128([id; 16]),
+            client_order_id: None,
+            accepted_at: i64::from(id),
+        };
+        let mut journal = CommandJournal::new(2);
+        for id in 1..=3 {
+            journal.insert(account::Id128([id; 16]), command(id), receipt(id));
+        }
+        assert_eq!(journal.values.len(), 2);
+        assert!(!journal.values.contains_key(&account::Id128([1; 16])));
+        assert!(journal.values.contains_key(&account::Id128([2; 16])));
+        assert!(journal.values.contains_key(&account::Id128([3; 16])));
+    }
+
+    #[test]
+    fn terminal_operation_history_stays_bounded_under_long_running_churn() {
+        let mut operations = Operations::default();
+        for value in 1..=10_000 {
+            let id = account::OperationId(value);
+            operations.set(id, account::OperationState::Pending, "queued");
+            operations.set(id, account::OperationState::Succeeded, "done");
+        }
+        assert_eq!(operations.values.len(), OPERATION_HISTORY_LIMIT);
+        assert_eq!(operations.terminal.len(), OPERATION_HISTORY_LIMIT);
+        assert!(!operations.values.contains_key(&account::OperationId(1)));
+        assert!(
+            operations
+                .values
+                .contains_key(&account::OperationId(10_000))
+        );
+    }
+
+    #[test]
+    fn account_runtime_stop_is_idempotent_restart_is_rejected_and_scope_has_no_cycle() {
+        let mut scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "account-lifecycle"),
+        );
+        let runtime = lifecycle_runtime(
+            &scope,
+            account::ShutdownOrderPolicy::LeaveOpen,
+            Duration::ZERO,
+        );
+        let weak = Arc::downgrade(&runtime);
+        runtime.start().unwrap();
+        runtime
+            .stop(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        runtime
+            .stop(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            runtime.start().unwrap_err().kind,
+            account::AccountErrorKind::ConnectorRejected
+        );
+        drop(runtime);
+        scope.close().unwrap();
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn account_runtime_retains_and_reaps_join_handle_after_stop_deadline() {
+        let mut scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "account-stop-timeout"),
+        );
+        let runtime = lifecycle_runtime(
+            &scope,
+            account::ShutdownOrderPolicy::CancelAll,
+            Duration::from_millis(50),
+        );
+        let weak = Arc::downgrade(&runtime);
+        runtime.start().unwrap();
+        assert_eq!(
+            runtime.stop(Instant::now()).unwrap_err().kind,
+            account::AccountErrorKind::DeadlineExceeded
+        );
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            runtime
+                .stop(Instant::now() + Duration::from_secs(1))
+                .unwrap_err()
+                .kind,
+            account::AccountErrorKind::DeadlineExceeded
+        );
+        // The second call joined the retained worker and consumed its terminal error.
+        runtime
+            .stop(Instant::now() + Duration::from_secs(1))
+            .unwrap();
+        drop(runtime);
+        scope.close().unwrap();
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn managed_only_distinguishes_external_orders_without_hiding_known_ids() {
+        let ownership = account::OrderOwnershipPolicy::ManagedOnly {
+            client_id_prefix: Arc::from("titan-"),
+        };
+        let ids = Mutex::new(IdInterner::default());
+        ids.lock().unwrap().intern("manual-but-journaled");
+        assert!(!is_external_order(&ownership, &ids, "titan-123"));
+        assert!(!is_external_order(&ownership, &ids, "manual-but-journaled"));
+        assert!(is_external_order(&ownership, &ids, "external-123"));
+        assert!(!is_external_order(
+            &account::OrderOwnershipPolicy::ObserveAll,
+            &ids,
+            "external-123"
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_policies_select_one_bounded_venue_action_and_propagate_failures() {
+        let leave_open = ShutdownProbe::default();
+        execute_shutdown_policy(
+            &leave_open,
+            &account::ShutdownOrderPolicy::LeaveOpen,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(leave_open.calls.lock().unwrap().is_empty());
+
+        let cancel_all = ShutdownProbe::default();
+        execute_shutdown_policy(
+            &cancel_all,
+            &account::ShutdownOrderPolicy::CancelAll,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cancel_all.calls.lock().unwrap().as_slice(), &["cancel_all"]);
+
+        let cancel_after = ShutdownProbe {
+            error: Some("venue rejected safety timer".into()),
+            ..ShutdownProbe::default()
+        };
+        let error = execute_shutdown_policy(
+            &cancel_after,
+            &account::ShutdownOrderPolicy::CancelAllAfter { timeout_ms: 2_500 },
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, account::AccountErrorKind::ConnectorRejected);
+        assert_eq!(
+            cancel_after.calls.lock().unwrap().as_slice(),
+            &["cancel_all_after:2500"]
+        );
+
+        let timeout = ShutdownProbe {
+            delay: Duration::from_millis(50),
+            ..ShutdownProbe::default()
+        };
+        let error = execute_shutdown_policy(
+            &timeout,
+            &account::ShutdownOrderPolicy::CancelAll,
+            Instant::now() + Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, account::AccountErrorKind::DeadlineExceeded);
+    }
+
+    #[tokio::test]
+    async fn full_reconcile_commits_one_epoch_and_observe_all_keeps_external_orders() {
+        let sink = Arc::new(RecordingAccountSink(Mutex::new(Vec::new())));
+        let context =
+            reconciliation_context(account::OrderOwnershipPolicy::ObserveAll, sink.clone());
+        let api = ReconcileProbe {
+            order: external_order(),
+            fail_orders: false,
+        };
+        let epoch = AtomicU64::new(0);
+        let version = AtomicU64::new(0);
+        let reconciling = AtomicBool::new(false);
+        let ready = AtomicBool::new(false);
+        let orders = Mutex::new(Arc::from([]));
+        let positions = Mutex::new(Arc::from([]));
+        let balances = Mutex::new(Arc::from([]));
+        let external = AtomicU64::new(99);
+        let ids = Mutex::new(IdInterner::default());
+
+        reconcile(
+            &context,
+            &api,
+            account::ReconcileScope::Full,
+            &epoch,
+            &version,
+            &reconciling,
+            &ready,
+            &orders,
+            &positions,
+            &balances,
+            &external,
+            &ids,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(epoch.load(Ordering::Acquire), 1);
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!reconciling.load(Ordering::Acquire));
+        assert_eq!(orders.lock().unwrap().len(), 1);
+        assert_eq!(balances.lock().unwrap().len(), 1);
+        assert_eq!(external.load(Ordering::Acquire), 0);
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            &[
+                account::RECONCILE_STARTED_EVENT,
+                account::ORDER_CHANGED_EVENT,
+                account::BALANCE_CHANGED_EVENT,
+                account::RECONCILE_COMPLETED_EVENT,
+                account::STREAM_STATE_CHANGED_EVENT,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_reconcile_never_opens_ready_and_managed_only_excludes_external_orders() {
+        let sink = Arc::new(RecordingAccountSink(Mutex::new(Vec::new())));
+        let context = reconciliation_context(
+            account::OrderOwnershipPolicy::ManagedOnly {
+                client_id_prefix: Arc::from("titan-"),
+            },
+            sink,
+        );
+        let successful = run_reconcile_probe(
+            &context,
+            &ReconcileProbe {
+                order: external_order(),
+                fail_orders: false,
+            },
+        )
+        .await;
+        assert!(successful.0.is_ok());
+        assert!(successful.1);
+        assert!(!successful.2);
+        assert!(successful.3.is_empty());
+        assert_eq!(successful.4, 1);
+
+        let failed = run_reconcile_probe(
+            &context,
+            &ReconcileProbe {
+                order: external_order(),
+                fail_orders: true,
+            },
+        )
+        .await;
+        assert!(failed.0.is_err());
+        assert!(!failed.1);
+        assert!(failed.2);
+    }
+
+    #[tokio::test]
+    async fn repeated_reconcile_failure_and_recovery_keeps_state_bounded_and_returns_ready() {
+        let context = reconciliation_context(
+            account::OrderOwnershipPolicy::ObserveAll,
+            Arc::new(NoopAccountSink),
+        );
+        let healthy = ReconcileProbe {
+            order: external_order(),
+            fail_orders: false,
+        };
+        let failing = ReconcileProbe {
+            order: external_order(),
+            fail_orders: true,
+        };
+        let epoch = AtomicU64::new(0);
+        let version = AtomicU64::new(0);
+        let reconciling = AtomicBool::new(false);
+        let ready = AtomicBool::new(false);
+        let orders = Mutex::new(Arc::from([]));
+        let positions = Mutex::new(Arc::from([]));
+        let balances = Mutex::new(Arc::from([]));
+        let external = AtomicU64::new(0);
+        let ids = Mutex::new(IdInterner::default());
+
+        for cycle in 0..2_000 {
+            let api = if cycle % 10 == 0 { &failing } else { &healthy };
+            let result = reconcile(
+                &context,
+                api,
+                account::ReconcileScope::Full,
+                &epoch,
+                &version,
+                &reconciling,
+                &ready,
+                &orders,
+                &positions,
+                &balances,
+                &external,
+                &ids,
+            )
+            .await;
+            if cycle % 10 == 0 {
+                assert!(result.is_err());
+                assert!(!ready.load(Ordering::Acquire));
+                assert!(reconciling.load(Ordering::Acquire));
+            } else {
+                result.unwrap();
+                assert!(ready.load(Ordering::Acquire));
+                assert!(!reconciling.load(Ordering::Acquire));
+            }
+            assert!(orders.lock().unwrap().len() <= 1);
+            assert!(positions.lock().unwrap().is_empty());
+            assert!(balances.lock().unwrap().len() <= 1);
+        }
+
+        // End on an authoritative successful snapshot after all injected failures.
+        reconcile(
+            &context,
+            &healthy,
+            account::ReconcileScope::Full,
+            &epoch,
+            &version,
+            &reconciling,
+            &ready,
+            &orders,
+            &positions,
+            &balances,
+            &external,
+            &ids,
+        )
+        .await
+        .unwrap();
+        assert!(ready.load(Ordering::Acquire));
+        assert_eq!(orders.lock().unwrap().len(), 1);
+        assert_eq!(balances.lock().unwrap().len(), 1);
+        assert_eq!(ids.lock().unwrap().by_text.len(), 2);
+    }
+
+    #[test]
+    fn account_fact_staging_is_bounded_and_reports_queue_full() {
+        let account_handle = account::AccountHandle {
+            account_id: account::AccountId(7),
+            generation: 1,
+        };
+        let scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "account-encoder"),
+        );
+        let secret_ref = account::SecretRef::new("secret://test/account");
+        let context = account::AccountConnectorContext {
+            account: account_handle,
+            instruments: Arc::from([]),
+            currencies: Arc::from([]),
+            ownership: account::OrderOwnershipPolicy::ObserveAll,
+            account_stream: account::SourceStreamId(1),
+            control_stream: account::SourceStreamId(2),
+            event_publisher: account::AccountEventPublisher::from_sink(
+                account_handle,
+                Arc::new(NoopAccountSink),
+            ),
+            resources: scope.handle(),
+            secrets: account::ScopedSecretResolver::scoped(
+                secret_ref,
+                Arc::new(account::UnavailableSecretProvider),
+            ),
+            command_queue_capacity: 1,
+        };
+        let encoder = AccountEventEncoder {
+            context,
+            epoch: Arc::new(AtomicU64::new(1)),
+            version: Arc::new(AtomicU64::new(0)),
+            ready: Arc::new(AtomicBool::new(false)),
+            reconciling: Arc::new(AtomicBool::new(true)),
+            ids: Arc::new(Mutex::new(IdInterner::default())),
+            pending: Mutex::new(VecDeque::with_capacity(1)),
+            pending_capacity: 1,
+        };
+        let fact = AccountPublication::Position {
+            symbol: "BTC".to_owned(),
+            qty: 1.0,
+            exch_ts: 1,
+        };
+        encoder.publish(&fact).unwrap();
+        let error = encoder.publish(&fact).unwrap_err();
+        assert_eq!(error.kind, account::AccountErrorKind::QueueFull);
+        assert_eq!(encoder.pending.lock().unwrap().len(), 1);
     }
 }

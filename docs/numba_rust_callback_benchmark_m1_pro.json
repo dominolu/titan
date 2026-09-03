@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "benchmark_kind": "single_pointer_tick_callback",
+  "abi_version": 9,
+  "profile": "release",
+  "target": "aarch64-macos",
+  "os": "Darwin dominoludeMacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Mon Apr 27 20:38:56 PDT 2026; root:xnu-12377.121.6~2/RELEASE_ARM64_T6000 arm64",
+  "cpu": "Apple M1 Pro",
+  "rust": {
+    "implementation": "rust",
+    "samples": 10000,
+    "calls_per_sample": 1000,
+    "total_calls": 10000000,
+    "p50_ns_per_call": 3.375,
+    "p99_ns_per_call": 3.75,
+    "p999_ns_per_call": 4.458,
+    "max_ns_per_call": 17.333
+  },
+  "numba": {
+    "implementation": "numba",
+    "samples": 10000,
+    "calls_per_sample": 1000,
+    "total_calls": 10000000,
+    "p50_ns_per_call": 28.75,
+    "p99_ns_per_call": 31.375,
+    "p999_ns_per_call": 35.416,
+    "max_ns_per_call": 109.291
+  },
+  "numba_over_rust_p50": 8.518518518518519,
+  "numba_over_rust_p99": 8.366666666666667
+}

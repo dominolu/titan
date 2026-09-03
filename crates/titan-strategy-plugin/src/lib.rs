@@ -4,22 +4,22 @@
 //! runtime's opaque `EventHandler` on its isolated worker.
 
 mod artifact;
-mod checkpoint;
 mod error;
 mod gateway;
 mod model;
 mod plugin;
 mod runtime;
 mod service;
+mod service_adapters;
 
 pub use artifact::*;
-pub use checkpoint::*;
 pub use error::*;
 pub use gateway::*;
 pub use model::*;
 pub use plugin::*;
 pub use runtime::*;
 pub use service::*;
+pub use service_adapters::*;
 
 #[cfg(test)]
 mod tests;

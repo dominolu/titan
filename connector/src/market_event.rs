@@ -14,8 +14,8 @@ use hftbacktest::types::{
 };
 use titan_market_plugin::{
     AssetId, BBO_EVENT, ConnectorError, DEPTH_BATCH_EVENT, DepthItemV1, FUNDING_RATE_EVENT,
-    MarketBatchHeaderV1, MarketConnectorContext, MarketDataKind, STREAM_INVALIDATED_EVENT,
-    TRADE_BATCH_EVENT,
+    MARK_PRICE_EVENT, MarketBatchHeaderV1, MarketConnectorContext, MarketDataKind,
+    STREAM_INVALIDATED_EVENT, TRADE_BATCH_EVENT,
 };
 use titan_plugin_engine::TraceContext;
 
@@ -494,6 +494,18 @@ fn publish_event(
             *funding_rate,
             *exch_ts,
         ),
+        PublishEvent::MarkPrice {
+            symbol,
+            mark_price,
+            exch_ts,
+        } => publish_mark_price(
+            context,
+            symbols,
+            active_kinds,
+            symbol,
+            *mark_price,
+            *exch_ts,
+        ),
         PublishEvent::LiveEvent(LiveEvent::Error(error)) => {
             Err(ConnectorError::new(format!("connector error: {error:?}")))
         }
@@ -657,6 +669,38 @@ fn publish_funding(
         .event_publisher
         .publish_market(
             FUNDING_RATE_EVENT,
+            &payload,
+            asset_id,
+            exchange_ts,
+            0,
+            TraceContext::default(),
+        )
+        .map_err(|error| ConnectorError::new(error.to_string()))
+}
+
+fn publish_mark_price(
+    context: &MarketConnectorContext,
+    symbols: &HashMap<String, AssetId>,
+    active_kinds: &Mutex<HashMap<AssetId, HashSet<MarketDataKind>>>,
+    symbol: &str,
+    mark_price: f64,
+    exchange_ts: i64,
+) -> Result<(), ConnectorError> {
+    let asset_id = symbols
+        .get(symbol)
+        .copied()
+        .ok_or_else(|| ConnectorError::new(format!("unbound symbol {symbol}")))?;
+    if !is_active(active_kinds, asset_id, MarketDataKind::MarkPrice) {
+        return Ok(());
+    }
+    let mut payload = Vec::with_capacity(20);
+    payload.extend_from_slice(&asset_id.0.to_le_bytes());
+    payload.extend_from_slice(&mark_price.to_le_bytes());
+    payload.extend_from_slice(&exchange_ts.to_le_bytes());
+    context
+        .event_publisher
+        .publish_market(
+            MARK_PRICE_EVENT,
             &payload,
             asset_id,
             exchange_ts,

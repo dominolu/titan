@@ -11,7 +11,7 @@ use titan_account_plugin::{FillV2, OrderChangedV1};
 use titan_event_engine::{EngineError, LaneProgress, PrimaryAsyncLaneHandle, SubscriberState};
 use titan_plugin_engine::{EventHandler, EventView, PluginError, ResourceScopeHandle};
 use titan_runtime::{CallbackRegistry, StrategyEventKind, StrategyRuntimeContext};
-use titan_runtime_abi::{Event, FillEvent, OrderEvent, TickItem};
+use titan_runtime_abi::{BarItem, Event, FillEvent, OrderEvent, TickItem};
 
 use crate::*;
 
@@ -272,6 +272,35 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
                     .invoke(StrategyEventKind::Tick, context)
                     .map_err(|_| adapter_error("tick_callback"))?;
                 StrategyEventKind::Tick
+            }
+            (
+                titan_market_plugin::BAR_BATCH_EVENT,
+                titan_market_plugin::MARKET_EVENT_SCHEMA_VERSION,
+            ) => {
+                let batch = titan_market_plugin::BarBatchV1::decode(event.payload)
+                    .map_err(|_| adapter_error("bar_batch_v1"))?;
+                let bars = batch
+                    .items
+                    .into_iter()
+                    .map(|item| {
+                        self.local_assets
+                            .get(&item.asset_id)
+                            .copied()
+                            .map(|asset_no| BarItem {
+                                asset_no,
+                                bar: item.bar,
+                            })
+                            .ok_or_else(|| adapter_error("bar_asset_not_bound"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                context.bars_ptr = bars.as_ptr();
+                context.num_bars = bars.len();
+                context.bar_timeframe_ns = batch.timeframe_ns;
+                context.bar_close_ts = batch.close_ts;
+                callbacks
+                    .invoke(StrategyEventKind::Bar, context)
+                    .map_err(|_| adapter_error("bar_callback"))?;
+                StrategyEventKind::Bar
             }
             (titan_account_plugin::FILL_EVENT, titan_account_plugin::FILL_EVENT_SCHEMA_VERSION) => {
                 let fill = FillV2::decode(event.payload).map_err(|_| adapter_error("fill_v2"))?;
@@ -538,6 +567,7 @@ impl NativeStrategyRuntime {
 
 impl EventHandler for NativeStrategyRuntime {
     fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+        let event_trace = event.trace;
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
         if matches!(
             inner.lifecycle,
@@ -669,12 +699,11 @@ impl EventHandler for NativeStrategyRuntime {
             return Err(plugin_callback_error());
         }
         for command in &commands[..count] {
-            if let Err(error) = self
-                .core
-                .context
-                .command_gateway
-                .execute(self.core.context.strategy, *command)
-            {
+            if let Err(error) = self.core.context.command_gateway.execute(
+                self.core.context.strategy,
+                *command,
+                event_trace,
+            ) {
                 self.core.context.command_gate.close();
                 self.core.context.activation.close();
                 context.last_error = -1;
