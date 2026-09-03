@@ -51,6 +51,8 @@ pub struct AckMsg {
     pub msg: Option<String>,
     #[serde(default)]
     pub conn_id: Option<String>,
+    #[serde(default)]
+    pub arg: Option<WsArg>,
 }
 
 #[derive(Deserialize, Debug)]

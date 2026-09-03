@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{LifecycleState, PluginIdentity, TraceContext};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ErrorKind {
     ManifestInvalid,
     ConfigInvalid,

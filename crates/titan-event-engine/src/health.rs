@@ -43,6 +43,9 @@ pub struct SubscriberHealth {
     recovery_sequence: AtomicU64,
     channel_depth: AtomicUsize,
     pending_depth: AtomicUsize,
+    admitted_sequence: AtomicU64,
+    dispatched_sequence: AtomicU64,
+    committed_sequence: AtomicU64,
 }
 
 impl Default for SubscriberHealth {
@@ -57,6 +60,9 @@ impl Default for SubscriberHealth {
             recovery_sequence: AtomicU64::new(0),
             channel_depth: AtomicUsize::new(0),
             pending_depth: AtomicUsize::new(0),
+            admitted_sequence: AtomicU64::new(0),
+            dispatched_sequence: AtomicU64::new(0),
+            committed_sequence: AtomicU64::new(0),
         }
     }
 }
@@ -119,6 +125,33 @@ impl SubscriberHealth {
         (value != 0).then_some(value)
     }
 
+    pub fn admitted_sequence(&self) -> u64 {
+        self.admitted_sequence.load(Ordering::Acquire)
+    }
+
+    pub fn dispatched_sequence(&self) -> u64 {
+        self.dispatched_sequence.load(Ordering::Acquire)
+    }
+
+    pub fn committed_sequence(&self) -> u64 {
+        self.committed_sequence.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn on_admitted(&self, sequence: u64) {
+        self.admitted_sequence
+            .fetch_max(sequence, Ordering::Release);
+    }
+
+    pub(crate) fn on_dispatched(&self, sequence: u64) {
+        self.dispatched_sequence
+            .fetch_max(sequence, Ordering::Release);
+    }
+
+    pub(crate) fn on_committed(&self, sequence: u64) {
+        self.committed_sequence
+            .fetch_max(sequence, Ordering::Release);
+    }
+
     pub(crate) fn on_enqueue(&self, now_ns: u64) {
         if self.outstanding_handles.fetch_add(1, Ordering::Relaxed) == 0 {
             self.oldest_handle_ns.store(now_ns, Ordering::Relaxed);
@@ -179,6 +212,7 @@ pub enum FaultKind {
     SubscriberLagging,
     SubscriberBackpressure,
     SubscriberRecovered,
+    SnapshotRecoveryAborted,
     EventLoopFailed,
 }
 
@@ -200,6 +234,9 @@ pub struct SubscriberHealthSnapshot {
     pub recovery_sequence: Option<u64>,
     pub channel_depth: usize,
     pub pending_depth: usize,
+    pub admitted_sequence: u64,
+    pub dispatched_sequence: u64,
+    pub committed_sequence: u64,
 }
 
 impl SubscriberHealth {
@@ -213,6 +250,9 @@ impl SubscriberHealth {
             recovery_sequence: self.recovery_sequence(),
             channel_depth: self.channel_depth.load(Ordering::Relaxed),
             pending_depth: self.pending_depth.load(Ordering::Relaxed),
+            admitted_sequence: self.admitted_sequence(),
+            dispatched_sequence: self.dispatched_sequence(),
+            committed_sequence: self.committed_sequence(),
         }
     }
 }

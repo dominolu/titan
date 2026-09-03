@@ -4,6 +4,7 @@
 //! publish directly to EventEngine. This crate only implements the control plane.
 
 mod abi;
+mod dynamic_abi;
 mod error;
 mod model;
 mod plugin;
@@ -11,6 +12,7 @@ mod registry;
 mod service;
 
 pub use abi::*;
+pub use dynamic_abi::*;
 pub use error::*;
 pub use model::*;
 pub use plugin::*;

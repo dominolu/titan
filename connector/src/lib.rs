@@ -16,6 +16,7 @@
 pub mod account_plugin;
 pub mod api;
 pub mod connector;
+pub mod dynamic_plugin;
 mod market_event;
 pub mod market_plugin;
 mod utils;

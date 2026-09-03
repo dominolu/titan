@@ -1,0 +1,12 @@
+{
+  "strategy_type": "numba-event-counter",
+  "package_version": "1.0.0",
+  "runtime_abi": { "major": 9, "minor": 0 },
+  "parameter_schema": { "type": "object" },
+  "parameter_schema_version": 1,
+  "state_schema_version": 1,
+  "callbacks": 4294967295,
+  "capabilities": 1,
+  "artifact_digest": "c4d0085990a17bcd12a7bb4be5ff714ec432e75f57c934421f99b963eb2ec0bb",
+  "content_files": ["__init__.py", "strategy.py"]
+}

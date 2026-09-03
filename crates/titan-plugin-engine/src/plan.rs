@@ -21,6 +21,8 @@ pub struct ServiceBindingPlan {
 pub struct PluginPlanEntry {
     pub identity: PluginIdentity,
     pub spec: PluginSpec,
+    pub package_version: semver::Version,
+    pub package_source: Arc<str>,
     pub provides: Vec<ServiceKey>,
     pub bindings: Vec<ServiceBindingPlan>,
 }
@@ -76,6 +78,18 @@ pub fn compile_plugin_plan(
             )
         })?;
         let manifest = registered.factory.manifest();
+        if spec.config.schema_version != manifest.config_schema_version {
+            return Err(PluginError::new(
+                ErrorKind::ConfigInvalid,
+                spec.identity(),
+                crate::LifecycleState::Discovered,
+                "compile_plugin_plan",
+                format!(
+                    "configuration schema version {} was not migrated to required version {}",
+                    spec.config.schema_version, manifest.config_schema_version
+                ),
+            ));
+        }
         let validator = jsonschema::validator_for(&manifest.config_schema).map_err(|error| {
             PluginError::new(
                 ErrorKind::ManifestInvalid,
@@ -147,11 +161,8 @@ pub fn compile_plugin_plan(
     > = BTreeMap::new();
     let mut entries = BTreeMap::new();
     for spec in &enabled {
-        let manifest = registry
-            .get(&spec.plugin_type)
-            .expect("checked")
-            .factory
-            .manifest();
+        let registered = registry.get(&spec.plugin_type).expect("checked");
+        let manifest = registered.factory.manifest();
         let configured_scopes: BTreeMap<_, _> = spec.service_scopes.iter().cloned().collect();
         for configured in configured_scopes.keys() {
             if !manifest
@@ -227,6 +238,8 @@ pub fn compile_plugin_plan(
             PluginPlanEntry {
                 identity: spec.identity(),
                 spec: spec.clone(),
+                package_version: registered.package_version.clone(),
+                package_source: registered.source.clone(),
                 provides,
                 bindings: Vec::new(),
             },

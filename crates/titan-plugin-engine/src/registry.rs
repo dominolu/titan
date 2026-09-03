@@ -4,6 +4,7 @@ use crate::{
     ApiVersion, ErrorKind, PluginError, PluginFactory, PluginIdentity, PluginManifest, engine_error,
 };
 
+#[derive(Clone)]
 pub struct RegisteredPlugin {
     pub factory: Arc<dyn PluginFactory>,
     pub package_version: semver::Version,
@@ -48,6 +49,39 @@ impl PluginRegistry {
         self.entries.get(plugin_type)
     }
 
+    pub(crate) fn replace(
+        &mut self,
+        factory: Arc<dyn PluginFactory>,
+        package_version: semver::Version,
+        source: impl Into<Arc<str>>,
+        host_api: ApiVersion,
+        host_abi: ApiVersion,
+    ) -> Result<RegisteredPlugin, PluginError> {
+        let manifest = factory.manifest();
+        validate_manifest(manifest, host_api, host_abi)?;
+        let plugin_type = manifest.plugin_type.clone();
+        let previous = self.entries.get(&plugin_type).cloned().ok_or_else(|| {
+            engine_error(
+                ErrorKind::ManifestInvalid,
+                "replace_package",
+                format!("plugin type {plugin_type} is not registered"),
+            )
+        })?;
+        self.entries.insert(
+            plugin_type,
+            RegisteredPlugin {
+                factory,
+                package_version,
+                source: source.into(),
+            },
+        );
+        Ok(previous)
+    }
+
+    pub(crate) fn restore(&mut self, plugin_type: Arc<str>, plugin: RegisteredPlugin) {
+        self.entries.insert(plugin_type, plugin);
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &RegisteredPlugin)> {
         self.entries.iter()
     }
@@ -62,16 +96,34 @@ pub fn validate_manifest(
     if manifest.plugin_type.is_empty() || manifest.name.is_empty() {
         return Err(PluginError::new(
             ErrorKind::ManifestInvalid,
-            identity,
+            identity.clone(),
             crate::LifecycleState::Discovered,
             "validate_manifest",
             "plugin_type and name must be non-empty",
         ));
     }
+    if manifest.config_schema_version == 0 {
+        return Err(PluginError::new(
+            ErrorKind::ManifestInvalid,
+            identity.clone(),
+            crate::LifecycleState::Discovered,
+            "validate_manifest",
+            "config_schema_version must be greater than zero",
+        ));
+    }
+    jsonschema::validator_for(&manifest.config_schema).map_err(|error| {
+        PluginError::new(
+            ErrorKind::ManifestInvalid,
+            identity.clone(),
+            crate::LifecycleState::Discovered,
+            "validate_manifest",
+            format!("invalid plugin configuration schema: {error}"),
+        )
+    })?;
     if !host_api.supports(manifest.engine_api_version) {
         return Err(PluginError::new(
             ErrorKind::ApiVersionMismatch,
-            identity,
+            identity.clone(),
             crate::LifecycleState::Discovered,
             "validate_manifest",
             format!(

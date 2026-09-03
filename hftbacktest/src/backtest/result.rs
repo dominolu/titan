@@ -655,6 +655,7 @@ mod tests {
             order_qty: 1.0,
             exec_price: 1.0,
             exec_qty: 1.0,
+            cumulative_filled_qty: 1.0,
             maker: false,
             account_delta: None,
         };

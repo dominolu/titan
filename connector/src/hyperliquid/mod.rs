@@ -23,7 +23,9 @@ use tracing::{error, warn};
 
 use crate::{
     api::BrokerApi,
-    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
+    connector::{
+        AccountPublication, Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent,
+    },
     hyperliquid::{
         client::HyperliquidClient,
         msg::{
@@ -83,6 +85,7 @@ pub struct Config {
     info_url: String,
     exchange_url: String,
     ws_url: String,
+    #[serde(default)]
     private_key: String,
     #[serde(default)]
     account_address: String,
@@ -212,12 +215,11 @@ impl Hyperliquid {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: HyperliquidError| {
                     error!(?error, "An error occurred in the WebSocket connection.");
-                    ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.to_value(),
-                        ))))
-                        .unwrap();
+                    publish_stream_error(
+                        &ev_tx,
+                        private_channels,
+                        LiveError::with(ErrorKind::ConnectionInterrupted, error.to_value()),
+                    );
                     Ok(())
                 })
                 .retry(|| async {
@@ -237,18 +239,17 @@ impl Hyperliquid {
                     );
                     if let Err(error) = stream.connect(&ws_url).await {
                         error!(?error, "A connection error occurred.");
-                        ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::ConnectionInterrupted,
-                                error.to_value(),
-                            ))))
-                            .unwrap();
+                        publish_stream_error(
+                            &ev_tx,
+                            private_channels,
+                            LiveError::with(ErrorKind::ConnectionInterrupted, error.to_value()),
+                        );
                     } else {
-                        ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::new(
-                                ErrorKind::ConnectionInterrupted,
-                            ))))
-                            .unwrap();
+                        publish_stream_error(
+                            &ev_tx,
+                            private_channels,
+                            LiveError::new(ErrorKind::ConnectionInterrupted),
+                        );
                     }
                     Err::<(), HyperliquidError>(HyperliquidError::ConnectionInterrupted)
                 })
@@ -324,6 +325,46 @@ impl ConnectorBuilder for Hyperliquid {
             market_tx,
             market_subscriptions: Default::default(),
         })
+    }
+}
+
+impl Hyperliquid {
+    /// Builds the public market-data connector without constructing or retaining a signer.
+    /// Account construction continues to use `ConnectorBuilder` and requires a valid private key.
+    pub(crate) fn build_market_from(config: &str) -> Result<Self, HyperliquidError> {
+        let mut config: Config = toml::from_str(config)?;
+        config.private_key.clear();
+        config.account_address.clear();
+        let client = HyperliquidClient::new(&config.info_url, &config.exchange_url);
+        let (market_tx, _) = broadcast::channel(500);
+        Ok(Self {
+            config,
+            private_key: [0; 32],
+            account_address: String::new(),
+            nonce_counter: Default::default(),
+            symbols: Default::default(),
+            assets: Default::default(),
+            order_manager: Arc::new(Mutex::new(OrderManager::new())),
+            client,
+            market_tx,
+            market_subscriptions: Default::default(),
+        })
+    }
+}
+
+fn publish_stream_error(
+    sender: &crate::connector::PublishSender,
+    private_channels: bool,
+    error: LiveError,
+) {
+    if private_channels {
+        sender
+            .send_account(AccountPublication::Error(error))
+            .expect("account publication receiver must remain live while connector runs");
+    } else {
+        sender
+            .send(PublishEvent::LiveEvent(LiveEvent::Error(error)))
+            .expect("market publication receiver must remain live while connector runs");
     }
 }
 
@@ -739,6 +780,46 @@ fn build_order_wire(
         },
         c: Some(cloid),
     })
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn public_stream_reconnects_and_replays_desired_subscription() {
+        let (url, mut subscriptions, server) =
+            crate::connector::reconnecting_websocket_server(2).await;
+        let config = format!(
+            "info_url = \"http://127.0.0.1:9/info\"\nexchange_url = \"http://127.0.0.1:9/exchange\"\nws_url = {url:?}\nsafety_timeout_ms = 0\n"
+        );
+        let mut connector = Hyperliquid::build_market_from(&config).unwrap();
+        connector.subscribe_market_data(
+            "BTC".to_owned(),
+            vec![MarketDataKind::Depth, MarketDataKind::Trades],
+        );
+        let (events, _event_receiver) = crate::connector::publish_channel(16);
+        connector.run_market_data(events);
+
+        for _ in 0..2 {
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                frames.push(
+                    tokio::time::timeout(std::time::Duration::from_secs(3), subscriptions.recv())
+                        .await
+                        .expect("connector did not reconnect before deadline")
+                        .expect("websocket fixture ended before reconnect"),
+                );
+            }
+            // Hyperliquid emits one command per channel. Both commands must be rebuilt from the
+            // shared desired state on each newly accepted socket.
+            assert!(frames.iter().all(|frame| frame.contains("subscribe")));
+            assert!(frames.iter().all(|frame| frame.contains("BTC")));
+            assert!(frames.iter().any(|frame| frame.contains("l2Book")));
+            assert!(frames.iter().any(|frame| frame.contains("trades")));
+        }
+        server.await.unwrap();
+    }
 }
 
 /// Hyperliquid rejects prices/sizes with trailing zeros (e.g. "0.00100"). Strips trailing zeros
@@ -1262,6 +1343,18 @@ is_mainnet = false
     fn test_build_from_rejects_invalid_private_key() {
         assert!(Hyperliquid::build_from(&config_str("not-hex", "")).is_err());
         assert!(Hyperliquid::build_from(&config_str(&"ab".repeat(20), "")).is_err());
+    }
+
+    #[test]
+    fn public_market_builder_does_not_require_or_retain_a_private_key() {
+        let public = r#"info_url = "http://localhost/info"
+exchange_url = "http://localhost/exchange"
+ws_url = "ws://localhost/ws"
+"#;
+        let connector = Hyperliquid::build_market_from(public).unwrap();
+        assert_eq!(connector.private_key, [0; 32]);
+        assert!(connector.account_address.is_empty());
+        assert!(Hyperliquid::build_from(public).is_err());
     }
 
     #[test]

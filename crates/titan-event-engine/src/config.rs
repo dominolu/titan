@@ -255,6 +255,26 @@ pub struct FaultSignalConfig {
     pub capacity: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotBarrierConfig {
+    pub max_active: usize,
+    pub per_barrier_staging_capacity: usize,
+    pub global_staging_capacity: usize,
+    pub timeout_ms: u64,
+}
+
+impl Default for SnapshotBarrierConfig {
+    fn default() -> Self {
+        Self {
+            max_active: 16,
+            per_barrier_staging_capacity: 8_192,
+            global_staging_capacity: 65_536,
+            timeout_ms: 5_000,
+        }
+    }
+}
+
 impl Default for FaultSignalConfig {
     fn default() -> Self {
         Self { capacity: 256 }
@@ -272,6 +292,7 @@ pub struct EventEngineConfig {
     pub runtime: RuntimeConfig,
     pub diagnostics: DiagnosticsConfig,
     pub fault_signal_ring: FaultSignalConfig,
+    pub snapshot_barriers: SnapshotBarrierConfig,
 }
 
 impl EventEngineConfig {
@@ -340,8 +361,39 @@ impl EventEngineConfig {
         {
             return Err(ConfigError::ZeroCapacity("diagnostics"));
         }
+        if self.snapshot_barriers.max_active == 0
+            || self.snapshot_barriers.per_barrier_staging_capacity == 0
+            || self.snapshot_barriers.global_staging_capacity == 0
+            || self.snapshot_barriers.per_barrier_staging_capacity
+                > self.snapshot_barriers.global_staging_capacity
+        {
+            return Err(ConfigError::SnapshotBarrierCapacity);
+        }
+        if self.snapshot_barriers.timeout_ms == 0 {
+            return Err(ConfigError::ZeroDuration("snapshot_barriers.timeout_ms"));
+        }
         if self.runtime.mode == RuntimeMode::Dedicated && self.runtime.cpu_affinity.is_none() {
             return Err(ConfigError::DedicatedAffinity);
+        }
+        let available = core_affinity::get_core_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|core| core.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut assigned = std::collections::BTreeSet::new();
+        for core in self
+            .runtime
+            .cpu_affinity
+            .iter()
+            .copied()
+            .chain(self.subscribers.cpu_affinity.iter().copied())
+        {
+            if !available.contains(&core) {
+                return Err(ConfigError::CpuAffinityUnavailable(core));
+            }
+            if !assigned.insert(core) {
+                return Err(ConfigError::CpuAffinityConflict(core));
+            }
         }
         Ok(())
     }

@@ -228,7 +228,10 @@ impl PublicStream {
                         };
                     } else if state.epoch == 0 || books.prev_seq_id != state.last_sequence {
                         let epoch = state.epoch;
-                        states.remove(&symbol);
+                        *state = LocalBook {
+                            epoch,
+                            ..LocalBook::default()
+                        };
                         let _ = self
                             .ev_tx
                             .send(PublishEvent::StreamInvalidated { symbol, epoch });
@@ -238,7 +241,10 @@ impl PublicStream {
                     LocalBook::apply(&mut state.asks, &books.asks);
                     if books.checksum != 0 && state.checksum() != books.checksum {
                         let epoch = state.epoch;
-                        states.remove(&symbol);
+                        *state = LocalBook {
+                            epoch,
+                            ..LocalBook::default()
+                        };
                         let _ = self
                             .ev_tx
                             .send(PublishEvent::StreamInvalidated { symbol, epoch });
@@ -540,5 +546,113 @@ impl PublicStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use super::*;
+    use crate::connector::{PublishEvent, publish_channel};
+    use tokio::sync::broadcast;
+
+    fn stream() -> (PublicStream, crate::connector::PublishReceiver) {
+        let (events, receiver) = publish_channel(16);
+        let (_commands, command_rx) = broadcast::channel(4);
+        (
+            PublicStream::new(events, command_rx, Arc::new(Mutex::new(HashMap::new()))),
+            receiver,
+        )
+    }
+
+    fn book(action: &str, sequence: i64, previous: i64, checksum: i64) -> String {
+        serde_json::json!({
+            "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"},
+            "action": action,
+            "data": [{
+                "asks": [["101", "2"]],
+                "bids": [["100", "1"]],
+                "ts": "1",
+                "seqId": sequence,
+                "prevSeqId": previous,
+                "checksum": checksum
+            }]
+        })
+        .to_string()
+    }
+
+    async fn next_stream(receiver: &mut crate::connector::PublishReceiver) -> MarketStreamMetadata {
+        match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                stream: Some(stream),
+                ..
+            } => stream,
+            _ => panic!("expected market feed batch"),
+        }
+    }
+
+    #[tokio::test]
+    async fn book_gap_invalidates_and_the_recovery_snapshot_advances_epoch() {
+        let (stream, mut receiver) = stream();
+        stream
+            .handle_public_stream(&book("snapshot", 10, -1, 0))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_stream(&mut receiver).await,
+            MarketStreamMetadata {
+                epoch: 1,
+                first_update_sequence: 10,
+                last_update_sequence: 10,
+                snapshot: true,
+            }
+        );
+
+        stream
+            .handle_public_stream(&book("update", 11, 10, 0))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 1);
+
+        assert!(
+            stream
+                .handle_public_stream(&book("update", 12, 9, 0))
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
+        ));
+
+        stream
+            .handle_public_stream(&book("snapshot", 20, -1, 0))
+            .await
+            .unwrap();
+        let recovered = next_stream(&mut receiver).await;
+        assert!(recovered.snapshot);
+        assert_eq!(recovered.epoch, 2);
+        assert_eq!(recovered.last_update_sequence, 20);
+    }
+
+    #[tokio::test]
+    async fn checksum_failure_invalidates_without_reusing_the_epoch() {
+        let (stream, mut receiver) = stream();
+        assert!(
+            stream
+                .handle_public_stream(&book("snapshot", 10, -1, 1))
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
+        ));
+        stream
+            .handle_public_stream(&book("snapshot", 20, -1, 0))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 2);
     }
 }

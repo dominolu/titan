@@ -52,7 +52,8 @@ bar_history_view_dtype = np.dtype(
 fill_dtype = np.dtype(
     [("asset_no", "u8"), ("order_id", "u8"), ("venue_order_id", "u8"),
      ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
-     ("price", "f8"), ("qty", "f8"), ("venue_no", "u4"),
+     ("price", "f8"), ("last_fill_qty", "f8"),
+     ("cumulative_filled_qty", "f8"), ("venue_no", "u4"),
      ("instrument_id", "u4"), ("reason", "u4"), ("side", "i1"),
      ("maker", "u1"), ("_reserved", "u1", (2,))], align=True,
 )
@@ -70,7 +71,9 @@ market_state_dtype = np.dtype(
 )
 order_command_dtype = np.dtype(
     [("kind", "u1"), ("side", "i1"), ("time_in_force", "u1"),
-     ("order_type", "u1"), ("_reserved", "u1", (4,)), ("asset_no", "u8"),
+     ("order_type", "u1"), ("_reserved", "u1", (4,)),
+     ("local_account_no", "u4"), ("_account_reserved", "u4"),
+     ("asset_no", "u8"),
      ("order_id", "u8"), ("price", "f8"), ("qty", "f8"),
      ("trigger_price", "f8"), ("gtd_expiry_ts", "i8")], align=True,
 )
@@ -299,7 +302,7 @@ class Strategy:
 
     def _submit(self, asset_no, order_id, price, qty, side, time_in_force, order_type,
                 wait, reduce_only=False, trigger_price=0.0, trigger_kind=0,
-                gtd_expiry_ts=0):
+                gtd_expiry_ts=0, local_account_no=0):
         if wait: return -2
         if self.event_kind == EVENT_ERROR or self.event_kind == EVENT_STOP: return -3
         index = self.ctx_arr[0]["num_commands"]
@@ -313,6 +316,7 @@ class Strategy:
         command["order_type"] = order_type
         command["_reserved"][0] = 1 if reduce_only else 0
         command["_reserved"][1] = trigger_kind
+        command["local_account_no"] = local_account_no
         command["asset_no"] = asset_no
         command["order_id"] = order_id
         command["price"] = price
@@ -323,14 +327,14 @@ class Strategy:
         return 0
 
     def submit_buy_order(self, asset_no, order_id, price, qty, time_in_force, order_type,
-                         wait, reduce_only=False, gtd_expiry_ts=0):
+                         wait, reduce_only=False, gtd_expiry_ts=0, local_account_no=0):
         return self._submit(asset_no, order_id, price, qty, 1, time_in_force, order_type,
-                            wait, reduce_only, 0.0, 0, gtd_expiry_ts)
+                            wait, reduce_only, 0.0, 0, gtd_expiry_ts, local_account_no)
     def submit_sell_order(self, asset_no, order_id, price, qty, time_in_force, order_type,
-                          wait, reduce_only=False, gtd_expiry_ts=0):
+                          wait, reduce_only=False, gtd_expiry_ts=0, local_account_no=0):
         return self._submit(asset_no, order_id, price, qty, -1, time_in_force, order_type,
-                            wait, reduce_only, 0.0, 0, gtd_expiry_ts)
-    def cancel(self, asset_no, order_id, wait):
+                            wait, reduce_only, 0.0, 0, gtd_expiry_ts, local_account_no)
+    def cancel(self, asset_no, order_id, wait, local_account_no=0):
         if wait: return -2
         index = self.ctx_arr[0]["num_commands"]
         capacity = self.ctx_arr[0]["command_capacity"]
@@ -338,6 +342,7 @@ class Strategy:
         command = carray(address_as_void_pointer(self.ctx_arr[0]["commands_ptr"]),
                          capacity, order_command_dtype)[index]
         command["kind"] = 2
+        command["local_account_no"] = local_account_no
         command["asset_no"] = asset_no
         command["order_id"] = order_id
         self.ctx_arr[0]["num_commands"] = index + 1

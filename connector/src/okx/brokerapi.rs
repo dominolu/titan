@@ -1736,7 +1736,9 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_public_api_smoke() {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10));
         if let Ok(proxy) = std::env::var("HTTPS_PROXY") {
             builder = builder.proxy(reqwest::Proxy::all(&proxy).unwrap());
         }

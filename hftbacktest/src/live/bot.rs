@@ -366,6 +366,7 @@ where
                         order_qty: order.qty,
                         exec_price: order.exec_price(),
                         exec_qty: order.exec_qty,
+                        cumulative_filled_qty: order.qty - order.leaves_qty,
                         maker: order.maker,
                         account_delta,
                     };
@@ -528,6 +529,7 @@ where
                             order_qty,
                             exec_price,
                             exec_qty,
+                            cumulative_filled_qty: order_qty - leaves_qty,
                             maker,
                             account_delta,
                         })

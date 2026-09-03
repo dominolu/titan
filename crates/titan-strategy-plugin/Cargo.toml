@@ -1,0 +1,27 @@
+[package]
+name = "titan-strategy-plugin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[features]
+default = []
+numba-loader = ["dep:titan-python-host"]
+
+[dependencies]
+jsonschema = { version = "0.33", default-features = false }
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+titan-account-plugin = { path = "../titan-account-plugin" }
+titan-event-engine = { path = "../titan-event-engine" }
+titan-market-plugin = { path = "../titan-market-plugin" }
+titan-plugin-engine = { path = "../titan-plugin-engine" }
+titan-python-host = { path = "../titan-python-host", optional = true }
+titan-runtime = { path = "../titan-runtime" }
+titan-runtime-abi = { path = "../titan-runtime-abi" }
+
+[dev-dependencies]
+crossbeam-channel = "0.5"

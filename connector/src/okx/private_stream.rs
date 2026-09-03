@@ -1,12 +1,8 @@
-use std::{
-    sync::atomic::{AtomicU8, Ordering},
-    time::Duration,
-};
+use std::{collections::HashSet, sync::Mutex, time::Duration};
 
 use base64::Engine as _;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use hftbacktest::prelude::LiveEvent;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use tokio::{
@@ -22,7 +18,7 @@ use tokio_tungstenite::{
 use tracing::{debug, error};
 
 use crate::{
-    connector::PublishEvent,
+    connector::{AccountPublication, PublishEvent},
     okx::{
         OkxError, SharedSymbolSet,
         msg::{
@@ -45,7 +41,7 @@ pub struct PrivateStream {
     client: OkxClient,
     symbol_rx: Receiver<String>,
     symbols: SharedSymbolSet,
-    private_subscriptions_remaining: AtomicU8,
+    pending_private_subscriptions: Mutex<HashSet<String>>,
 }
 
 impl PrivateStream {
@@ -72,8 +68,28 @@ impl PrivateStream {
             client,
             symbol_rx,
             symbols,
-            private_subscriptions_remaining: AtomicU8::new(0),
+            pending_private_subscriptions: Mutex::new(HashSet::new()),
         }
+    }
+
+    fn reset_private_subscriptions(&self) {
+        *self
+            .pending_private_subscriptions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            HashSet::from(["orders".to_string(), "positions".to_string()]);
+    }
+
+    fn acknowledge_private_subscription(&self, channel: Option<&str>) -> bool {
+        let Some(channel) = channel else {
+            return false;
+        };
+        let mut pending = self
+            .pending_private_subscriptions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let removed = pending.remove(channel);
+        removed && pending.is_empty()
     }
 
     async fn handle_private_stream(
@@ -104,8 +120,7 @@ impl PrivateStream {
                         };
                         let s = serde_json::to_string(&op).unwrap();
                         write.send(Message::Text(s.into())).await?;
-                        self.private_subscriptions_remaining
-                            .store(2, Ordering::Release);
+                        self.reset_private_subscriptions();
 
                         // Replays every registered symbol after (re)connect so their cancel-all and
                         // position initialization run again on the fresh connection.
@@ -126,13 +141,9 @@ impl PrivateStream {
                     if ack.code.as_deref().is_some_and(|code| code != "0") {
                         return Err(OkxError::ConnectionInterrupted);
                     }
-                    let remaining = self
-                        .private_subscriptions_remaining
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                            value.checked_sub(1)
-                        })
-                        .unwrap_or(0);
-                    if remaining == 1 {
+                    if self.acknowledge_private_subscription(
+                        ack.arg.as_ref().map(|arg| arg.channel.as_str()),
+                    ) {
                         self.ev_tx
                             .send(PublishEvent::PrivateStreamReady)
                             .map_err(|_| OkxError::ConnectionInterrupted)?;
@@ -156,7 +167,7 @@ impl PrivateStream {
                         Ok(Some(order)) => {
                             let symbol = order_update.inst_id.clone();
                             self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
+                                .send_account(AccountPublication::Order { symbol, order })
                                 .unwrap();
                         }
                         Ok(None) => {}
@@ -173,11 +184,11 @@ impl PrivateStream {
                 for value in &data.data {
                     let position: Position = serde_json::from_value(value.clone())?;
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Position {
+                        .send_account(AccountPublication::Position {
                             symbol: position.inst_id.clone(),
                             qty: position_qty(&position),
                             exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
-                        }))
+                        })
                         .unwrap();
                 }
             }
@@ -321,11 +332,11 @@ pub async fn get_position(
     let positions = client.get_positions(&symbol).await?;
     for position in positions {
         ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Position {
+            .send_account(AccountPublication::Position {
                 symbol: position.inst_id.clone(),
                 qty: position_qty(&position),
                 exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
-            }))
+            })
             .unwrap();
     }
     Ok(())
@@ -348,10 +359,10 @@ pub async fn cancel_all(
         .cancel_all(&symbol, pos_side.as_deref());
     for order in orders {
         ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::Order {
+            .send_account(AccountPublication::Order {
                 symbol: symbol.clone(),
                 order,
-            }))
+            })
             .unwrap();
     }
     Ok(())
@@ -382,5 +393,32 @@ mod tests {
         // OKX returns a negative pos for short positions in long/short mode too.
         assert_eq!(position_qty(&position("-1.5", "short")), -1.5);
         assert_eq!(position_qty(&position("1.5", "long")), 1.5);
+    }
+
+    #[test]
+    fn private_ready_requires_each_distinct_private_channel() {
+        let (events, _receiver) = crate::connector::publish_channel(4);
+        let (_symbols, symbol_rx) = tokio::sync::broadcast::channel(4);
+        let stream = PrivateStream::new(
+            String::new(),
+            String::new(),
+            String::new(),
+            "cross".to_string(),
+            None,
+            events,
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::okx::ordermanager::OrderManager::new(""),
+            )),
+            OkxClient::new("http://localhost", "", "", ""),
+            symbol_rx,
+            Default::default(),
+        );
+
+        stream.reset_private_subscriptions();
+        assert!(!stream.acknowledge_private_subscription(Some("orders")));
+        assert!(!stream.acknowledge_private_subscription(Some("orders")));
+        assert!(!stream.acknowledge_private_subscription(Some("books")));
+        assert!(stream.acknowledge_private_subscription(Some("positions")));
+        assert!(!stream.acknowledge_private_subscription(Some("positions")));
     }
 }

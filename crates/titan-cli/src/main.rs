@@ -32,8 +32,6 @@ use hftbacktest::{
         result::{AccountSnapshot, execution_report_counts},
     },
     depth::HashMapMarketDepth,
-    live::{Instrument, LiveBotBuilder, ipc::iceoryx::IceoryxUnifiedChannel},
-    prelude::Bot,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,6 +58,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the configured EventEngine/PluginEngine graph until SIGINT.
+    CoreRun {
+        #[arg(short = 'c', long = "config", value_name = "RUNTIME.toml")]
+        config: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Resolve a strategy and config, then execute it in an isolated worker process.
     Run {
         #[arg(value_name = "STRATEGY")]
@@ -183,7 +188,8 @@ enum StrategyCommands {
 impl Commands {
     fn json_requested(&self) -> bool {
         match self {
-            Self::Run { json, .. }
+            Self::CoreRun { json, .. }
+            | Self::Run { json, .. }
             | Self::Validate { json, .. }
             | Self::Ls { json, .. }
             | Self::Show { json, .. }
@@ -348,8 +354,6 @@ struct RunConfig {
     strategy: RunConfigStrategy,
     #[serde(default)]
     backtest: Option<BacktestConfig>,
-    #[serde(default)]
-    live: Option<LiveConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -451,18 +455,6 @@ enum AssetModel {
     Inverse,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LiveConfig {
-    instruments: Vec<LiveInstrumentSpec>,
-    #[serde(default = "default_frame_interval")]
-    frame_interval_ns: i64,
-    #[serde(default = "default_max_tick_batch")]
-    max_tick_batch: usize,
-    #[serde(default)]
-    bot_id: Option<u64>,
-}
-
 #[derive(Debug, Serialize)]
 struct StrategyCatalogEntry {
     strategy_id: String,
@@ -482,14 +474,8 @@ enum BackendSpec {
         #[serde(default)]
         execution: BacktestExecutionSpec,
     },
-    Live {
-        instruments: Vec<LiveInstrumentSpec>,
-        #[serde(default = "default_frame_interval")]
-        frame_interval_ns: i64,
-        #[serde(default = "default_max_tick_batch")]
-        max_tick_batch: usize,
-        #[serde(default)]
-        bot_id: Option<u64>,
+    CoreLive {
+        strategy_key: String,
     },
 }
 
@@ -522,17 +508,6 @@ enum BacktestSourceSpec {
         #[serde(default = "default_max_tick_batch")]
         max_tick_batch: usize,
     },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LiveInstrumentSpec {
-    connector: String,
-    symbol: String,
-    tick_size: f64,
-    lot_size: f64,
-    #[serde(default = "default_last_trades_capacity")]
-    last_trades_capacity: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1330,6 +1305,9 @@ fn resolve_run_spec(
     event_mode: EventMode,
     config_path: &Path,
 ) -> Result<RunSpec, CliError> {
+    if environment == Environment::Live {
+        return resolve_core_live_run_spec(strategy_name, event_mode, config_path);
+    }
     let manifest = load_strategy_manifest(strategy_name)?;
     if !manifest.environments.contains(&environment) {
         return Err(CliError::Engine(format!(
@@ -1395,11 +1373,6 @@ fn resolve_run_spec(
 
     let backend = match environment {
         Environment::Backtest => {
-            if config.live.is_some() {
-                return Err(CliError::Engine(
-                    "backtest config must not contain a [live] section".into(),
-                ));
-            }
             let backend = config.backtest.ok_or_else(|| {
                 CliError::Engine("backtest environment requires a [backtest] section".into())
             })?;
@@ -1461,28 +1434,7 @@ fn resolve_run_spec(
             };
             BackendSpec::Backtest { source, execution }
         }
-        Environment::Live => {
-            if config.backtest.is_some() {
-                return Err(CliError::Engine(
-                    "live config must not contain a [backtest] section".into(),
-                ));
-            }
-            if event_mode != EventMode::Tick {
-                return Err(CliError::Engine(format!(
-                    "live environment currently supports tick mode, not {}",
-                    event_mode.as_str()
-                )));
-            }
-            let backend = config.live.ok_or_else(|| {
-                CliError::Engine("live environment requires a [live] section".into())
-            })?;
-            BackendSpec::Live {
-                instruments: backend.instruments,
-                frame_interval_ns: backend.frame_interval_ns,
-                max_tick_batch: backend.max_tick_batch,
-                bot_id: backend.bot_id,
-            }
-        }
+        Environment::Live => unreachable!("live returned before legacy run-spec resolution"),
     };
 
     let spec = RunSpec {
@@ -1500,6 +1452,51 @@ fn resolve_run_spec(
         },
         backend,
         history_capacity: config.history_capacity,
+    };
+    validate_spec(&spec)?;
+    Ok(spec)
+}
+
+fn resolve_core_live_run_spec(
+    strategy_name: &str,
+    event_mode: EventMode,
+    config_path: &Path,
+) -> Result<RunSpec, CliError> {
+    let config_path = fs::canonicalize(config_path).map_err(|source| CliError::Read {
+        path: config_path.into(),
+        source,
+    })?;
+    let config_bytes = fs::read(&config_path).map_err(|source| CliError::Read {
+        path: config_path.clone(),
+        source,
+    })?;
+    let adapted = load_core_configuration(&config_path, Some((strategy_name, event_mode)))?;
+    let definition = adapted
+        .strategies
+        .first()
+        .ok_or_else(|| CliError::Engine(format!("strategy {strategy_name} is not enabled")))?;
+    let parameters =
+        serde_json::from_slice(&definition.parameters).map_err(|source| CliError::Json {
+            path: config_path.clone(),
+            source,
+        })?;
+    let spec = RunSpec {
+        schema_version: RUN_SPEC_VERSION,
+        environment: Environment::Live,
+        event_mode,
+        config_path,
+        config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
+        strategy: StrategyRunSpec {
+            strategy_id: definition.strategy_key.to_string(),
+            strategy_version: definition.definition_version.to_string(),
+            entrypoint: definition.entrypoint.to_string(),
+            parameters,
+            python_paths: Vec::new(),
+        },
+        backend: BackendSpec::CoreLive {
+            strategy_key: definition.strategy_key.to_string(),
+        },
+        history_capacity: default_history_capacity(),
     };
     validate_spec(&spec)?;
     Ok(spec)
@@ -1608,27 +1605,16 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
                 ));
             }
         }
-        BackendSpec::Live {
-            instruments,
-            frame_interval_ns,
-            max_tick_batch,
-            ..
-        } => {
-            if spec.environment != Environment::Live || spec.event_mode != EventMode::Tick {
+        BackendSpec::CoreLive { strategy_key } => {
+            if spec.environment != Environment::Live {
                 return Err(CliError::Engine(
-                    "live backend currently requires live environment and tick mode".into(),
+                    "Core live backend requires live environment".into(),
                 ));
             }
-            if instruments.is_empty() || *frame_interval_ns <= 0 || *max_tick_batch == 0 {
-                return Err(CliError::Engine("invalid Live backend limits".into()));
-            }
-            if instruments.iter().any(|instrument| {
-                instrument.connector.is_empty()
-                    || instrument.symbol.is_empty()
-                    || instrument.tick_size <= 0.0
-                    || instrument.lot_size <= 0.0
-            }) {
-                return Err(CliError::Engine("invalid Live instrument".into()));
+            if strategy_key.is_empty() || strategy_key != &spec.strategy.strategy_id {
+                return Err(CliError::Engine(
+                    "Core live strategy identity is inconsistent".into(),
+                ));
             }
         }
     }
@@ -2053,64 +2039,9 @@ fn execute_backend(
                 ))
             }
         },
-        BackendSpec::Live {
-            instruments,
-            frame_interval_ns,
-            max_tick_batch,
-            bot_id,
-        } => {
-            if instruments.is_empty() {
-                return Err(CliError::Engine(
-                    "Live requires at least one instrument".into(),
-                ));
-            }
-            let mut builder = LiveBotBuilder::new();
-            for instrument in instruments {
-                if instrument.connector.is_empty()
-                    || instrument.symbol.is_empty()
-                    || !instrument.tick_size.is_finite()
-                    || instrument.tick_size <= 0.0
-                    || !instrument.lot_size.is_finite()
-                    || instrument.lot_size <= 0.0
-                {
-                    return Err(CliError::Engine("invalid Live instrument".into()));
-                }
-                builder = builder.register(Instrument::new(
-                    &instrument.connector,
-                    &instrument.symbol,
-                    instrument.tick_size,
-                    instrument.lot_size,
-                    HashMapMarketDepth::new(instrument.tick_size, instrument.lot_size),
-                    instrument.last_trades_capacity,
-                ));
-            }
-            if let Some(bot_id) = bot_id {
-                builder = builder.id(bot_id);
-            }
-            let mut live = builder
-                .build::<IceoryxUnifiedChannel>()
-                .map_err(|error| CliError::Engine(error.to_string()))?;
-            let result = {
-                let mut source = TickFrameSource::new(&mut live, frame_interval_ns, max_tick_batch);
-                source.configure_context(context);
-                let mut source = StopAwareSource {
-                    inner: source,
-                    stop,
-                };
-                let stats = run_event_runtime_counted(&mut source, callbacks, context)
-                    .map_err(CliError::Callback)?;
-                Ok::<_, CliError>(execution_outcome(
-                    stats,
-                    source.inner.execution_reports(),
-                    source.inner.funding_reports(),
-                    source.inner.account_snapshots(),
-                ))
-            };
-            let outcome = result?;
-            live.close()
-                .map_err(|error| CliError::Engine(error.to_string()))?;
-            Ok(outcome)
-        }
+        BackendSpec::CoreLive { .. } => Err(CliError::Engine(
+            "Core live backends are executed by the Core Runtime worker".into(),
+        )),
     }
 }
 
@@ -2211,6 +2142,9 @@ fn worker(
     )?;
     let spec = load_spec(spec_path)?;
     registry.transition(run_id, token, "COMPILING")?;
+    if let BackendSpec::CoreLive { strategy_key } = &spec.backend {
+        return core_live_worker(&registry, run_id, token, &spec, strategy_key, stop);
+    }
     let mut compiler = EmbeddedPythonCompiler::default();
     for path in &spec.strategy.python_paths {
         compiler = compiler.with_python_path(path);
@@ -2344,6 +2278,49 @@ fn worker(
     registry.finish(run_id, token, final_state, 0, None)?;
     drop(callbacks);
     drop(loaded); // cfunc/state keepalive is dropped only after Runtime and result extraction.
+    Ok(())
+}
+
+fn core_live_worker(
+    registry: &Registry,
+    run_id: &str,
+    token: &str,
+    spec: &RunSpec,
+    strategy_key: &str,
+    stop: Arc<AtomicBool>,
+) -> Result<(), CliError> {
+    let adapted =
+        load_core_configuration(&spec.config_path, Some((strategy_key, spec.event_mode)))?;
+    let mut runtime = titan_cli::ConfiguredCoreRuntime::start(adapted)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    registry.transition(run_id, token, "READY")?;
+    registry.transition(run_id, token, "RUNNING")?;
+    let started = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    runtime
+        .shutdown(titan_plugin_engine::StopReason::Shutdown)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "run_id": run_id,
+        "strategy_id": strategy_key,
+        "strategy_version": spec.strategy.strategy_version,
+        "environment": spec.environment,
+        "event_mode": spec.event_mode,
+        "config_sha256": spec.config_sha256,
+        "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        "status": "STOPPED"
+    });
+    let result_json = serde_json::to_string_pretty(&result).map_err(CliError::ResultJson)?;
+    let record = registry
+        .get(run_id)?
+        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
+    atomic_write(&record.result_path, result_json.as_bytes())?;
+    registry.update_metrics(run_id, token, 0, 0, 0)?;
+    registry.finish(run_id, token, "STOPPED", 0, None)?;
+    println!("{result_json}");
     Ok(())
 }
 
@@ -2756,6 +2733,109 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
     Ok(())
 }
 
+fn run_configured_core(config: &Path, json: bool) -> Result<(), CliError> {
+    run_selected_core(config, None, json)
+}
+
+fn run_selected_core(
+    config: &Path,
+    selected: Option<(&str, EventMode)>,
+    json: bool,
+) -> Result<(), CliError> {
+    let adapted = load_core_configuration(config, selected)?;
+    let mut runtime = titan_cli::ConfiguredCoreRuntime::start(adapted)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let terminate = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, interrupt.clone())
+        .map_err(CliError::Spawn)?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, terminate.clone())
+        .map_err(CliError::Spawn)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "status": "RUNNING"
+            })
+        );
+        std::io::stdout().flush().map_err(CliError::Spawn)?;
+    } else {
+        println!("Titan Core Runtime is running; press Ctrl-C to stop");
+    }
+    while !interrupt.load(Ordering::Acquire) && !terminate.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let reason = if interrupt.load(Ordering::Acquire) {
+        "SIGINT"
+    } else {
+        "SIGTERM"
+    };
+    runtime
+        .shutdown(titan_plugin_engine::StopReason::Shutdown)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "status": "STOPPED",
+                "reason": reason
+            })
+        );
+    }
+    Ok(())
+}
+
+fn load_core_configuration(
+    config: &Path,
+    selected: Option<(&str, EventMode)>,
+) -> Result<titan_cli::AdaptedConfiguration, CliError> {
+    let mut adapted = titan_cli::ConfigurationAdapter::load_toml(config)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    if let Some((strategy_key, mode)) = selected {
+        let selected = adapted
+            .strategies
+            .iter()
+            .find(|definition| definition.strategy_key.as_ref() == strategy_key)
+            .ok_or_else(|| {
+                CliError::Engine(format!(
+                    "strategy {strategy_key} is not defined in the Core Runtime config"
+                ))
+            })?;
+        if !selected.enabled {
+            return Err(CliError::Engine(format!(
+                "strategy {strategy_key} is disabled"
+            )));
+        }
+        let mode_matches = selected.markets.iter().all(|binding| {
+            matches!(
+                (mode, binding.data_mode),
+                (
+                    EventMode::Tick,
+                    titan_strategy_plugin::StrategyDataMode::Tick
+                ) | (
+                    EventMode::Bar,
+                    titan_strategy_plugin::StrategyDataMode::Bar { .. }
+                ) | (
+                    EventMode::Hybrid,
+                    titan_strategy_plugin::StrategyDataMode::Hybrid { .. }
+                )
+            )
+        });
+        if !mode_matches {
+            return Err(CliError::Engine(format!(
+                "strategy {strategy_key} bindings do not match {} mode",
+                mode.as_str()
+            )));
+        }
+        adapted
+            .strategies
+            .retain(|definition| definition.strategy_key.as_ref() == strategy_key);
+    }
+    Ok(adapted)
+}
+
 fn main() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     let json_argument = arguments.iter().any(|argument| argument == "--json");
@@ -2782,6 +2862,7 @@ fn main() -> ExitCode {
     };
     let json_requested = cli.command.json_requested();
     let result = match cli.command {
+        Commands::CoreRun { config, json } => run_configured_core(&config, json),
         Commands::Run {
             strategy,
             env,
@@ -2816,23 +2897,44 @@ fn main() -> ExitCode {
             mode,
             config,
             json,
-        } => resolve_run_spec(&strategy, env, mode, &config).map(|spec| {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "schema_version": 1,
-                        "valid": true,
-                        "strategy_id": strategy,
-                        "environment": spec.environment.as_str(),
-                        "event_mode": spec.event_mode.as_str(),
-                        "config_sha256": spec.config_sha256
-                    })
-                );
+        } => {
+            if env == Environment::Live {
+                load_core_configuration(&config, Some((&strategy, mode))).map(|_| {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "schema_version": 1,
+                                "valid": true,
+                                "strategy_id": strategy,
+                                "environment": env.as_str(),
+                                "event_mode": mode.as_str()
+                            })
+                        );
+                    } else {
+                        println!("valid");
+                    }
+                })
             } else {
-                println!("valid");
+                resolve_run_spec(&strategy, env, mode, &config).map(|spec| {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "schema_version": 1,
+                                "valid": true,
+                                "strategy_id": strategy,
+                                "environment": spec.environment.as_str(),
+                                "event_mode": spec.event_mode.as_str(),
+                                "config_sha256": spec.config_sha256
+                            })
+                        );
+                    } else {
+                        println!("valid");
+                    }
+                })
             }
-        }),
+        }
         Commands::Ls {
             json,
             active,

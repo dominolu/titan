@@ -121,7 +121,7 @@ pub enum EventQos {
     BestEffort,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProvidedService {
     pub id: ServiceId,
     pub version: Version,
@@ -129,7 +129,7 @@ pub struct ProvidedService {
     pub call_mode: CallMode,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequiredService {
     pub id: ServiceId,
     pub version: VersionReq,
@@ -137,26 +137,27 @@ pub struct RequiredService {
     pub required: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PublishedEvent {
     pub event_type: Arc<str>,
     pub schema_version: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SubscribedEvent {
     pub event_type: Arc<str>,
     pub schema_version: u32,
     pub allowed_qos: BTreeSet<EventQos>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin_type: Arc<str>,
     pub name: Arc<str>,
     pub version: Version,
     pub engine_api_version: ApiVersion,
     pub abi_version: ApiVersion,
+    pub config_schema_version: u32,
     pub config_schema: Arc<serde_json::Value>,
     pub provides: Vec<ProvidedService>,
     pub requires: Vec<RequiredService>,
@@ -188,6 +189,7 @@ pub struct SubscriptionLimits {
 
 #[derive(Clone, Debug)]
 pub struct ConfigSnapshot {
+    pub schema_version: u32,
     pub version: u64,
     pub hash: Arc<str>,
     pub loaded_at: SystemTime,
@@ -198,12 +200,18 @@ pub struct ConfigSnapshot {
 impl ConfigSnapshot {
     pub fn new(version: u64, value: serde_json::Value) -> Self {
         Self {
+            schema_version: 1,
             version,
             hash: Arc::from(format!("v{version}")),
             loaded_at: SystemTime::now(),
             source: Arc::from("memory"),
             value: Arc::new(value),
         }
+    }
+
+    pub fn with_schema_version(mut self, schema_version: u32) -> Self {
+        self.schema_version = schema_version;
+        self
     }
 }
 

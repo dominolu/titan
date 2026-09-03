@@ -2,7 +2,7 @@
 
 版本：v0.1
 
-状态：设计基线，待实现
+状态：主体实现已落地；Phase 5、旧路径退休与实盘验收待完成
 
 关联文档：
 
@@ -852,6 +852,10 @@ Binance Futures、OKX 和 Hyperliquid 分别验证：
 - 验证事件状态与交易所最终 orders/positions/balances 一致。
 
 ## 17. 实施任务拆分
+
+实施状态说明：Phase 1、Phase 2 和公共 Service/动态 ConnectorFactory 装配已经落地；Phase 3/4 的
+部分 Connector 适配与测试已经存在，但旧 `PublishEvent::LiveEvent` bridge、三家交易所完整恢复语义及
+故障/长稳验收尚未全部退休或通过。以下 Phase 5 项目仍是当前生产切换的验收边界。
 
 ### Phase 1：公共契约与骨架
 
