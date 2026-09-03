@@ -26,7 +26,9 @@ use crate::{
         ordermanager::{OrderManager, SharedOrderManager},
         rest::BinanceFuturesClient,
     },
-    connector::{Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent},
+    connector::{
+        AccountPublication, Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent,
+    },
     utils::{ExponentialBackoff, Retry},
 };
 
@@ -130,6 +132,28 @@ pub struct BinanceFutures {
 }
 
 impl BinanceFutures {
+    fn market_stream_endpoints(
+        stream_url: &str,
+    ) -> Vec<(String, market_data_stream::MarketStreamRoute)> {
+        const PRODUCTION_ROOT: &str = "wss://fstream.binance.com";
+        if stream_url == PRODUCTION_ROOT || stream_url.starts_with(&format!("{PRODUCTION_ROOT}/")) {
+            return vec![
+                (
+                    format!("{PRODUCTION_ROOT}/public/ws"),
+                    market_data_stream::MarketStreamRoute::Public,
+                ),
+                (
+                    format!("{PRODUCTION_ROOT}/market/ws"),
+                    market_data_stream::MarketStreamRoute::Market,
+                ),
+            ];
+        }
+        vec![(
+            stream_url.to_owned(),
+            market_data_stream::MarketStreamRoute::All,
+        )]
+    }
+
     fn start_safety_heartbeat(&self) {
         let timeout_ms = self.config.safety_timeout_ms;
         if timeout_ms == 0 || self.config.api_key.is_empty() || self.config.secret.is_empty() {
@@ -153,40 +177,42 @@ impl BinanceFutures {
     }
 
     pub fn connect_market_data_stream(&mut self, ev_tx: crate::connector::PublishSender) {
-        let base_url = self.config.stream_url.clone();
-        let client = self.client.clone();
-        let symbol_tx = self.market_tx.clone();
-        let market_subscriptions = self.market_subscriptions.clone();
-
-        tokio::spawn(async move {
-            let _ = Retry::new(ExponentialBackoff::default())
-                .error_handler(|error: BinanceFuturesError| {
-                    error!(
-                        ?error,
-                        "An error occurred in the market data stream connection."
-                    );
-                    ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.into(),
-                        ))))
-                        .unwrap();
-                    Ok(())
-                })
-                .retry(|| async {
-                    let mut stream = market_data_stream::MarketDataStream::new(
-                        client.clone(),
-                        ev_tx.clone(),
-                        symbol_tx.subscribe(),
-                        market_subscriptions.clone(),
-                    );
-                    debug!("Connecting to the market data stream...");
-                    stream.connect(&base_url).await?;
-                    debug!("The market data stream connection is permanently closed.");
-                    Ok(())
-                })
-                .await;
-        });
+        for (base_url, route) in Self::market_stream_endpoints(&self.config.stream_url) {
+            let client = self.client.clone();
+            let symbol_tx = self.market_tx.clone();
+            let market_subscriptions = self.market_subscriptions.clone();
+            let ev_tx = ev_tx.clone();
+            tokio::spawn(async move {
+                let _ = Retry::new(ExponentialBackoff::default())
+                    .error_handler(|error: BinanceFuturesError| {
+                        error!(
+                            ?error,
+                            "An error occurred in the market data stream connection."
+                        );
+                        ev_tx
+                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                                ErrorKind::ConnectionInterrupted,
+                                error.into(),
+                            ))))
+                            .unwrap();
+                        Ok(())
+                    })
+                    .retry(|| async {
+                        let mut stream = market_data_stream::MarketDataStream::new(
+                            client.clone(),
+                            ev_tx.clone(),
+                            symbol_tx.subscribe(),
+                            market_subscriptions.clone(),
+                            route,
+                        );
+                        debug!(?route, %base_url, "Connecting to the market data stream...");
+                        stream.connect(&base_url).await?;
+                        debug!("The market data stream connection is permanently closed.");
+                        Ok(())
+                    })
+                    .await;
+            });
+        }
     }
 
     pub fn connect_user_data_stream(&self, ev_tx: crate::connector::PublishSender) {
@@ -204,10 +230,10 @@ impl BinanceFutures {
                         "An error occurred in the user data stream connection."
                     );
                     ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        .send_account(AccountPublication::Error(LiveError::with(
                             ErrorKind::ConnectionInterrupted,
                             error.into(),
-                        ))))
+                        )))
                         .unwrap();
                     Ok(())
                 })
@@ -240,13 +266,15 @@ impl ConnectorBuilder for BinanceFutures {
         let config: Config = toml::from_str(config)?;
 
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
-        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret);
+        let symbols: SharedSymbolSet = Default::default();
+        let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret)
+            .with_registered_symbols(symbols.clone());
         let (symbol_tx, _) = broadcast::channel(500);
         let (market_tx, _) = broadcast::channel(500);
 
         Ok(BinanceFutures {
             config,
-            symbols: Default::default(),
+            symbols,
             order_manager,
             client,
             symbol_tx,
@@ -507,5 +535,63 @@ impl Connector for BinanceFutures {
         } else {
             Err(errors.join("; "))
         }
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn production_market_stream_is_split_by_binance_route() {
+        let endpoints = BinanceFutures::market_stream_endpoints("wss://fstream.binance.com/ws");
+        assert_eq!(
+            endpoints,
+            vec![
+                (
+                    "wss://fstream.binance.com/public/ws".to_owned(),
+                    market_data_stream::MarketStreamRoute::Public,
+                ),
+                (
+                    "wss://fstream.binance.com/market/ws".to_owned(),
+                    market_data_stream::MarketStreamRoute::Market,
+                ),
+            ]
+        );
+        assert_eq!(
+            BinanceFutures::market_stream_endpoints("ws://127.0.0.1:1234"),
+            vec![(
+                "ws://127.0.0.1:1234".to_owned(),
+                market_data_stream::MarketStreamRoute::All,
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn public_stream_reconnects_and_replays_desired_subscription() {
+        let (url, mut subscriptions, server) =
+            crate::connector::reconnecting_websocket_server(1).await;
+        let config = format!(
+            "stream_url = {url:?}\napi_url = \"http://127.0.0.1:9\"\norder_prefix = \"test\"\napi_key = \"\"\nsecret = \"\"\nsafety_timeout_ms = 0\n"
+        );
+        let mut connector = BinanceFutures::build_from(&config).unwrap();
+        connector.subscribe_market_data(
+            "btcusdt".to_owned(),
+            vec![MarketDataKind::Depth, MarketDataKind::Trades],
+        );
+        let (events, _event_receiver) = crate::connector::publish_channel(16);
+        connector.run_market_data(events);
+
+        for _ in 0..2 {
+            let subscription =
+                tokio::time::timeout(std::time::Duration::from_secs(3), subscriptions.recv())
+                    .await
+                    .expect("connector did not reconnect before deadline")
+                    .expect("websocket fixture ended before reconnect");
+            assert!(subscription.contains("SUBSCRIBE"));
+            assert!(subscription.contains("btcusdt@depth@0ms"));
+            assert!(subscription.contains("btcusdt@trade"));
+        }
+        server.await.unwrap();
     }
 }

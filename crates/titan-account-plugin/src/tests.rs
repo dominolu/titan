@@ -17,6 +17,31 @@ use titan_plugin_engine::{
 
 use crate::*;
 
+#[test]
+fn fill_v2_preserves_last_and_cumulative_quantities() {
+    let value = FillV2 {
+        header: AccountEventHeaderV1 {
+            account_id: 1,
+            kind: event_kind::FILL,
+            account_generation: 2,
+            account_epoch: 3,
+            account_version: 4,
+            ..AccountEventHeaderV1::default()
+        },
+        asset_id: 9,
+        last_fill_quantity_lots: 2,
+        cumulative_filled_quantity_lots: 7,
+        ..FillV2::default()
+    };
+    let mut encoded = vec![0; FillV2::ENCODED_LEN];
+    value.encode_into(&mut encoded).unwrap();
+    assert_eq!(FillV2::decode(&encoded).unwrap(), value);
+    assert_eq!(
+        account_event_layout_version(FILL_EVENT, FILL_EVENT_SCHEMA_VERSION),
+        Some((event_kind::FILL, FillV2::ENCODED_LEN))
+    );
+}
+
 struct TestSecrets;
 impl SecretProvider for TestSecrets {
     fn resolve(&self, reference: &SecretRef) -> Result<SecretValue, AccountConnectorError> {
@@ -65,6 +90,91 @@ impl FakeConnector {
             captured_at: 10,
             items: Arc::from([]),
         }
+    }
+
+    fn publish_command_facts(
+        &self,
+        command: &SubmitOrderCommand,
+    ) -> Result<(), AccountConnectorError> {
+        let header = |kind, account_version| AccountEventHeaderV1 {
+            account_id: self.context.account.account_id.0,
+            kind,
+            account_generation: self.context.account.generation,
+            account_epoch: 1,
+            account_version,
+            exchange_ts: 101,
+            receive_ts: 102,
+            ..Default::default()
+        };
+        let client_order_id = command.client_order_id.unwrap_or_default();
+        let venue_order_id = Id128([3; 16]);
+        let publisher = &self.context.event_publisher;
+        publisher
+            .publish_encoded(
+                &OrderChangedV1 {
+                    header: header(event_kind::ORDER_CHANGED, 4),
+                    asset_id: command.asset_id.0,
+                    side: command.side,
+                    order_type: command.order_type,
+                    time_in_force: command.time_in_force,
+                    status: 2,
+                    price_ticks: command.price_ticks,
+                    quantity_lots: command.quantity_lots,
+                    filled_quantity_lots: command.quantity_lots,
+                    average_price_ticks: command.price_ticks,
+                    client_order_id,
+                    venue_order_id,
+                    command_id: command.command_id,
+                },
+                command.trace,
+            )
+            .map_err(|error| AccountConnectorError::rejected(error.to_string()))?;
+        publisher
+            .publish_encoded(
+                &FillV2 {
+                    header: header(event_kind::FILL, 5),
+                    asset_id: command.asset_id.0,
+                    side: command.side,
+                    liquidity: 1,
+                    price_ticks: command.price_ticks,
+                    last_fill_quantity_lots: command.quantity_lots,
+                    cumulative_filled_quantity_lots: command.quantity_lots,
+                    trade_id: Id128([4; 16]),
+                    venue_order_id,
+                    client_order_id,
+                    command_id: command.command_id,
+                    ..Default::default()
+                },
+                command.trace,
+            )
+            .map_err(|error| AccountConnectorError::rejected(error.to_string()))?;
+        publisher
+            .publish_encoded(
+                &PositionChangedV1 {
+                    header: header(event_kind::POSITION_CHANGED, 6),
+                    asset_id: command.asset_id.0,
+                    position_side: command.side,
+                    quantity_lots: command.quantity_lots,
+                    entry_price_ticks: command.price_ticks,
+                    margin_currency_id: self.context.currencies[0].currency_id.0,
+                    ..Default::default()
+                },
+                command.trace,
+            )
+            .map_err(|error| AccountConnectorError::rejected(error.to_string()))?;
+        publisher
+            .publish_encoded(
+                &BalanceChangedV1 {
+                    header: header(event_kind::BALANCE_CHANGED, 7),
+                    currency_id: self.context.currencies[0].currency_id.0,
+                    wallet_units: 1_000,
+                    available_units: 900,
+                    margin_units: 100,
+                    unrealized_pnl_units: 5,
+                },
+                command.trace,
+            )
+            .map_err(|error| AccountConnectorError::rejected(error.to_string()))
     }
 }
 
@@ -172,6 +282,7 @@ impl AccountConnector for FakeConnector {
             };
         }
         let r = self.receipt(c.command_id, c.client_order_id);
+        self.publish_command_facts(&c)?;
         j.insert(c.command_id, (c, r.clone()));
         Ok(r)
     }
@@ -463,6 +574,16 @@ impl EventHandler for RecordingHandler {
     }
 }
 
+struct TraceRecordingHandler(std::sync::mpsc::Sender<(String, TraceContext)>);
+impl EventHandler for TraceRecordingHandler {
+    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+        self.0
+            .send((event.event_type.to_string(), event.trace))
+            .unwrap();
+        Ok(())
+    }
+}
+
 #[test]
 fn plugin_services_direct_events_generation_and_snapshots_work() {
     let mut c = EventEngineConfig::default();
@@ -471,9 +592,19 @@ fn plugin_services_direct_events_generation_and_snapshots_work() {
     c.subscribers.critical_reserve = 2;
     let ee = EventEngine::new(c).unwrap();
     let h = ee.handle();
-    for t in ACCOUNT_EVENT_TYPES {
-        h.register_event(t, 1, EventClass::Critical, PoolKind::SmallEvent)
-            .unwrap();
+    for event_type in ACCOUNT_EVENT_TYPES {
+        let schema_version = if event_type == FILL_EVENT {
+            FILL_EVENT_SCHEMA_VERSION
+        } else {
+            ACCOUNT_EVENT_SCHEMA_VERSION
+        };
+        h.register_event(
+            event_type,
+            schema_version,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
     }
     ee.start().unwrap();
     let tx = h.begin_route_update(h.current_route_version()).unwrap();
@@ -625,6 +756,158 @@ fn plugin_services_direct_events_generation_and_snapshots_work() {
 }
 
 #[test]
+fn execution_service_reaches_connector_and_returns_all_account_facts_with_trace() {
+    let mut config = EventEngineConfig::default();
+    config.ingress.max_sources = 5_000;
+    config.subscribers.default_capacity = 16;
+    config.subscribers.critical_reserve = 2;
+    let event_engine = EventEngine::new(config).unwrap();
+    let events = event_engine.handle();
+    for event_type in ACCOUNT_EVENT_TYPES {
+        let schema_version = if event_type == FILL_EVENT {
+            FILL_EVENT_SCHEMA_VERSION
+        } else {
+            ACCOUNT_EVENT_SCHEMA_VERSION
+        };
+        events
+            .register_event(
+                event_type,
+                schema_version,
+                EventClass::Critical,
+                PoolKind::SmallEvent,
+            )
+            .unwrap();
+    }
+    event_engine.start().unwrap();
+    let mut plugins = engine_with_plugin(&event_engine);
+    let account = match admin(
+        &plugins,
+        AccountAdminRequest::Create(definition("facts", 2001)),
+    )
+    .unwrap()
+    {
+        AccountAdminResponse::Handle(handle) => handle,
+        _ => panic!("unexpected create response"),
+    };
+    let start = match admin(&plugins, AccountAdminRequest::Start(account)).unwrap() {
+        AccountAdminResponse::OperationId(id) => id,
+        _ => panic!("unexpected start response"),
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match admin(&plugins, AccountAdminRequest::Operation(start)).unwrap() {
+            AccountAdminResponse::Operation(snapshot)
+                if snapshot.state == OperationState::Succeeded =>
+            {
+                break;
+            }
+            AccountAdminResponse::Operation(snapshot)
+                if snapshot.state == OperationState::Failed =>
+            {
+                panic!("account start failed: {}", snapshot.detail);
+            }
+            AccountAdminResponse::Operation(_) => {
+                assert!(Instant::now() < deadline, "account start timed out");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            _ => panic!("unexpected operation response"),
+        }
+    }
+
+    let transaction = events
+        .begin_route_update(events.current_route_version())
+        .unwrap();
+    for (event_type, schema_version) in [
+        (ORDER_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+        (FILL_EVENT, FILL_EVENT_SCHEMA_VERSION),
+        (POSITION_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+        (BALANCE_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+    ] {
+        events
+            .stage_subscription(
+                transaction,
+                &PluginIdentity::new("strategy", "account-facts"),
+                &SubscriptionSpec {
+                    event_type: Arc::from(event_type),
+                    schema_version,
+                    qos: EventQos::ReliableOrdered,
+                    capacity: 8,
+                    routing_keys: Arc::from([u64::from(account.account_id.0)]),
+                },
+            )
+            .unwrap();
+    }
+    let (_, subscriptions) = events.commit_at_safe_point(transaction).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let consumers = subscriptions
+        .into_iter()
+        .map(|subscription| {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let handler = TraceRecordingHandler(sender);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    if subscription
+                        .receiver
+                        .dispatch_next(&handler, Duration::from_millis(10))
+                        .unwrap()
+                        == DispatchOutcome::Delivered
+                    {
+                        return;
+                    }
+                    assert!(Instant::now() < deadline, "account fact was not delivered");
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(sender);
+
+    let command = SubmitOrderCommand {
+        command_id: Id128([9; 16]),
+        client_order_id: Some(Id128([10; 16])),
+        asset_id: AssetId(1001),
+        side: 1,
+        order_type: 1,
+        time_in_force: 1,
+        price_ticks: 20,
+        quantity_lots: 3,
+        trace: TraceContext::default(),
+    };
+    execution(&plugins, AccountExecutionRequest::Submit(account, command)).unwrap();
+
+    let mut delivered = receiver.iter().collect::<Vec<_>>();
+    for consumer in consumers {
+        consumer.join().unwrap();
+    }
+    delivered.sort_by(|left, right| left.0.cmp(&right.0));
+    assert!(delivered.iter().all(|(_, trace)| {
+        *trace
+            == TraceContext {
+                trace_id: 9,
+                causation_id: 8,
+            }
+    }));
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|(event_type, _)| event_type.as_str())
+            .collect::<BTreeSet<_>>(),
+        [
+            ORDER_CHANGED_EVENT,
+            FILL_EVENT,
+            POSITION_CHANGED_EVENT,
+            BALANCE_CHANGED_EVENT,
+        ]
+        .into_iter()
+        .collect()
+    );
+
+    plugins.shutdown(StopReason::Shutdown).unwrap();
+    event_engine.stop().unwrap();
+    assert_eq!(event_engine.arena().outstanding_blocks(), 0);
+}
+
+#[test]
 fn validation_capacity_redaction_and_error_passthrough_work() {
     assert_eq!(
         format!("{:?}", SecretRef::new("secret://sensitive/path")),
@@ -632,8 +915,18 @@ fn validation_capacity_redaction_and_error_passthrough_work() {
     );
     let ee = EventEngine::new(EventEngineConfig::default()).unwrap();
     for event_type in ACCOUNT_EVENT_TYPES {
+        let schema_version = if event_type == FILL_EVENT {
+            FILL_EVENT_SCHEMA_VERSION
+        } else {
+            ACCOUNT_EVENT_SCHEMA_VERSION
+        };
         ee.handle()
-            .register_event(event_type, 1, EventClass::Critical, PoolKind::SmallEvent)
+            .register_event(
+                event_type,
+                schema_version,
+                EventClass::Critical,
+                PoolKind::SmallEvent,
+            )
             .unwrap();
     }
     ee.start().unwrap();

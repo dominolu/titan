@@ -3,6 +3,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
+use std::time::Duration;
 
 use crate::okx::{
     OkxError,
@@ -31,7 +32,7 @@ impl OkxClient {
             secret,
             passphrase,
             false,
-            reqwest::Client::new(),
+            default_http_client(),
             "cross".to_string(),
         )
     }
@@ -49,7 +50,7 @@ impl OkxClient {
             secret,
             passphrase,
             simulated,
-            reqwest::Client::new(),
+            default_http_client(),
             "cross".to_string(),
         )
     }
@@ -262,6 +263,14 @@ impl OkxClient {
             .next()
             .ok_or(OkxError::InvalidArg("empty instruments response"))
     }
+}
+
+fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("static OKX HTTP client configuration is valid")
 }
 
 /// The header that switches OKX to demo trading. Demo trading uses the same REST host with this

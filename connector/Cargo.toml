@@ -56,3 +56,4 @@ smallvec = { version = "1", features = ["serde"] }
 [dev-dependencies]
 semver = "1"
 titan-event-engine = { path = "../crates/titan-event-engine" }
+titan-connector-loader = { path = "../crates/titan-connector-loader" }

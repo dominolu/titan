@@ -10,6 +10,7 @@ pub const RECONCILE_COMPLETED_EVENT: &str = "titan.account.ReconcileCompleted";
 pub const STREAM_STATE_CHANGED_EVENT: &str = "titan.account.StreamStateChanged";
 pub const STREAM_INVALIDATED_EVENT: &str = "titan.account.StreamInvalidated";
 pub const ACCOUNT_EVENT_SCHEMA_VERSION: u32 = 1;
+pub const FILL_EVENT_SCHEMA_VERSION: u32 = 2;
 
 pub mod event_kind {
     pub const ORDER_CHANGED: u16 = 1;
@@ -46,9 +47,18 @@ pub fn is_control_event(event_type: &str) -> bool {
 }
 
 pub fn account_event_layout(event_type: &str) -> Option<(u16, usize)> {
+    account_event_layout_version(event_type, ACCOUNT_EVENT_SCHEMA_VERSION)
+}
+
+pub fn account_event_layout_version(event_type: &str, schema_version: u32) -> Option<(u16, usize)> {
     Some(match event_type {
         ORDER_CHANGED_EVENT => (event_kind::ORDER_CHANGED, OrderChangedV1::ENCODED_LEN),
-        FILL_EVENT => (event_kind::FILL, FillV1::ENCODED_LEN),
+        FILL_EVENT if schema_version == FILL_EVENT_SCHEMA_VERSION => {
+            (event_kind::FILL, FillV2::ENCODED_LEN)
+        }
+        FILL_EVENT if schema_version == ACCOUNT_EVENT_SCHEMA_VERSION => {
+            (event_kind::FILL, FillV1::ENCODED_LEN)
+        }
         POSITION_CHANGED_EVENT => (event_kind::POSITION_CHANGED, PositionChangedV1::ENCODED_LEN),
         BALANCE_CHANGED_EVENT => (event_kind::BALANCE_CHANGED, BalanceChangedV1::ENCODED_LEN),
         COMMAND_RESULT_EVENT => (event_kind::COMMAND_RESULT, CommandResultV1::ENCODED_LEN),
@@ -129,6 +139,7 @@ pub fn decode_account_event_header(input: &[u8]) -> Result<AccountEventHeaderV1,
 
 pub trait AccountEventPayload {
     const EVENT_TYPE: &'static str;
+    const SCHEMA_VERSION: u32 = ACCOUNT_EVENT_SCHEMA_VERSION;
     const ENCODED_LEN: usize;
     fn header(&self) -> AccountEventHeaderV1;
     fn encode_into(&self, output: &mut [u8]) -> Result<(), &'static str>;
@@ -257,6 +268,77 @@ impl FillV1 {
             venue_order_id: get_id(i, 108),
             client_order_id: get_id(i, 124),
             command_id: get_id(i, 140),
+        })
+    }
+}
+
+/// Fill@2 carries both the current execution delta and the order cumulative quantity.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FillV2 {
+    pub header: AccountEventHeaderV1,
+    pub asset_id: u32,
+    pub side: u8,
+    pub liquidity: u8,
+    pub price_ticks: i64,
+    pub last_fill_quantity_lots: i64,
+    pub cumulative_filled_quantity_lots: i64,
+    pub fee_amount_units: i64,
+    pub fee_currency_id: u32,
+    pub realized_pnl_units: i64,
+    pub trade_id: Id128,
+    pub venue_order_id: Id128,
+    pub client_order_id: Id128,
+    pub command_id: Id128,
+}
+
+impl AccountEventPayload for FillV2 {
+    const EVENT_TYPE: &'static str = FILL_EVENT;
+    const SCHEMA_VERSION: u32 = FILL_EVENT_SCHEMA_VERSION;
+    const ENCODED_LEN: usize = 164;
+
+    fn header(&self) -> AccountEventHeaderV1 {
+        self.header
+    }
+
+    fn encode_into(&self, out: &mut [u8]) -> Result<(), &'static str> {
+        require(out, Self::ENCODED_LEN)?;
+        self.header.encode_into(out)?;
+        put_u32(out, 48, self.asset_id);
+        out[52] = self.side;
+        out[53] = self.liquidity;
+        out[54..56].fill(0);
+        put_i64(out, 56, self.price_ticks);
+        put_i64(out, 64, self.last_fill_quantity_lots);
+        put_i64(out, 72, self.cumulative_filled_quantity_lots);
+        put_i64(out, 80, self.fee_amount_units);
+        put_u32(out, 88, self.fee_currency_id);
+        put_i64(out, 92, self.realized_pnl_units);
+        put_id(out, 100, self.trade_id);
+        put_id(out, 116, self.venue_order_id);
+        put_id(out, 132, self.client_order_id);
+        put_id(out, 148, self.command_id);
+        Ok(())
+    }
+}
+
+impl FillV2 {
+    pub fn decode(input: &[u8]) -> Result<Self, &'static str> {
+        require(input, Self::ENCODED_LEN)?;
+        Ok(Self {
+            header: decode_account_event_header(input)?,
+            asset_id: get_u32(input, 48),
+            side: input[52],
+            liquidity: input[53],
+            price_ticks: get_i64(input, 56),
+            last_fill_quantity_lots: get_i64(input, 64),
+            cumulative_filled_quantity_lots: get_i64(input, 72),
+            fee_amount_units: get_i64(input, 80),
+            fee_currency_id: get_u32(input, 88),
+            realized_pnl_units: get_i64(input, 92),
+            trade_id: get_id(input, 100),
+            venue_order_id: get_id(input, 116),
+            client_order_id: get_id(input, 132),
+            command_id: get_id(input, 148),
         })
     }
 }

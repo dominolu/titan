@@ -254,21 +254,44 @@ impl ScopedSecretResolver {
         }
         self.provider.resolve(reference)
     }
+
+    /// Creates a resolver whose authority is limited to one explicit reference. This is used by
+    /// an in-process dynamic connector adapter; dropping the resolver drops the provider and its
+    /// foreign callback context.
+    pub fn scoped(allowed: SecretRef, provider: Arc<dyn SecretProvider>) -> Self {
+        Self {
+            allowed,
+            provider,
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct SourceStreamId(pub u32);
 
 #[derive(Clone)]
 pub struct AccountEventPublisher {
-    inner: EventPublisher,
+    inner: Option<EventPublisher>,
+    dynamic_sink: Option<Arc<dyn AccountEventSink>>,
     account: AccountHandle,
     account_stream: SourceStreamId,
     control_stream: SourceStreamId,
     account_sequence: Arc<Mutex<u64>>,
     control_sequence: Arc<Mutex<u64>>,
     admission: Arc<AtomicBool>,
+}
+
+/// Plugin-side event backend for a dynamically loaded AccountConnector. The concrete
+/// implementation translates the binary account payload to the host's fixed-layout C callback.
+pub trait AccountEventSink: Send + Sync + 'static {
+    fn publish(
+        &self,
+        event_type: &str,
+        payload: &[u8],
+        trace: TraceContext,
+    ) -> Result<(), PluginError>;
 }
 
 impl AccountEventPublisher {
@@ -280,13 +303,27 @@ impl AccountEventPublisher {
         admission: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            inner,
+            inner: Some(inner),
+            dynamic_sink: None,
             account,
             account_stream,
             control_stream,
             account_sequence: Arc::new(Mutex::new(0)),
             control_sequence: Arc::new(Mutex::new(0)),
             admission,
+        }
+    }
+
+    pub fn from_sink(account: AccountHandle, sink: Arc<dyn AccountEventSink>) -> Self {
+        Self {
+            inner: None,
+            dynamic_sink: Some(sink),
+            account,
+            account_stream: SourceStreamId(0),
+            control_stream: SourceStreamId(0),
+            account_sequence: Arc::new(Mutex::new(0)),
+            control_sequence: Arc::new(Mutex::new(0)),
+            admission: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -312,6 +349,9 @@ impl AccountEventPublisher {
                 "account event kind or payload length does not match its schema",
             ));
         }
+        if let Some(sink) = &self.dynamic_sink {
+            return sink.publish(event_type, payload, trace);
+        }
         let control = crate::is_control_event(event_type);
         let sequence_lock = if control {
             &self.control_sequence
@@ -325,20 +365,24 @@ impl AccountEventPublisher {
         };
         let mut committed = sequence_lock.lock().unwrap_or_else(|p| p.into_inner());
         let source_sequence = committed.saturating_add(1);
-        let result = self.inner.publish_with_metadata(
-            event_type,
-            ACCOUNT_EVENT_SCHEMA_VERSION,
-            payload,
-            EventPublishMetadata {
-                source_id: stream.0,
-                source_sequence,
-                exchange_ts: header.exchange_ts,
-                receive_ts: header.receive_ts,
-                routing_key: u64::from(self.account.account_id.0),
-                ..EventPublishMetadata::default()
-            },
-            trace,
-        );
+        let result = self
+            .inner
+            .as_ref()
+            .expect("core account publisher is present")
+            .publish_with_metadata(
+                event_type,
+                ACCOUNT_EVENT_SCHEMA_VERSION,
+                payload,
+                EventPublishMetadata {
+                    source_id: stream.0,
+                    source_sequence,
+                    exchange_ts: header.exchange_ts,
+                    receive_ts: header.receive_ts,
+                    routing_key: u64::from(self.account.account_id.0),
+                    ..EventPublishMetadata::default()
+                },
+                trace,
+            );
         if result.is_ok() {
             *committed = source_sequence;
         }
@@ -355,12 +399,18 @@ impl AccountEventPublisher {
         }
         let header = event.header();
         self.validate_header(header)?;
-        let (expected_kind, expected_len) = crate::account_event_layout(T::EVENT_TYPE)
-            .ok_or_else(|| publisher_error("account event type is not authorized"))?;
+        let (expected_kind, expected_len) =
+            crate::account_event_layout_version(T::EVENT_TYPE, T::SCHEMA_VERSION)
+                .ok_or_else(|| publisher_error("account event type is not authorized"))?;
         if header.kind != expected_kind || T::ENCODED_LEN != expected_len {
             return Err(publisher_error(
                 "account event kind or payload length does not match its schema",
             ));
+        }
+        if let Some(sink) = &self.dynamic_sink {
+            let mut payload = vec![0_u8; T::ENCODED_LEN];
+            event.encode_into(&mut payload).map_err(publisher_error)?;
+            return sink.publish(T::EVENT_TYPE, &payload, trace);
         }
         let control = crate::is_control_event(T::EVENT_TYPE);
         let sequence_lock = if control {
@@ -375,20 +425,24 @@ impl AccountEventPublisher {
         };
         let mut committed = sequence_lock.lock().unwrap_or_else(|p| p.into_inner());
         let source_sequence = committed.saturating_add(1);
-        let mut reservation = self.inner.reserve_event_payload(
-            T::EVENT_TYPE,
-            ACCOUNT_EVENT_SCHEMA_VERSION,
-            T::ENCODED_LEN,
-            EventPublishMetadata {
-                source_id: stream.0,
-                source_sequence,
-                exchange_ts: header.exchange_ts,
-                receive_ts: header.receive_ts,
-                routing_key: u64::from(self.account.account_id.0),
-                ..EventPublishMetadata::default()
-            },
-            trace,
-        )?;
+        let mut reservation = self
+            .inner
+            .as_ref()
+            .expect("core account publisher is present")
+            .reserve_event_payload(
+                T::EVENT_TYPE,
+                T::SCHEMA_VERSION,
+                T::ENCODED_LEN,
+                EventPublishMetadata {
+                    source_id: stream.0,
+                    source_sequence,
+                    exchange_ts: header.exchange_ts,
+                    receive_ts: header.receive_ts,
+                    routing_key: u64::from(self.account.account_id.0),
+                    ..EventPublishMetadata::default()
+                },
+                trace,
+            )?;
         event
             .encode_into(reservation.payload_mut())
             .map_err(publisher_error)?;
@@ -446,31 +500,31 @@ pub struct Id128(pub [u8; 16]);
 pub type CommandId = Id128;
 pub type ClientOrderId = Id128;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct OperationId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OperationState {
     Pending,
     Succeeded,
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountConnectorOperationSnapshot {
     pub id: OperationId,
     pub state: OperationState,
     pub detail: Arc<str>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountOperationSnapshot {
     pub id: OperationId,
     pub state: OperationState,
     pub detail: Arc<str>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AccountLifecycle {
     Created,
     Starting,
@@ -484,7 +538,7 @@ pub enum AccountLifecycle {
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountInstanceSnapshot {
     pub handle: AccountHandle,
     pub account_key: Arc<str>,
@@ -494,14 +548,14 @@ pub struct AccountInstanceSnapshot {
     pub lifecycle: AccountLifecycle,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountConnectorHealthSnapshot {
     pub state: AccountLifecycle,
     pub message: Arc<str>,
     pub observed_at: SystemTime,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountConnectorDiagnosticSnapshot {
     pub summary: Arc<str>,
     pub external_order_count: u64,
@@ -510,7 +564,7 @@ pub struct AccountConnectorDiagnosticSnapshot {
     pub account_version: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AccountSnapshotState {
     Ready,
     Reconciling,
@@ -518,7 +572,7 @@ pub enum AccountSnapshotState {
     Stopped,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountStateSnapshot<T> {
     pub account: AccountHandle,
     pub state: AccountSnapshotState,
@@ -528,17 +582,17 @@ pub struct AccountStateSnapshot<T> {
     pub items: Arc<[T]>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OrderFilter {
     pub asset_id: Option<AssetId>,
     pub include_final: bool,
 }
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PositionFilter {
     pub asset_id: Option<AssetId>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OrderSnapshot {
     pub asset_id: AssetId,
     pub side: u8,
@@ -553,7 +607,7 @@ pub struct OrderSnapshot {
     pub command_id: Id128,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PositionSnapshot {
     pub asset_id: AssetId,
     pub position_side: u8,
@@ -566,7 +620,7 @@ pub struct PositionSnapshot {
     pub margin_currency_id: CurrencyId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BalanceSnapshot {
     pub currency_id: CurrencyId,
     pub wallet_units: i64,
@@ -575,7 +629,7 @@ pub struct BalanceSnapshot {
     pub unrealized_pnl_units: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReconcileScope {
     Full,
     Orders,
@@ -583,7 +637,7 @@ pub enum ReconcileScope {
     Balances,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SubmitOrderCommand {
     pub command_id: CommandId,
     pub client_order_id: Option<ClientOrderId>,
@@ -596,7 +650,7 @@ pub struct SubmitOrderCommand {
     pub trace: TraceContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AmendOrderCommand {
     pub command_id: CommandId,
     pub asset_id: AssetId,
@@ -607,7 +661,7 @@ pub struct AmendOrderCommand {
     pub trace: TraceContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CancelOrderCommand {
     pub command_id: CommandId,
     pub asset_id: AssetId,
@@ -616,21 +670,21 @@ pub struct CancelOrderCommand {
     pub trace: TraceContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CancelAllCommand {
     pub command_id: CommandId,
     pub asset_id: Option<AssetId>,
     pub trace: TraceContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CancelAllAfterCommand {
     pub command_id: CommandId,
     pub timeout_ms: u64,
     pub trace: TraceContext,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccountCommandReceipt {
     pub account: AccountHandle,
     pub command_id: CommandId,

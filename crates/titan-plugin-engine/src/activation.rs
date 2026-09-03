@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
+use tokio::sync::watch;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -15,6 +16,7 @@ pub struct ActivationGate {
     state: AtomicU8,
     lock: Mutex<()>,
     changed: Condvar,
+    async_changed: watch::Sender<ActivationState>,
 }
 
 impl Default for ActivationGate {
@@ -24,11 +26,13 @@ impl Default for ActivationGate {
 }
 
 impl ActivationGate {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let (async_changed, _) = watch::channel(ActivationState::Prepared);
         Self {
             state: AtomicU8::new(ActivationState::Prepared as u8),
             lock: Mutex::new(()),
             changed: Condvar::new(),
+            async_changed,
         }
     }
 
@@ -61,6 +65,7 @@ impl ActivationGate {
             .is_ok()
         {
             self.changed.notify_all();
+            self.async_changed.send_replace(ActivationState::Active);
             true
         } else {
             false
@@ -83,6 +88,7 @@ impl ActivationGate {
             .is_ok()
         {
             self.changed.notify_all();
+            self.async_changed.send_replace(ActivationState::Quiescing);
             true
         } else {
             false
@@ -97,6 +103,7 @@ impl ActivationGate {
         self.state
             .store(ActivationState::Stopped as u8, Ordering::Release);
         self.changed.notify_all();
+        self.async_changed.send_replace(ActivationState::Stopped);
     }
 
     pub fn wait_until_active(&self) -> ActivationState {
@@ -113,6 +120,19 @@ impl ActivationGate {
                 .changed
                 .wait(guard)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
+    pub async fn wait_until_active_async(&self) -> ActivationState {
+        let mut changed = self.async_changed.subscribe();
+        loop {
+            let state = self.state();
+            if state != ActivationState::Prepared {
+                return state;
+            }
+            if changed.changed().await.is_err() {
+                return self.state();
+            }
         }
     }
 }

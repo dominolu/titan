@@ -9,9 +9,10 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use titan_plugin_engine::{
-    ActivationGate, DispatchOutcome, ErrorKind, EventControl, EventHandler, EventPublishMetadata,
-    EventQos, EventReceiver, EventView, LifecycleState, PluginError, PluginIdentity,
-    SubscriptionSpec, TraceContext,
+    ActivationGate, ApiVersion, DispatchOutcome, ErrorKind, EventApiCapabilities, EventControl,
+    EventHandler, EventPublishMetadata, EventQos, EventReceiver, EventView, LifecycleState,
+    PluginBundle, PluginContext, PluginEngine, PluginError, PluginFactory, PluginIdentity,
+    PluginInit, PluginManifest, StopReason, SubscriptionSpec, TraceContext, ValidationContext,
 };
 
 use crate::*;
@@ -80,6 +81,830 @@ impl EventHandler for RecordingHandler {
 struct BlockingHandler {
     entered: Sender<Vec<u8>>,
     release: Receiver<()>,
+}
+
+struct CountingHandler(Arc<AtomicUsize>);
+
+impl EventHandler for CountingHandler {
+    fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+        self.0.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+}
+
+struct ThreadNameHandler(Sender<String>);
+
+impl EventHandler for ThreadNameHandler {
+    fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+        self.0
+            .send(thread::current().name().unwrap_or("unnamed").to_string())
+            .unwrap();
+        Ok(())
+    }
+}
+
+#[test]
+fn staged_route_commit_fails_fast_until_event_loop_is_running() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    let transaction = handle
+        .begin_route_update(handle.current_route_version())
+        .unwrap();
+
+    let error = handle.commit_at_safe_point(transaction).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::RuntimeNotActive);
+
+    // A failed pre-start commit does not consume the candidate, so the Core Runtime can start
+    // EventEngine and commit the exact graph that it already validated.
+    engine.start().unwrap();
+    handle.commit_at_safe_point(transaction).unwrap();
+    engine.stop().unwrap();
+}
+
+#[test]
+fn primary_async_lane_owns_handler_and_advances_three_watermarks() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("primary", 1, EventClass::Critical, PoolKind::SmallEvent)
+        .unwrap();
+    engine.start().unwrap();
+
+    let (tx, rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([42]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 4,
+                critical_reserve: 1,
+                reliable_pending_capacity: 4,
+                snapshot_staging_capacity: 4,
+                control_capacity: 4,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let publisher_thread = thread::current().id();
+    let mut request = PublishRequest::new("primary", 1, b"one");
+    request.routing_key = 42;
+    handle.try_publish(request).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"one");
+    wait_until(|| lane.progress().committed_sequence == 1);
+    assert_eq!(
+        lane.progress(),
+        LaneProgress {
+            admitted_sequence: 1,
+            dispatched_sequence: 1,
+            committed_sequence: 1,
+        }
+    );
+    let (worker_tx, worker_rx) = bounded(1);
+    lane.submit_safe_point(move || {
+        worker_tx.send(thread::current().id()).unwrap();
+        Ok(())
+    })
+    .unwrap()
+    .wait(Instant::now() + Duration::from_secs(1))
+    .unwrap();
+    assert_ne!(worker_rx.recv().unwrap(), publisher_thread);
+
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn snapshot_barrier_stages_then_replays_only_newer_tail() {
+    let mut config = test_config();
+    config.arena.snapshot.slots = 16;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-source",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, rx) = bounded(8);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("snapshot-source"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 8,
+                critical_reserve: 1,
+                reliable_pending_capacity: 4,
+                snapshot_staging_capacity: 8,
+                control_capacity: 4,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let barrier = lane
+        .begin_snapshot_barrier(SnapshotBarrierRequest {
+            source_ids: Arc::from([3]),
+            deadline: Instant::now() + Duration::from_secs(1),
+        })
+        .unwrap();
+    for (sequence, payload) in [(9, b"old".as_slice()), (11, b"new".as_slice())] {
+        let mut request = PublishRequest::new("snapshot-source", 1, payload);
+        request.source_id = 3;
+        request.source_sequence = sequence;
+        handle.try_publish(request).unwrap();
+    }
+    assert!(rx.try_recv().is_err());
+    let mut snapshot = PublishRequest::new("snapshot-source", 1, b"snapshot");
+    snapshot.source_id = 3;
+    snapshot.source_sequence = 10;
+    lane.publish_snapshot_fact(barrier, snapshot).unwrap();
+    let replay_watermark = lane
+        .snapshot_provider_complete(
+            barrier,
+            &[StreamBoundary {
+                source_id: 3,
+                stream_epoch: 1,
+                source_sequence: 10,
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"snapshot"
+    );
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), b"new");
+    wait_until(|| lane.progress().committed_sequence >= replay_watermark);
+    lane.complete_snapshot_barrier(barrier, lane.progress().committed_sequence)
+        .unwrap();
+    assert_eq!(lane.health().state, SubscriberState::Normal);
+    assert!(lane.snapshot_barrier().is_none());
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn overloaded_primary_lane_isolated_from_healthy_lane() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-isolation",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+
+    let subscription = [PrimarySubscriptionSpec {
+        event_type: Arc::from("primary-isolation"),
+        schema_version: 1,
+        qos: EventQos::ReliableOrdered,
+        routing_keys: Arc::from([]),
+    }];
+    let (entered_tx, entered_rx) = bounded(8);
+    let (release_tx, release_rx) = bounded(8);
+    let slow = handle
+        .register_primary_async_lane(
+            &subscription,
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 2,
+                snapshot_staging_capacity: 2,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    let (healthy_tx, healthy_rx) = bounded(8);
+    let healthy = handle
+        .register_primary_async_lane(
+            &subscription,
+            PrimaryAsyncLaneConfig {
+                capacity: 8,
+                critical_reserve: 1,
+                reliable_pending_capacity: 2,
+                snapshot_staging_capacity: 8,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(RecordingHandler(healthy_tx)),
+        )
+        .unwrap();
+
+    handle
+        .try_publish(PublishRequest::new("primary-isolation", 1, b"0"))
+        .unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"0"
+    );
+    for value in 1_u8..=5 {
+        handle
+            .try_publish(PublishRequest::new("primary-isolation", 1, &[value]))
+            .unwrap();
+    }
+    wait_until(|| slow.health().state == SubscriberState::ResyncRequired);
+    for expected in 0_u8..=5 {
+        assert_eq!(
+            healthy_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            vec![if expected == 0 { b'0' } else { expected }]
+        );
+    }
+    assert_eq!(healthy.health().state, SubscriberState::Normal);
+
+    for _ in 0..6 {
+        let _ = release_tx.try_send(());
+    }
+    assert!(handle.unregister_primary_async_lane(slow.token()));
+    assert!(handle.unregister_primary_async_lane(healthy.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn multiple_brokers_and_primary_lanes_drain_a_bounded_burst_without_cross_routing() {
+    const BROKERS: usize = 4;
+    const EVENTS_PER_BROKER: usize = 1_024;
+    let mut config = test_config();
+    config.arena.small_event.slots = BROKERS * EVENTS_PER_BROKER * 2;
+    config.ingress.critical_capacity = BROKERS * EVENTS_PER_BROKER * 2;
+    config.ingress.max_sources = BROKERS * 2;
+    config.subscribers.max_count = BROKERS * 2;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "multi-broker-burst",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+
+    let mut lanes = Vec::with_capacity(BROKERS);
+    let mut counts = Vec::with_capacity(BROKERS);
+    for broker in 0..BROKERS {
+        let count = Arc::new(AtomicUsize::new(0));
+        let lane = handle
+            .register_primary_async_lane(
+                &[PrimarySubscriptionSpec {
+                    event_type: Arc::from("multi-broker-burst"),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    routing_keys: Arc::from([broker as u64 + 1]),
+                }],
+                PrimaryAsyncLaneConfig {
+                    capacity: EVENTS_PER_BROKER * 2,
+                    critical_reserve: 8,
+                    reliable_pending_capacity: EVENTS_PER_BROKER,
+                    snapshot_staging_capacity: 8,
+                    control_capacity: 8,
+                    idle_sleep: Duration::from_micros(50),
+                    ..PrimaryAsyncLaneConfig::default()
+                },
+                Arc::new(CountingHandler(count.clone())),
+            )
+            .unwrap();
+        lanes.push(lane);
+        counts.push(count);
+    }
+
+    for sequence in 1..=EVENTS_PER_BROKER as u64 {
+        for broker in 0..BROKERS as u32 {
+            loop {
+                let mut request = PublishRequest::new("multi-broker-burst", 1, b"x");
+                request.source_id = broker + 1;
+                request.source_sequence = sequence;
+                request.routing_key = u64::from(broker + 1);
+                request.trace.trace_id = (u64::from(broker + 1) << 32) | sequence;
+                match handle.try_publish(request) {
+                    Ok(()) => break,
+                    Err(PublishError::CriticalIngressFull)
+                    | Err(PublishError::EventArenaExhausted(_)) => thread::yield_now(),
+                    Err(error) => panic!("unexpected burst publication failure: {error}"),
+                }
+            }
+        }
+    }
+
+    wait_until(|| {
+        counts
+            .iter()
+            .all(|count| count.load(Ordering::Acquire) == EVENTS_PER_BROKER)
+    });
+    for (lane, count) in lanes.iter().zip(&counts) {
+        assert_eq!(count.load(Ordering::Acquire), EVENTS_PER_BROKER);
+        assert_eq!(lane.health().state, SubscriberState::Normal);
+        assert_eq!(
+            lane.progress(),
+            LaneProgress {
+                admitted_sequence: EVENTS_PER_BROKER as u64,
+                dispatched_sequence: EVENTS_PER_BROKER as u64,
+                committed_sequence: EVENTS_PER_BROKER as u64,
+            }
+        );
+    }
+
+    for lane in lanes {
+        assert!(handle.unregister_primary_async_lane(lane.token()));
+    }
+    engine.stop().unwrap();
+    assert_eq!(engine.arena().outstanding_blocks(), 0);
+}
+
+#[test]
+fn primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "worker-policy",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+
+    let available_core = core_affinity::get_core_ids()
+        .and_then(|cores| cores.into_iter().next())
+        .map(|core| core.id)
+        .expect("test host must expose at least one logical CPU");
+    let binding_supported = std::thread::spawn(move || {
+        core_affinity::set_for_current(core_affinity::CoreId { id: available_core })
+    })
+    .join()
+    .unwrap();
+    if !binding_supported {
+        let result = handle.register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("worker-policy"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([1]),
+            }],
+            PrimaryAsyncLaneConfig {
+                runtime_mode: SubscriberRuntimeMode::Dedicated,
+                cpu_affinity: Some(available_core),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
+        );
+        assert!(matches!(result, Err(EngineError::CpuAffinityFailed(_))));
+    }
+    let modes = [
+        binding_supported.then_some((SubscriberRuntimeMode::Dedicated, Some(available_core))),
+        Some((SubscriberRuntimeMode::SpinSleep, None)),
+        Some((SubscriberRuntimeMode::Park, None)),
+    ];
+    let mut lanes = Vec::new();
+    let mut receivers = Vec::new();
+    for (index, (runtime_mode, cpu_affinity)) in modes.into_iter().flatten().enumerate() {
+        let (tx, rx) = bounded(1);
+        let lane = handle
+            .register_primary_async_lane(
+                &[PrimarySubscriptionSpec {
+                    event_type: Arc::from("worker-policy"),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    routing_keys: Arc::from([index as u64 + 1]),
+                }],
+                PrimaryAsyncLaneConfig {
+                    runtime_mode,
+                    spin_iterations: 16,
+                    idle_sleep: Duration::from_millis(10),
+                    cpu_affinity,
+                    ..PrimaryAsyncLaneConfig::default()
+                },
+                Arc::new(ThreadNameHandler(tx)),
+            )
+            .unwrap();
+        lanes.push(lane);
+        receivers.push(rx);
+    }
+
+    let duplicate = binding_supported.then(|| {
+        handle.register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("worker-policy"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([99]),
+            }],
+            PrimaryAsyncLaneConfig {
+                runtime_mode: SubscriberRuntimeMode::Dedicated,
+                cpu_affinity: Some(available_core),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
+        )
+    });
+    if let Some(duplicate) = duplicate {
+        assert!(matches!(
+            duplicate,
+            Err(EngineError::InvalidPrimaryLaneConfig)
+        ));
+    }
+
+    for routing_key in 1..=lanes.len() as u64 {
+        let mut request = PublishRequest::new("worker-policy", 1, b"x");
+        request.routing_key = routing_key;
+        handle.try_publish(request).unwrap();
+    }
+    let names = receivers
+        .into_iter()
+        .map(|receiver| receiver.recv_timeout(Duration::from_secs(1)).unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(names.len(), lanes.len());
+    assert!(
+        names
+            .iter()
+            .all(|name| name.starts_with("event-primary-lane-"))
+    );
+
+    for lane in lanes {
+        assert!(handle.unregister_primary_async_lane(lane.token()));
+    }
+
+    if binding_supported {
+        let (tx, _rx) = bounded(1);
+        let reused = handle
+            .register_primary_async_lane(
+                &[PrimarySubscriptionSpec {
+                    event_type: Arc::from("worker-policy"),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    routing_keys: Arc::from([100]),
+                }],
+                PrimaryAsyncLaneConfig {
+                    runtime_mode: SubscriberRuntimeMode::Dedicated,
+                    cpu_affinity: Some(available_core),
+                    ..PrimaryAsyncLaneConfig::default()
+                },
+                Arc::new(ThreadNameHandler(tx)),
+            )
+            .unwrap();
+        assert!(handle.unregister_primary_async_lane(reused.token()));
+    }
+    engine.stop().unwrap();
+}
+
+#[test]
+fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-best-effort",
+            1,
+            EventClass::Market,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (entered_tx, entered_rx) = bounded(4);
+    let (release_tx, release_rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary-best-effort"),
+                schema_version: 1,
+                qos: EventQos::BestEffort,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 1,
+                snapshot_staging_capacity: 2,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"first"))
+        .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"queued"))
+        .unwrap();
+    handle
+        .try_publish(PublishRequest::new("primary-best-effort", 1, b"dropped"))
+        .unwrap();
+    wait_until(|| lane.progress().admitted_sequence == 2);
+    assert_eq!(lane.progress().admitted_sequence, 2);
+    release_tx.send(()).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn primary_latest_is_coalesced_independently_per_routing_key() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "primary-latest",
+            1,
+            EventClass::Market,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (entered_tx, entered_rx) = bounded(8);
+    let (release_tx, release_rx) = bounded(8);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("primary-latest"),
+                schema_version: 1,
+                qos: EventQos::Latest,
+                routing_keys: Arc::from([1, 2]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 2,
+                critical_reserve: 1,
+                reliable_pending_capacity: 1,
+                snapshot_staging_capacity: 4,
+                control_capacity: 2,
+                idle_sleep: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            Arc::new(BlockingHandler {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        )
+        .unwrap();
+    let publish = |key, payload| {
+        let mut request = PublishRequest::new("primary-latest", 1, payload);
+        request.routing_key = key;
+        handle.try_publish(request).unwrap();
+    };
+    publish(1, b"first");
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"first"
+    );
+    publish(1, b"queued");
+    publish(1, b"latest-one");
+    publish(2, b"latest-two");
+    for _ in 0..4 {
+        release_tx.send(()).unwrap();
+    }
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"queued"
+    );
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"latest-one"
+    );
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        b"latest-two"
+    );
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn aborted_snapshot_barrier_releases_staging_and_allows_retry() {
+    let mut config = test_config();
+    config.arena.snapshot.slots = 4;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-abort",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, _rx) = bounded(4);
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("snapshot-abort"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig::default(),
+            Arc::new(RecordingHandler(tx)),
+        )
+        .unwrap();
+    let request = || SnapshotBarrierRequest {
+        source_ids: Arc::from([9]),
+        deadline: Instant::now() + Duration::from_secs(1),
+    };
+    let first = lane.begin_snapshot_barrier(request()).unwrap();
+    let mut staged = PublishRequest::new("snapshot-abort", 1, b"staged");
+    staged.source_id = 9;
+    staged.source_sequence = 1;
+    handle.try_publish(staged).unwrap();
+    wait_until(|| {
+        lane.snapshot_barrier()
+            .is_some_and(|value| value.staged_events == 1)
+    });
+    lane.abort_snapshot_barrier(first).unwrap();
+    assert!(lane.snapshot_barrier().is_none());
+    assert_eq!(lane.health().state, SubscriberState::ResyncRequired);
+    let retry = lane.begin_snapshot_barrier(request()).unwrap();
+    lane.abort_snapshot_barrier(retry).unwrap();
+    assert!(handle.unregister_primary_async_lane(lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn snapshot_barrier_registry_enforces_and_releases_global_limits() {
+    let mut config = test_config();
+    config.arena.snapshot.slots = 8;
+    config.snapshot_barriers.max_active = 2;
+    config.snapshot_barriers.per_barrier_staging_capacity = 1;
+    config.snapshot_barriers.global_staging_capacity = 1;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-global-limit",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+
+    let make_lane = |routing_key| {
+        handle
+            .register_primary_async_lane(
+                &[PrimarySubscriptionSpec {
+                    event_type: Arc::from("snapshot-global-limit"),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    routing_keys: Arc::from([routing_key]),
+                }],
+                PrimaryAsyncLaneConfig {
+                    snapshot_staging_capacity: 1,
+                    idle_sleep: Duration::from_millis(1),
+                    ..PrimaryAsyncLaneConfig::default()
+                },
+                Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
+            )
+            .unwrap()
+    };
+    let first_lane = make_lane(1);
+    let second_lane = make_lane(2);
+    let barrier_request = || SnapshotBarrierRequest {
+        source_ids: Arc::from([7]),
+        deadline: Instant::now() + Duration::from_secs(1),
+    };
+    let first = first_lane
+        .begin_snapshot_barrier(barrier_request())
+        .unwrap();
+    let second = second_lane
+        .begin_snapshot_barrier(barrier_request())
+        .unwrap();
+
+    let mut first_snapshot = PublishRequest::new("snapshot-global-limit", 1, b"first");
+    first_snapshot.source_id = 7;
+    first_snapshot.routing_key = 1;
+    first_lane
+        .publish_snapshot_fact(first, first_snapshot)
+        .unwrap();
+    let mut second_snapshot = PublishRequest::new("snapshot-global-limit", 1, b"second");
+    second_snapshot.source_id = 7;
+    second_snapshot.routing_key = 2;
+    assert!(matches!(
+        second_lane.publish_snapshot_fact(second, second_snapshot),
+        Err(EngineError::SnapshotStagingFull)
+    ));
+    assert_eq!(
+        second_lane.snapshot_barrier().unwrap().state,
+        SnapshotBarrierState::Failed
+    );
+
+    first_lane.abort_snapshot_barrier(first).unwrap();
+    second_lane.abort_snapshot_barrier(second).unwrap();
+    let retry = second_lane
+        .begin_snapshot_barrier(barrier_request())
+        .unwrap();
+    let mut retry_snapshot = PublishRequest::new("snapshot-global-limit", 1, b"retry");
+    retry_snapshot.source_id = 7;
+    retry_snapshot.routing_key = 2;
+    second_lane
+        .publish_snapshot_fact(retry, retry_snapshot)
+        .unwrap();
+    second_lane.abort_snapshot_barrier(retry).unwrap();
+
+    assert!(handle.unregister_primary_async_lane(first_lane.token()));
+    assert!(handle.unregister_primary_async_lane(second_lane.token()));
+    engine.stop().unwrap();
+}
+
+#[test]
+fn snapshot_barrier_registry_enforces_active_limit_and_deadline() {
+    let mut config = test_config();
+    config.snapshot_barriers.max_active = 1;
+    config.snapshot_barriers.per_barrier_staging_capacity = 4;
+    config.snapshot_barriers.global_staging_capacity = 4;
+    config.snapshot_barriers.timeout_ms = 50;
+    let engine = EventEngine::new(config).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "snapshot-active-limit",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let subscription = [PrimarySubscriptionSpec {
+        event_type: Arc::from("snapshot-active-limit"),
+        schema_version: 1,
+        qos: EventQos::ReliableOrdered,
+        routing_keys: Arc::from([]),
+    }];
+    let make_lane = || {
+        handle
+            .register_primary_async_lane(
+                &subscription,
+                PrimaryAsyncLaneConfig {
+                    snapshot_staging_capacity: 4,
+                    idle_sleep: Duration::from_millis(1),
+                    ..PrimaryAsyncLaneConfig::default()
+                },
+                Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
+            )
+            .unwrap()
+    };
+    let first_lane = make_lane();
+    let second_lane = make_lane();
+    let first = first_lane
+        .begin_snapshot_barrier(SnapshotBarrierRequest {
+            source_ids: Arc::from([1]),
+            deadline: Instant::now() + Duration::from_millis(20),
+        })
+        .unwrap();
+    assert!(matches!(
+        second_lane.begin_snapshot_barrier(SnapshotBarrierRequest {
+            source_ids: Arc::from([2]),
+            deadline: Instant::now() + Duration::from_millis(20),
+        }),
+        Err(EngineError::SnapshotBarrierLimit)
+    ));
+    wait_until(|| {
+        first_lane
+            .snapshot_barrier()
+            .is_some_and(|barrier| barrier.state == SnapshotBarrierState::Failed)
+    });
+    assert_eq!(first_lane.health().state, SubscriberState::ResyncRequired);
+
+    // Timeout releases the global active slot even while the failed tombstone remains
+    // inspectable until its owner acknowledges it with abort.
+    let second = second_lane
+        .begin_snapshot_barrier(SnapshotBarrierRequest {
+            source_ids: Arc::from([2]),
+            deadline: Instant::now() + Duration::from_millis(20),
+        })
+        .unwrap();
+    first_lane.abort_snapshot_barrier(first).unwrap();
+    second_lane.abort_snapshot_barrier(second).unwrap();
+    assert!(handle.unregister_primary_async_lane(first_lane.token()));
+    assert!(handle.unregister_primary_async_lane(second_lane.token()));
+    engine.stop().unwrap();
 }
 
 impl EventHandler for BlockingHandler {
@@ -372,6 +1197,11 @@ fn configuration_rejects_unbounded_or_inconsistent_capacity() {
     assert_eq!(config.validate(), Err(ConfigError::PendingCapacity));
 
     let mut config = test_config();
+    config.snapshot_barriers.per_barrier_staging_capacity =
+        config.snapshot_barriers.global_staging_capacity + 1;
+    assert_eq!(config.validate(), Err(ConfigError::SnapshotBarrierCapacity));
+
+    let mut config = test_config();
     config.runtime.mode = RuntimeMode::Dedicated;
     config.runtime.cpu_affinity = None;
     assert_eq!(config.validate(), Err(ConfigError::DedicatedAffinity));
@@ -382,6 +1212,34 @@ fn configuration_rejects_unbounded_or_inconsistent_capacity() {
     assert_eq!(
         config.validate(),
         Err(ConfigError::DedicatedSubscriberAffinity)
+    );
+
+    let core = core_affinity::get_core_ids()
+        .and_then(|cores| cores.into_iter().next())
+        .expect("test host must expose at least one logical CPU")
+        .id;
+    let mut config = test_config();
+    config.runtime.mode = RuntimeMode::Dedicated;
+    config.runtime.cpu_affinity = Some(core);
+    config.subscribers.runtime_mode = SubscriberRuntimeMode::Dedicated;
+    config.subscribers.cpu_affinity = vec![core];
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::CpuAffinityConflict(core))
+    );
+
+    let unavailable = core_affinity::get_core_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|core| core.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1_000);
+    let mut config = test_config();
+    config.runtime.cpu_affinity = Some(unavailable);
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::CpuAffinityUnavailable(unavailable))
     );
 }
 
@@ -999,7 +1857,7 @@ fn pending_retry_preserves_fifo_after_gate_opens() {
         .unwrap();
     engine.start().unwrap();
     let (tx, rx) = bounded(8);
-    let (_token, gate) = subscribe(
+    let (token, gate) = subscribe(
         &handle,
         "fifo",
         1,
@@ -1012,7 +1870,12 @@ fn pending_retry_preserves_fifo_after_gate_opens() {
             .try_publish(PublishRequest::new("fifo", 1, &[value]))
             .unwrap();
     }
-    wait_until(|| engine.metrics().snapshot().publish_total == 7);
+    wait_until(|| {
+        engine.metrics().snapshot().publish_total == 7
+            && handle
+                .subscriber_health(token)
+                .is_some_and(|health| health.pending_depth >= 3)
+    });
     gate.activate();
     let values = (0..7)
         .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap()[0])
@@ -1888,6 +2751,19 @@ fn core_runtime_enforces_event_before_plugin_lifecycle() {
 }
 
 #[test]
+fn v13_adapter_is_explicit_and_rejected_by_v2_plugin_engine() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let legacy = V13EventControlAdapter::new(engine.handle());
+    assert_eq!(legacy.api_version(), ApiVersion::new(1, 0));
+    assert_eq!(legacy.api_capabilities(), EventApiCapabilities::default());
+    let error = match PluginEngine::new(Arc::new(legacy), ApiVersion::new(1, 0)) {
+        Ok(_) => panic!("v2 PluginEngine accepted a v1 compatibility adapter"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, ErrorKind::ApiVersionMismatch);
+}
+
+#[test]
 fn latency_histogram_reports_required_percentiles_without_allocation_on_record() {
     let histogram = LatencyHistogram::default();
     for value in [1, 2, 4, 8, 16, 32, 64, 128] {
@@ -2037,6 +2913,375 @@ impl titan_plugin_engine::PluginFactory for IntegrationFactory {
     }
 }
 
+struct StartupOrderPlugin {
+    events: EventEngineHandle,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    fail_start: bool,
+}
+
+impl titan_plugin_engine::Plugin for StartupOrderPlugin {
+    fn validate(&self, _: &ValidationContext) -> Result<(), PluginError> {
+        assert!(matches!(
+            self.events
+                .try_publish(PublishRequest::new("startup-order", 1, b"validate")),
+            Err(PublishError::Stopped)
+        ));
+        self.log.lock().unwrap().push("validate-before-events");
+        Ok(())
+    }
+
+    fn start(&mut self, _: &mut PluginContext) -> Result<(), PluginError> {
+        self.events
+            .try_publish(PublishRequest::new("startup-order", 1, b"start"))
+            .unwrap();
+        self.log.lock().unwrap().push("start-after-events");
+        if self.fail_start {
+            Err(PluginError::new(
+                ErrorKind::RuntimeStartFailed,
+                PluginIdentity::new("startup-order", "startup-order-1"),
+                LifecycleState::Starting,
+                "start",
+                "injected startup failure",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn quiesce(&mut self, _: StopReason) -> Result<(), PluginError> {
+        self.log.lock().unwrap().push("quiesce");
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<(), PluginError> {
+        self.log.lock().unwrap().push("stop");
+        Ok(())
+    }
+}
+
+struct StartupOrderFactory {
+    manifest: &'static PluginManifest,
+    events: EventEngineHandle,
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    fail_start: bool,
+}
+
+impl PluginFactory for StartupOrderFactory {
+    fn manifest(&self) -> &'static PluginManifest {
+        self.manifest
+    }
+
+    fn create(&self, _: PluginInit) -> Result<PluginBundle, PluginError> {
+        Ok(PluginBundle {
+            lifecycle: Box::new(StartupOrderPlugin {
+                events: self.events.clone(),
+                log: self.log.clone(),
+                fail_start: self.fail_start,
+            }),
+            service_exports: vec![],
+            subscription_bindings: vec![],
+        })
+    }
+}
+
+fn startup_order_manifest() -> &'static PluginManifest {
+    Box::leak(Box::new(PluginManifest {
+        plugin_type: Arc::from("startup-order"),
+        name: Arc::from("startup-order"),
+        version: semver::Version::new(1, 0, 0),
+        engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
+        abi_version: ApiVersion::new(1, 0),
+        config_schema_version: 1,
+        config_schema: Arc::new(serde_json::json!({})),
+        provides: vec![],
+        requires: vec![],
+        publishes: vec![],
+        subscribes: vec![],
+        supported_execution_models: [titan_plugin_engine::ExecutionModel::Passive]
+            .into_iter()
+            .collect(),
+        reload_policy: titan_plugin_engine::ReloadPolicy::RestartRequired,
+    }))
+}
+
+#[test]
+fn core_runtime_prepares_before_event_start_then_commits_and_stops_in_reverse() {
+    use titan_plugin_engine::{
+        ConfigSnapshot, ExecutionModel, ExecutionSpec, PluginSpec, SubscriptionLimits,
+    };
+
+    let mut runtime = TitanCoreRuntime::new(test_config(), ApiVersion::new(1, 0)).unwrap();
+    runtime
+        .event_handle()
+        .register_event(
+            "startup-order",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let event_handle = runtime.event_handle().as_ref().clone();
+    let manifest = startup_order_manifest();
+    runtime
+        .plugins_mut()
+        .register(
+            Arc::new(StartupOrderFactory {
+                manifest,
+                events: event_handle,
+                log: log.clone(),
+                fail_start: false,
+            }),
+            semver::Version::new(1, 0, 0),
+            "test",
+        )
+        .unwrap();
+    runtime
+        .start_with_plugins(&[PluginSpec {
+            instance_id: Arc::from("startup-order-1"),
+            plugin_type: Arc::from("startup-order"),
+            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
+            enabled: true,
+            execution: ExecutionSpec {
+                model: ExecutionModel::Passive,
+                cpu_affinity: None,
+                callback_budget: None,
+            },
+            subscription_limits: SubscriptionLimits {
+                max_capacity: 1,
+                allowed_qos: Default::default(),
+            },
+            service_scopes: vec![],
+            required_service_scopes: vec![],
+        }])
+        .unwrap();
+    assert_eq!(
+        &*log.lock().unwrap(),
+        &["validate-before-events", "start-after-events"]
+    );
+    runtime.shutdown(StopReason::Shutdown).unwrap();
+    assert_eq!(
+        &*log.lock().unwrap(),
+        &[
+            "validate-before-events",
+            "start-after-events",
+            "quiesce",
+            "stop"
+        ]
+    );
+    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
+}
+
+#[test]
+fn core_runtime_stops_event_engine_and_rolls_back_plugin_on_start_failure() {
+    use titan_plugin_engine::{
+        ConfigSnapshot, EngineState, ExecutionModel, ExecutionSpec, PluginSpec, SubscriptionLimits,
+    };
+
+    let mut runtime = TitanCoreRuntime::new(test_config(), ApiVersion::new(1, 0)).unwrap();
+    runtime
+        .event_handle()
+        .register_event(
+            "startup-order",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let event_handle = runtime.event_handle().as_ref().clone();
+    runtime
+        .plugins_mut()
+        .register(
+            Arc::new(StartupOrderFactory {
+                manifest: startup_order_manifest(),
+                events: event_handle,
+                log: log.clone(),
+                fail_start: true,
+            }),
+            semver::Version::new(1, 0, 0),
+            "test",
+        )
+        .unwrap();
+    let error = runtime
+        .start_with_plugins(&[PluginSpec {
+            instance_id: Arc::from("startup-order-1"),
+            plugin_type: Arc::from("startup-order"),
+            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
+            enabled: true,
+            execution: ExecutionSpec {
+                model: ExecutionModel::Passive,
+                cpu_affinity: None,
+                callback_budget: None,
+            },
+            subscription_limits: SubscriptionLimits {
+                max_capacity: 1,
+                allowed_qos: Default::default(),
+            },
+            service_scopes: vec![],
+            required_service_scopes: vec![],
+        }])
+        .unwrap_err();
+    assert!(matches!(error, CoreRuntimeError::Plugin(_)));
+    assert_eq!(runtime.plugins().state(), EngineState::Failed);
+    assert!(matches!(
+        runtime.event_handle().try_publish(PublishRequest::new(
+            "startup-order",
+            1,
+            b"after-failure"
+        )),
+        Err(PublishError::Stopped)
+    ));
+    assert_eq!(
+        &*log.lock().unwrap(),
+        &["validate-before-events", "start-after-events", "stop"]
+    );
+    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
+}
+
+#[test]
+fn runtime_failure_emits_structured_failure_and_health_events_and_closes_gate() {
+    use titan_plugin_engine::{
+        ConfigSnapshot, ErrorKind, ExecutionModel, ExecutionSpec, HealthState,
+        PLUGIN_HEALTH_CHANGED_EVENT, PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
+        PLUGIN_RUNTIME_FAILED_EVENT, PluginError, PluginIdentity, PluginSpec, SubscriptionLimits,
+    };
+
+    struct Capture(std::sync::Mutex<Vec<(String, serde_json::Value, TraceContext)>>);
+    impl EventHandler for Capture {
+        fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+            self.0.lock().unwrap().push((
+                event.event_type.to_owned(),
+                serde_json::from_slice(event.payload).unwrap(),
+                event.trace,
+            ));
+            Ok(())
+        }
+    }
+
+    let mut config = test_config();
+    // Runtime diagnostics use the Snapshot pool because their bounded,
+    // structured payload is deliberately larger than a SmallEvent block.
+    config.arena.snapshot.block_bytes = 128 * 1024;
+    let mut runtime = TitanCoreRuntime::new(config, ApiVersion::new(1, 0)).unwrap();
+    runtime
+        .event_handle()
+        .register_event(
+            "startup-order",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    for event_type in [PLUGIN_RUNTIME_FAILED_EVENT, PLUGIN_HEALTH_CHANGED_EVENT] {
+        runtime
+            .event_handle()
+            .register_event(
+                event_type,
+                PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
+                EventClass::Critical,
+                PoolKind::Snapshot,
+            )
+            .unwrap();
+    }
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let plugin_events = runtime.event_handle().as_ref().clone();
+    runtime
+        .plugins_mut()
+        .register(
+            Arc::new(StartupOrderFactory {
+                manifest: startup_order_manifest(),
+                events: plugin_events,
+                log,
+                fail_start: false,
+            }),
+            semver::Version::new(1, 0, 0),
+            "test",
+        )
+        .unwrap();
+    runtime
+        .start_with_plugins(&[PluginSpec {
+            instance_id: Arc::from("startup-order-1"),
+            plugin_type: Arc::from("startup-order"),
+            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
+            enabled: true,
+            execution: ExecutionSpec {
+                model: ExecutionModel::Passive,
+                cpu_affinity: None,
+                callback_budget: None,
+            },
+            subscription_limits: SubscriptionLimits {
+                max_capacity: 4,
+                allowed_qos: Default::default(),
+            },
+            service_scopes: vec![],
+            required_service_scopes: vec![],
+        }])
+        .unwrap();
+    let route = runtime
+        .event_handle()
+        .begin_route_update(runtime.event_handle().current_route_version())
+        .unwrap();
+    for event_type in [PLUGIN_RUNTIME_FAILED_EVENT, PLUGIN_HEALTH_CHANGED_EVENT] {
+        runtime
+            .event_handle()
+            .stage_subscription_in_mailbox(
+                route,
+                &PluginIdentity::new("observer", "health"),
+                "health",
+                &SubscriptionSpec {
+                    event_type: Arc::from(event_type),
+                    schema_version: PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
+                    qos: EventQos::ReliableOrdered,
+                    capacity: 4,
+                    routing_keys: Arc::from([]),
+                },
+            )
+            .unwrap();
+    }
+    let (_, subscriptions) = runtime.event_handle().commit_at_safe_point(route).unwrap();
+    let receiver = subscriptions[0].receiver.clone();
+    let capture = Capture(std::sync::Mutex::new(Vec::new()));
+    let trace = TraceContext {
+        trace_id: 44,
+        causation_id: 43,
+    };
+    let mut failure = PluginError::new(
+        ErrorKind::PluginFailed,
+        PluginIdentity::new("startup-order", "startup-order-1"),
+        titan_plugin_engine::LifecycleState::Running,
+        "callback",
+        "injected failure",
+    );
+    failure.trace_context = Some(trace);
+    runtime
+        .plugins_mut()
+        .report_runtime_failure("startup-order-1", failure, false)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while capture.0.lock().unwrap().len() < 2 && Instant::now() < deadline {
+        let outcome = receiver
+            .dispatch_next(&capture, Duration::from_millis(10))
+            .unwrap();
+        assert_ne!(outcome, DispatchOutcome::Closed);
+    }
+    let captured = capture.0.into_inner().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].0, PLUGIN_RUNTIME_FAILED_EVENT);
+    assert_eq!(captured[1].0, PLUGIN_HEALTH_CHANGED_EVENT);
+    assert!(captured.iter().all(|(_, payload, observed_trace)| {
+        payload["instance_id"] == "startup-order-1"
+            && payload["health"] == "FAILED"
+            && *observed_trace == trace
+    }));
+    assert_eq!(
+        runtime.plugins().diagnostics()[0].health,
+        HealthState::Failed
+    );
+    runtime.shutdown(StopReason::Failure).unwrap();
+    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
+}
+
 #[test]
 fn plugin_engine_uses_real_event_engine_and_direct_stop_is_safe() {
     use titan_plugin_engine::{
@@ -2067,6 +3312,7 @@ fn plugin_engine_uses_real_event_engine_and_direct_stop_is_safe() {
         version: semver::Version::new(1, 0, 0),
         engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
         abi_version: ApiVersion::new(1, 0),
+        config_schema_version: 1,
         config_schema: Arc::new(serde_json::json!({})),
         provides: vec![ProvidedService {
             id: ServiceId::new("integration", "counter"),
@@ -2126,7 +3372,7 @@ fn plugin_engine_uses_real_event_engine_and_direct_stop_is_safe() {
         .unwrap();
     let (thread_name, payload) = received_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(payload, b"running");
-    assert!(thread_name.starts_with("titan-subscriber-integration-1"));
+    assert!(thread_name.starts_with("titan-cold-async"));
 
     let service_key = ServiceKey {
         id: ServiceId::new("integration", "counter"),
@@ -2245,6 +3491,7 @@ fn real_route_commit_failure_rolls_back_started_plugins_and_endpoints() {
         version: semver::Version::new(1, 0, 0),
         engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
         abi_version: ApiVersion::new(1, 0),
+        config_schema_version: 1,
         config_schema: Arc::new(serde_json::json!({})),
         provides: vec![ProvidedService {
             id: ServiceId::new("integration", "rollback"),
@@ -2300,15 +3547,9 @@ fn real_route_commit_failure_rolls_back_started_plugins_and_endpoints() {
         version: semver::Version::new(1, 0, 0),
         scope: ServiceScope::Global,
     };
-    assert_eq!(
-        plugins
-            .services()
-            .bind(&key)
-            .unwrap()
-            .call(Box::new(1_u64), TraceContext::default())
-            .unwrap_err()
-            .kind,
-        ErrorKind::ServiceUnavailable
-    );
+    // This service slot belonged exclusively to the failed transaction.
+    // Rollback removes it; only pre-existing slots survive replacement so
+    // previously bound handles can observe the next endpoint generation.
+    assert!(plugins.services().bind(&key).is_none());
     events.stop().unwrap();
 }

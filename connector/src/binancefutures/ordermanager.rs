@@ -352,3 +352,117 @@ impl GetOrders for OrderManager {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hftbacktest::types::{OrdType, Side, TimeInForce};
+
+    fn tracked_order(manager: &mut OrderManager) -> String {
+        let mut order = Order::new(
+            7,
+            100,
+            1.0,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.exch_timestamp = 1_000_000;
+        order.status = Status::New;
+        manager
+            .prepare_client_order_id("btcusdt".to_string(), order)
+            .unwrap()
+    }
+
+    fn rest_update(client_order_id: &str, update_time: i64, status: &str) -> OrderResponse {
+        serde_json::from_str(
+            &serde_json::json!({
+                "clientOrderId": client_order_id,
+                "cumQty": "0.5",
+                "executedQty": "0.5",
+                "orderId": 7,
+                "origQty": "1",
+                "price": "100",
+                "reduceOnly": false,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "status": status,
+                "stopPrice": "0",
+                "closePosition": false,
+                "symbol": "BTCUSDT",
+                "timeInForce": "GTC",
+                "type": "LIMIT",
+                "origType": "LIMIT",
+                "updateTime": update_time,
+                "workingType": "CONTRACT_PRICE",
+                "priceProtect": false,
+                "priceMatch": "NONE",
+                "selfTradePreventionMode": "NONE",
+                "goodTillDate": 0
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn ws_update(client_order_id: &str, transaction_time: i64, status: &str) -> OrderTradeUpdate {
+        serde_json::from_str(
+            &serde_json::json!({
+                "E": transaction_time,
+                "T": transaction_time,
+                "o": {
+                    "s": "BTCUSDT",
+                    "c": client_order_id,
+                    "S": "BUY",
+                    "o": "LIMIT",
+                    "f": "GTC",
+                    "q": "1",
+                    "p": "100",
+                    "ap": "100",
+                    "sp": "0",
+                    "x": "TRADE",
+                    "X": status,
+                    "i": 7,
+                    "l": "0.5",
+                    "z": "0.5",
+                    "L": "100",
+                    "T": transaction_time,
+                    "t": 11
+                }
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stale_ws_update_does_not_regress_newer_rest_state() {
+        let mut manager = OrderManager::new("t-");
+        let client_order_id = tracked_order(&mut manager);
+        let rest = rest_update(&client_order_id, 20, "PARTIALLY_FILLED");
+        let updated = manager.update_from_rest(&client_order_id, &rest).unwrap();
+        assert_eq!(updated.exch_timestamp, 20_000_000);
+        assert_eq!(updated.status, Status::PartiallyFilled);
+
+        let stale = ws_update(&client_order_id, 10, "NEW");
+        let unchanged = manager.update_from_ws(&stale).unwrap().unwrap();
+        assert_eq!(unchanged.exch_timestamp, 20_000_000);
+        assert_eq!(unchanged.status, Status::PartiallyFilled);
+        assert_eq!(unchanged.leaves_qty, 0.5);
+    }
+
+    #[test]
+    fn terminal_rest_and_ws_updates_are_published_only_once() {
+        let mut manager = OrderManager::new("t-");
+        let client_order_id = tracked_order(&mut manager);
+
+        let ws = ws_update(&client_order_id, 20, "FILLED");
+        assert!(manager.update_from_ws(&ws).unwrap().is_some());
+        assert!(manager.update_from_ws(&ws).unwrap().is_none());
+
+        let rest = rest_update(&client_order_id, 20, "FILLED");
+        assert!(manager.update_from_rest(&client_order_id, &rest).is_none());
+        assert!(!manager.orders.contains_key(&client_order_id));
+    }
+}

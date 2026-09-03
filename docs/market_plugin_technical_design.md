@@ -2,7 +2,7 @@
 
 版本：v0.4
 
-状态：已实现并完成 Binance Futures 实盘验证
+状态：已实现并完成 Binance Futures、OKX、Hyperliquid 公共行情全路径实盘验证
 
 关联文档：
 
@@ -635,6 +635,24 @@ payload 并唤醒 `std::mpsc` consumer；普通镜像 subscriber 使用主动唤
 Depth frame 抽样为平均 59 档、p90 93 档、p99 463 档；因此 Depth batch 数量相同并不代表每批
 工作量相同。若验收门槛是三类 p99 全部 `<30us`，必须使用至少两个独立物理核并隔离 CPU，或改变
 Depth ABI/交付语义；不能通过隐藏大 batch 或丢弃尾延迟样本达标。
+
+2026-09-03 在 Apple M1 Pro/macOS 26.5.1 上以 `--release` 再次执行 20 秒真实 Binance Futures
+production public stream 验收：收到 1 个 depth snapshot、132 个连续 delta、78 个 trade、77 个 BBO 和
+6 个 funding 事件，`drop/resync/rejected` 均为 0。稳态 P50 为 Depth `11us`、Trade `6us`、BBO `8us`；
+FastLane enqueue P50/P99 为 `0.255us/4.095us`，最大观测队列深度为 1。debug 构建只执行功能不变量，
+不再套用 release 延迟门槛，防止构建模式噪声造成错误失败。
+
+同级真实链路验收已覆盖 Hyperliquid production public stream，Depth/Trade 均经 MarketPlugin、
+PluginEngine、EventEngine FastLane 到达消费者并完成统一关闭。OKX 也提供相同 ignored acceptance 入口、
+`OKX_TEST_PROXY` 和 `OKX_TEST_PUBLIC_WS_URL` 覆盖；2026-09-03 当前主机无法连接主站 public endpoint，
+切换到官方美国区域 `wss://wsus.okx.com:8443/ws/v5/public` 后在 7.42 秒内收到 Depth/Trade，并完成相同的
+统一关闭，因此三家真实公共行情链路均已通过。
+
+三家 Connector 还通过了可重复的真实 TCP/WebSocket 断线恢复测试：测试服务器在收到每条连接的完整订阅
+后主动关闭 socket，Connector 经生产 `Retry<ExponentialBackoff>` 路径建立第二条连接，并从共享 desired
+state 重放相同订阅；Binance Futures、OKX 的合并订阅帧及 Hyperliquid 的 l2Book/trades 独立订阅帧均被
+逐连接验证。该测试与统一 runtime 的 stop deadline、JoinHandle 回收和 ResourceScope 泄漏测试共同构成
+Connector 生命周期合约证据。
 
 ## 14. 测试
 

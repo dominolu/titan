@@ -2,9 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use crossbeam_channel::bounded;
 use titan_plugin_engine::{
-    ApiVersion, CommittedSubscription, ErrorKind, EventControl, EventPayloadReservation,
-    EventPublishMetadata, LifecycleState, PluginError, PluginIdentity, RouteTransaction,
-    RouteVersion, SubscriptionCandidate, SubscriptionSpec, SubscriptionToken, TraceContext,
+    ApiVersion, CommittedSubscription, ErrorKind, EventApiCapabilities, EventControl,
+    EventPayloadReservation, EventPublishMetadata, LifecycleState, PluginError, PluginIdentity,
+    RouteTransaction, RouteVersion, SubscriptionCandidate, SubscriptionSpec, SubscriptionToken,
+    TraceContext,
 };
 
 use crate::{
@@ -12,9 +13,105 @@ use crate::{
     StagedSubscription,
 };
 
+/// Explicit compatibility surface for v1.3-era normal-route consumers.
+///
+/// The adapter deliberately advertises Core Runtime API v1 and no v2 capabilities.  A v2
+/// PluginEngine therefore rejects it, while an older host can continue to use the normal route
+/// during a controlled migration.  PRIMARY lanes and snapshot barriers are intentionally absent.
+#[derive(Clone)]
+pub struct V13EventControlAdapter {
+    inner: EventEngineHandle,
+}
+
+impl V13EventControlAdapter {
+    pub fn new(inner: EventEngineHandle) -> Self {
+        Self { inner }
+    }
+}
+
+impl EventControl for V13EventControlAdapter {
+    fn api_version(&self) -> ApiVersion {
+        titan_plugin_engine::CORE_RUNTIME_V1_COMPAT_VERSION
+    }
+
+    fn current_route_version(&self) -> RouteVersion {
+        EventControl::current_route_version(&self.inner)
+    }
+
+    fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, PluginError> {
+        EventControl::begin_route_update(&self.inner, base)
+    }
+
+    fn stage_subscription(
+        &self,
+        transaction: RouteTransaction,
+        owner: &PluginIdentity,
+        spec: &SubscriptionSpec,
+    ) -> Result<SubscriptionCandidate, PluginError> {
+        EventControl::stage_subscription(&self.inner, transaction, owner, spec)
+    }
+
+    fn stage_subscription_in_mailbox(
+        &self,
+        transaction: RouteTransaction,
+        owner: &PluginIdentity,
+        mailbox: &str,
+        spec: &SubscriptionSpec,
+    ) -> Result<SubscriptionCandidate, PluginError> {
+        EventControl::stage_subscription_in_mailbox(&self.inner, transaction, owner, mailbox, spec)
+    }
+
+    fn commit_at_safe_point(
+        &self,
+        transaction: RouteTransaction,
+    ) -> Result<(RouteVersion, Vec<CommittedSubscription>), PluginError> {
+        EventControl::commit_at_safe_point(&self.inner, transaction)
+    }
+
+    fn abort(&self, transaction: RouteTransaction) {
+        EventControl::abort(&self.inner, transaction);
+    }
+
+    fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), PluginError> {
+        EventControl::retire_subscription(&self.inner, token)
+    }
+
+    fn publish(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload: &[u8],
+        trace: TraceContext,
+    ) -> Result<(), PluginError> {
+        EventControl::publish(&self.inner, event_type, schema_version, payload, trace)
+    }
+
+    fn publish_with_metadata(
+        &self,
+        event_type: &str,
+        schema_version: u32,
+        payload: &[u8],
+        metadata: EventPublishMetadata,
+        trace: TraceContext,
+    ) -> Result<(), PluginError> {
+        EventControl::publish_with_metadata(
+            &self.inner,
+            event_type,
+            schema_version,
+            payload,
+            metadata,
+            trace,
+        )
+    }
+}
+
 impl EventControl for EventEngineHandle {
     fn api_version(&self) -> ApiVersion {
         titan_plugin_engine::CORE_RUNTIME_API_VERSION
+    }
+
+    fn api_capabilities(&self) -> EventApiCapabilities {
+        EventApiCapabilities::V2_REQUIRED
     }
 
     fn current_route_version(&self) -> RouteVersion {
@@ -26,18 +123,9 @@ impl EventControl for EventEngineHandle {
     }
 
     fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, PluginError> {
-        if !self
-            .shared
-            .running
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(plugin_error(
-                ErrorKind::RuntimeNotActive,
-                "begin_route_update",
-                "event engine is not running",
-                true,
-            ));
-        }
+        // Route candidates are intentionally stageable before the event loop starts. Titan main
+        // validates the complete plugin graph first, starts EventEngine, and only then commits the
+        // candidate at a safe point. Publication and commit still reject a stopped engine.
         if base != self.current_route_version() {
             return Err(plugin_error(
                 ErrorKind::SubscriptionRejected,
@@ -80,6 +168,18 @@ impl EventControl for EventEngineHandle {
         &self,
         transaction: RouteTransaction,
     ) -> Result<(RouteVersion, Vec<CommittedSubscription>), PluginError> {
+        if !self
+            .shared
+            .running
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(plugin_error(
+                ErrorKind::RuntimeNotActive,
+                "commit_at_safe_point",
+                "event loop is not running",
+                true,
+            ));
+        }
         let (base_version, staged) = self
             .transactions
             .lock()

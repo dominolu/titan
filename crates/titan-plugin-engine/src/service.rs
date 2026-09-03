@@ -12,8 +12,8 @@ use std::{
 use arc_swap::ArcSwapOption;
 
 use crate::{
-    ActivationGate, ErrorKind, LifecycleState, PluginError, PluginIdentity, ServiceKey,
-    TraceContext,
+    ActivationGate, ErrorKind, FlightRecorder, LifecycleState, PluginEngineMetrics, PluginError,
+    PluginIdentity, ServiceKey, ServiceMetricSeries, TraceContext, trace_kind,
 };
 
 pub type BoxValue = Box<dyn Any + Send>;
@@ -113,6 +113,8 @@ pub struct UntypedServiceHandle {
     key: ServiceKey,
     provider: PluginIdentity,
     slot: Arc<EndpointSlot>,
+    recorder: Arc<FlightRecorder>,
+    metrics: Arc<ServiceMetricSeries>,
 }
 
 impl UntypedServiceHandle {
@@ -127,6 +129,32 @@ impl UntypedServiceHandle {
     }
 
     pub fn call(&self, request: BoxValue, trace: TraceContext) -> Result<BoxValue, PluginError> {
+        self.recorder
+            .record(trace, trace_kind::SERVICE_BEGIN, 0, false);
+        let started = std::time::Instant::now();
+        let result = self.call_inner(request, trace);
+        self.recorder.record(
+            trace,
+            trace_kind::SERVICE_END,
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            result.is_err(),
+        );
+        self.metrics.call(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            result.is_ok(),
+        );
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.kind,
+                ErrorKind::ServiceUnavailable | ErrorKind::RuntimeNotActive
+            )
+        }) {
+            self.metrics.unavailable();
+        }
+        result
+    }
+
+    fn call_inner(&self, request: BoxValue, trace: TraceContext) -> Result<BoxValue, PluginError> {
         let version = self
             .slot
             .load()
@@ -153,14 +181,53 @@ impl UntypedServiceHandle {
     }
 }
 
-#[derive(Clone)]
 pub struct ServiceHandle<S: Service> {
     inner: UntypedServiceHandle,
     _service: PhantomData<fn() -> S>,
 }
 
+impl<S: Service> Clone for ServiceHandle<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _service: PhantomData,
+        }
+    }
+}
+
 impl<S: Service> ServiceHandle<S> {
     pub fn call(
+        &self,
+        request: S::Request,
+        trace: TraceContext,
+    ) -> Result<S::Response, PluginError> {
+        self.inner
+            .recorder
+            .record(trace, trace_kind::SERVICE_BEGIN, 0, false);
+        let started = std::time::Instant::now();
+        let result = self.call_inner(request, trace);
+        self.inner.recorder.record(
+            trace,
+            trace_kind::SERVICE_END,
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            result.is_err(),
+        );
+        self.inner.metrics.call(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            result.is_ok(),
+        );
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.kind,
+                ErrorKind::ServiceUnavailable | ErrorKind::RuntimeNotActive
+            )
+        }) {
+            self.inner.metrics.unavailable();
+        }
+        result
+    }
+
+    fn call_inner(
         &self,
         request: S::Request,
         trace: TraceContext,
@@ -269,12 +336,34 @@ impl BoundServices {
     }
 }
 
-#[derive(Default)]
 pub struct ServiceRegistry {
     slots: BTreeMap<ServiceKey, (PluginIdentity, Arc<EndpointSlot>)>,
+    recorder: Arc<FlightRecorder>,
+    metrics: Arc<PluginEngineMetrics>,
+}
+
+impl Default for ServiceRegistry {
+    fn default() -> Self {
+        Self::new(
+            Arc::new(FlightRecorder::new(4096)),
+            Arc::new(PluginEngineMetrics::default()),
+        )
+    }
 }
 
 impl ServiceRegistry {
+    pub(crate) fn new(recorder: Arc<FlightRecorder>, metrics: Arc<PluginEngineMetrics>) -> Self {
+        Self {
+            slots: BTreeMap::new(),
+            recorder,
+            metrics,
+        }
+    }
+
+    pub(crate) fn contains(&self, key: &ServiceKey) -> bool {
+        self.slots.contains_key(key)
+    }
+
     pub fn stage(
         &mut self,
         key: ServiceKey,
@@ -298,13 +387,30 @@ impl ServiceRegistry {
     }
 
     pub fn bind(&self, key: &ServiceKey) -> Option<UntypedServiceHandle> {
+        self.bind_for(key, PluginIdentity::new("unknown", "consumer"))
+    }
+
+    pub(crate) fn bind_for(
+        &self,
+        key: &ServiceKey,
+        consumer: PluginIdentity,
+    ) -> Option<UntypedServiceHandle> {
         self.slots
             .get(key)
             .map(|(provider, slot)| UntypedServiceHandle {
                 key: key.clone(),
                 provider: provider.clone(),
                 slot: slot.clone(),
+                recorder: self.recorder.clone(),
+                metrics: self.metrics.service(key, provider, &consumer),
             })
+    }
+
+    pub fn bind_typed<S: Service>(&self, key: &ServiceKey) -> Option<ServiceHandle<S>> {
+        self.bind(key).map(|inner| ServiceHandle {
+            inner,
+            _service: PhantomData,
+        })
     }
 
     pub fn publish(

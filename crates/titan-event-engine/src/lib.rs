@@ -18,16 +18,19 @@ mod error;
 mod health;
 mod metrics;
 mod model;
+mod primary;
 
 pub use arena::*;
 pub use channel::*;
 pub use config::*;
+pub use control::V13EventControlAdapter;
 pub use core::*;
 pub use engine::*;
 pub use error::*;
 pub use health::*;
 pub use metrics::*;
 pub use model::*;
+pub use primary::*;
 
 pub use titan_plugin_engine::CORE_RUNTIME_API_VERSION;
 

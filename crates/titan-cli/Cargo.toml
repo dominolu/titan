@@ -14,7 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 thiserror = "2"
-hftbacktest = { path = "../../hftbacktest", default-features = false, features = ["backtest", "live"] }
+hftbacktest = { path = "../../hftbacktest", default-features = false, features = ["backtest"] }
 libc = "0.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
@@ -23,3 +23,10 @@ sysinfo = "0.37"
 titan-python-host = { path = "../titan-python-host" }
 titan-runtime = { path = "../titan-runtime", default-features = false, features = ["backtest", "live"] }
 titan-runtime-abi = { path = "../titan-runtime-abi" }
+titan-event-engine = { path = "../titan-event-engine" }
+titan-plugin-engine = { path = "../titan-plugin-engine" }
+titan-market-plugin = { path = "../titan-market-plugin" }
+titan-account-plugin = { path = "../titan-account-plugin" }
+titan-strategy-plugin = { path = "../titan-strategy-plugin", features = ["numba-loader"] }
+titan-connector-loader = { path = "../titan-connector-loader" }
+semver = "1"

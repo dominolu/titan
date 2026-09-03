@@ -21,8 +21,6 @@ use serde::{
 };
 use sha2::Sha256;
 
-use crate::bybit::BybitError;
-
 struct I64Visitor;
 
 impl Visitor<'_> for I64Visitor {
@@ -168,7 +166,7 @@ pub type PxQty = (f64, f64);
 pub fn parse_depth(
     bids: Vec<(String, String)>,
     asks: Vec<(String, String)>,
-) -> Result<(Vec<PxQty>, Vec<PxQty>), BybitError> {
+) -> Result<(Vec<PxQty>, Vec<PxQty>), std::num::ParseFloatError> {
     let mut bids_ = Vec::with_capacity(bids.len());
     for (px, qty) in bids {
         bids_.push(parse_px_qty_tup(px, qty)?);
@@ -180,7 +178,7 @@ pub fn parse_depth(
     Ok((bids_, asks_))
 }
 
-pub fn parse_px_qty_tup(px: String, qty: String) -> Result<PxQty, BybitError> {
+pub fn parse_px_qty_tup(px: String, qty: String) -> Result<PxQty, std::num::ParseFloatError> {
     Ok((px.parse()?, qty.parse()?))
 }
 

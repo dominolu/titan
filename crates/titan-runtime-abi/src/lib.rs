@@ -10,7 +10,7 @@ use std::ffi::c_void;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
-pub const STRATEGY_ABI_VERSION: u32 = 8;
+pub const STRATEGY_ABI_VERSION: u32 = 9;
 pub const EVENT_SLOT_COUNT: usize = 32;
 
 pub const BAR_COMPLETE: u64 = 1 << 0;
@@ -77,7 +77,10 @@ pub struct FillEvent {
     pub local_ts: i64,
     pub sequence: u64,
     pub price: f64,
-    pub qty: f64,
+    /// Quantity contributed by this canonical fill fact.
+    pub last_fill_qty: f64,
+    /// Order cumulative filled quantity after applying this fill.
+    pub cumulative_filled_qty: f64,
     pub venue_no: u32,
     pub instrument_id: u32,
     pub reason: u32,
@@ -201,6 +204,8 @@ pub struct OrderCommand {
     pub time_in_force: u8,
     pub order_type: u8,
     pub _reserved: [u8; 4],
+    pub local_account_no: u32,
+    pub _account_reserved: u32,
     pub asset_no: u64,
     pub order_id: u64,
     pub price: f64,
@@ -217,6 +222,8 @@ impl Default for OrderCommand {
             time_in_force: 0,
             order_type: 0,
             _reserved: [0; 4],
+            local_account_no: 0,
+            _account_reserved: 0,
             asset_no: 0,
             order_id: 0,
             price: 0.0,
@@ -448,7 +455,9 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
             venue_order_id: AbiType::U64 => u64, exch_ts: AbiType::I64 => i64,
             local_ts: AbiType::I64 => i64, sequence: AbiType::U64 => u64,
-            price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
+            price: AbiType::F64 => f64,
+            last_fill_qty: AbiType::F64 => f64,
+            cumulative_filled_qty: AbiType::F64 => f64,
             venue_no: AbiType::U32 => u32, instrument_id: AbiType::U32 => u32,
             reason: AbiType::U32 => u32, side: AbiType::I8 => i8,
             maker: AbiType::U8 => u8,
@@ -494,6 +503,8 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             kind: AbiType::U8 => u8, side: AbiType::I8 => i8,
             time_in_force: AbiType::U8 => u8, order_type: AbiType::U8 => u8,
             _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 4 } => [u8; 4],
+            local_account_no: AbiType::U32 => u32,
+            _account_reserved: AbiType::U32 => u32,
             asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
             price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
             trigger_price: AbiType::F64 => f64, gtd_expiry_ts: AbiType::I64 => i64,
@@ -783,5 +794,37 @@ mod tests {
         let mut changed = descriptor();
         changed.structs[0].fields[0].offset += 1;
         assert!(!changed.verify_fingerprint());
+    }
+
+    #[test]
+    fn abi_v9_exposes_dual_fill_quantity_and_account_routing() {
+        let descriptor = runtime_abi_descriptor();
+        assert_eq!(descriptor.abi_version, 9);
+        let fill = descriptor
+            .structs
+            .iter()
+            .find(|value| value.name == "FillEvent")
+            .unwrap();
+        assert!(
+            fill.fields
+                .iter()
+                .any(|field| field.name == "last_fill_qty")
+        );
+        assert!(
+            fill.fields
+                .iter()
+                .any(|field| field.name == "cumulative_filled_qty")
+        );
+        let command = descriptor
+            .structs
+            .iter()
+            .find(|value| value.name == "OrderCommand")
+            .unwrap();
+        assert!(
+            command
+                .fields
+                .iter()
+                .any(|field| field.name == "local_account_no")
+        );
     }
 }

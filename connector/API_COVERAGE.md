@@ -4,7 +4,7 @@
 频道，以及统一 API 层（`src/api.rs`）的覆盖情况。
 状态图例：✅ 已验证（实测/单测）｜⚠️ 已实现，端到端待验证 ｜🔧 已实现未接线
 
-> 最后更新：2026-08-19
+> 最后更新：2026-09-03
 >
 > 本文件是接口状态的唯一事实来源；[API_GAP_ANALYSIS.md](API_GAP_ANALYSIS.md) 仅保留状态
 > 定义和维护规则。
@@ -53,8 +53,13 @@
 | REST | 账户全量（marginType、leverage、positionMode、multiAssetsMargin、positionMargin、income、commissionRate、leverageBracket、adlQuantile、accountConfig 等） | brokerapi.rs | 对照官方文档 | ✅ |
 | REST | algoOrder 系列（下单/撤/查） | brokerapi.rs | 条件单/算法单 | ✅ |
 | REST | `get_depth` | rest.rs | 深度快照（WS 断档补快照） | ✅ |
-| WS 公共 | `{symbol}@trade` / `@depth@0ms` / `@markPrice` / `@bookTicker` | market_data_stream.rs | 成交/深度/资金费/BBO | ⚠️ 当前环境 WS 不可达，格式按官方文档 + 单测 |
-| WS 私有 | listenKey 用户数据流 | user_data_stream.rs | AccountUpdate / OrderTradeUpdate / ListenKeyExpired | ⚠️ 依赖 WS 连通性 |
+| WS 公共 | `{symbol}@trade` / `@depth@0ms` / `@markPrice` / `@bookTicker` | market_data_stream.rs | 成交/深度/资金费/BBO | ✅ 2026-09-03 目标机 production 实测：`public/ws`（Depth/Trade/BBO）+ `market/ws`（markPrice/Funding）事件均到达 |
+| WS 私有 | listenKey 用户数据流 | user_data_stream.rs | AccountUpdate / OrderTradeUpdate / ListenKeyExpired | ✅ 2026-09-03 目标机实测：listenKey start/keepalive/close + 私有流两代 READY/Full reconcile/事件发布/干净 stop（静态 Factory） |
+
+> 2026-09-03 目标机（43.165.184.116）Binance 主网验收：只读接口盘点 60/60 PASS；XRPUSDT 小额订单
+> 闭环（批量 submit/amend/cancel、单笔 submit/query/cancel、市价开仓、reduce-only 平仓、fills 查询）
+> 通过；可逆写接口 16/16 PASS（杠杆/保证金/仓位模式/多资产模式/countdown cancel/算法单/持仓保证金/
+> get_open_order/cancel_all/income async），且全部恢复原值、账户零仓位零挂单。
 
 ## OKX V5 SWAP（okx）
 

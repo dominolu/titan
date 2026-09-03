@@ -1305,6 +1305,11 @@ PluginApiV1
 - Manifest Schema major不兼容时拒绝加载；
 - Manifest Schema minor通过ConfigurationAdapter迁移到当前标准格式；
 - 插件业务配置携带独立`config_schema_version`，迁移必须在`PluginFactory.create()`前完成；
+- 包清单版本必须在建立进程级 code lease 前与动态库内嵌 Manifest 版本一致；不一致的候选库立即拒绝，
+  不得进入进程级永久保留集合；
+- 所有指针加长度的输入在构造本地 slice 前必须验证空指针、长度和 `isize::MAX` 边界；无效的
+  producer-owned 输出仍由其配套释放函数按原始 tuple 回收；
+- 插件包和动态库摘要必须使用固定大小缓冲流式计算，不得按插件文件大小分配校验内存；
 - Service ABI或语义不兼容时生成新PluginPlan并重启Consumer，不允许EndpointSlot热替换。
 
 ### 15.4 Panic与动态库生命周期
@@ -1315,6 +1320,9 @@ PluginApiV1
 catch_unwind(AssertUnwindSafe(|| plugin_call()))
     -> TitanStatus
 ```
+
+实例创建导出必须把外部输入校验、配置解码和实例构造全部置于上述 panic boundary 内，不允许在进入
+保护边界前对外部 buffer 构造 slice 或执行可能 panic 的 Rust 逻辑。
 
 - Panic禁止跨越`extern "C"`边界；
 - Host回调同样禁止向插件传播Panic；

@@ -14,6 +14,7 @@ use titan_plugin_engine::{
     ExecutionSpec, PluginEngine, PluginError, PluginIdentity, PluginSpec, ServiceKey, ServiceScope,
     StopReason, SubscriptionLimits, SubscriptionSpec, TraceContext,
 };
+use titan_runtime_abi::{BAR_COMPLETE, Bar};
 
 use crate::*;
 
@@ -21,10 +22,15 @@ struct FakeConnector {
     context: MarketConnectorContext,
     running: AtomicBool,
     next_id: AtomicU64,
+    fail_start: bool,
+    stop_calls: Option<Arc<AtomicU64>>,
 }
 
 impl MarketConnector for FakeConnector {
     fn start(&self) -> Result<(), ConnectorError> {
+        if self.fail_start {
+            return Err(ConnectorError::new("injected start failure"));
+        }
         self.running.store(true, Ordering::Release);
         let header = MarketBatchHeaderV1 {
             asset_id: self.context.instruments[0].asset_id.0,
@@ -57,6 +63,9 @@ impl MarketConnector for FakeConnector {
             .map_err(|error| ConnectorError::new(error.to_string()))
     }
     fn stop(&self, _: Instant) -> Result<(), ConnectorError> {
+        if let Some(calls) = &self.stop_calls {
+            calls.fetch_add(1, Ordering::AcqRel);
+        }
         self.running.store(false, Ordering::Release);
         Ok(())
     }
@@ -133,6 +142,32 @@ impl MarketConnectorFactory for FakeFactory {
             context,
             running: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
+            fail_start: false,
+            stop_calls: None,
+        }))
+    }
+}
+
+struct StartFailFactory {
+    stop_calls: Arc<AtomicU64>,
+}
+
+impl MarketConnectorFactory for StartFailFactory {
+    fn connector_type(&self) -> &str {
+        "start-fail"
+    }
+
+    fn create(
+        &self,
+        _: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        Ok(Arc::new(FakeConnector {
+            context,
+            running: AtomicBool::new(false),
+            next_id: AtomicU64::new(1),
+            fail_start: true,
+            stop_calls: Some(self.stop_calls.clone()),
         }))
     }
 }
@@ -533,4 +568,81 @@ fn duplicate_factory_registration_is_rejected() {
             .kind,
         MarketErrorKind::AlreadyExists
     );
+}
+
+#[test]
+fn connector_start_failure_is_retained_for_diagnostics_and_core_shutdown_releases_it() {
+    let events = EventEngine::new(EventEngineConfig::default()).unwrap();
+    events.start().unwrap();
+    let stop_calls = Arc::new(AtomicU64::new(0));
+    let mut plugins = PluginEngine::new(Arc::new(events.handle()), ApiVersion::new(1, 0)).unwrap();
+    plugins
+        .register(
+            Arc::new(
+                MarketPluginFactory::new().with_factory(Arc::new(StartFailFactory {
+                    stop_calls: stop_calls.clone(),
+                })),
+            ),
+            Version::new(1, 0, 0),
+            "test",
+        )
+        .unwrap();
+    plugins.apply(&[plugin_spec()]).unwrap();
+
+    let mut candidate = definition("failed", 71);
+    candidate.connector_type = Arc::from("start-fail");
+    let handle = match admin_call(&plugins, MarketAdminRequest::Create(candidate)).unwrap() {
+        MarketAdminResponse::Handle(handle) => handle,
+        _ => panic!("unexpected create response"),
+    };
+    assert_eq!(
+        admin_call(&plugins, MarketAdminRequest::Start(handle))
+            .unwrap_err()
+            .kind,
+        MarketErrorKind::ConnectorRejected
+    );
+    assert!(matches!(
+        admin_call(&plugins, MarketAdminRequest::List).unwrap(),
+        MarketAdminResponse::Sources(values)
+            if values.len() == 1 && values[0].lifecycle == ConnectorLifecycle::Failed
+    ));
+
+    plugins.shutdown(StopReason::Failure).unwrap();
+    events.stop().unwrap();
+    assert_eq!(stop_calls.load(Ordering::Acquire), 1);
+    assert_eq!(events.arena().outstanding_blocks(), 0);
+}
+
+#[test]
+fn closed_bar_batch_v1_round_trips_and_rejects_partial_or_mismatched_bars() {
+    let batch = BarBatchV1 {
+        timeframe_ns: 60,
+        close_ts: 120,
+        items: vec![BarRecordV1 {
+            asset_id: 7,
+            bar: Bar {
+                open_ts: 60,
+                close_ts: 120,
+                open: 1.0,
+                high: 3.0,
+                low: 0.5,
+                close: 2.0,
+                volume: 4.0,
+                quote_volume: 8.0,
+                buy_volume: 2.5,
+                trade_count: 9,
+                flags: BAR_COMPLETE,
+            },
+        }],
+    };
+    let encoded = batch.encode().unwrap();
+    assert_eq!(encoded.len(), BarBatchV1::HEADER_LEN + BarBatchV1::ITEM_LEN);
+    assert_eq!(BarBatchV1::decode(&encoded).unwrap(), batch);
+
+    let mut partial = batch.clone();
+    partial.items[0].bar.flags = titan_runtime_abi::BAR_PARTIAL;
+    assert!(partial.encode().is_err());
+    let mut mismatched = batch;
+    mismatched.items[0].bar.close_ts += 1;
+    assert!(mismatched.encode().is_err());
 }

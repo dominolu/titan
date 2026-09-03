@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use hftbacktest::types::{Event, LiveEvent, Order};
+use hftbacktest::types::{Event, LiveError, LiveEvent, Order};
 use titan_market_plugin::MarketDataKind;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
@@ -103,6 +103,43 @@ impl<'a> NativeMarketBatch<'a> {
 pub enum DirectPublication<'a> {
     Event(&'a PublishEvent),
     NativeMarket(NativeMarketBatch<'a>),
+    Account(&'a AccountPublication),
+}
+
+/// Account-owned facts emitted by authenticated venue streams. The AccountPlugin direct path
+/// consumes this type synchronously and encodes the stable account ABI without wrapping the fact
+/// in the legacy bot-wide `LiveEvent` transport. Queued legacy runners are adapted at the sender
+/// boundary until that runner is retired.
+#[derive(Clone, Debug)]
+pub enum AccountPublication {
+    Order {
+        symbol: String,
+        order: Order,
+    },
+    Position {
+        symbol: String,
+        qty: f64,
+        exch_ts: i64,
+    },
+    Error(LiveError),
+}
+
+impl AccountPublication {
+    fn into_legacy(self) -> LiveEvent {
+        match self {
+            Self::Order { symbol, order } => LiveEvent::Order { symbol, order },
+            Self::Position {
+                symbol,
+                qty,
+                exch_ts,
+            } => LiveEvent::Position {
+                symbol,
+                qty,
+                exch_ts,
+            },
+            Self::Error(error) => LiveEvent::Error(error),
+        }
+    }
 }
 
 type DirectPublisher = dyn for<'a> Fn(DirectPublication<'a>) + Send + Sync + 'static;
@@ -157,6 +194,26 @@ impl PublishSender {
         };
         publish(DirectPublication::NativeMarket(batch));
         true
+    }
+
+    /// Publishes an authenticated account fact without a bridge queue on the AccountPlugin path.
+    /// The compatibility queue conversion is isolated here and disappears with the old live CLI.
+    pub fn send_account(
+        &self,
+        publication: AccountPublication,
+    ) -> Result<(), TrySendError<AccountPublication>> {
+        match &self.transport {
+            PublishTransport::Direct(publish) => {
+                publish(DirectPublication::Account(&publication));
+                Ok(())
+            }
+            PublishTransport::Queued { .. } => self
+                .send(PublishEvent::LiveEvent(publication.clone().into_legacy()))
+                .map_err(|error| match error {
+                    TrySendError::Full(_) => TrySendError::Full(publication),
+                    TrySendError::Closed(_) => TrySendError::Closed(publication),
+                }),
+        }
     }
 }
 
@@ -260,6 +317,13 @@ pub enum PublishEvent {
     /// AccountPlugin uses this as the barrier before running reconciliation and declaring READY.
     PrivateStreamReady,
     LiveEvent(LiveEvent),
+    /// A normalized mark-price update. This remains separate from `LiveEvent::Funding` because
+    /// one Binance mark-price frame carries both values and consumers may subscribe independently.
+    MarkPrice {
+        symbol: String,
+        mark_price: f64,
+        exch_ts: i64,
+    },
     /// All normalized feed records produced by one exchange message. Keeping the symbol once per
     /// batch avoids one MPSC allocation and one symbol clone per price level.
     FeedBatch {
@@ -284,6 +348,7 @@ impl PublishEvent {
     pub(crate) fn lossy_market_symbol(&self) -> Option<&str> {
         match self {
             Self::FeedBatch { symbol, .. }
+            | Self::MarkPrice { symbol, .. }
             | Self::LiveEvent(LiveEvent::Feed { symbol, .. })
             | Self::LiveEvent(LiveEvent::Funding { symbol, .. }) => Some(symbol),
             _ => None,
@@ -390,8 +455,65 @@ pub trait GetOrders {
 }
 
 #[cfg(test)]
+pub(crate) async fn reconnecting_websocket_server(
+    text_frames_per_connection: usize,
+) -> (
+    String,
+    tokio::sync::mpsc::Receiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local websocket fixture");
+    let address = listener
+        .local_addr()
+        .expect("read websocket fixture address");
+    assert!(text_frames_per_connection > 0);
+    let (subscriptions, receiver) = tokio::sync::mpsc::channel(2 * text_frames_per_connection);
+    let task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (socket, _) = listener.accept().await.expect("accept connector socket");
+            let mut websocket = accept_async(socket)
+                .await
+                .expect("complete connector websocket handshake");
+            let mut observed = 0;
+            while observed < text_frames_per_connection {
+                let Some(message) = websocket.next().await else {
+                    panic!("connector socket ended before all subscription frames arrived");
+                };
+                match message.expect("read connector websocket frame") {
+                    Message::Text(text) => {
+                        subscriptions
+                            .send(text.to_string())
+                            .await
+                            .expect("publish observed subscription");
+                        observed += 1;
+                    }
+                    Message::Ping(value) => {
+                        websocket
+                            .send(Message::Pong(value))
+                            .await
+                            .expect("reply to connector ping");
+                    }
+                    _ => {}
+                }
+            }
+            // Force an actual peer-side disconnect. The connector must reconnect and rebuild the
+            // subscription from its shared desired state rather than relying on an in-flight
+            // command from the first socket.
+            websocket.close(None).await.expect("close connector socket");
+        }
+    });
+    (format!("ws://{address}"), receiver, task)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn bounded_publish_channel_reports_overflow_before_buffered_data() {
@@ -450,5 +572,52 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn account_publication_uses_only_sender_boundary_for_legacy_queue_conversion() {
+        let (sender, mut receiver) = publish_channel(1);
+        sender
+            .send_account(AccountPublication::Position {
+                symbol: "BTCUSDT".to_owned(),
+                qty: 1.25,
+                exch_ts: 42,
+            })
+            .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::LiveEvent(LiveEvent::Position {
+                symbol,
+                qty: 1.25,
+                exch_ts: 42,
+            })) if symbol == "BTCUSDT"
+        ));
+    }
+
+    #[test]
+    fn account_publication_is_delivered_directly_without_a_live_event_bridge() {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let capture = observed.clone();
+        let sender = direct_publish_sender(move |publication| {
+            if let DirectPublication::Account(AccountPublication::Position {
+                symbol,
+                qty,
+                exch_ts,
+            }) = publication
+            {
+                assert_eq!(symbol, "BTC");
+                assert_eq!(*qty, -2.0);
+                assert_eq!(*exch_ts, 99);
+                capture.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        sender
+            .send_account(AccountPublication::Position {
+                symbol: "BTC".to_owned(),
+                qty: -2.0,
+                exch_ts: 99,
+            })
+            .unwrap();
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
     }
 }
