@@ -466,7 +466,7 @@ connector/src/main.rs（iceoryx2 连接器进程）
   `connector/scripts/run_binance_ws_to_on_tick_latency.sh`。
 - [x] 更新根 README、`connector/README.md`、`hftbacktest/README.md`、`docs/rust_strategy.md`
   与 PluginEngine 示例，旧“连接器进程 + iceoryx IPC”不再作为产品入口。
-- [x] 回测/新链路回归：`hftbacktest --lib` 106 项、`connector --lib` 220 项、
+- [x] 回测/新链路回归：`hftbacktest --lib` 106 项、`connector --lib` 201 项、
   `titan-runtime`/`titan-strategy-plugin` 测试均通过；全 workspace `--all-targets` 编译通过。
 
 connector 已删除 queued transport 并改为 direct-only，`PublishEvent::LiveEvent` 亦已移除：

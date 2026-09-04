@@ -134,6 +134,9 @@ pub struct PublishSender {
 }
 
 impl PublishSender {
+    /// Direct publication is synchronous and never signals queue pressure. Publication failures
+    /// are observed by the direct callback (MarketEventBridge/AccountEventEncoder), which owns
+    /// invalidation/recovery. The `Result` return is retained only for legacy call-site parity.
     pub fn send(&self, event: PublishEvent) -> Result<(), TrySendError<PublishEvent>> {
         (self.publish)(DirectPublication::Event(&event));
         Ok(())
@@ -148,7 +151,8 @@ impl PublishSender {
         true
     }
 
-    /// Publishes an authenticated account fact directly into the AccountPlugin encoder.
+    /// Publishes an authenticated account fact directly into the AccountPlugin encoder. As with
+    /// [`Self::send`], errors are handled by the direct callback and the `Result` is parity-only.
     pub fn send_account(
         &self,
         publication: AccountPublication,
