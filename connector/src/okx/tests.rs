@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::okx::{
-    msg::rest::{Books, CancelResult, Instrument, OrderResult, Position},
+    msg::rest::{Books, CancelResult, Instrument, Position},
     msg::stream::{OrderUpdate, StreamMsg},
     ordermanager::OrderManager,
     rest::{OkxClient, build_submit_body, check_cancel_result},
@@ -38,15 +38,6 @@ fn test_order(order_id: u64) -> Order {
         OrdType::Limit,
         TimeInForce::GTC,
     )
-}
-
-fn order_result(s_code: &str) -> OrderResult {
-    OrderResult {
-        cl_ord_id: "c1".to_string(),
-        ord_id: "1".to_string(),
-        s_code: s_code.to_string(),
-        s_msg: "err".to_string(),
-    }
 }
 
 fn order_update(cl_ord_id: &str, state: &str) -> OrderUpdate {
@@ -423,56 +414,18 @@ fn test_lot_sz_decimals() {
 // ------------------------------------------------------------------
 
 #[test]
-fn test_rest_submit_success_clears_req() {
-    let mut manager = OrderManager::new("titan-");
-    let cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-        .unwrap();
-    let order = manager
-        .update_from_rest_submit(&cid, &order_result("0"))
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.req, Status::None);
-    assert_eq!(order.status, Status::New);
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 1).is_some());
-}
-
-#[test]
-fn test_cancel_s_code_51401_clears_req() {
-    let mut manager = OrderManager::new("titan-");
-    let mut order = test_order(1);
-    order.req = Status::Canceled;
-    let cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), order)
-        .unwrap();
-    let updated = manager
-        .update_cancel_fail(
-            &cid,
-            &OkxError::OrderError {
-                code: "51401".to_string(),
-                msg: "Order does not exist".to_string(),
-            },
-        )
-        .unwrap();
-    assert_eq!(updated.req, Status::None);
-    // The order status cannot be determined from this error; it must not be flipped.
-    assert_eq!(updated.status, Status::None);
-}
-
-#[test]
 fn test_ws_partial_fill() {
     let mut manager = OrderManager::new("titan-");
-    let cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-        .unwrap();
+    let cid = "0123456789abcdef0123456789abcdef";
+    let mut order = test_order(1);
+    order.status = Status::New;
+    assert!(manager.track_managed_order("BTC-USDT-SWAP", cid, order));
     let mut update = order_update(&cid, "partially_filled");
     update.acc_fill_sz = "0.5".to_string();
     let order = manager.update_from_ws(&update).unwrap().unwrap();
     assert_eq!(order.status, Status::PartiallyFilled);
     assert_eq!(order.exec_qty, 0.5);
     assert_eq!(order.leaves_qty, 0.5);
-    // A partial fill must not remove the order.
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 1).is_some());
 }
 
 #[test]
@@ -489,24 +442,22 @@ fn test_ws_ignores_external_prefix() {
 fn test_gc_removes_stale_orders() {
     let mut manager = OrderManager::new("titan-");
 
-    let cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-        .unwrap();
+    let cid = "0123456789abcdef0123456789abcdef";
+    let mut stale_order = test_order(1);
+    stale_order.status = Status::New;
+    assert!(manager.track_managed_order("BTC-USDT-SWAP", cid, stale_order));
     let mut stale = order_update(&cid, "canceled");
     stale.u_time = "0".to_string();
     manager.update_from_ws(&stale).unwrap();
 
     let mut fresh = test_order(2);
     fresh.status = Status::New;
-    let _fresh_cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), fresh)
-        .unwrap();
+    assert!(manager.track_managed_order("BTC-USDT-SWAP", "fresh", fresh));
 
     manager.gc();
 
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 1).is_none());
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 2).is_some());
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 1).is_none());
+    // Only the active fresh order remains published by the public GetOrders view.
+    assert_eq!(manager.orders(None).len(), 1);
 }
 
 #[test]
@@ -520,9 +471,9 @@ fn test_orders_filters_active_and_symbol() {
     let mut eth_active = test_order(3);
     eth_active.status = Status::New;
 
-    manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), btc_active);
-    manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), btc_filled);
-    manager.prepare_client_order_id("ETH-USDT-SWAP".to_string(), eth_active);
+    manager.track_managed_order("BTC-USDT-SWAP", "btc-active", btc_active);
+    manager.track_managed_order("BTC-USDT-SWAP", "btc-filled", btc_filled);
+    manager.track_managed_order("ETH-USDT-SWAP", "eth-active", eth_active);
 
     assert_eq!(manager.orders(None).len(), 2);
     let btc = manager.orders(Some("BTC-USDT-SWAP".to_string()));
@@ -531,50 +482,17 @@ fn test_orders_filters_active_and_symbol() {
 }
 
 #[test]
-fn test_prepare_client_order_id_rejects_duplicate() {
-    let mut manager = OrderManager::new("titan-");
-    assert!(
-        manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-            .is_some()
-    );
-    assert!(
-        manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-            .is_none()
-    );
-    assert!(
-        manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(2))
-            .is_some()
-    );
-}
-
-#[test]
-fn test_client_order_id_format() {
-    let mut manager = OrderManager::new("titan-");
-    let cid = manager
-        .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-        .unwrap();
-    assert!(cid.starts_with("titan-"));
-    assert_eq!(cid.len(), "titan-".len() + 16);
-    assert!(
-        cid.chars()
-            .skip("titan-".len())
-            .all(|c| c.is_ascii_alphanumeric())
-    );
-}
-
-#[test]
 fn test_cancel_all_net_mode() {
     let mut manager = OrderManager::new("titan-");
-    manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1));
-    manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(2));
+    let mut one = test_order(1);
+    one.status = Status::New;
+    let mut two = test_order(2);
+    two.status = Status::New;
+    manager.track_managed_order("BTC-USDT-SWAP", "one", one);
+    manager.track_managed_order("BTC-USDT-SWAP", "two", two);
 
     let canceled = manager.cancel_all("BTC-USDT-SWAP", None);
     assert_eq!(canceled.len(), 2);
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 1).is_none());
-    assert!(manager.get_client_order_id("BTC-USDT-SWAP", 2).is_none());
 }
 
 // ------------------------------------------------------------------

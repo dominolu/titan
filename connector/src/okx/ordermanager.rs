@@ -2,16 +2,12 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, OrderId, Side, Status};
-use tracing::error;
+use hftbacktest::types::{Order, Side, Status};
 
 use crate::{
     connector::GetOrders,
-    okx::{
-        OkxError,
-        msg::{rest::OrderResult, stream::OrderUpdate},
-    },
-    utils::{RefSymbolOrderId, SymbolOrderId, generate_rand_string},
+    okx::{OkxError, msg::stream::OrderUpdate},
+    utils::{RefSymbolOrderId, SymbolOrderId},
 };
 
 #[derive(Debug)]
@@ -31,22 +27,16 @@ fn from_str_to_status(state: &str) -> Status {
         "live" => Status::New,
         "partially_filled" => Status::PartiallyFilled,
         "filled" => Status::Filled,
-        "canceled" => Status::Canceled,
-        "mmp_canceled" => Status::Canceled,
+        "canceled" | "mmp_canceled" => Status::Canceled,
         "rejected" => Status::Rejected,
         "order_failed" => Status::Expired,
         _ => Status::Unsupported,
     }
 }
 
-/// OKX has separated channels for REST APIs and WebSocket. Order responses are delivered
-/// through these channels, with no guaranteed order of transmission. To prevent duplicate handling
-/// of order responses, such as order deletion due to cancellation or fill, OrderManager manages the
-/// order states before transmitting the responses to a live bot.
-///
-/// Deletions must be confirmed by both channels. If not, differences in response times could result
-/// in attempts to update an order that has already been deleted, potentially creating a ghost order
-/// unintentionally.
+/// Tracks orders created by the AccountPlugin REST facade so the private `orders` channel can be
+/// correlated back to the deterministic owner client id. Terminal private-stream facts are kept for
+/// GC (rather than removed immediately) so no duplicate publication can follow a stale frame.
 #[derive(Default, Debug)]
 pub struct OrderManager {
     prefix: String,
@@ -61,37 +51,6 @@ impl OrderManager {
             orders: Default::default(),
             order_id_map: Default::default(),
         }
-    }
-
-    pub fn prepare_client_order_id(&mut self, symbol: String, order: Order) -> Option<String> {
-        let symbol_order_id = SymbolOrderId::new(symbol.clone(), order.order_id);
-        if self.order_id_map.contains_key(&symbol_order_id) {
-            return None;
-        }
-
-        let client_order_id = format!("{}{}", self.prefix, generate_rand_string(16));
-        if self.orders.contains_key(&client_order_id) {
-            return None;
-        }
-
-        self.order_id_map
-            .insert(symbol_order_id, client_order_id.clone());
-        self.orders.insert(
-            client_order_id.clone(),
-            OrderExt {
-                symbol,
-                order,
-                removed_by_ws: false,
-                removed_by_rest: false,
-            },
-        );
-        Some(client_order_id)
-    }
-
-    pub fn get_client_order_id(&self, symbol: &str, order_id: OrderId) -> Option<String> {
-        self.order_id_map
-            .get(&RefSymbolOrderId::new(symbol, order_id))
-            .cloned()
     }
 
     pub fn track_managed_order(
@@ -119,8 +78,7 @@ impl OrderManager {
         true
     }
 
-    /// Updates the order state with the data received from the private WebSocket stream
-    /// (`orders` channel). Returns the order to be published when the update is meaningful.
+    /// Updates the order state with the private `orders` channel and returns the order to publish.
     pub fn update_from_ws(&mut self, data: &OrderUpdate) -> Result<Option<Order>, OkxError> {
         if !self.orders.contains_key(&data.cl_ord_id) && !data.cl_ord_id.starts_with(&self.prefix) {
             return Err(OkxError::PrefixUnmatched);
@@ -166,133 +124,6 @@ impl OrderManager {
         }
 
         Ok(result)
-    }
-
-    /// Updates the order state with the REST order placement response.
-    pub fn update_from_rest_submit(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        resp: &OrderResult,
-    ) -> Result<Option<Order>, OkxError> {
-        let order_ext = self
-            .orders
-            .get_mut(client_order_id)
-            .ok_or(OkxError::OrderNotFound)?;
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-
-        order_ext.order.req = Status::None;
-        if resp.s_code != "0" {
-            // The exchange rejected the order placement (e.g. insufficient margin).
-            order_ext.order.status = Status::Expired;
-            order_ext.removed_by_rest = true;
-            if !already_removed {
-                self.order_id_map.remove(&RefSymbolOrderId::new(
-                    &order_ext.symbol,
-                    order_ext.order.order_id,
-                ));
-            }
-        } else if !already_removed {
-            // The order is now resting on the book. Set New explicitly so the bot sees the order
-            // as active even if the WebSocket stream has not delivered the first update yet.
-            order_ext.order.status = Status::New;
-        }
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-        if order_ext.removed_by_ws && order_ext.removed_by_rest {
-            self.orders.remove(client_order_id).unwrap();
-        }
-
-        Ok(result)
-    }
-
-    /// Updates the order state with the REST cancel response.
-    pub fn update_from_rest_cancel(
-        &mut self,
-        client_order_id: &ClientOrderId,
-    ) -> Result<Option<Order>, OkxError> {
-        let order_ext = self
-            .orders
-            .get_mut(client_order_id)
-            .ok_or(OkxError::OrderNotFound)?;
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-
-        order_ext.order.req = Status::None;
-        order_ext.order.status = Status::Canceled;
-        order_ext.removed_by_rest = true;
-        if !already_removed {
-            self.order_id_map.remove(&RefSymbolOrderId::new(
-                &order_ext.symbol,
-                order_ext.order.order_id,
-            ));
-        }
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-        if order_ext.removed_by_ws && order_ext.removed_by_rest {
-            self.orders.remove(client_order_id).unwrap();
-        }
-
-        Ok(result)
-    }
-
-    /// Updates the order state when the REST cancel request fails.
-    pub fn update_cancel_fail(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        error: &OkxError,
-    ) -> Option<Order> {
-        let order_ext = self.orders.get_mut(client_order_id)?;
-        match error {
-            OkxError::OrderError { code, .. } if code == "51401" => {
-                // The order no longer exists; it may have already been filled or canceled.
-                // The order status cannot be determined from this error.
-                order_ext.order.req = Status::None;
-            }
-            error => {
-                error!(?error, "cancel error");
-            }
-        }
-        Some(order_ext.order.clone())
-    }
-
-    pub fn update_submit_fail(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        error: &OkxError,
-    ) -> Option<Order> {
-        let order_ext = self.orders.get_mut(client_order_id)?;
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        match error {
-            OkxError::OrderError { code, .. } => {
-                error!(code, "submit error");
-            }
-            error => {
-                error!(?error, "submit error");
-            }
-        }
-        order_ext.order.req = Status::None;
-        order_ext.order.status = Status::Expired;
-        order_ext.removed_by_rest = true;
-        if !already_removed {
-            self.order_id_map.remove(&RefSymbolOrderId::new(
-                &order_ext.symbol,
-                order_ext.order.order_id,
-            ));
-        }
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-        if order_ext.removed_by_ws && order_ext.removed_by_rest {
-            self.orders.remove(client_order_id).unwrap();
-        }
-        result
     }
 
     pub fn cancel_all(&mut self, symbol: &str, pos_side: Option<&str>) -> Vec<Order> {
@@ -373,7 +204,6 @@ impl GetOrders for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::okx::msg::stream::OrderUpdate;
     use hftbacktest::types::{OrdType, TimeInForce};
 
     fn test_order(order_id: u64) -> Order {
@@ -408,44 +238,6 @@ mod tests {
         }
     }
 
-    fn order_result(s_code: &str) -> OrderResult {
-        OrderResult {
-            cl_ord_id: String::new(),
-            ord_id: String::new(),
-            s_code: s_code.to_string(),
-            s_msg: String::new(),
-        }
-    }
-
-    #[test]
-    fn test_submit_fail_publishes_expired_status() {
-        let mut manager = OrderManager::new("");
-        let cl_ord_id = manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-            .unwrap();
-        let error = OkxError::OrderError {
-            code: "51000".to_string(),
-            msg: "insufficient margin".to_string(),
-        };
-        let order = manager.update_submit_fail(&cl_ord_id, &error).unwrap();
-        assert_eq!(order.status, Status::Expired);
-        assert_eq!(order.req, Status::None);
-    }
-
-    #[test]
-    fn test_exchange_rejection_publishes_expired_status() {
-        let mut manager = OrderManager::new("");
-        let cl_ord_id = manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-            .unwrap();
-        let order = manager
-            .update_from_rest_submit(&cl_ord_id, &order_result("51000"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(order.status, Status::Expired);
-        assert_eq!(order.req, Status::None);
-    }
-
     #[test]
     fn tracked_rest_order_flows_through_private_ws_without_legacy_prefix() {
         let mut manager = OrderManager::new("t-");
@@ -462,50 +254,17 @@ mod tests {
     }
 
     #[test]
-    fn test_dual_channel_removal() {
-        let mut manager = OrderManager::new("");
-        let cl_ord_id = manager
-            .prepare_client_order_id("BTC-USDT-SWAP".to_string(), test_order(1))
-            .unwrap();
-
-        let rest_update = manager.update_from_rest_cancel(&cl_ord_id).unwrap();
-        assert!(rest_update.is_some());
-        assert_eq!(rest_update.unwrap().status, Status::Canceled);
-        assert_eq!(manager.orders.len(), 1);
-
-        let ws_update = manager
-            .update_from_ws(&order_update(&cl_ord_id, "canceled"))
-            .unwrap();
-        assert!(ws_update.is_none());
-        assert!(manager.orders.is_empty());
-    }
-
-    #[test]
     fn test_cancel_all_respects_pos_side() {
         let mut manager = OrderManager::new("");
         let mut buy = test_order(1);
         buy.side = Side::Buy;
         let mut sell = test_order(2);
         sell.side = Side::Sell;
-        manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), buy);
-        manager.prepare_client_order_id("BTC-USDT-SWAP".to_string(), sell);
+        manager.track_managed_order("BTC-USDT-SWAP", "buyer", buy);
+        manager.track_managed_order("BTC-USDT-SWAP", "seller", sell);
 
         let canceled = manager.cancel_all("BTC-USDT-SWAP", Some("short"));
         assert_eq!(canceled.len(), 1);
         assert_eq!(canceled[0].side, Side::Sell);
-        // The sell order is removed from the lookup table; both orders remain in memory until the
-        // WebSocket channel confirms the cancellation (dual-channel design).
-        assert!(
-            manager
-                .order_id_map
-                .get(&SymbolOrderId::new("BTC-USDT-SWAP".to_string(), 2))
-                .is_none()
-        );
-        assert!(
-            manager
-                .order_id_map
-                .contains_key(&SymbolOrderId::new("BTC-USDT-SWAP".to_string(), 1))
-        );
-        assert_eq!(manager.orders.len(), 2);
     }
 }
