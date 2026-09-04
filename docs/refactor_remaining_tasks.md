@@ -353,6 +353,60 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
 - [ ] OKX/Hyperliquid 私有流尚未实盘接入：其 cancel-all 聚合路径没有交易所 orderId 回填、WS
   exchange_ts 与 REST reconcile 的换算需在各自主网逐一实测；接入顺序先 Binance（已通）再其余两家。
 
+### 4.11 EventEngine 容量扫描与旧路径清理审计（2026-09-04）
+
+#### 容量扫描（目标机 `43.165.184.116`，2 vCPU / 1.9 GiB RAM，release）
+
+把 `titan-event-engine` 基准改为可复现的容量扫描工具：
+`TITAN_EVENT_BENCH_DEFAULT_CONFIG=1` 使用 `EventEngineConfig::default()` 基线；
+`TITAN_EVENT_BENCH_SMALL_SLOTS/…_CRITICAL_CAPACITY/…_SUBSCRIBER_CAPACITY/…_PENDING_GLOBAL`
+等环境变量可逐项缩小容量，结果行同时打印 drop/resync/arena 耗尽计数，便于找到拐点而非只记吞吐。
+
+同一 synthetic 单 critical lane、64 B payload、单 ReliableOrdered subscriber 的结果：
+
+| 配置 | 负载 | 吞吐 | dispatch P99 桶 | subscriber P99 桶 | drop/resync/arena | RSS |
+|---|---|---:|---:|---:|---:|---:|
+| tuned（原有基准档） | 500k burst | ~1.49M/s | 67,108,863 ns | 67,108,863 ns | 0/0/0 | ~46 MB |
+| tuned | 500k @ 300k/s | 299,994/s | 2,097,151 ns | 4,194,303 ns | 0/0/0 | ~46 MB |
+| default | 1M burst | ~1.06M/s | 16,777,215 ns | 16,777,215 ns | 0/0/0 | ~152 MB |
+| default | 1M @ 500k/s | 499,984/s | 2,097,151 ns | 4,194,303 ns | 0/0/0 | ~152 MB |
+| default | 1M @ 800k/s | 799,237/s | 4,194,303 ns | 8,388,607 ns | 0/0/0 | ~152 MB |
+| 过小样本（8,192 slots / 4,096 sub cap） | 500k burst | 未完成 | — | — | ReliableOrdered 转 RESYNC，投递超时 | — |
+
+结论：默认有界容量在该 synthetic critical lane 基准上无丢单且有余量；过小容量会明确进入重同步/超时，
+证明配置边界是可承载的约束而非装饰。此结果只用于容量机制验收与目标机复现基线，不冻结为生产 SLA：
+正式 P99/P99.9 仍需按真实 Market/Account 双源负载（含 MarketBatch 长度分布与多 Primary lane）
+在目标部署形态下测得后再设 CI 门槛。
+
+#### 旧路径清理审计
+
+经依赖面梳理，connector 内待退休的“旧发布/旧桥/重复缓存”实际是一整簇，而不是独立死代码：
+
+```text
+connector/src/main.rs（iceoryx2 连接器进程）
+  └─ PublishTransport::Queued / PublishReceiver / publish_channel / PublishEvent
+       ├─ venue 测试用 queued 通道（可改为 direct 断言，删除成本低）
+       ├─ binancespot、bybit 旧 venue 模块（仅被旧连接器进程使用）
+       ├─ hftbacktest examples/src/bin/live.rs（研究用 LiveBot + Iceoryx IPC）
+       └─ 旧 LiveEvent::Feed/Funding/Order/Position 兼容转换
+```
+
+新 Market/Account 直接路径只使用 `PublishTransport::Direct` 与 `DirectPublication`；但三家新 venue
+的市场流仍通过 `PublishEvent`（FeedBatch/MarkPrice/StreamInvalidated 或少量 LiveEvent 格式）进入
+`MarketEventBridge`，账户流直接进入 `AccountEventEncoder`，因此不能只删 `PublishEvent` 而不迁移 venue
+发布格式。完整退休顺序建议：
+
+1. 把 OKX/Hyperliquid/BinanceFutures 残余 `LiveEvent::Feed/Funding` 发布迁移到 `FeedBatch`/专属事件；
+2. venue 单测改走 direct sender 断言，删除 queued 兼容测试依赖；
+3. 删除 `PublishTransport::Queued/PublishReceiver/publish_channel` 及 `send_account` 的 legacy 分支；
+4. 删除 `connector/src/main.rs` 与 `examples/src/bin/live.rs`（旧 Iceoryx 连接器进程/研究 LiveBot）；
+5. 依据是否仍保留 hftbacktest 研究型 live 能力，决定 binancespot/bybit 模块与 `hftbacktest/src/live`
+   去留，并同步 README/rust_strategy 文档。
+
+该顺序涉及 README 宣称的 iceoryx IPC 研究能力和旧 venue 模块的产品取舍，未在本次未经确认直接删除；
+代码层“单一事实无双重发布”通过 direct/direct-exclusive 设计约束与 EventEngine 路由隔离测试已覆盖，
+待上述第 3 步完成后在 connector 边界再补一条断言即可收尾。
+
 ## 5. ABI 与文档同步
 
 - [x] Strategy ABI v8 Funding 配置字段、布局和冲突校验已实现。

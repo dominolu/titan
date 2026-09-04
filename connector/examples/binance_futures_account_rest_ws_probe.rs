@@ -41,10 +41,7 @@ struct EnvironmentSecret {
 }
 
 impl SecretProvider for EnvironmentSecret {
-    fn resolve(
-        &self,
-        _: &SecretRef,
-    ) -> Result<SecretValue, AccountConnectorError> {
+    fn resolve(&self, _: &SecretRef) -> Result<SecretValue, AccountConnectorError> {
         Ok(SecretValue::new(self.value.as_bytes().to_vec()))
     }
 }
@@ -61,7 +58,12 @@ struct RecordingSink {
 }
 
 impl AccountEventSink for RecordingSink {
-    fn publish(&self, event_type: &str, payload: &[u8], _: TraceContext) -> Result<(), PluginError> {
+    fn publish(
+        &self,
+        event_type: &str,
+        payload: &[u8],
+        _: TraceContext,
+    ) -> Result<(), PluginError> {
         self.events
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -195,12 +197,8 @@ fn run_probe(
 
     // GTX sell at 100 USDT, XRP mark ~1.44: post-only so it cannot fill.
     let asset_id = AssetId(1);
-    let command_id = Id128([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-    ]);
-    let client_order_id = Id128([
-        16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
-    ]);
+    let command_id = Id128([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    let client_order_id = Id128([16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
     let client_hex = id_text(client_order_id);
     let submit_receipt = connector
         .submit(SubmitOrderCommand {
@@ -209,9 +207,9 @@ fn run_probe(
             asset_id,
             side: 2,
             order_type: 0,
-            time_in_force: 1, // GTX post-only
+            time_in_force: 1,       // GTX post-only
             price_ticks: 1_000_000, // 100 / 0.0001
-            quantity_lots: 1,        // 0.1 XRP
+            quantity_lots: 1,       // 0.1 XRP
             trace: TraceContext {
                 trace_id: 9001,
                 causation_id: 0,
@@ -225,12 +223,9 @@ fn run_probe(
         32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
     ]);
     let wait_for_stream = wait_until(Duration::from_secs(90), || {
-        recorded_orders(&sink, &client_hex)
-            .iter()
-            .any(|event| {
-                is_private_stream_event(event)
-                    && event.header.exchange_ts >= submit_ns - 1_000_000_000
-            })
+        recorded_orders(&sink, &client_hex).iter().any(|event| {
+            is_private_stream_event(event) && event.header.exchange_ts >= submit_ns - 1_000_000_000
+        })
     });
     if let Err(error) = wait_for_stream {
         // Fail-safe cleanup: never leave a resting order behind when the stream path is broken.
@@ -245,13 +240,15 @@ fn run_probe(
             },
         });
         eprintln!("decoded_events={}", debug_dump_events(&sink));
-        return Err(error).context(
-            "private-stream OrderChanged carrying client id was not observed",
-        );
+        return Err(error)
+            .context("private-stream OrderChanged carrying client id was not observed");
     }
 
     let before_cancel = decode_order_summary(&sink, &client_hex);
-    println!("order_facts_before_cancel={}", serde_json::to_string_pretty(&before_cancel)?);
+    println!(
+        "order_facts_before_cancel={}",
+        serde_json::to_string_pretty(&before_cancel)?
+    );
     verify_rest_stream_agreement(&sink, &client_hex, 1)
         .context("NEW order facts disagree between REST and private stream")?;
 
@@ -271,19 +268,16 @@ fn run_probe(
     let cancel_ns = cancel_receipt.accepted_at;
 
     let wait_for_cancel = wait_until(Duration::from_secs(90), || {
-        recorded_orders(&sink, &client_hex)
-            .iter()
-            .any(|event| {
-                event.status == 4
-                    && is_private_stream_event(event)
-                    && event.header.exchange_ts >= cancel_ns - 1_000_000_000
-            })
+        recorded_orders(&sink, &client_hex).iter().any(|event| {
+            event.status == 4
+                && is_private_stream_event(event)
+                && event.header.exchange_ts >= cancel_ns - 1_000_000_000
+        })
     });
     if let Err(error) = wait_for_cancel {
         eprintln!("decoded_events={}", debug_dump_events(&sink));
-        return Err(error).context(
-            "private-stream terminal CANCELED OrderChanged was not observed",
-        );
+        return Err(error)
+            .context("private-stream terminal CANCELED OrderChanged was not observed");
     }
     verify_rest_stream_agreement(&sink, &client_hex, 4)
         .context("CANCELED order facts disagree between REST and private stream")?;
@@ -310,7 +304,10 @@ fn run_probe(
         include_final: true,
     })?;
     ensure!(
-        orders.items.iter().all(|item| item.status != 1 && item.status != 5),
+        orders
+            .items
+            .iter()
+            .all(|item| item.status != 1 && item.status != 5),
         "open order still present after cancel"
     );
 
@@ -332,11 +329,7 @@ fn run_probe(
     Ok(())
 }
 
-fn verify_rest_stream_agreement(
-    sink: &RecordingSink,
-    client_hex: &str,
-    status: u8,
-) -> Result<()> {
+fn verify_rest_stream_agreement(sink: &RecordingSink, client_hex: &str, status: u8) -> Result<()> {
     let orders = recorded_orders(sink, client_hex);
     let stream = orders
         .iter()
@@ -372,10 +365,7 @@ fn verify_rest_stream_agreement(
     Ok(())
 }
 
-fn recorded_orders(
-    sink: &RecordingSink,
-    client_hex: &str,
-) -> Vec<OrderChangedV1> {
+fn recorded_orders(sink: &RecordingSink, client_hex: &str) -> Vec<OrderChangedV1> {
     sink.events
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -386,10 +376,7 @@ fn recorded_orders(
         .collect()
 }
 
-fn decode_order_summary(
-    sink: &RecordingSink,
-    client_hex: &str,
-) -> Vec<serde_json::Value> {
+fn decode_order_summary(sink: &RecordingSink, client_hex: &str) -> Vec<serde_json::Value> {
     recorded_orders(sink, client_hex)
         .into_iter()
         .map(|event| {

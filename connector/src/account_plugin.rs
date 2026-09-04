@@ -386,7 +386,7 @@ impl AccountRuntime {
                 account::AccountErrorKind::NotReady,
                 "account command queue is closed",
             ),
-            })?;
+        })?;
         let receipt = Self::receipt(id, client, self.context.account);
         journal.insert(id, command, receipt.clone(), client_order_id);
         Ok(receipt)
@@ -2385,12 +2385,7 @@ safety_timeout_ms = 5000
         };
         let mut journal = CommandJournal::new(2);
         for id in 1..=3 {
-            journal.insert(
-                account::Id128([id; 16]),
-                command(id),
-                receipt(id),
-                None,
-            );
+            journal.insert(account::Id128([id; 16]), command(id), receipt(id), None);
         }
         assert_eq!(journal.values.len(), 2);
         assert!(!journal.values.contains_key(&account::Id128([1; 16])));
