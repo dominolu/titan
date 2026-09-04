@@ -673,7 +673,7 @@ order_prefix = "titan"
 #[ignore = "requires OKX credentials and network access"]
 async fn e2e_order_roundtrip() {
     let connector = Okx::build_from(&e2e_config()).unwrap();
-    let (tx, mut rx) = crate::connector::publish_channel(64);
+    let (tx, mut rx) = crate::connector::test_publish_channel();
 
     let order = Order::new(
         9_990_001,

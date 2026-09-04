@@ -620,7 +620,7 @@ mod reconnect_tests {
             "btcusdt".to_owned(),
             vec![MarketDataKind::Depth, MarketDataKind::Trades],
         );
-        let (events, _event_receiver) = crate::connector::publish_channel(16);
+        let (events, _event_receiver) = crate::connector::test_publish_channel();
         connector.run_market_data(events);
 
         for _ in 0..2 {

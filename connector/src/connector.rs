@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fmt::Debug,
     sync::{Arc, Mutex},
 };
@@ -8,8 +7,6 @@ use async_trait::async_trait;
 use hftbacktest::types::{Event, LiveError, LiveEvent, Order};
 use titan_market_plugin::MarketDataKind;
 use tokio::sync::mpsc::{self, error::TrySendError};
-
-pub const DEFAULT_PUBLISH_QUEUE_CAPACITY: usize = 4_096;
 
 /// Exchange-owned stream coordinates attached by the concrete market-data connector. The plugin
 /// adapter transports these values unchanged; it must not infer gaps or create epochs itself.
@@ -37,13 +34,6 @@ pub enum MarketDataCommand {
     InitializeTrading {
         symbol: String,
     },
-}
-
-/// Bounded, non-blocking connector output. Producers observe congestion immediately instead of
-/// accumulating an unbounded market-data backlog.
-#[derive(Clone)]
-pub struct PublishSender {
-    transport: PublishTransport,
 }
 
 #[derive(Clone, Copy)]
@@ -134,195 +124,51 @@ pub enum AccountPublication {
     Error(LiveError),
 }
 
-impl AccountPublication {
-    fn into_legacy(self) -> LiveEvent {
-        match self {
-            Self::Order { symbol, order, .. } => LiveEvent::Order { symbol, order },
-            Self::Position {
-                symbol,
-                qty,
-                exch_ts,
-            } => LiveEvent::Position {
-                symbol,
-                qty,
-                exch_ts,
-            },
-            Self::Error(error) => LiveEvent::Error(error),
-        }
-    }
-}
-
 type DirectPublisher = dyn for<'a> Fn(DirectPublication<'a>) + Send + Sync + 'static;
 
 #[derive(Clone)]
-enum PublishTransport {
-    Queued {
-        market_sender: mpsc::Sender<PublishEvent>,
-        critical_sender: mpsc::UnboundedSender<PublishEvent>,
-        overflowed_symbols: Arc<Mutex<HashSet<String>>>,
-    },
-    Direct(Arc<DirectPublisher>),
+pub struct PublishSender {
+    publish: Arc<DirectPublisher>,
+    native_supported: bool,
 }
 
 impl PublishSender {
     pub fn send(&self, event: PublishEvent) -> Result<(), TrySendError<PublishEvent>> {
-        let PublishTransport::Queued {
-            market_sender,
-            critical_sender,
-            overflowed_symbols,
-        } = &self.transport
-        else {
-            let PublishTransport::Direct(publish) = &self.transport else {
-                unreachable!()
-            };
-            publish(DirectPublication::Event(&event));
-            return Ok(());
-        };
-        let Some(symbol) = event.lossy_market_symbol().map(str::to_owned) else {
-            return critical_sender
-                .send(event)
-                .map_err(|error| TrySendError::Closed(error.0));
-        };
-        match market_sender.try_send(event) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => {
-                overflowed_symbols
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(symbol);
-                Ok(())
-            }
-            Err(error @ TrySendError::Closed(_)) => Err(error),
-        }
+        (self.publish)(DirectPublication::Event(&event));
+        Ok(())
     }
 
-    /// Publishes a borrowed venue batch without constructing normalized `Event` vectors. Returns
-    /// `false` when this sender uses the compatibility queue and the caller must use `send`.
+    /// Publishes a borrowed venue batch without constructing normalized `Event` vectors.
     pub fn try_send_native_market(&self, batch: NativeMarketBatch<'_>) -> bool {
-        let PublishTransport::Direct(publish) = &self.transport else {
+        if !self.native_supported {
             return false;
-        };
-        publish(DirectPublication::NativeMarket(batch));
+        }
+        (self.publish)(DirectPublication::NativeMarket(batch));
         true
     }
 
-    /// Publishes an authenticated account fact without a bridge queue on the AccountPlugin path.
-    /// The compatibility queue conversion is isolated here and disappears with the old live CLI.
+    /// Publishes an authenticated account fact directly into the AccountPlugin encoder.
     pub fn send_account(
         &self,
         publication: AccountPublication,
     ) -> Result<(), TrySendError<AccountPublication>> {
-        match &self.transport {
-            PublishTransport::Direct(publish) => {
-                publish(DirectPublication::Account(&publication));
-                Ok(())
-            }
-            PublishTransport::Queued { .. } => self
-                .send(PublishEvent::LiveEvent(publication.clone().into_legacy()))
-                .map_err(|error| match error {
-                    TrySendError::Full(_) => TrySendError::Full(publication),
-                    TrySendError::Closed(_) => TrySendError::Closed(publication),
-                }),
-        }
+        (self.publish)(DirectPublication::Account(&publication));
+        Ok(())
     }
 }
 
-pub struct PublishReceiver {
-    market_receiver: mpsc::Receiver<PublishEvent>,
-    critical_receiver: mpsc::UnboundedReceiver<PublishEvent>,
-    overflowed_symbols: Arc<Mutex<HashSet<String>>>,
-    invalidated_symbols: HashSet<String>,
-}
-
-impl PublishReceiver {
-    fn take_overflow(&mut self) -> Option<PublishEvent> {
-        let mut overflowed = {
-            let mut value = self
-                .overflowed_symbols
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            std::mem::take(&mut *value)
-        };
-        if overflowed.is_empty() {
-            return None;
-        }
-        while let Ok(event) = self.market_receiver.try_recv() {
-            if let Some(symbol) = event.lossy_market_symbol() {
-                overflowed.insert(symbol.to_string());
-            }
-        }
-        self.invalidated_symbols.extend(overflowed.iter().cloned());
-        Some(PublishEvent::QueueOverflow {
-            symbols: overflowed.into_iter().collect(),
-        })
-    }
-
-    pub async fn recv(&mut self) -> Option<PublishEvent> {
-        if let Some(overflow) = self.take_overflow() {
-            return Some(overflow);
-        }
-        loop {
-            let (value, market) = tokio::select! {
-                biased;
-                value = self.critical_receiver.recv() => (value, false),
-                value = self.market_receiver.recv() => (value, true),
-            };
-            let value = value?;
-            if market {
-                if let Some(overflow) = self.take_overflow() {
-                    return Some(overflow);
-                }
-            }
-            let Some(symbol) = value.lossy_market_symbol() else {
-                return Some(value);
-            };
-            if !self.invalidated_symbols.contains(symbol) {
-                return Some(value);
-            }
-            if value.is_market_snapshot() {
-                self.invalidated_symbols.remove(symbol);
-                return Some(value);
-            }
-        }
-    }
-}
-
-pub fn publish_channel(capacity: usize) -> (PublishSender, PublishReceiver) {
-    let (market_sender, market_receiver) = mpsc::channel(capacity);
-    let (critical_sender, critical_receiver) = mpsc::unbounded_channel();
-    let overflowed_symbols = Arc::new(Mutex::new(HashSet::new()));
-    (
-        PublishSender {
-            transport: PublishTransport::Queued {
-                market_sender,
-                critical_sender,
-                overflowed_symbols: overflowed_symbols.clone(),
-            },
-        },
-        PublishReceiver {
-            market_receiver,
-            critical_receiver,
-            overflowed_symbols,
-            invalidated_symbols: HashSet::new(),
-        },
-    )
-}
-
-pub(crate) fn direct_publish_sender(
+pub fn direct_publish_sender(
     publish: impl for<'a> Fn(DirectPublication<'a>) + Send + Sync + 'static,
 ) -> PublishSender {
     PublishSender {
-        transport: PublishTransport::Direct(Arc::new(publish)),
+        publish: Arc::new(publish),
+        native_supported: true,
     }
 }
 
 /// A message will be received by the publisher thread and then published to the bots.
+#[derive(Clone)]
 pub enum PublishEvent {
-    QueueOverflow {
-        symbols: Vec<String>,
-    },
-    BatchStart(u64),
-    BatchEnd(u64),
     /// The authenticated private stream has connected and confirmed its account subscriptions.
     /// AccountPlugin uses this as the barrier before running reconciliation and declaring READY.
     PrivateStreamReady,
@@ -346,12 +192,6 @@ pub enum PublishEvent {
         symbol: String,
         epoch: u64,
     },
-    RegisterInstrument {
-        id: u64,
-        symbol: String,
-        tick_size: f64,
-        lot_size: f64,
-    },
 }
 
 impl PublishEvent {
@@ -364,16 +204,37 @@ impl PublishEvent {
             _ => None,
         }
     }
+}
 
-    fn is_market_snapshot(&self) -> bool {
-        matches!(
-            self,
-            Self::FeedBatch {
-                stream: Some(MarketStreamMetadata { snapshot: true, .. }),
-                ..
-            }
-        )
+#[cfg(test)]
+pub(crate) struct TestPublishReceiver {
+    receiver: mpsc::UnboundedReceiver<PublishEvent>,
+}
+
+#[cfg(test)]
+impl TestPublishReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<PublishEvent> {
+        self.receiver.recv().await
     }
+}
+
+/// Direct test channel: captures every `PublishEvent` sent through a `PublishSender`.
+#[cfg(test)]
+pub(crate) fn test_publish_channel() -> (PublishSender, TestPublishReceiver) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    (
+        PublishSender {
+            publish: Arc::new(move |publication| {
+                if let DirectPublication::Event(event) = publication {
+                    let _ = sender.send(event.clone());
+                }
+            }),
+            // Keep the historical test behavior: native batches are declined so venue code
+            // falls back to the normalized FeedBatch path that the test receiver can inspect.
+            native_supported: false,
+        },
+        TestPublishReceiver { receiver },
+    )
 }
 
 /// Provides a build function for the Connector.
@@ -537,9 +398,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    async fn bounded_publish_channel_reports_overflow_before_buffered_data() {
-        let (sender, mut receiver) = publish_channel(1);
-        let delta = || PublishEvent::FeedBatch {
+    async fn publish_event_is_delivered_once_through_the_direct_sender() {
+        let (sender, mut receiver) = test_publish_channel();
+        let delta = PublishEvent::FeedBatch {
             symbol: "BTC".to_string(),
             events: Vec::new(),
             stream: Some(MarketStreamMetadata {
@@ -549,69 +410,15 @@ mod tests {
                 snapshot: false,
             }),
         };
-        sender.send(delta()).unwrap();
-        sender.send(delta()).unwrap();
-        sender.send(PublishEvent::BatchStart(1)).unwrap();
-
+        sender.send(delta.clone()).unwrap();
+        sender.send(delta.clone()).unwrap();
         assert!(matches!(
             receiver.recv().await,
-            Some(PublishEvent::QueueOverflow { .. })
+            Some(PublishEvent::FeedBatch { symbol, .. }) if symbol == "BTC"
         ));
         assert!(matches!(
             receiver.recv().await,
-            Some(PublishEvent::BatchStart(1))
-        ));
-
-        sender.send(delta()).unwrap();
-        sender.send(delta()).unwrap();
-        assert!(matches!(
-            receiver.recv().await,
-            Some(PublishEvent::QueueOverflow { .. })
-        ));
-
-        sender.send(delta()).unwrap();
-        let snapshot_sender = sender.clone();
-        tokio::spawn(async move {
-            tokio::task::yield_now().await;
-            snapshot_sender
-                .send(PublishEvent::FeedBatch {
-                    symbol: "BTC".to_string(),
-                    events: Vec::new(),
-                    stream: Some(MarketStreamMetadata {
-                        epoch: 2,
-                        first_update_sequence: 10,
-                        last_update_sequence: 10,
-                        snapshot: true,
-                    }),
-                })
-                .unwrap();
-        });
-        assert!(matches!(
-            receiver.recv().await,
-            Some(PublishEvent::FeedBatch {
-                stream: Some(MarketStreamMetadata { snapshot: true, .. }),
-                ..
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn account_publication_uses_only_sender_boundary_for_legacy_queue_conversion() {
-        let (sender, mut receiver) = publish_channel(1);
-        sender
-            .send_account(AccountPublication::Position {
-                symbol: "BTCUSDT".to_owned(),
-                qty: 1.25,
-                exch_ts: 42,
-            })
-            .unwrap();
-        assert!(matches!(
-            receiver.recv().await,
-            Some(PublishEvent::LiveEvent(LiveEvent::Position {
-                symbol,
-                qty: 1.25,
-                exch_ts: 42,
-            })) if symbol == "BTCUSDT"
+            Some(PublishEvent::FeedBatch { symbol, .. }) if symbol == "BTC"
         ));
     }
 

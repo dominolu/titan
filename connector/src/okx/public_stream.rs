@@ -554,11 +554,11 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use super::*;
-    use crate::connector::{PublishEvent, publish_channel};
+    use crate::connector::{PublishEvent, TestPublishReceiver};
     use tokio::sync::broadcast;
 
-    fn stream() -> (PublicStream, crate::connector::PublishReceiver) {
-        let (events, receiver) = publish_channel(16);
+    fn stream() -> (PublicStream, TestPublishReceiver) {
+        let (events, receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = broadcast::channel(4);
         (
             PublicStream::new(events, command_rx, Arc::new(Mutex::new(HashMap::new()))),
@@ -582,7 +582,7 @@ mod tests {
         .to_string()
     }
 
-    async fn next_stream(receiver: &mut crate::connector::PublishReceiver) -> MarketStreamMetadata {
+    async fn next_stream(receiver: &mut TestPublishReceiver) -> MarketStreamMetadata {
         match receiver.recv().await.unwrap() {
             PublishEvent::FeedBatch {
                 stream: Some(stream),

@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn private_ready_requires_each_distinct_private_channel() {
-        let (events, _receiver) = crate::connector::publish_channel(4);
+        let (events, _receiver) = crate::connector::test_publish_channel();
         let (_symbols, symbol_rx) = tokio::sync::broadcast::channel(4);
         let stream = PrivateStream::new(
             String::new(),

@@ -3,7 +3,9 @@ use std::{collections::BTreeSet, time::Duration};
 use anyhow::{Context, Result, ensure};
 use connector::{
     binancefutures::BinanceFutures,
-    connector::{Connector, ConnectorBuilder, PublishEvent, publish_channel},
+    connector::{
+        Connector, ConnectorBuilder, DirectPublication, PublishEvent, direct_publish_sender,
+    },
 };
 use hftbacktest::prelude::{
     LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
@@ -113,7 +115,12 @@ async fn run_once(symbol: &str, stream_url: &str, duration: Duration) -> Result<
             MarketDataKind::FundingRate,
         ],
     );
-    let (sender, mut receiver) = publish_channel(16_384);
+    let (tx, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let sender = direct_publish_sender(move |publication| {
+        if let DirectPublication::Event(event) = publication {
+            let _ = tx.send(event.clone());
+        }
+    });
     connector.run_market_data(sender);
 
     let mut observed = BTreeSet::new();
@@ -170,9 +177,6 @@ async fn run_once(symbol: &str, stream_url: &str, duration: Duration) -> Result<
                 println!(
                     "mark_price_event symbol={event_symbol} funding_rate={funding_rate} next_funding_time={next_funding_time}"
                 );
-            }
-            PublishEvent::QueueOverflow { symbols } => {
-                anyhow::bail!("market queue overflowed for {symbols:?}")
             }
             _ => {}
         }
