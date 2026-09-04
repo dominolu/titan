@@ -28,6 +28,7 @@ pub struct BinanceFuturesClient {
     registered_symbols: Arc<Mutex<HashSet<String>>>,
 }
 
+#[allow(dead_code)]
 impl BinanceFuturesClient {
     pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
         Self {

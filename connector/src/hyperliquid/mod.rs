@@ -11,6 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[allow(unused_imports)]
 use hftbacktest::{
     prelude::get_precision,
     types::{ErrorKind, LiveError, OrdType, Order, Side, TimeInForce, Value},
@@ -21,6 +22,7 @@ use titan_market_plugin::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
 
+#[allow(unused_imports)]
 use crate::{
     api::BrokerApi,
     connector::{
@@ -28,15 +30,11 @@ use crate::{
     },
     hyperliquid::{
         client::HyperliquidClient,
-        msg::{
-            CancelAction, CancelActionWire, CancelByCloidAction, CancelByCloidWire, CancelStatus,
-            CancelWire, ExchangeResponse, Meta, OrderAction, OrderStatus, OrderTypeWire, OrderWire,
-            Tif,
-        },
+        msg::{CancelStatus, ExchangeResponse, Meta, OrderStatus, OrderTypeWire, OrderWire, Tif},
         ordermanager::{OrderManager, SharedOrderManager},
-        signing::{derive_address, sign_l1_action},
+        signing::derive_address,
     },
-    utils::{ExponentialBackoff, Retry, next_nonce},
+    utils::{ExponentialBackoff, Retry},
 };
 
 #[derive(Error, Debug)]
@@ -153,30 +151,6 @@ fn build_assets_map(meta: &Meta) -> HashMap<String, AssetInfo> {
         );
     }
     map
-}
-
-/// Resolves the asset metadata for a symbol, refreshing the universe once if the asset was listed
-/// after the initial load.
-async fn ensure_asset(
-    client: &HyperliquidClient,
-    assets: &SharedAssets,
-    symbol: &str,
-) -> Result<AssetInfo, HyperliquidError> {
-    if assets.lock().unwrap().is_empty() {
-        ensure_assets(client, assets).await?;
-    }
-    if let Some(info) = assets.lock().unwrap().get(symbol).cloned() {
-        return Ok(info);
-    }
-    // The asset may have been listed after the initial load; refresh the universe once.
-    assets.lock().unwrap().clear();
-    ensure_assets(client, assets).await?;
-    assets
-        .lock()
-        .unwrap()
-        .get(symbol)
-        .cloned()
-        .ok_or_else(|| HyperliquidError::AssetNotFound(symbol.to_string()))
 }
 
 impl Hyperliquid {
@@ -490,6 +464,7 @@ impl Connector for Hyperliquid {
     }
 }
 
+#[cfg(test)]
 fn build_order_wire(
     asset_info: &AssetInfo,
     order: Order,
@@ -578,6 +553,7 @@ mod reconnect_tests {
 
 /// Hyperliquid rejects prices/sizes with trailing zeros (e.g. "0.00100"). Strips trailing zeros
 /// and the decimal point from a fixed-decimal string, matching the official SDK's float_to_wire.
+#[cfg(test)]
 fn trim_wire_decimals(s: String) -> String {
     if !s.contains('.') {
         return s;
@@ -590,6 +566,7 @@ fn trim_wire_decimals(s: String) -> String {
     }
 }
 
+#[cfg(test)]
 fn parse_order_statuses(resp: &ExchangeResponse) -> Result<Option<OrderStatus>, HyperliquidError> {
     if resp.status != "ok" {
         return Err(HyperliquidError::OrderError(exchange_error_message(resp)));
@@ -609,6 +586,7 @@ fn parse_order_statuses(resp: &ExchangeResponse) -> Result<Option<OrderStatus>, 
     Ok(Some(serde_json::from_value(statuses[0].clone())?))
 }
 
+#[cfg(test)]
 fn parse_cancel_statuses(
     resp: &ExchangeResponse,
 ) -> Result<Option<CancelStatus>, HyperliquidError> {
@@ -630,6 +608,7 @@ fn parse_cancel_statuses(
     Ok(Some(serde_json::from_value(statuses[0].clone())?))
 }
 
+#[cfg(test)]
 fn exchange_error_message(resp: &ExchangeResponse) -> String {
     match resp
         .response

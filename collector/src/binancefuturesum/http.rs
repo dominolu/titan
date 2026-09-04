@@ -18,6 +18,7 @@ use tokio_tungstenite::{
 };
 use tracing::{error, warn};
 
+#[allow(dead_code)]
 pub async fn fetch_symbol_list() -> Result<Vec<String>, reqwest::Error> {
     Ok(reqwest::Client::new()
         .get("https://fapi.binance.com/fapi/v1/exchangeInfo")
