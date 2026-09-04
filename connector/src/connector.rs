@@ -114,6 +114,16 @@ pub enum DirectPublication<'a> {
 pub enum AccountPublication {
     Order {
         symbol: String,
+        /// Venue client order id when the private stream can associate one. REST-submitted
+        /// AccountPlugin orders carry the deterministic 32-hex owner id; legacy connector orders
+        /// carry the venue prefix id. It must survive into the account ABI so Order/Fill facts can
+        /// be correlated back to the strategy command that created them.
+        client_order_id: Option<String>,
+        /// Exchange order id as reported by the private stream. AccountPlugin facts must surface
+        /// the exchange id (not the hftbacktest local order id) so a WS OrderChanged can be
+        /// correlated and later amended/canceled by venue id. Falls back to `order.order_id` when
+        /// the private stream cannot associate an exchange id (e.g. venue-wide cancel-all).
+        venue_order_id: Option<String>,
         order: Order,
     },
     Position {
@@ -127,7 +137,7 @@ pub enum AccountPublication {
 impl AccountPublication {
     fn into_legacy(self) -> LiveEvent {
         match self {
-            Self::Order { symbol, order } => LiveEvent::Order { symbol, order },
+            Self::Order { symbol, order, .. } => LiveEvent::Order { symbol, order },
             Self::Position {
                 symbol,
                 qty,
@@ -427,6 +437,17 @@ pub trait Connector: Send + Sync {
     /// through the channel using [`PublishEvent`]. The returned error should not be related to the
     /// exchange; instead, it should indicate a connector internal error.
     fn submit(&self, symbol: String, order: Order, tx: PublishSender);
+
+    /// Registers a REST-submitted AccountPlugin order in the connector's private-stream identity
+    /// table before the exchange request is sent.
+    ///
+    /// `client_order_id` is the canonical identifier the REST facade will send (32 lowercase hex
+    /// for AccountPlugin orders). Venue implementations translate it to their own private-stream
+    /// key (e.g. Hyperliquid's `0x` cloid). Without registration, private-stream Order/Fill
+    /// updates for orders submitted through `BrokerApi` cannot be correlated back to the order.
+    fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {
+        let _ = (symbol, client_order_id, order);
+    }
 
     /// Cancels an open order. This method should not block, and the response should be returned
     /// through the channel using [`PublishEvent`]. The returned error should not be related to the

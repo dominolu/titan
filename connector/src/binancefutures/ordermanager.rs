@@ -60,7 +60,9 @@ impl OrderManager {
         &mut self,
         resp: &OrderTradeUpdate,
     ) -> Result<Option<Order>, BinanceFuturesError> {
-        if !resp.order.client_order_id.starts_with(&self.prefix) {
+        if !self.orders.contains_key(&resp.order.client_order_id)
+            && !resp.order.client_order_id.starts_with(&self.prefix)
+        {
             return Err(BinanceFuturesError::PrefixUnmatched);
         }
         let order_ext = self
@@ -275,6 +277,31 @@ impl OrderManager {
             .cloned()
     }
 
+    pub fn track_managed_order(
+        &mut self,
+        symbol: &str,
+        client_order_id: &str,
+        order: Order,
+    ) -> bool {
+        if self.orders.contains_key(client_order_id) {
+            return false;
+        }
+        self.order_id_map.insert(
+            SymbolOrderId::new(symbol.to_owned(), order.order_id),
+            client_order_id.to_owned(),
+        );
+        self.orders.insert(
+            client_order_id.to_owned(),
+            OrderExt {
+                symbol: symbol.to_owned(),
+                order,
+                removed_by_ws: false,
+                removed_by_rest: false,
+            },
+        );
+        true
+    }
+
     /// Due to API instability or network issues, discrepancies can occur where an order is deleted
     /// by one channel but remains active because its deletion wasn't confirmed by both channels.
     /// The gc method resolves this by removing orders that were deleted by one channel but not
@@ -450,6 +477,33 @@ mod tests {
         assert_eq!(unchanged.exch_timestamp, 20_000_000);
         assert_eq!(unchanged.status, Status::PartiallyFilled);
         assert_eq!(unchanged.leaves_qty, 0.5);
+    }
+
+    #[test]
+    fn tracked_rest_order_flows_through_private_ws_without_legacy_prefix() {
+        let mut manager = OrderManager::new("t-");
+        let client_order_id = "0123456789abcdef0123456789abcdef";
+        let order = {
+            let mut order = Order::new(
+                9,
+                100,
+                1.0,
+                1.0,
+                Side::Buy,
+                OrdType::Limit,
+                TimeInForce::GTC,
+            );
+            order.status = Status::New;
+            order
+        };
+        assert!(manager.track_managed_order("BTCUSDT", client_order_id, order));
+
+        let updated = manager
+            .update_from_ws(&ws_update(client_order_id, 20, "FILLED"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, Status::Filled);
+        assert_eq!(updated.leaves_qty, 0.5);
     }
 
     #[test]

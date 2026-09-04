@@ -15,8 +15,8 @@ use titan_connector_loader::{
 };
 use titan_event_engine::{EventClass, EventEngineConfig, PoolKind, TitanCoreRuntime};
 use titan_market_plugin::{
-    MARKET_EVENT_SCHEMA_VERSION, MARKET_EVENT_TYPES, MarketAdminApi, MarketAdminRequest,
-    MarketAdminResponse, MarketSourceDefinition,
+    BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, MARKET_EVENT_TYPES, MarketAdminApi,
+    MarketAdminRequest, MarketAdminResponse, MarketSourceDefinition,
 };
 use titan_plugin_engine::{
     ApiVersion, CallbackBudget, ConfigSnapshot, EventQos, ExecutionModel, ExecutionSpec,
@@ -27,8 +27,8 @@ use titan_python_host::EmbeddedPythonCompiler;
 use titan_strategy_plugin::{
     InProcessNumbaLoaderFactory, NativeStrategyRuntimeFactory, STRATEGY_PLUGIN_MANIFEST,
     STRATEGY_PLUGIN_TYPE, StrategyAdminApi, StrategyAdminRequest, StrategyAdminResponse,
-    StrategyDefinition, StrategyOperationState, StrategyPluginConfig, StrategyPluginFactory,
-    StrategyRecoveryPolicy,
+    StrategyDataMode, StrategyDefinition, StrategyOperationState, StrategyPluginConfig,
+    StrategyPluginFactory, StrategyRecoveryPolicy,
 };
 
 pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -291,6 +291,12 @@ impl ConfigurationAdapter {
             plugin_specs
                 .iter()
                 .any(|spec| spec.enabled && spec.plugin_type.as_ref() == STRATEGY_PLUGIN_TYPE),
+        )?;
+        validate_core_live_strategy_profile(&config.strategies)?;
+        validate_strategy_unit_consistency(
+            &config.strategies,
+            &config.market_sources,
+            &config.accounts,
         )?;
         Ok(AdaptedConfiguration {
             event_engine: config.event_engine,
@@ -777,6 +783,131 @@ fn canonical_config_path(
     })
 }
 
+/// Freezes the still-unimplemented live Bar/Hybrid profiles before they can reach a RUNNING
+/// strategy that silently waits for events no configured producer can emit.
+///
+/// The tick path is fully wired (venue -> EventEngine -> strategy lane). Bar delivery exists only
+/// as an encoded adapter plus fake-connector tests; no live connector or aggregator publishes
+/// `titan.market.BarBatch` yet, so any live strategy that subscribes bars or declares Bar/Hybrid
+/// data mode is rejected at configuration time.
+fn validate_core_live_strategy_profile(
+    strategies: &[StrategyDefinition],
+) -> Result<(), ConfigurationError> {
+    for definition in strategies {
+        if !definition.enabled {
+            continue;
+        }
+        for binding in definition.markets.iter() {
+            if binding.data_mode != StrategyDataMode::Tick {
+                return Err(ConfigurationError::Invalid(format!(
+                    "strategy {} declares non-tick data mode; live Bar/Hybrid is unavailable until a production BarBatch publisher is implemented",
+                    definition.strategy_key
+                )));
+            }
+        }
+        for subscription in definition.subscriptions.iter() {
+            if subscription.event_type.as_ref() == BAR_BATCH_EVENT {
+                return Err(ConfigurationError::Invalid(format!(
+                    "strategy {} subscribes to titan.market.BarBatch; no live BarBatch producer is currently configured",
+                    definition.strategy_key
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decimal_unit_value(unit: &titan_account_plugin::DecimalUnit) -> f64 {
+    unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
+}
+
+fn unit_values_match(market: f64, account: f64) -> bool {
+    let magnitude = market.abs().max(account.abs()).max(1.0);
+    (market - account).abs() <= magnitude * 1e-12
+}
+
+/// Rejects live configurations where the same asset id is priced in different tick/lot units by
+/// the Market and Account definitions.
+///
+/// Strategies consume integer ticks/lots from the market batch and send integer ticks/lots through
+/// the account execution path. If the two sides are configured with different units, the strategy
+/// believes it is quoting one price/quantity while the account adapter converts to another. This
+/// validation only checks pairs that a strategy actually binds; unrelated definitions are ignored.
+fn validate_strategy_unit_consistency(
+    strategies: &[StrategyDefinition],
+    market_sources: &[MarketSourceDefinition],
+    accounts: &[AccountDefinition],
+) -> Result<(), ConfigurationError> {
+    for definition in strategies {
+        if !definition.enabled {
+            continue;
+        }
+        let mut market_units = Vec::new();
+        for binding in definition.markets.iter() {
+            let Some(source) = market_sources
+                .iter()
+                .find(|source| source.source_key == binding.source_key)
+            else {
+                // Missing market sources are reported with a dedicated runtime error during
+                // dependency resolution; this validation only checks the units that exist.
+                continue;
+            };
+            let Some(instrument) = source
+                .instruments
+                .iter()
+                .find(|instrument| instrument.asset_id.0 == binding.asset_id)
+            else {
+                return Err(ConfigurationError::Invalid(format!(
+                    "strategy {} binds asset {} but market source {} has no matching instrument",
+                    definition.strategy_key, binding.asset_id, binding.source_key
+                )));
+            };
+            market_units.push((
+                binding.asset_id,
+                instrument.price_tick,
+                instrument.quantity_lot,
+            ));
+        }
+        for account_binding in definition.accounts.iter() {
+            let Some(account) = accounts
+                .iter()
+                .find(|account| account.account_key == account_binding.account_key)
+            else {
+                continue;
+            };
+            for tradable in account_binding.tradable_assets.iter() {
+                let Some(&(_, market_price, market_lot)) = market_units
+                    .iter()
+                    .find(|(asset_id, _, _)| *asset_id == tradable.asset_id)
+                else {
+                    continue;
+                };
+                let Some(instrument) = account
+                    .instruments
+                    .iter()
+                    .find(|instrument| instrument.asset_id.0 == tradable.asset_id)
+                else {
+                    return Err(ConfigurationError::Invalid(format!(
+                        "strategy {} trades asset {} on account {} but the account definition has no matching instrument",
+                        definition.strategy_key, tradable.asset_id, account_binding.account_key
+                    )));
+                };
+                let account_price = decimal_unit_value(&instrument.price_tick);
+                let account_lot = decimal_unit_value(&instrument.quantity_lot);
+                if !unit_values_match(market_price, account_price)
+                    || !unit_values_match(market_lot, account_lot)
+                {
+                    return Err(ConfigurationError::Invalid(format!(
+                        "strategy {} asset {} unit mismatch: market price={market_price} lot={market_lot}, account price={account_price} lot={account_lot}",
+                        definition.strategy_key, tradable.asset_id
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn event_error(error: titan_event_engine::EngineError) -> PluginError {
     PluginError::new(
         titan_plugin_engine::ErrorKind::PluginFailed,
@@ -988,5 +1119,146 @@ config = {}
         );
         runtime.shutdown(StopReason::Shutdown).unwrap();
         assert_eq!(runtime.core().events().arena().outstanding_blocks(), 0);
+    }
+
+    fn live_strategy(data_mode: StrategyDataMode, subscribe_bar_batch: bool) -> StrategyDefinition {
+        let event_type: &str = if subscribe_bar_batch {
+            BAR_BATCH_EVENT
+        } else {
+            titan_market_plugin::DEPTH_BATCH_EVENT
+        };
+        StrategyDefinition {
+            strategy_key: Arc::from("freeze-test"),
+            strategy_id: titan_strategy_plugin::StrategyId(99),
+            package: titan_strategy_plugin::StrategyPackageRef {
+                loader_type: Arc::from("numba-python"),
+                uri: Arc::from("file:///unused"),
+                expected_digest: [1; 32],
+                signature_ref: None,
+            },
+            entrypoint: Arc::from("freeze.strategy:build"),
+            parameters: Arc::from(b"{}".as_slice()),
+            parameter_schema_version: 1,
+            markets: Arc::from([titan_strategy_plugin::StrategyMarketBinding {
+                local_market_no: 0,
+                local_asset_no: 0,
+                source_key: Arc::from("market"),
+                asset_id: 1,
+                data_mode,
+            }]),
+            accounts: Arc::from([]),
+            subscriptions: Arc::from([titan_strategy_plugin::StrategySubscriptionSpec {
+                event_type: Arc::from(event_type),
+                schema_version: titan_market_plugin::MARKET_EVENT_SCHEMA_VERSION,
+                routing_keys: Arc::from([1]),
+                qos: EventQos::ReliableOrdered,
+            }]),
+            risk_scope: titan_strategy_plugin::RiskScopeRef(Arc::from("unused")),
+            runtime: titan_strategy_plugin::StrategyRuntimeSpec::default(),
+            recovery: titan_strategy_plugin::StrategyRecoveryPolicy::Fresh,
+            shutdown: titan_strategy_plugin::StrategyShutdownPolicy::LeaveOwnedOrders,
+            enabled: true,
+            definition_version: 1,
+        }
+    }
+
+    #[test]
+    fn core_live_profile_freezes_bar_and_hybrid_until_producer_exists() {
+        let bar_mode = live_strategy(
+            titan_strategy_plugin::StrategyDataMode::Bar {
+                timeframe_ns: 60_000_000_000,
+            },
+            false,
+        );
+        assert!(matches!(
+            validate_core_live_strategy_profile(&[bar_mode]),
+            Err(ConfigurationError::Invalid(_))
+        ));
+
+        let hybrid_mode = live_strategy(
+            titan_strategy_plugin::StrategyDataMode::Hybrid {
+                signal_timeframe_ns: 60_000_000_000,
+            },
+            false,
+        );
+        assert!(matches!(
+            validate_core_live_strategy_profile(&[hybrid_mode]),
+            Err(ConfigurationError::Invalid(_))
+        ));
+
+        let bar_subscription = live_strategy(titan_strategy_plugin::StrategyDataMode::Tick, true);
+        assert!(matches!(
+            validate_core_live_strategy_profile(&[bar_subscription]),
+            Err(ConfigurationError::Invalid(_))
+        ));
+
+        let tick = live_strategy(titan_strategy_plugin::StrategyDataMode::Tick, false);
+        assert!(validate_core_live_strategy_profile(&[tick]).is_ok());
+    }
+
+    #[test]
+    fn decimal_unit_matches_market_f64_units_within_float_precision() {
+        let market_price = 0.0001_f64;
+        let account_price = decimal_unit_value(&"0.0001".parse().unwrap());
+        assert!(unit_values_match(market_price, account_price));
+        assert!(!unit_values_match(
+            market_price,
+            decimal_unit_value(&"0.00001".parse().unwrap())
+        ));
+
+        let market_lot = 0.001_f64;
+        let account_lot = decimal_unit_value(&"0.001".parse().unwrap());
+        assert!(unit_values_match(market_lot, account_lot));
+    }
+
+    #[test]
+    fn unit_consistency_rejects_strategy_bound_account_mismatch() {
+        let market_source = titan_market_plugin::MarketSourceDefinition {
+            source_key: Arc::from("market"),
+            connector_type: Arc::from("binance-futures"),
+            connector_config: Arc::from([]),
+            instruments: Arc::from([titan_market_plugin::MarketInstrumentBinding {
+                native_symbol: Arc::from("BTCUSDT"),
+                asset_id: titan_market_plugin::AssetId(1),
+                price_tick: 0.0001,
+                quantity_lot: 0.001,
+            }]),
+            enabled: true,
+            definition_version: 1,
+        };
+        let account = titan_account_plugin::AccountDefinition {
+            account_key: Arc::from("account"),
+            account_id: titan_account_plugin::AccountId(7),
+            connector_type: Arc::from("binance-futures-account"),
+            credential_ref: titan_account_plugin::SecretRef::new("secret://test"),
+            connector_config: Arc::from([]),
+            instruments: Arc::from([titan_account_plugin::AccountInstrumentBinding {
+                native_symbol: Arc::from("BTCUSDT"),
+                asset_id: titan_account_plugin::AssetId(1),
+                price_tick: "0.0001".parse().unwrap(),
+                quantity_lot: "0.01".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+            }]),
+            currencies: Arc::from([]),
+            ownership: titan_account_plugin::OrderOwnershipPolicy::ManagedOnly {
+                client_id_prefix: Arc::from("titan-"),
+            },
+            shutdown_order_policy: titan_account_plugin::ShutdownOrderPolicy::LeaveOpen,
+            enabled: true,
+            definition_version: 1,
+        };
+        let mut strategy = live_strategy(titan_strategy_plugin::StrategyDataMode::Tick, false);
+        strategy.accounts = Arc::from([titan_strategy_plugin::StrategyAccountBinding {
+            local_account_no: 0,
+            account_key: Arc::from("account"),
+            tradable_assets: Arc::from([titan_strategy_plugin::StrategyTradableAsset {
+                local_asset_no: 0,
+                asset_id: 1,
+            }]),
+        }]);
+        assert!(matches!(
+            validate_strategy_unit_consistency(&[strategy], &[market_source], &[account]),
+            Err(ConfigurationError::Invalid(_))
+        ));
     }
 }

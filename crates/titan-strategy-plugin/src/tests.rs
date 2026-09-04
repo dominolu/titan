@@ -9,7 +9,7 @@ use std::{
 use titan_account_plugin::*;
 use titan_event_engine::*;
 use titan_market_plugin::{self as market, *};
-use titan_plugin_engine::{ApiVersion, EventQos, TraceContext};
+use titan_plugin_engine::{ApiVersion, EventQos, EventView, TraceContext};
 use titan_runtime::{CallbackRegistry, StrategyEventKind, StrategyRuntimeContext};
 use titan_runtime_abi::{
     BAR_COMPLETE, Bar, ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand,
@@ -281,8 +281,8 @@ fn definition(version: u64) -> StrategyDefinition {
             }]),
         }]),
         subscriptions: Arc::from([StrategySubscriptionSpec {
-            event_type: Arc::from("test.tick"),
-            schema_version: 1,
+            event_type: Arc::from(DEPTH_BATCH_EVENT),
+            schema_version: MARKET_EVENT_SCHEMA_VERSION,
             routing_keys: Arc::from([1]),
             qos: EventQos::ReliableOrdered,
         }]),
@@ -301,6 +301,26 @@ fn definition(version: u64) -> StrategyDefinition {
         enabled: true,
         definition_version: version,
     }
+}
+
+fn market_tick_batch_payload() -> Vec<u8> {
+    encode_depth_batch(
+        MarketBatchHeaderV1 {
+            asset_id: 1,
+            stream_epoch: 1,
+            first_update_sequence: 1,
+            last_update_sequence: 1,
+            ..MarketBatchHeaderV1::default()
+        },
+        &[DepthItemV1 {
+            price_ticks: 100,
+            quantity_lots: 1,
+            side: 1,
+            action: 1,
+            ..DepthItemV1::default()
+        }],
+    )
+    .unwrap()
 }
 
 fn wait_operation(core: &StrategyPluginCore, id: StrategyOperationId) -> StrategyOperationSnapshot {
@@ -328,7 +348,12 @@ fn lifecycle_gateway_replace_and_stale_handle_contract() {
     let engine = EventEngine::new(event_config).unwrap();
     let events = engine.handle();
     events
-        .register_event("test.tick", 1, EventClass::Market, PoolKind::SmallEvent)
+        .register_event(
+            DEPTH_BATCH_EVENT,
+            MARKET_EVENT_SCHEMA_VERSION,
+            EventClass::Market,
+            PoolKind::MarketBatch,
+        )
         .unwrap();
     engine.start().unwrap();
 
@@ -341,7 +366,9 @@ fn lifecycle_gateway_replace_and_stale_handle_contract() {
         state_schema_version: 1,
         callbacks: StrategyCallbackMask(u32::MAX),
         capabilities: StrategyCapabilities(
-            StrategyCapabilities::READ_TICK.0 | StrategyCapabilities::SUBMIT_ORDER.0,
+            StrategyCapabilities::READ_TICK.0
+                | StrategyCapabilities::READ_DEPTH.0
+                | StrategyCapabilities::SUBMIT_ORDER.0,
         ),
         artifact_digest: [7; 32],
     };
@@ -386,7 +413,8 @@ fn lifecycle_gateway_replace_and_stale_handle_contract() {
         wait_operation(&core, start).state,
         StrategyOperationState::Succeeded
     );
-    let mut publish = PublishRequest::new("test.tick", 1, b"tick");
+    let payload = market_tick_batch_payload();
+    let mut publish = PublishRequest::new(DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, &payload);
     publish.routing_key = 1;
     publish.trace = TraceContext {
         trace_id: 91,
@@ -416,7 +444,8 @@ fn lifecycle_gateway_replace_and_stale_handle_contract() {
         wait_operation(&core, pause).state,
         StrategyOperationState::Succeeded
     );
-    let mut paused = PublishRequest::new("test.tick", 1, b"paused");
+    let payload = market_tick_batch_payload();
+    let mut paused = PublishRequest::new(DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, &payload);
     paused.routing_key = 1;
     events.try_publish(paused).unwrap();
     std::thread::sleep(Duration::from_millis(20));
@@ -487,6 +516,97 @@ fn definition_rejects_non_contiguous_bindings_before_loading() {
 }
 
 #[test]
+fn definition_rejects_unimplemented_canonical_subscriptions() {
+    let config = StrategyPluginConfig::default();
+    let unsupported: &[(&str, u32)] = &[
+        (POSITION_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+        (BALANCE_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+        (COMMAND_RESULT_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+        (FUNDING_RATE_EVENT, MARKET_EVENT_SCHEMA_VERSION),
+        (MARK_PRICE_EVENT, MARKET_EVENT_SCHEMA_VERSION),
+        (TICKER_EVENT, MARKET_EVENT_SCHEMA_VERSION),
+        (
+            "titan.account.StreamStateChanged",
+            ACCOUNT_EVENT_SCHEMA_VERSION,
+        ),
+    ];
+    for (event_type, schema_version) in unsupported {
+        let mut value = definition(1);
+        value.subscriptions = Arc::from([StrategySubscriptionSpec {
+            event_type: Arc::from(*event_type),
+            schema_version: *schema_version,
+            routing_keys: Arc::from([1]),
+            qos: EventQos::ReliableOrdered,
+        }]);
+        let error = super::plugin::validate_definition(&config, &value).unwrap_err();
+        assert_eq!(
+            error.kind,
+            StrategyErrorKind::UnsupportedCapability,
+            "{event_type} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn manifest_rejects_unimplemented_command_capabilities() {
+    let mut value = definition(1);
+    value.parameters = Arc::from(b"{}".as_slice());
+    for capabilities in [
+        StrategyCapabilities::SCHEDULE_TIMER,
+        StrategyCapabilities::AMEND_ORDER,
+    ] {
+        let manifest = StrategyPackageManifest {
+            strategy_type: Arc::from("command-test"),
+            package_version: semver::Version::new(1, 0, 0),
+            runtime_abi: ApiVersion::new(9, 0),
+            parameter_schema: Arc::new(serde_json::json!({"type":"object"})),
+            parameter_schema_version: 1,
+            state_schema_version: 1,
+            callbacks: StrategyCallbackMask(u32::MAX),
+            capabilities,
+            artifact_digest: [7; 32],
+        };
+        let error =
+            super::plugin::validate_manifest(&StrategyPluginConfig::default(), &value, &manifest)
+                .unwrap_err();
+        assert_eq!(error.kind, StrategyErrorKind::UnsupportedCapability);
+    }
+}
+
+#[test]
+fn adapter_fails_fast_on_unimplemented_canonical_facts() {
+    let adapter = CanonicalStrategyEventAdapter::new(&[]);
+    let mut payload = vec![0_u8; BalanceChangedV1::ENCODED_LEN];
+    BalanceChangedV1 {
+        header: AccountEventHeaderV1 {
+            account_id: 7,
+            ..AccountEventHeaderV1::default()
+        },
+        currency_id: 1,
+        wallet_units: 1_000,
+        available_units: 900,
+        margin_units: 100,
+        unrealized_pnl_units: 5,
+    }
+    .encode_into(&mut payload)
+    .unwrap();
+    let event = EventView {
+        event_type: BALANCE_CHANGED_EVENT,
+        schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
+        payload: &payload,
+        trace: TraceContext::default(),
+    };
+    let error = adapter
+        .invoke(
+            event,
+            &CallbackRegistry::default(),
+            &mut StrategyRuntimeContext::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.reason_code.as_ref(), "unsupported_canonical_event");
+}
+
+#[test]
 fn cancel_accepts_zero_quantity_and_ignores_submit_only_numeric_fields() {
     let strategy = StrategyHandle {
         strategy_id: StrategyId(11),
@@ -533,6 +653,91 @@ fn cancel_accepts_zero_quantity_and_ignores_submit_only_numeric_fields() {
     assert_eq!(execution_calls.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn gateway_rejects_invalid_submit_enum_fields_before_execution() {
+    let strategy = StrategyHandle {
+        strategy_id: StrategyId(12),
+        generation: 1,
+    };
+    let gate = Arc::new(StrategyCommandGate::new(strategy));
+    gate.open();
+    let execution_calls = Arc::new(AtomicUsize::new(0));
+    let gateway = StandardStrategyCommandGateway::new(
+        strategy,
+        StrategyCapabilities::SUBMIT_ORDER,
+        gate,
+        &[ResolvedAccountBinding {
+            local_account_no: 0,
+            account: AccountHandle {
+                account_id: AccountId(7),
+                generation: 1,
+            },
+            tradable_assets: Arc::from([StrategyTradableAsset {
+                local_asset_no: 0,
+                asset_id: 1,
+            }]),
+        }],
+        Arc::new(FakeExecution {
+            calls: execution_calls.clone(),
+            last_trace_id: Arc::new(AtomicU64::new(0)),
+        }),
+    );
+    let cases = [
+        (
+            "invalid_side",
+            OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: 0,
+                time_in_force: 0,
+                order_type: 0,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 7,
+                price: 10.0,
+                qty: 1.0,
+                ..OrderCommand::default()
+            },
+        ),
+        (
+            "invalid_order_type",
+            OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: 1,
+                time_in_force: 0,
+                order_type: 3,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 8,
+                price: 10.0,
+                qty: 1.0,
+                ..OrderCommand::default()
+            },
+        ),
+        (
+            "invalid_time_in_force",
+            OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: 1,
+                time_in_force: 7,
+                order_type: 0,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 9,
+                price: 10.0,
+                qty: 1.0,
+                ..OrderCommand::default()
+            },
+        ),
+    ];
+    for (reason, command) in cases {
+        let error = gateway
+            .execute(strategy, command, TraceContext::default())
+            .unwrap_err();
+        assert_eq!(error.reason_code.as_ref(), reason);
+    }
+    assert_eq!(execution_calls.load(Ordering::SeqCst), 0);
+}
+
 struct ChainSecrets;
 impl SecretProvider for ChainSecrets {
     fn resolve(&self, _: &SecretRef) -> Result<SecretValue, AccountConnectorError> {
@@ -543,15 +748,9 @@ impl SecretProvider for ChainSecrets {
 static CHAIN_TICKS: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_ORDERS: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_FILLS: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_POSITIONS: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_BALANCES: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn chain_on_tick(context: *mut StrategyRuntimeContext) -> i32 {
     let context = unsafe { &mut *context };
-    if context.payload_len == BalanceChangedV1::ENCODED_LEN {
-        CHAIN_BALANCES.fetch_add(1, Ordering::SeqCst);
-        return 0;
-    }
     CHAIN_TICKS.fetch_add(1, Ordering::SeqCst);
     unsafe {
         *context.commands_ptr = OrderCommand {
@@ -575,10 +774,6 @@ unsafe extern "C" fn chain_on_order(_: *mut StrategyRuntimeContext) -> i32 {
 }
 unsafe extern "C" fn chain_on_filled(_: *mut StrategyRuntimeContext) -> i32 {
     CHAIN_FILLS.fetch_add(1, Ordering::SeqCst);
-    0
-}
-unsafe extern "C" fn chain_on_position(_: *mut StrategyRuntimeContext) -> i32 {
-    CHAIN_POSITIONS.fetch_add(1, Ordering::SeqCst);
     0
 }
 unsafe extern "C" fn chain_noop(_: *mut StrategyRuntimeContext) -> i32 {
@@ -608,7 +803,6 @@ impl StrategyPackageLoader for ChainLoader {
         callbacks.set(StrategyEventKind::Tick, chain_on_tick);
         callbacks.set(StrategyEventKind::Order, chain_on_order);
         callbacks.set(StrategyEventKind::Filled, chain_on_filled);
-        callbacks.set(StrategyEventKind::Position, chain_on_position);
         callbacks.set(StrategyEventKind::Stop, chain_noop);
         Ok(StrategyArtifact {
             id: StrategyArtifactId {
@@ -850,12 +1044,15 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
     CHAIN_TICKS.store(0, Ordering::SeqCst);
     CHAIN_ORDERS.store(0, Ordering::SeqCst);
     CHAIN_FILLS.store(0, Ordering::SeqCst);
-    CHAIN_POSITIONS.store(0, Ordering::SeqCst);
-    CHAIN_BALANCES.store(0, Ordering::SeqCst);
     let event_engine = EventEngine::new(EventEngineConfig::default()).unwrap();
     let events = event_engine.handle();
     events
-        .register_event("test.tick", 1, EventClass::Market, PoolKind::SmallEvent)
+        .register_event(
+            DEPTH_BATCH_EVENT,
+            MARKET_EVENT_SCHEMA_VERSION,
+            EventClass::Market,
+            PoolKind::MarketBatch,
+        )
         .unwrap();
     for event_type in ACCOUNT_EVENT_TYPES {
         events
@@ -994,6 +1191,7 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
         callbacks: StrategyCallbackMask(u32::MAX),
         capabilities: StrategyCapabilities(
             StrategyCapabilities::READ_TICK.0
+                | StrategyCapabilities::READ_DEPTH.0
                 | StrategyCapabilities::READ_ACCOUNT.0
                 | StrategyCapabilities::SUBMIT_ORDER.0,
         ),
@@ -1025,8 +1223,8 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
     strategy_definition.parameters = Arc::from(b"{}".as_slice());
     strategy_definition.subscriptions = Arc::from([
         StrategySubscriptionSpec {
-            event_type: Arc::from("test.tick"),
-            schema_version: 1,
+            event_type: Arc::from(DEPTH_BATCH_EVENT),
+            schema_version: MARKET_EVENT_SCHEMA_VERSION,
             routing_keys: Arc::from([1]),
             qos: EventQos::ReliableOrdered,
         },
@@ -1042,18 +1240,6 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
             routing_keys: Arc::from([7]),
             qos: EventQos::ReliableOrdered,
         },
-        StrategySubscriptionSpec {
-            event_type: Arc::from(POSITION_CHANGED_EVENT),
-            schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
-            routing_keys: Arc::from([7]),
-            qos: EventQos::ReliableOrdered,
-        },
-        StrategySubscriptionSpec {
-            event_type: Arc::from(BALANCE_CHANGED_EVENT),
-            schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
-            routing_keys: Arc::from([7]),
-            qos: EventQos::ReliableOrdered,
-        },
     ]);
     let strategy = strategy_core.create(strategy_definition).unwrap();
     assert_eq!(
@@ -1064,7 +1250,8 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
         wait_operation(&strategy_core, strategy_core.start(strategy).unwrap()).state,
         StrategyOperationState::Succeeded
     );
-    let mut trigger = PublishRequest::new("test.tick", 1, b"trigger");
+    let payload = market_tick_batch_payload();
+    let mut trigger = PublishRequest::new(DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, &payload);
     trigger.routing_key = 1;
     trigger.trace = TraceContext {
         trace_id: 777,
@@ -1072,11 +1259,7 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
     };
     events.try_publish(trigger).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
-    while CHAIN_ORDERS.load(Ordering::SeqCst) == 0
-        || CHAIN_FILLS.load(Ordering::SeqCst) == 0
-        || CHAIN_POSITIONS.load(Ordering::SeqCst) == 0
-        || CHAIN_BALANCES.load(Ordering::SeqCst) == 0
-    {
+    while CHAIN_ORDERS.load(Ordering::SeqCst) == 0 || CHAIN_FILLS.load(Ordering::SeqCst) == 0 {
         assert!(
             Instant::now() < deadline,
             "account facts did not return to strategy"
@@ -1088,14 +1271,14 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
     assert_eq!(CHAIN_TICKS.load(Ordering::SeqCst), 1);
     assert_eq!(CHAIN_ORDERS.load(Ordering::SeqCst), 1);
     assert_eq!(CHAIN_FILLS.load(Ordering::SeqCst), 1);
-    assert_eq!(CHAIN_POSITIONS.load(Ordering::SeqCst), 1);
-    assert_eq!(CHAIN_BALANCES.load(Ordering::SeqCst), 1);
 
     strategy_core
         .quiesce(Instant::now() + Duration::from_secs(1))
         .unwrap();
     let submits_before_shutdown = submits.load(Ordering::SeqCst);
-    let mut after_quiesce = PublishRequest::new("test.tick", 1, b"after-quiesce");
+    let payload = market_tick_batch_payload();
+    let mut after_quiesce =
+        PublishRequest::new(DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, &payload);
     after_quiesce.routing_key = 1;
     events.try_publish(after_quiesce).unwrap();
     std::thread::sleep(Duration::from_millis(20));

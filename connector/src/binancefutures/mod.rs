@@ -120,6 +120,22 @@ fn all_market_kinds() -> Vec<MarketDataKind> {
     ]
 }
 
+fn private_user_stream_url(stream_url: &str, listen_key: &str) -> String {
+    const PRODUCTION_ROOT: &str = "wss://fstream.binance.com";
+    if stream_url == PRODUCTION_ROOT || stream_url.starts_with(&format!("{PRODUCTION_ROOT}/")) {
+        // Binance split USDⓈ-M futures websocket routes on 2026-03-06 and retired the legacy
+        // per-listen-key path (wss://fstream.binance.com/ws/{listenKey}) on 2026-04-23.
+        // Private user data now subscribes by events on the dedicated /private route; event
+        // names are joined by '/' in the query parameter.
+        format!(
+            "{PRODUCTION_ROOT}/private/ws?listenKey={listen_key}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE"
+        )
+    } else {
+        // Testnet/custom gateways still accept the legacy path on a single connection.
+        format!("{stream_url}/{listen_key}")
+    }
+}
+
 /// A connector for Binance USD-m Futures.
 pub struct BinanceFutures {
     config: Config,
@@ -216,7 +232,7 @@ impl BinanceFutures {
     }
 
     pub fn connect_user_data_stream(&self, ev_tx: crate::connector::PublishSender) {
-        let base_url = self.config.stream_url.clone();
+        let stream_url = self.config.stream_url.clone();
         let client = self.client.clone();
         let order_manager = self.order_manager.clone();
         let instruments = self.symbols.clone();
@@ -248,9 +264,10 @@ impl BinanceFutures {
 
                     debug!("Requesting the listen key for the user data stream...");
                     let listen_key = stream.get_listen_key().await?;
+                    let url = private_user_stream_url(&stream_url, &listen_key);
 
-                    debug!("Connecting to the user data stream...");
-                    stream.connect(&format!("{base_url}/{listen_key}")).await?;
+                    debug!(%url, "Connecting to the user data stream...");
+                    stream.connect(&url).await?;
                     debug!("The user data stream connection is permanently closed.");
                     Ok(())
                 })
@@ -383,6 +400,13 @@ impl Connector for BinanceFutures {
     fn run_account(&mut self, ev_tx: crate::connector::PublishSender) {
         self.connect_user_data_stream(ev_tx);
         self.start_safety_heartbeat();
+    }
+
+    fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {
+        self.order_manager
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .track_managed_order(symbol, client_order_id, order.clone());
     }
 
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
@@ -564,6 +588,23 @@ mod reconnect_tests {
                 "ws://127.0.0.1:1234".to_owned(),
                 market_data_stream::MarketStreamRoute::All,
             )]
+        );
+    }
+
+    #[test]
+    fn private_user_stream_uses_binance_events_route_on_production() {
+        assert_eq!(
+            private_user_stream_url("wss://fstream.binance.com/ws", "listen-key-abc"),
+            "wss://fstream.binance.com/private/ws?listenKey=listen-key-abc&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE"
+        );
+        assert_eq!(
+            private_user_stream_url("wss://fstream.binance.com", "listen-key-abc"),
+            "wss://fstream.binance.com/private/ws?listenKey=listen-key-abc&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE"
+        );
+        // Non-production gateways keep the legacy path.
+        assert_eq!(
+            private_user_stream_url("wss://fstream.binancefuture.com/ws", "listen-key-abc"),
+            "wss://fstream.binancefuture.com/ws/listen-key-abc"
         );
     }
 

@@ -125,6 +125,24 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
                         "invalid_numeric_command",
                     ));
                 }
+                if !matches!(command.side, 1 | -1) {
+                    return Err(gateway_error(
+                        StrategyErrorKind::InvalidDefinition,
+                        "invalid_side",
+                    ));
+                }
+                if !matches!(command.order_type, 0 | 1) {
+                    return Err(gateway_error(
+                        StrategyErrorKind::InvalidDefinition,
+                        "invalid_order_type",
+                    ));
+                }
+                if !(0..=3).contains(&command.time_in_force) {
+                    return Err(gateway_error(
+                        StrategyErrorKind::InvalidDefinition,
+                        "invalid_time_in_force",
+                    ));
+                }
                 StrategyCapabilities::SUBMIT_ORDER
             }
             ORDER_COMMAND_CANCEL => {
@@ -292,12 +310,17 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
         for owned_order in owned {
             let trace = TraceContext::default();
             let client_order_id = owned_order.client_order_id;
-            let order_id = u64::from_le_bytes(client_order_id.0[8..16].try_into().unwrap());
+            // Cancellation is addressed by the deterministic client order id that the original
+            // submit stored. The command id only has to be unique per retry and stable per owned
+            // order; it must not attempt to recover the strategy's 64-bit order id from the
+            // 128-bit owner encoding (which folds generation and order bits together).
+            let mut command_id = client_order_id;
+            command_id.0[0] ^= 0xfe;
             self.execution
                 .cancel(
                     owned_order.account,
                     CancelOrderCommand {
-                        command_id: owner_id(strategy, order_id, 0xfe),
+                        command_id,
                         asset_id: AssetId(owned_order.asset_id),
                         client_order_id: Some(client_order_id),
                         venue_order_id: None,

@@ -54,6 +54,11 @@ ConnectorFactory 不由 Titan main 或 CLI 静态逐个注册。Binance Futures�
   `wss://fstream.binance.com/market/ws`（markPrice/Funding）两条连接后，XRPUSDT/BTCUSDT 均实时收到
   Depth snapshot/delta、Trade、BBO、MarkPrice 与 Funding 事件；旧组合端点 `/ws` 上
   `@markPrice@1s` 仅 ACK 无推送的问题不再出现。
+  2026-09-04 进一步按 Binance 官方 WebSocket 拆分迁移私有用户流：旧
+  `wss://fstream.binance.com/ws/{listenKey}` 已退役（TCP 可连但不再推送 executionReport），生产私有流
+  必须使用 `wss://fstream.binance.com/private/ws?listenKey=<key>&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE`。
+  迁移后在目标机真实主网用 XRPUSDT GTX 卖单 + 撤单验证 REST→私有流字段语义，探针自校验通过，账户最终
+  零挂单零仓位。
   OKX、Hyperliquid 凭据和资金环境仍待提供。
 - 容量调优和 P99/P99.9 冻结已有目标硬件，但目标负载仍需通过该机器的可持续峰值探测后确定
   50%/80%/95% 档位；在测量完成前不虚构生产门槛。
@@ -124,7 +129,11 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 - [x] 保证回测和实盘加载同一份 `on_tick(s)` / `on_bar(s)` 策略文件和同一 ABI descriptor。
 - [x] 接通实盘 Tick 模式。
 - [x] 接通设计中已有的 VenueNative、Canonical 和 REST recovery Bar 输入及去重规则。
-- [x] 接通实盘 Bar 和 Hybrid 模式；CLI 会按 StrategyDefinition 的 data mode 校验选择模式。
+- [x] 冻结实盘 Bar/Hybrid 入口（2026-09-03）：live 模式 Bar/Hybrid、`titan.market.BarBatch`
+  订阅和非 Tick data mode 在 CLI 配置适配与 run-spec 解析阶段显式拒绝，避免无生产者的
+  Bar 订阅在运行时静默等待。
+- [ ] 接通实盘 Bar 和 Hybrid 模式：需要生产级本地聚合器或交易所 Candle 适配器发布
+  `BarBatchV1`，此前保持冻结；Fake connector 的 Bar/Hybrid 链路验收仍由测试覆盖。
 - [x] 验证稳态事件热路径不进入 Python 解释器。
 
 ### 3.6 最小端到端自动化验收
@@ -136,7 +145,9 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   批次映射为 ABI `bars_ptr/num_bars`，Fake MarketConnector 的 Hybrid 测试已验证同一 Numba 策略依次收到
   Tick 与 Bar。
 - [x] 验证策略命令经 AccountExecutionService 到达 Fake AccountConnector。
-- [x] 验证 Fake AccountConnector 发布 Order、Fill、Position、Balance，并由策略 consumer 收到。
+- [x] 验证 Fake AccountConnector 发布 Order、Fill 并由策略 consumer 收到；Position/Balance 等
+  尚无类型化 Strategy ABI view 的事实现在被订阅校验拒绝、在 adapter 层 fail-fast，不再静默
+  映射为错误回调。
 - [x] 覆盖 route commit 失败、Endpoint 激活失败和 Connector 启动失败的完整回滚。
 - [x] 覆盖正常 shutdown：停止新命令、收敛账户事实、退休订阅、释放 Connector 和 EventBlock。
 
@@ -291,6 +302,54 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 - [x] 删除 CLI 的旧 LiveBot/Iceoryx 启动路径。
 - [ ] 删除 Connector 中不再使用的旧 PublishSender、PublishEvent 和重复 Runtime 管理代码。
 - [ ] 确认同一业务事实不存在新旧路径双重发布或双重消费。
+
+### 4.7 断流状态与健康可见性（2026-09-03 增量）
+
+- [x] 实例 supervisor 在 `PrimaryAsyncLane` 进入 `ResyncRequired`/`Failed` 时，把 runtime
+  生命周期显式切换为 `Invalidated`、关闭 command/activation gate，并记录 degraded 原因；
+  lane 非 Normal 后队列中剩余事件不再调用用户回调，而是安全丢弃/收敛。
+- [x] `StrategyRuntimeHealthSnapshot` 直接反映 lane 权威状态：ResyncRequired/Failed 时
+  `healthy=false`，不再出现 “Running + healthy 但实际已停止交易” 的假健康。
+- [ ] 自动恢复仍依赖未来 Recovery/SnapshotBarrier Provider；当前恢复路径是
+  stop/replace（或后续接入 barrier 后 resume）。
+
+### 4.8 单位一致性校验（2026-09-03 增量）
+
+- [x] CLI 配置适配阶段对策略实际绑定的同一 asset id 做 Market f64 tick/lot 与
+  Account `DecimalUnit` 的一致性校验；不匹配会在启动前显式拒绝，并报告两侧数值。
+- [x] 校验只检查 enabled strategy 真正绑定且两端都定义的单位对，避免无关定义误伤。
+- [ ] 深度统一仍待完成：把 Market/Account 各自的 instrument unit 收敛为一个权威共享模型，
+  而不是由 CLI 做事后一致性检查。
+
+### 4.9 REST→私有流身份链路（2026-09-03 增量）
+
+- [x] `AccountPublication::Order` 携带 client order id，并在 `OrderChangedV1`/`FillV2`
+  中回填，策略侧订单/成交身份不再为零。
+- [x] AccountPlugin REST 提交前把订单登记进 venue `OrderManager`（三家 venue），使私有流
+  Order/Fill 更新不再因“未知 client id”被丢弃。
+- [x] Binance/OKX 私有流对已登记 client id 不再强制旧前缀；Hyperliquid 统一
+  32-hex ↔ `0x` cloid 编码（REST 提交与 OrderManager 键一致）。
+- [ ] CommandJournal 终态释放：事件已能带 client/command 身份后，仍需把 encoder/私有流
+  终态回写 journal（释放已完成命令、保留 pending/unknown），并接入现有 1,024 历史上限语义。
+
+### 4.10 Binance REST→私有流主网字段语义验收（2026-09-04）
+
+2026-09-04 在目标机 `43.165.184.116` 用 Binance USD-M 主网真实完成
+`submit(GTX, XRPUSDT, 100 USDT) → private-stream NEW → REST cancel → private-stream CANCELED →
+Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测语义与修复：
+
+- [x] 私有用户流连接改为官方 `/private/ws?listenKey=…&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE`；
+  本地 `user_data_stream.rs` 日志可确认收到 `executionReport`（此前 90s 收不到任何帧）。
+- [x] `AccountPublication::Order` 新增显式 `venue_order_id`：Binance WS 直接回填交易所 orderId；
+  `OrderChangedV1`/`FillV2` 的 venue id 不再使用内部合成的 command-id 数值。
+- [x] REST/查询快照时间戳在 ABI 边界由 BrokerApi 毫秒换算为纳秒；REST 与私有流
+  `OrderChangedV1.exchange_ts` 实测同一笔订单完全相等，且与 `receive_ts` 同数量级。
+- [x] REST 与私有流回传的 `client_order_id`（32-hex 确定性 ID）、`venue_order_id`、`status`
+  （1=NEW/4=CANCELED）、side/type/price/quantity 实测一致；即使 WS 帧先于 REST 回包到达也一致。
+- [x] 探针 `connector/examples/binance_futures_account_rest_ws_probe.rs` 增加 REST↔WS 一致性
+  自校验（client id、venue id、exchange_ts、状态），可作为后续 CI/验收样例。
+- [ ] OKX/Hyperliquid 私有流尚未实盘接入：其 cancel-all 聚合路径没有交易所 orderId 回填、WS
+  exchange_ts 与 REST reconcile 的换算需在各自主网逐一实测；接入顺序先 Binance（已通）再其余两家。
 
 ## 5. ABI 与文档同步
 

@@ -8,13 +8,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-use titan_account_plugin::{AccountExecutionService, AccountLifecycle, AccountService};
+use titan_account_plugin::{
+    ACCOUNT_EVENT_SCHEMA_VERSION, AccountExecutionService, AccountLifecycle, AccountService,
+    FILL_EVENT, FILL_EVENT_SCHEMA_VERSION, ORDER_CHANGED_EVENT,
+};
 use titan_event_engine::{
     EventEngineHandle, PrimaryAsyncLaneConfig, PrimaryAsyncLaneHandle, PrimarySubscriptionSpec,
     SubscriberState,
 };
-use titan_market_plugin::{ConnectorHealth, MarketService};
+use titan_market_plugin::{
+    BAR_BATCH_EVENT, BBO_EVENT, ConnectorHealth, DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION,
+    MarketService, TRADE_BATCH_EVENT,
+};
 use titan_plugin_engine::{ClosureResource, ResourceScope, ServiceId, ServiceKey, ServiceScope};
+use tracing::warn;
 
 use crate::*;
 
@@ -446,6 +453,8 @@ impl StrategyPluginCore {
         let supervisor_lane = lane.clone();
         let supervisor_command_gate = command_gate.clone();
         let supervisor_activation = activation.clone();
+        let supervisor_runtime = runtime.clone();
+        let invalidated_flag = Arc::new(AtomicBool::new(false));
         let supervisor = std::thread::Builder::new()
             .name(format!(
                 "strategy-supervisor-{}-{}",
@@ -453,12 +462,29 @@ impl StrategyPluginCore {
             ))
             .spawn(move || {
                 while supervisor_flag.load(Ordering::Acquire) {
+                    let state = supervisor_lane.health().state;
                     if matches!(
-                        supervisor_lane.health().state,
-                        SubscriberState::ResyncRequired
-                            | SubscriberState::Failed
-                            | SubscriberState::Stopped
+                        state,
+                        SubscriberState::ResyncRequired | SubscriberState::Failed
                     ) {
+                        supervisor_command_gate.close();
+                        supervisor_activation.close();
+                        if !invalidated_flag.swap(true, Ordering::AcqRel) {
+                            let reason: Arc<str> = if state == SubscriberState::ResyncRequired {
+                                Arc::from("subscriber_resync_required")
+                            } else {
+                                Arc::from("subscriber_failed")
+                            };
+                            warn!(
+                                strategy_id = handle.strategy_id.0,
+                                generation = handle.generation,
+                                lane_state = ?state,
+                                reason = reason.as_ref(),
+                                "strategy subscriber lane lost; runtime invalidated; recovery requires stop/replace",
+                            );
+                            let _ = supervisor_runtime.invalidate(reason);
+                        }
+                    } else if state == SubscriberState::Stopped {
                         supervisor_command_gate.close();
                         supervisor_activation.close();
                     }
@@ -1104,6 +1130,17 @@ pub(crate) fn validate_definition(
         return Err(definition_error("subscriptions_empty"));
     }
     for subscription in definition.subscriptions.iter() {
+        if !supported_strategy_subscription(
+            subscription.event_type.as_ref(),
+            subscription.schema_version,
+        ) {
+            return Err(StrategyError::new(
+                StrategyErrorKind::UnsupportedCapability,
+                "definition",
+                "unsupported_strategy_subscription",
+                "strategy subscription is not supported by the current canonical adapter",
+            ));
+        }
         if !config.allowed_event_types.is_empty()
             && !config
                 .allowed_event_types
@@ -1138,7 +1175,7 @@ pub(crate) fn validate_definition(
     Ok(())
 }
 
-fn validate_manifest(
+pub(crate) fn validate_manifest(
     config: &StrategyPluginConfig,
     definition: &StrategyDefinition,
     manifest: &StrategyPackageManifest,
@@ -1157,6 +1194,17 @@ fn validate_manifest(
             "inspect",
             "runtime_abi_mismatch",
             "strategy package requires an incompatible runtime ABI",
+        ));
+    }
+    let unavailable = StrategyCapabilities(
+        StrategyCapabilities::SCHEDULE_TIMER.0 | StrategyCapabilities::AMEND_ORDER.0,
+    );
+    if manifest.capabilities.contains(unavailable) {
+        return Err(StrategyError::new(
+            StrategyErrorKind::UnsupportedCapability,
+            "inspect",
+            "command_capability_unavailable",
+            "timer scheduling and order amendment are not implemented in the current strategy runtime profile",
         ));
     }
     if !config.allowed_capabilities.contains(manifest.capabilities) {
@@ -1327,6 +1375,29 @@ impl titan_plugin_engine::Resource for StrategySupervisorResource {
 }
 
 pub const STRATEGY_PLUGIN_TYPE: &str = "titan.strategy";
+
+/// Canonical EventEngine facts that `CanonicalStrategyEventAdapter` can translate into typed
+/// Strategy ABI views today.
+///
+/// Event types that the Account/Market plugins publish but the adapter cannot yet decode
+/// (PositionChanged, BalanceChanged, CommandResult, FundingRate, MarkPrice, control facts, ...)
+/// must be rejected here instead of falling through to a heuristic callback mapping.
+///
+/// `BarBatch` is intentionally still accepted at the plugin API boundary: the typed adapter and
+/// unit/integration coverage exist. The live CLI rejects bar/hybrid profiles separately until a
+/// production `BarBatch` publisher is wired, so no runnable live configuration can silently wait
+/// for bars that no producer emits.
+pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) -> bool {
+    matches!(
+        (event_type, schema_version),
+        (
+            DEPTH_BATCH_EVENT | TRADE_BATCH_EVENT | BBO_EVENT,
+            MARKET_EVENT_SCHEMA_VERSION,
+        ) | (BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION)
+            | (ORDER_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (FILL_EVENT, FILL_EVENT_SCHEMA_VERSION)
+    )
+}
 
 pub static STRATEGY_PLUGIN_MANIFEST: std::sync::LazyLock<titan_plugin_engine::PluginManifest> =
     std::sync::LazyLock::new(|| {
