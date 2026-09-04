@@ -137,8 +137,14 @@ struct Operations {
     terminal: VecDeque<account::OperationId>,
 }
 
+struct CommandJournalEntry {
+    command: Command,
+    receipt: account::AccountCommandReceipt,
+    client_order_id: Option<String>,
+}
+
 struct CommandJournal {
-    values: HashMap<account::CommandId, (Command, account::AccountCommandReceipt)>,
+    values: HashMap<account::CommandId, CommandJournalEntry>,
     order: VecDeque<account::CommandId>,
     capacity: usize,
 }
@@ -157,6 +163,7 @@ impl CommandJournal {
         id: account::CommandId,
         command: Command,
         receipt: account::AccountCommandReceipt,
+        client_order_id: Option<String>,
     ) {
         while self.values.len() >= self.capacity {
             if let Some(expired) = self.order.pop_front() {
@@ -164,7 +171,37 @@ impl CommandJournal {
             }
         }
         self.order.push_back(id);
-        self.values.insert(id, (command, receipt));
+        self.values.insert(
+            id,
+            CommandJournalEntry {
+                command,
+                receipt,
+                client_order_id,
+            },
+        );
+    }
+
+    fn release_by_command(&mut self, id: &account::CommandId) {
+        if self.values.remove(id).is_some() {
+            self.order.retain(|candidate| candidate != id);
+        }
+    }
+
+    fn release_by_client(&mut self, client_order_id: &str) {
+        let released: Vec<account::CommandId> = self
+            .values
+            .iter()
+            .filter(|(_, entry)| {
+                entry
+                    .client_order_id
+                    .as_deref()
+                    .is_some_and(|candidate| candidate == client_order_id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in released {
+            self.release_by_command(&id);
+        }
     }
 }
 impl Operations {
@@ -255,7 +292,7 @@ struct AccountRuntime {
     positions: Arc<Mutex<Arc<[account::PositionSnapshot]>>>,
     balances: Arc<Mutex<Arc<[account::BalanceSnapshot]>>>,
     external_order_count: Arc<AtomicU64>,
-    journal: Mutex<CommandJournal>,
+    journal: Arc<Mutex<CommandJournal>>,
     ids: Arc<Mutex<IdInterner>>,
 }
 
@@ -284,7 +321,7 @@ impl AccountRuntime {
             positions: Arc::new(Mutex::new(Arc::from([]))),
             balances: Arc::new(Mutex::new(Arc::from([]))),
             external_order_count: Arc::new(AtomicU64::new(0)),
-            journal: Mutex::new(CommandJournal::new(journal_capacity)),
+            journal: Arc::new(Mutex::new(CommandJournal::new(journal_capacity))),
             ids: Arc::new(Mutex::new(IdInterner::default())),
         });
         let weak = Arc::downgrade(&value);
@@ -316,10 +353,11 @@ impl AccountRuntime {
         client: Option<account::ClientOrderId>,
         command: Command,
     ) -> Result<account::AccountCommandReceipt, account::AccountConnectorError> {
+        let client_order_id = client.map(|c| resolve_id(&self.ids, c));
         let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((old, receipt)) = journal.values.get(&id) {
-            return if old == &command {
-                Ok(receipt.clone())
+        if let Some(entry) = journal.values.get(&id) {
+            return if entry.command == command {
+                Ok(entry.receipt.clone())
             } else {
                 Err(account::AccountConnectorError::new(
                     account::AccountErrorKind::CommandConflict,
@@ -348,9 +386,9 @@ impl AccountRuntime {
                 account::AccountErrorKind::NotReady,
                 "account command queue is closed",
             ),
-        })?;
+            })?;
         let receipt = Self::receipt(id, client, self.context.account);
-        journal.insert(id, command, receipt.clone());
+        journal.insert(id, command, receipt.clone(), client_order_id);
         Ok(receipt)
     }
     fn snapshot<T>(&self, items: Arc<[T]>) -> account::AccountStateSnapshot<T> {
@@ -430,6 +468,7 @@ impl account::AccountConnector for AccountRuntime {
         let external_order_count = self.external_order_count.clone();
         let operations = self.operations.clone();
         let ids = self.ids.clone();
+        let journal = self.journal.clone();
         let shutdown_policy = self.shutdown_policy.clone();
         let (command_tx, mut command_rx) = mpsc::channel(context.command_queue_capacity);
         let (stop_tx, mut stop_rx) = oneshot::channel::<Instant>();
@@ -455,6 +494,7 @@ impl account::AccountConnector for AccountRuntime {
                     });
                     let account_events = encoder.clone();
                     let event_recovery = recovery_tx.clone();
+                    let stream_journal = journal.clone();
                     let tx = direct_publish_sender(move |publication| {
                         match publication {
                             DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
@@ -468,6 +508,20 @@ impl account::AccountConnector for AccountRuntime {
                                 ));
                             }
                             DirectPublication::Account(event) => {
+                                let terminal_client = match event {
+                                    AccountPublication::Order {
+                                        client_order_id: Some(client_order_id),
+                                        order,
+                                        ..
+                                    } if !order.active() => Some(client_order_id.clone()),
+                                    _ => None,
+                                };
+                                if let Some(client_order_id) = terminal_client {
+                                    stream_journal
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .release_by_client(&client_order_id);
+                                }
                                 if account_events.publish(event).is_err() {
                                     account_events.invalidate(2);
                                     let _ = event_recovery.try_send(Command::Reconcile(
@@ -517,6 +571,7 @@ impl account::AccountConnector for AccountRuntime {
                                         &external_order_count,
                                         &operations,
                                         &ids,
+                                        &journal,
                                         &recovery_tx,
                                     )
                                     .await;
@@ -1186,6 +1241,7 @@ async fn handle_command(
     external_order_count: &AtomicU64,
     operations: &Mutex<Operations>,
     ids: &Mutex<IdInterner>,
+    journal: &Arc<Mutex<CommandJournal>>,
     recovery_tx: &mpsc::Sender<Command>,
 ) {
     let command = match command {
@@ -1404,6 +1460,36 @@ async fn handle_command(
         ready.store(false, Ordering::Release);
         publish_invalidated(context, epoch, version, 3);
         schedule_reconcile(recovery_tx.clone());
+    }
+    if !unknown {
+        let terminal_order = result
+            .as_ref()
+            .ok()
+            .and_then(|order| order.as_ref())
+            .is_some_and(|value| {
+                matches!(
+                    value.status,
+                    ApiOrderStatus::Filled
+                        | ApiOrderStatus::Canceled
+                        | ApiOrderStatus::Rejected
+                        | ApiOrderStatus::Expired
+                )
+            });
+        let terminal_client = if terminal_order {
+            client.map(|c| resolve_id(ids, c))
+        } else {
+            None
+        };
+        let release_any = terminal_order
+            || result.is_err()
+            || matches!(&command, Command::CancelAll(_) | Command::CancelAllAfter(_));
+        let mut journal = journal.lock().unwrap_or_else(|p| p.into_inner());
+        if release_any {
+            journal.release_by_command(&id);
+        }
+        if let Some(client_order_id) = terminal_client {
+            journal.release_by_client(&client_order_id);
+        }
     }
     let outcome = if result.is_ok() {
         1
@@ -2299,12 +2385,65 @@ safety_timeout_ms = 5000
         };
         let mut journal = CommandJournal::new(2);
         for id in 1..=3 {
-            journal.insert(account::Id128([id; 16]), command(id), receipt(id));
+            journal.insert(
+                account::Id128([id; 16]),
+                command(id),
+                receipt(id),
+                None,
+            );
         }
         assert_eq!(journal.values.len(), 2);
         assert!(!journal.values.contains_key(&account::Id128([1; 16])));
         assert!(journal.values.contains_key(&account::Id128([2; 16])));
         assert!(journal.values.contains_key(&account::Id128([3; 16])));
+    }
+
+    #[test]
+    fn command_journal_terminal_release_frees_command_and_client_entries() {
+        let entry = |id: u8, client_id: Option<String>| {
+            (
+                account::Id128([id; 16]),
+                Command::CancelAllAfter(account::CancelAllAfterCommand {
+                    command_id: account::Id128([id; 16]),
+                    timeout_ms: 1,
+                    trace: TraceContext::default(),
+                }),
+                account::AccountCommandReceipt {
+                    account: account::AccountHandle {
+                        account_id: account::AccountId(1),
+                        generation: 1,
+                    },
+                    command_id: account::Id128([id; 16]),
+                    client_order_id: None,
+                    accepted_at: i64::from(id),
+                },
+                client_id,
+            )
+        };
+        let mut journal = CommandJournal::new(4);
+        let (id_a, command_a, receipt_a, client_a) = entry(1, Some("client-a".to_owned()));
+        let (id_b, command_b, receipt_b, client_b) = entry(2, Some("client-a".to_owned()));
+        let (id_c, command_c, receipt_c, client_c) = entry(3, None);
+        let (id_d, command_d, receipt_d, client_d) = entry(4, Some("client-d".to_owned()));
+        journal.insert(id_a, command_a, receipt_a, client_a);
+        journal.insert(id_b, command_b, receipt_b, client_b);
+        journal.insert(id_c, command_c, receipt_c, client_c);
+        journal.insert(id_d, command_d, receipt_d, client_d);
+
+        journal.release_by_client("client-a");
+        assert!(!journal.values.contains_key(&id_a));
+        assert!(!journal.values.contains_key(&id_b));
+        assert!(journal.values.contains_key(&id_c));
+        assert!(journal.values.contains_key(&id_d));
+
+        journal.release_by_command(&id_d);
+        assert!(!journal.values.contains_key(&id_d));
+        // A released command no longer consumes bounded capacity.
+        let (id_e, command_e, receipt_e, _) = entry(5, None);
+        journal.insert(id_e, command_e, receipt_e, None);
+        assert_eq!(journal.values.len(), 2);
+        assert!(journal.values.contains_key(&id_c));
+        assert!(journal.values.contains_key(&id_e));
     }
 
     #[test]
