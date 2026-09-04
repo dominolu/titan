@@ -436,10 +436,13 @@ connector/src/main.rs（iceoryx2 连接器进程）
 - [x] 回测/新链路回归：`hftbacktest --lib` 106 项、`connector --lib` 220 项、
   `titan-runtime`/`titan-strategy-plugin` 测试均通过；全 workspace `--all-targets` 编译通过。
 
-connector 已删除 queued transport 并改为 direct-only；残余的 `PublishEvent::LiveEvent`
-（OKX/Hyperliquid/BinanceFutures 少量 `LiveEvent::Feed/Funding` 归一化格式，以及
-`MarketEventBridge` 的对应翻译）是连接器内部发布格式，仍可继续迁移为
-FeedBatch/专属 Funding 事件后移除，不影响“单一事实只发布一次”的 direct 约束。
+connector 已删除 queued transport 并改为 direct-only，`PublishEvent::LiveEvent` 亦已移除：
+venue 行情统一以 `FeedBatch`/`MarkPrice`/`Funding`/`ConnectorError`/`StreamInvalidated`
+发布，`MarketEventBridge` 只做 FeedBatch/NativeMarket → Market ABI 的单一翻译。
+- [x] 删除 `Connector::submit/cancel` 旧订单接口及其三家实现/测试入口；订单执行只走
+  `AccountConnector` 命令 + `BrokerApi` 路径。
+- [x] 移除 `PublishEvent::LiveEvent`：行情 `Feed/Funding` 迁移为 `FeedBatch/Funding`，
+  Hyperliquid `userFundings` 旧资金流订阅/发布删除，错误统一为 `ConnectorError`。
 
 ## 5. ABI 与文档同步
 

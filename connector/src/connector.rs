@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use hftbacktest::types::{Event, LiveError, LiveEvent, Order};
+use hftbacktest::types::{Event, LiveError, Order};
 use titan_market_plugin::MarketDataKind;
 use tokio::sync::mpsc::{self, error::TrySendError};
 
@@ -172,9 +172,18 @@ pub enum PublishEvent {
     /// The authenticated private stream has connected and confirmed its account subscriptions.
     /// AccountPlugin uses this as the barrier before running reconciliation and declaring READY.
     PrivateStreamReady,
-    LiveEvent(LiveEvent),
-    /// A normalized mark-price update. This remains separate from `LiveEvent::Funding` because
-    /// one Binance mark-price frame carries both values and consumers may subscribe independently.
+    /// A normalized market data connection/processing error.
+    ConnectorError(LiveError),
+    /// A funding-rate/mark-price-frame funding update. Kept separate from `MarkPrice` because one
+    /// Binance frame carries both values and subscribers may choose either independently.
+    Funding {
+        symbol: String,
+        funding_rate: f64,
+        next_funding_time: i64,
+        exch_ts: i64,
+    },
+    /// A normalized mark-price update. This remains separate from `Funding` because one Binance
+    /// mark-price frame carries both values and consumers may subscribe independently.
     MarkPrice {
         symbol: String,
         mark_price: f64,
@@ -188,10 +197,7 @@ pub enum PublishEvent {
         stream: Option<MarketStreamMetadata>,
     },
     /// The concrete connector detected that consumers must discard their current stream image.
-    StreamInvalidated {
-        symbol: String,
-        epoch: u64,
-    },
+    StreamInvalidated { symbol: String, epoch: u64 },
 }
 
 impl PublishEvent {
@@ -199,8 +205,7 @@ impl PublishEvent {
         match self {
             Self::FeedBatch { symbol, .. }
             | Self::MarkPrice { symbol, .. }
-            | Self::LiveEvent(LiveEvent::Feed { symbol, .. })
-            | Self::LiveEvent(LiveEvent::Funding { symbol, .. }) => Some(symbol),
+            | Self::Funding { symbol, .. } => Some(symbol),
             _ => None,
         }
     }
@@ -294,11 +299,6 @@ pub trait Connector: Send + Sync {
         None
     }
 
-    /// Submits a new order. This method should not block, and the response should be returned
-    /// through the channel using [`PublishEvent`]. The returned error should not be related to the
-    /// exchange; instead, it should indicate a connector internal error.
-    fn submit(&self, symbol: String, order: Order, tx: PublishSender);
-
     /// Registers a REST-submitted AccountPlugin order in the connector's private-stream identity
     /// table before the exchange request is sent.
     ///
@@ -309,11 +309,6 @@ pub trait Connector: Send + Sync {
     fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {
         let _ = (symbol, client_order_id, order);
     }
-
-    /// Cancels an open order. This method should not block, and the response should be returned
-    /// through the channel using [`PublishEvent`]. The returned error should not be related to the
-    /// exchange; instead, it should indicate a connector internal error.
-    fn cancel(&self, symbol: String, order: Order, tx: PublishSender);
 
     /// Requests a fresh exchange-owned snapshot without running trading initialization.
     fn request_snapshot(&mut self, _symbol: String) {}

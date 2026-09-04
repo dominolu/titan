@@ -14,7 +14,7 @@ use std::{
 
 use hftbacktest::{
     prelude::get_precision,
-    types::{ErrorKind, LiveError, LiveEvent, OrdType, Order, Side, Status, TimeInForce, Value},
+    types::{ErrorKind, LiveError, OrdType, Order, Side, Status, TimeInForce, Value},
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -195,10 +195,10 @@ impl Okx {
                 .error_handler(|error: OkxError| {
                     error!(?error, "An error occurred in the public stream connection.");
                     ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                        .send(PublishEvent::ConnectorError(LiveError::with(
                             ErrorKind::ConnectionInterrupted,
                             error.to_value(),
-                        ))))
+                        )))
                         .unwrap();
                     Ok(())
                 })
@@ -211,16 +211,16 @@ impl Okx {
                     if let Err(error) = stream.connect(&public_url).await {
                         error!(?error, "A connection error occurred.");
                         ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                            .send(PublishEvent::ConnectorError(LiveError::with(
                                 ErrorKind::ConnectionInterrupted,
                                 error.to_value(),
-                            ))))
+                            )))
                             .unwrap();
                     } else {
                         ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::new(
+                            .send(PublishEvent::ConnectorError(LiveError::new(
                                 ErrorKind::ConnectionInterrupted,
-                            ))))
+                            )))
                             .unwrap();
                     }
                     Err::<(), OkxError>(OkxError::ConnectionInterrupted)
@@ -432,198 +432,6 @@ impl Connector for Okx {
         Some(Arc::new(self.client.clone()))
     }
 
-    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
-        let client = self.client.clone();
-        let order_manager = self.order_manager.clone();
-        let assets = self.assets.clone();
-        let td_mode = self.config.td_mode.clone();
-        let pos_side = self.config.pos_side.clone();
-
-        tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
-                .prepare_client_order_id(symbol.clone(), order.clone());
-
-            match client_order_id {
-                Some(client_order_id) => {
-                    let side = match order.side {
-                        Side::Buy => "buy",
-                        Side::Sell => "sell",
-                        Side::None | Side::Unsupported => {
-                            submit_fail(
-                                &client_order_id,
-                                &order_manager,
-                                &symbol,
-                                &tx,
-                                OkxError::InvalidArg("side"),
-                            );
-                            return;
-                        }
-                    };
-                    let (ord_type, px) = match order.order_type {
-                        OrdType::Limit => (
-                            match order.time_in_force {
-                                TimeInForce::GTC => "limit",
-                                TimeInForce::GTX => "post_only",
-                                TimeInForce::IOC => "ioc",
-                                TimeInForce::FOK => "fok",
-                                TimeInForce::Unsupported => {
-                                    submit_fail(
-                                        &client_order_id,
-                                        &order_manager,
-                                        &symbol,
-                                        &tx,
-                                        OkxError::InvalidArg("time_in_force"),
-                                    );
-                                    return;
-                                }
-                            },
-                            Some(format!(
-                                "{:.prec$}",
-                                order.price_tick as f64 * order.tick_size,
-                                prec = get_precision(order.tick_size)
-                            )),
-                        ),
-                        OrdType::Market => ("market", None),
-                        OrdType::Unsupported => {
-                            submit_fail(
-                                &client_order_id,
-                                &order_manager,
-                                &symbol,
-                                &tx,
-                                OkxError::InvalidArg("order_type"),
-                            );
-                            return;
-                        }
-                    };
-
-                    let sz_decimals = match ensure_asset_decimals(&client, &assets, &symbol).await {
-                        Ok(decimals) => decimals,
-                        Err(error) => {
-                            submit_fail(&client_order_id, &order_manager, &symbol, &tx, error);
-                            return;
-                        }
-                    };
-
-                    let result = client
-                        .submit_order(
-                            &symbol,
-                            &td_mode,
-                            pos_side.as_deref(),
-                            &client_order_id,
-                            side,
-                            ord_type,
-                            px.as_deref(),
-                            &format!("{:.prec$}", order.qty, prec = sz_decimals),
-                        )
-                        .await;
-                    match result {
-                        Ok(resp) => {
-                            if let Ok(Some(order)) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_from_rest_submit(&client_order_id, &resp)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                            if resp.s_code != "0" {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Error(
-                                    LiveError::with(
-                                        ErrorKind::OrderError,
-                                        OkxError::OrderError {
-                                            code: resp.s_code,
-                                            msg: resp.s_msg,
-                                        }
-                                        .to_value(),
-                                    ),
-                                )))
-                                .unwrap();
-                            }
-                        }
-                        Err(error) => {
-                            submit_fail(&client_order_id, &order_manager, &symbol, &tx, error);
-                        }
-                    }
-                }
-                None => {
-                    warn!(
-                        ?order,
-                        "Coincidentally, creates a duplicated client order id. \
-                        This order request will be expired."
-                    );
-                    order.req = Status::None;
-                    order.status = Status::Expired;
-                    tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
-                        .unwrap();
-                }
-            }
-        });
-    }
-
-    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
-        let client = self.client.clone();
-        let order_manager = self.order_manager.clone();
-
-        tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
-                .get_client_order_id(&symbol, order.order_id);
-
-            match client_order_id {
-                Some(client_order_id) => {
-                    let result = client.cancel_order(&symbol, &client_order_id).await;
-                    match result {
-                        Ok(()) => {
-                            if let Ok(Some(order)) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_from_rest_cancel(&client_order_id)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                        }
-                        Err(error) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_cancel_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::OrderError,
-                                error.to_value(),
-                            ))))
-                            .unwrap();
-                        }
-                    }
-                }
-                None => {
-                    warn!(
-                        order_id = order.order_id,
-                        "client_order_id corresponding to order_id is not found; \
-                        this may be due to the order already being canceled or filled."
-                    );
-                }
-            }
-        });
-    }
-
     async fn shutdown(&self) -> Result<(), String> {
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         let mut errors = Vec::new();
@@ -646,31 +454,6 @@ impl Connector for Okx {
             Err(errors.join("; "))
         }
     }
-}
-
-fn submit_fail(
-    client_order_id: &String,
-    order_manager: &SharedOrderManager,
-    symbol: &str,
-    tx: &crate::connector::PublishSender,
-    error: OkxError,
-) {
-    if let Some(order) = order_manager
-        .lock()
-        .unwrap()
-        .update_submit_fail(client_order_id, &error)
-    {
-        tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-            symbol: symbol.to_string(),
-            order,
-        }))
-        .unwrap();
-    }
-    tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-        ErrorKind::OrderError,
-        error.to_value(),
-    ))))
-    .unwrap();
 }
 
 #[cfg(test)]

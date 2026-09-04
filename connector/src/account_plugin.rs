@@ -2060,22 +2060,6 @@ mod tests {
 
         fn run(&mut self, _: crate::connector::PublishSender) {}
 
-        fn submit(
-            &self,
-            _: String,
-            _: hftbacktest::types::Order,
-            _: crate::connector::PublishSender,
-        ) {
-        }
-
-        fn cancel(
-            &self,
-            _: String,
-            _: hftbacktest::types::Order,
-            _: crate::connector::PublishSender,
-        ) {
-        }
-
         async fn shutdown(&self) -> Result<(), String> {
             tokio::time::sleep(self.shutdown_delay).await;
             Ok(())

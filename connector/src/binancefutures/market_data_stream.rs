@@ -438,12 +438,12 @@ impl MarketDataStream {
                 }
                 if self
                     .ev_tx
-                    .send(PublishEvent::LiveEvent(LiveEvent::Funding {
+                    .send(PublishEvent::Funding {
                         symbol: symbol.clone(),
                         funding_rate: data.funding_rate,
                         next_funding_time: data.next_funding_time * 1_000_000,
                         exch_ts: data.event_time * 1_000_000,
-                    }))
+                    })
                     .is_err()
                 {
                     warn!(symbol = %symbol, "market data sender closed while publishing funding event");
@@ -919,12 +919,12 @@ mod tests {
         ));
         assert!(matches!(
             receiver.recv().await,
-            Some(PublishEvent::LiveEvent(LiveEvent::Funding {
+            Some(PublishEvent::Funding {
                 symbol,
                 funding_rate,
                 next_funding_time: 1_562_306_400_000_000_000,
                 exch_ts: 1_562_305_380_000_000_000,
-            })) if symbol == "btcusdt" && funding_rate == -0.000381
+            }) if symbol == "btcusdt" && funding_rate == -0.000381
         ));
     }
 
@@ -1066,23 +1066,11 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(std::time::Duration::from_secs(3), ev_rx.recv()).await {
-                Ok(Some(PublishEvent::LiveEvent(LiveEvent::Feed { symbol, event }))) => {
-                    assert_eq!(symbol, "btcusdt");
-                    if event.is(LOCAL_BID_DEPTH_EVENT) || event.is(LOCAL_ASK_DEPTH_EVENT) {
-                        feed_depth += 1;
-                    } else if event.is(LOCAL_BID_DEPTH_BBO_EVENT)
-                        || event.is(LOCAL_ASK_DEPTH_BBO_EVENT)
-                    {
-                        feed_bbo += 1;
-                    } else if event.is(LOCAL_BUY_TRADE_EVENT) || event.is(LOCAL_SELL_TRADE_EVENT) {
-                        feed_trade += 1;
-                    }
-                }
-                Ok(Some(PublishEvent::LiveEvent(LiveEvent::Funding {
+                Ok(Some(PublishEvent::Funding {
                     symbol,
                     funding_rate,
                     ..
-                }))) => {
+                })) => {
                     assert_eq!(symbol, "btcusdt");
                     assert!(funding_rate.is_finite());
                     funding += 1;
