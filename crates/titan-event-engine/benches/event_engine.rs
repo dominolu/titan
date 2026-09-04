@@ -30,30 +30,50 @@ fn main() {
     let target_rate = std::env::var("TITAN_EVENT_BENCH_RATE")
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
+    // Benchmark-tuned capacities used by the recorded M1 Pro runs. Set
+    // TITAN_EVENT_BENCH_DEFAULT_CONFIG=1 to sweep with EventEngineConfig::default(), or override
+    // individual pools/queues below to probe how far a capacity can shrink before drops appear.
+    let use_default_config = std::env::var("TITAN_EVENT_BENCH_DEFAULT_CONFIG")
+        .ok()
+        .is_some_and(|value| value == "1");
+    let env_usize = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+    };
     let mut config = EventEngineConfig::default();
-    config.arena.small_event = PoolConfig {
-        slots: 131_072,
-        block_bytes: 64,
-        low_watermark: 8_192,
-    };
-    config.arena.market_batch = PoolConfig {
-        slots: 8,
-        block_bytes: 128,
-        low_watermark: 1,
-    };
-    config.arena.snapshot = PoolConfig {
-        slots: 2,
-        block_bytes: 256,
-        low_watermark: 1,
-    };
-    config.ingress.critical_capacity = 65_536;
-    config.subscribers.default_capacity = 65_536;
-    config.subscribers.critical_reserve = 4_096;
-    config.pending_dispatch.global_capacity = 8_192;
-    config.pending_dispatch.guaranteed_per_critical_subscriber = 1_024;
-    config.dispatch.critical = DrainBudgetConfig::new(1_024, 1_000_000);
-    config.dispatch.pending = DrainBudgetConfig::new(256, 250_000);
-    config.runtime.spin_iterations = 100_000;
+    if !use_default_config {
+        config.arena.small_event = PoolConfig {
+            slots: env_usize("TITAN_EVENT_BENCH_SMALL_SLOTS").unwrap_or(131_072),
+            block_bytes: env_usize("TITAN_EVENT_BENCH_SMALL_BLOCK_BYTES").unwrap_or(64),
+            low_watermark: env_usize("TITAN_EVENT_BENCH_SMALL_LOW_WATERMARK").unwrap_or(8_192),
+        };
+        config.arena.market_batch = PoolConfig {
+            slots: env_usize("TITAN_EVENT_BENCH_MARKET_SLOTS").unwrap_or(8),
+            block_bytes: env_usize("TITAN_EVENT_BENCH_MARKET_BLOCK_BYTES").unwrap_or(128),
+            low_watermark: env_usize("TITAN_EVENT_BENCH_MARKET_LOW_WATERMARK").unwrap_or(1),
+        };
+        config.arena.snapshot = PoolConfig {
+            slots: env_usize("TITAN_EVENT_BENCH_SNAPSHOT_SLOTS").unwrap_or(2),
+            block_bytes: env_usize("TITAN_EVENT_BENCH_SNAPSHOT_BLOCK_BYTES").unwrap_or(256),
+            low_watermark: env_usize("TITAN_EVENT_BENCH_SNAPSHOT_LOW_WATERMARK").unwrap_or(1),
+        };
+        config.ingress.critical_capacity =
+            env_usize("TITAN_EVENT_BENCH_CRITICAL_CAPACITY").unwrap_or(65_536);
+        config.subscribers.default_capacity =
+            env_usize("TITAN_EVENT_BENCH_SUBSCRIBER_CAPACITY").unwrap_or(65_536);
+        config.subscribers.critical_reserve =
+            env_usize("TITAN_EVENT_BENCH_SUBSCRIBER_CRITICAL_RESERVE").unwrap_or(4_096);
+        config.pending_dispatch.global_capacity =
+            env_usize("TITAN_EVENT_BENCH_PENDING_GLOBAL").unwrap_or(8_192);
+        config.pending_dispatch.guaranteed_per_critical_subscriber =
+            env_usize("TITAN_EVENT_BENCH_PENDING_SUBSCRIBER").unwrap_or(1_024);
+        config.dispatch.critical = DrainBudgetConfig::new(1_024, 1_000_000);
+        config.dispatch.pending = DrainBudgetConfig::new(256, 250_000);
+        config.runtime.spin_iterations = 100_000;
+    }
+    config.runtime.spin_iterations =
+        env_usize("TITAN_EVENT_BENCH_RUNTIME_SPIN").unwrap_or(config.runtime.spin_iterations);
     if let Some(cpu) = std::env::var("TITAN_EVENT_BENCH_CPU")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -68,6 +88,17 @@ fn main() {
         config.subscribers.runtime_mode = SubscriberRuntimeMode::Dedicated;
         config.subscribers.cpu_affinity = vec![cpu];
     }
+    let profile = (
+        config.arena.small_event.slots,
+        config.arena.market_batch.slots,
+        config.arena.snapshot.slots,
+        config.ingress.critical_capacity,
+        config.ingress.market_capacity,
+        config.subscribers.default_capacity,
+        config.subscribers.critical_reserve,
+        config.pending_dispatch.global_capacity,
+        config.pending_dispatch.per_subscriber_capacity,
+    );
 
     let engine = EventEngine::new(config).expect("benchmark config must be valid");
     let handle = engine.handle();
@@ -89,7 +120,7 @@ fn main() {
                 event_type: Arc::from("benchmark"),
                 schema_version: 1,
                 qos: EventQos::ReliableOrdered,
-                capacity: 65_536,
+                capacity: profile.5,
                 routing_keys: Arc::from([]),
             },
         )
@@ -142,10 +173,26 @@ fn main() {
     let elapsed = started.elapsed();
     let metrics = engine.metrics().snapshot();
     println!(
-        "events={events} target_rate={target_rate:?} elapsed={elapsed:?} throughput={:.0}/s dispatch_p99_bucket_ns={} subscriber_p99_bucket_ns={}",
+        "events={events} target_rate={target_rate:?} elapsed={elapsed:?} throughput={:.0}/s dispatch_p99_bucket_ns={} subscriber_p99_bucket_ns={} drop_total={} resync_total={} arena_exhausted={:?} fast_lane_drop_total={}",
         events as f64 / elapsed.as_secs_f64(),
         metrics.dispatch_latency.p99_ns,
         metrics.subscriber_latency.p99_ns,
+        metrics.drop_total,
+        metrics.resync_total,
+        metrics.arena_exhausted,
+        metrics.fast_lane_drop_total,
+    );
+    println!(
+        "config small_event_slots={} market_batch_slots={} snapshot_slots={} critical_capacity={} market_capacity={} subscriber_capacity={} critical_reserve={} pending_global={} pending_subscriber={}",
+        profile.0,
+        profile.1,
+        profile.2,
+        profile.3,
+        profile.4,
+        profile.5,
+        profile.6,
+        profile.7,
+        profile.8,
     );
     gate.quiesce();
     subscriber.join().unwrap();
