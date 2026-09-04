@@ -817,15 +817,6 @@ fn validate_core_live_strategy_profile(
     Ok(())
 }
 
-fn decimal_unit_value(unit: &titan_account_plugin::DecimalUnit) -> f64 {
-    unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
-}
-
-fn unit_values_match(market: f64, account: f64) -> bool {
-    let magnitude = market.abs().max(account.abs()).max(1.0);
-    (market - account).abs() <= magnitude * 1e-12
-}
-
 /// Rejects live configurations where the same asset id is priced in different tick/lot units by
 /// the Market and Account definitions.
 ///
@@ -892,14 +883,13 @@ fn validate_strategy_unit_consistency(
                         definition.strategy_key, tradable.asset_id, account_binding.account_key
                     )));
                 };
-                let account_price = decimal_unit_value(&instrument.price_tick);
-                let account_lot = decimal_unit_value(&instrument.quantity_lot);
-                if !unit_values_match(market_price, account_price)
-                    || !unit_values_match(market_lot, account_lot)
-                {
+                if instrument.price_tick != market_price || instrument.quantity_lot != market_lot {
                     return Err(ConfigurationError::Invalid(format!(
-                        "strategy {} asset {} unit mismatch: market price={market_price} lot={market_lot}, account price={account_price} lot={account_lot}",
-                        definition.strategy_key, tradable.asset_id
+                        "strategy {} asset {} unit mismatch: market price={market_price} lot={market_lot}, account price={} lot={}",
+                        definition.strategy_key,
+                        tradable.asset_id,
+                        instrument.price_tick,
+                        instrument.quantity_lot
                     )));
                 }
             }
@@ -1197,21 +1187,6 @@ config = {}
     }
 
     #[test]
-    fn decimal_unit_matches_market_f64_units_within_float_precision() {
-        let market_price = 0.0001_f64;
-        let account_price = decimal_unit_value(&"0.0001".parse().unwrap());
-        assert!(unit_values_match(market_price, account_price));
-        assert!(!unit_values_match(
-            market_price,
-            decimal_unit_value(&"0.00001".parse().unwrap())
-        ));
-
-        let market_lot = 0.001_f64;
-        let account_lot = decimal_unit_value(&"0.001".parse().unwrap());
-        assert!(unit_values_match(market_lot, account_lot));
-    }
-
-    #[test]
     fn unit_consistency_rejects_strategy_bound_account_mismatch() {
         let market_source = titan_market_plugin::MarketSourceDefinition {
             source_key: Arc::from("market"),
@@ -1220,8 +1195,8 @@ config = {}
             instruments: Arc::from([titan_market_plugin::MarketInstrumentBinding {
                 native_symbol: Arc::from("BTCUSDT"),
                 asset_id: titan_market_plugin::AssetId(1),
-                price_tick: 0.0001,
-                quantity_lot: 0.001,
+                price_tick: "0.0001".parse().unwrap(),
+                quantity_lot: "0.001".parse().unwrap(),
             }]),
             enabled: true,
             definition_version: 1,

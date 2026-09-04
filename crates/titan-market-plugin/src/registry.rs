@@ -167,16 +167,12 @@ impl ConnectorRegistry {
         let mut assets = HashSet::new();
         for binding in definition.instruments.iter() {
             if binding.native_symbol.trim().is_empty()
-                || !binding.price_tick.is_finite()
-                || binding.price_tick <= 0.0
-                || !binding.quantity_lot.is_finite()
-                || binding.quantity_lot <= 0.0
                 || !symbols.insert(binding.native_symbol.as_ref())
                 || !assets.insert(binding.asset_id)
             {
                 return Err(MarketError::new(
                     MarketErrorKind::InvalidDefinition,
-                    "instrument symbols/assets must be unique and tick/lot sizes must be positive",
+                    "instrument symbols/assets must be unique and native symbols must not be empty",
                 ));
             }
         }

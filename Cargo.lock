@@ -1162,6 +1162,7 @@ dependencies = [
  "titan-event-engine",
  "titan-market-plugin",
  "titan-plugin-engine",
+ "titan-runtime-abi",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -4173,6 +4174,7 @@ dependencies = [
  "serde_json",
  "titan-event-engine",
  "titan-plugin-engine",
+ "titan-runtime-abi",
  "tracing",
  "zeroize",
 ]

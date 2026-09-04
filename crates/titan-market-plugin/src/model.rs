@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use titan_plugin_engine::{
     EventPublishMetadata, EventPublisher, PluginError, ResourceScopeHandle, TraceContext,
 };
+use titan_runtime_abi::DecimalUnit;
 
 use crate::{ConnectorError, MARKET_EVENT_SCHEMA_VERSION, MarketError, MarketErrorKind};
 
@@ -29,9 +30,9 @@ pub struct MarketInstrumentBinding {
     pub native_symbol: Arc<str>,
     pub asset_id: AssetId,
     /// Exchange price tick represented by one `price_ticks` unit in Market ABI payloads.
-    pub price_tick: f64,
+    pub price_tick: DecimalUnit,
     /// Exchange quantity lot represented by one `quantity_lots` unit in Market ABI payloads.
-    pub quantity_lot: f64,
+    pub quantity_lot: DecimalUnit,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

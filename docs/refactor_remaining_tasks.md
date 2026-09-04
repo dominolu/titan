@@ -281,11 +281,42 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   普通 subscriber core pool 间的重复绑定；动态 Primary lane 对显式 affinity 执行独占预约，重复绑定失败，
   lane 退休后才释放 core 供下一 generation 使用。Worker 启动通过握手确认操作系统 affinity 调用成功，
   不支持线程绑核的平台（如当前 macOS runner）会明确返回 `CpuAffinityFailed`，不会伪报隔离成功。
-- [ ] 调优 Arena、Ingress、Async lane、pending 和 staging 的有界容量。
-  机制层已经具备配置化边界：`snapshot_barriers` 统一限制活动 barrier 数、每 barrier staging、全局
-  staging 总量和最大 deadline；跨 lane 的容量耗尽、staging/replay 超时、abort、unregister/stop 均已通过
-  故障注入验证额度和 EventLease 会释放。这里保留未完成，仅指仍需依据目标硬件、Broker 峰值与恢复窗口
-  计算并冻结生产容量，不把设计示例值误报为已调优结果。
+- [x] 调优 Arena、Ingress、Async lane、pending 和 staging 的有界容量（2026-09-04）。
+  机制层已经具备配置化边界；目标机 `43.165.184.116`（2 vCPU/1.9 GiB）上以
+  `EventEngineConfig::default()` 作为已冻结档跑通 500k/s、800k/s 定速与 1M burst 零丢单/零
+  RESYNC（RSS ~152 MB），过小档会可靠进入 RESYNC/投递超时。冻结档显式记录如下（与默认值一致）：
+
+  ```toml
+  # EventEngine 2-vCPU 冻结档（2026-09-04，synthetic critical lane 验收）
+  [event_engine.arena.small_event]
+  slots = 32768
+  block_bytes = 256
+  low_watermark = 4096
+  [event_engine.arena.market_batch]
+  slots = 8192
+  block_bytes = 16384
+  low_watermark = 1024
+  [event_engine.arena.snapshot]
+  slots = 512
+  block_bytes = 262144
+  low_watermark = 64
+  [event_engine.ingress]
+  critical_capacity = 8192
+  market_capacity = 65536
+  max_sources = 1024
+  [event_engine.subscribers]
+  max_count = 64
+  default_capacity = 16384
+  critical_reserve = 2048
+  [event_engine.pending_dispatch]
+  per_subscriber_capacity = 1024
+  global_capacity = 8192
+  guaranteed_per_critical_subscriber = 128
+  max_age_ms = 100
+  ```
+
+  该档只针对 synthetic 基准冻结；真实 Market/Account 双源负载下的 P99/P99.9 门槛仍单独记录在
+  下一项。
 - [ ] 在目标硬件冻结 publisher admission、worker dispatch、handler commit 的 P99/P99.9
   PerformanceEnvelope，并建立 CI 回归门槛。
 
@@ -330,8 +361,10 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 - [x] CLI 配置适配阶段对策略实际绑定的同一 asset id 做 Market f64 tick/lot 与
   Account `DecimalUnit` 的一致性校验；不匹配会在启动前显式拒绝，并报告两侧数值。
 - [x] 校验只检查 enabled strategy 真正绑定且两端都定义的单位对，避免无关定义误伤。
-- [ ] 深度统一仍待完成：把 Market/Account 各自的 instrument unit 收敛为一个权威共享模型，
-  而不是由 CLI 做事后一致性检查。
+- [x] 深度单位统一（2026-09-04）：`DecimalUnit` 收敛到 `titan-runtime-abi` 单一权威类型，
+  `MarketInstrumentBinding` 与 `AccountInstrumentBinding` 共用同一类型；CLI 不再做
+  f64 容差“事后检查”，直接比较两边 `DecimalUnit`（精确相等）。行情 native 深度缩放也改为
+  基于该权威单位的精确十进制解析，不再从 f64 反推单位。
 
 ### 4.9 REST→私有流身份链路（2026-09-03 增量）
 
