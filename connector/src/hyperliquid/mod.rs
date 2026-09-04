@@ -805,7 +805,7 @@ mod reconnect_tests {
             "BTC".to_owned(),
             vec![MarketDataKind::Depth, MarketDataKind::Trades],
         );
-        let (events, _event_receiver) = crate::connector::publish_channel(16);
+        let (events, _event_receiver) = crate::connector::test_publish_channel();
         connector.run_market_data(events);
 
         for _ in 0..2 {
@@ -948,7 +948,7 @@ is_mainnet = false
     }
 
     async fn wait_order_event(
-        rx: &mut crate::connector::PublishReceiver,
+        rx: &mut crate::connector::TestPublishReceiver,
         timeout: Duration,
     ) -> Order {
         tokio::time::timeout(timeout, async {
@@ -974,7 +974,7 @@ is_mainnet = false
     #[ignore = "requires a funded Hyperliquid testnet account and env vars"]
     async fn e2e_testnet_order_roundtrip() {
         let connector = Hyperliquid::build_from(&testnet_config()).unwrap();
-        let (tx, mut rx) = crate::connector::publish_channel(64);
+        let (tx, mut rx) = crate::connector::test_publish_channel();
 
         // A resting buy GTC at 63,000 (well below the ~64,200 market), so it rests on the book.
         // Testnet BTC trades with a 1.0 tick; integer prices are always valid.

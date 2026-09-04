@@ -894,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn mark_price_frame_publishes_price_and_funding_independently() {
         let client = BinanceFuturesClient::new("http://localhost", "", "");
-        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
         let mut market_stream = MarketDataStream::new(
             client,
@@ -931,7 +931,7 @@ mod tests {
     #[tokio::test]
     async fn rest_snapshot_and_contiguous_delta_preserve_sequence_and_advance_epoch() {
         let client = BinanceFuturesClient::new("http://localhost", "", "");
-        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
         let mut stream = MarketDataStream::new(
             client,
@@ -1020,7 +1020,7 @@ mod tests {
     #[ignore]
     async fn live_ws() {
         let client = BinanceFuturesClient::new("https://testnet.binancefuture.com", "", "");
-        let (ev_tx, mut ev_rx) = crate::connector::publish_channel(64);
+        let (ev_tx, mut ev_rx) = crate::connector::test_publish_channel();
         let (symbol_tx, _) = tokio::sync::broadcast::channel(16);
         let subscriptions = std::sync::Arc::new(std::sync::Mutex::new(HashMap::from([(
             "btcusdt".to_string(),

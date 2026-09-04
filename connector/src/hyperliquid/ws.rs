@@ -774,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
-        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
         let mut ws = HyperliquidWs::new(
             events,
@@ -823,7 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_ready_ignores_public_and_duplicate_subscription_responses() {
-        let (events, mut receiver) = crate::connector::publish_channel(8);
+        let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
         let mut ws = HyperliquidWs::new(
             events,
@@ -876,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_error_invalidates_the_connection() {
-        let (events, _receiver) = crate::connector::publish_channel(4);
+        let (events, _receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
         let mut ws = HyperliquidWs::new(
             events,
