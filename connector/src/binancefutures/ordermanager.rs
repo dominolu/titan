@@ -2,16 +2,13 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, OrderId, Status};
+use hftbacktest::types::{Order, Status};
 use tracing::error;
 
 use crate::{
-    binancefutures::{
-        BinanceFuturesError,
-        msg::{rest::OrderResponse, stream::OrderTradeUpdate},
-    },
+    binancefutures::{BinanceFuturesError, msg::stream::OrderTradeUpdate},
     connector::GetOrders,
-    utils::{RefSymbolOrderId, SymbolOrderId, generate_rand_string},
+    utils::{RefSymbolOrderId, SymbolOrderId},
 };
 
 #[derive(Debug)]
@@ -26,20 +23,10 @@ pub type SharedOrderManager = Arc<Mutex<OrderManager>>;
 
 pub type ClientOrderId = String;
 
-/// Binance has separated channels for REST APIs and Websocket. Order responses are delivered
-/// through these channels, with no guaranteed order of transmission. To prevent duplicate handling
-/// of order responses, such as order deletion due to cancellation or fill, OrderManager manages the
-/// order states before transmitting the responses to a live bot.
-///
-/// Deletions must be confirmed by both channels. If not, differences in response times could result
-/// in attempts to update an order that has already been deleted, potentially creating a ghost order
-/// unintentionally.
-///
-/// To handle this, the `client_order_id` should include a random ID to differentiate it, even when
-/// the order ID is the same(bot's order id). This is necessary because the order deletion is
-/// immediately notified to the bot, but the Connector must still retain the `client_order_id` in
-/// case an update arrives later from the other channel, which has not yet sent the deletion
-/// message.
+/// Tracks orders created by the AccountPlugin REST facade so private-stream Order/Fill updates can
+/// be correlated back to the deterministic owner client id. Deletions that are terminal in the
+/// private stream are kept for GC (rather than immediately removed) so the connector never emits a
+/// duplicate publication if a stale frame arrives from another channel.
 #[derive(Default, Debug)]
 pub struct OrderManager {
     prefix: String,
@@ -110,173 +97,6 @@ impl OrderManager {
         Ok(result)
     }
 
-    pub fn update_submit_fail(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        error: &BinanceFuturesError,
-    ) -> Option<Order> {
-        match error {
-            BinanceFuturesError::OrderError { code: -5022, .. } => {
-                // GTX rejection.
-            }
-            BinanceFuturesError::OrderError { code: -1008, .. } => {
-                // Server is currently overloaded with other requests. Please try again in a few minutes.
-                error!(
-                    "Server is currently overloaded with other requests. Please try again in a few minutes."
-                );
-            }
-            BinanceFuturesError::OrderError { code: -2019, .. } => {
-                // Margin is insufficient.
-                error!("Margin is insufficient.");
-            }
-            BinanceFuturesError::OrderError { code: -1015, .. } => {
-                // Too many new orders; current limit is 300 orders per TEN_SECONDS.
-                error!("Too many new orders; current limit is 300 orders per TEN_SECONDS.");
-            }
-            error => {
-                error!(?error, "submit error");
-            }
-        }
-        self.update_from_rest_fail(client_order_id, Some(Status::Expired))
-    }
-
-    pub fn update_cancel_fail(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        error: &BinanceFuturesError,
-    ) -> Option<Order> {
-        match error {
-            BinanceFuturesError::OrderError { code: -2011, .. } => {
-                // The given order may no longer exist; it could have already been filled or
-                // canceled. But, it cannot determine the order status because it lacks the
-                // necessary information.
-                self.update_from_rest_fail(client_order_id, Some(Status::None))
-            }
-            error => {
-                error!(?error, "cancel error");
-                self.update_from_rest_fail(client_order_id, None)
-            }
-        }
-    }
-
-    pub fn update_from_rest_fail(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        status: Option<Status>,
-    ) -> Option<Order> {
-        let order_ext = self.orders.get_mut(client_order_id)?;
-        // .ok_or(BinanceFuturesError::OrderNotFound)?;
-
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        if let Some(status) = status {
-            order_ext.order.status = status;
-        }
-        order_ext.order.req = Status::None;
-
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-
-        if order_ext.order.status != Status::New
-            && order_ext.order.status != Status::PartiallyFilled
-        {
-            order_ext.removed_by_rest = true;
-            if !already_removed {
-                self.order_id_map.remove(&RefSymbolOrderId::new(
-                    &order_ext.symbol,
-                    order_ext.order.order_id,
-                ));
-            }
-
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(client_order_id).unwrap();
-            }
-        }
-
-        result
-    }
-
-    pub fn update_from_rest(
-        &mut self,
-        client_order_id: &ClientOrderId,
-        resp: &OrderResponse,
-    ) -> Option<Order> {
-        let order_ext = self.orders.get_mut(client_order_id)?;
-        // .ok_or(BinanceFuturesError::OrderNotFound)?;
-
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        if resp.update_time * 1_000_000 >= order_ext.order.exch_timestamp {
-            order_ext.order.qty = resp.orig_qty;
-            order_ext.order.leaves_qty = resp.orig_qty - resp.cum_qty;
-            order_ext.order.side = resp.side;
-            order_ext.order.time_in_force = resp.time_in_force;
-            order_ext.order.exch_timestamp = resp.update_time * 1_000_000;
-            order_ext.order.status = resp.status;
-            // The last filled price isn't available in the REST response.
-            // Execution details are expected to be received via the WebSocket stream.
-            order_ext.order.exec_qty = resp.executed_qty;
-            order_ext.order.order_type = resp.ty;
-            order_ext.order.req = Status::None;
-        }
-
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-
-        if order_ext.order.status != Status::New
-            && order_ext.order.status != Status::PartiallyFilled
-        {
-            order_ext.removed_by_rest = true;
-            if !already_removed {
-                self.order_id_map.remove(&RefSymbolOrderId::new(
-                    &order_ext.symbol,
-                    order_ext.order.order_id,
-                ));
-            }
-
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(client_order_id).unwrap();
-            }
-        }
-
-        result
-    }
-
-    pub fn prepare_client_order_id(&mut self, symbol: String, order: Order) -> Option<String> {
-        let symbol_order_id = SymbolOrderId::new(symbol.clone(), order.order_id);
-        if self.order_id_map.contains_key(&symbol_order_id) {
-            return None;
-        }
-
-        let client_order_id = format!("{}{}", self.prefix, generate_rand_string(16));
-        if self.orders.contains_key(&client_order_id) {
-            return None;
-        }
-
-        self.order_id_map
-            .insert(symbol_order_id, client_order_id.clone());
-        self.orders.insert(
-            client_order_id.clone(),
-            OrderExt {
-                symbol,
-                order,
-                removed_by_ws: false,
-                removed_by_rest: false,
-            },
-        );
-        Some(client_order_id)
-    }
-
-    pub fn get_client_order_id(&self, symbol: &str, order_id: OrderId) -> Option<String> {
-        self.order_id_map
-            .get(&RefSymbolOrderId::new(symbol, order_id))
-            .cloned()
-    }
-
     pub fn track_managed_order(
         &mut self,
         symbol: &str,
@@ -302,10 +122,7 @@ impl OrderManager {
         true
     }
 
-    /// Due to API instability or network issues, discrepancies can occur where an order is deleted
-    /// by one channel but remains active because its deletion wasn't confirmed by both channels.
-    /// The gc method resolves this by removing orders that were deleted by one channel but not
-    /// confirmed by the other, after a defined threshold period.
+    /// Removes terminal orders that were only deleted by one channel after a staleness threshold.
     pub fn gc(&mut self) {
         let now = Utc::now().timestamp_nanos_opt().unwrap();
         let stale_ts = now - 300_000_000_000;
@@ -327,43 +144,10 @@ impl OrderManager {
             .collect();
         for (client_order_id, order_id) in stale_ids.iter() {
             if self.order_id_map.contains_key(order_id) {
-                // todo: something went wrong?
                 self.order_id_map.remove(order_id).unwrap();
             }
             self.orders.remove(client_order_id);
         }
-    }
-
-    pub fn cancel_all_from_rest(&mut self, symbol: &str) -> Vec<Order> {
-        let mut removed_orders = Vec::new();
-        let mut removed_order_ids = Vec::new();
-        for (client_order_id, order_ext) in &mut self.orders {
-            if order_ext.symbol != symbol {
-                continue;
-            }
-            let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-
-            order_ext.removed_by_rest = true;
-            order_ext.order.status = Status::Canceled;
-            // todo: check if the exchange timestamp exists in the REST response.
-            order_ext.order.exch_timestamp = Utc::now().timestamp_nanos_opt().unwrap();
-            if !already_removed {
-                self.order_id_map
-                    .remove(&RefSymbolOrderId::new(symbol, order_ext.order.order_id));
-                removed_orders.push(order_ext.order.clone());
-            }
-
-            // Completely deletes the order if it is removed by both the REST response and the
-            // WebSocket stream.
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                removed_order_ids.push(client_order_id.clone());
-            }
-        }
-
-        for order_id in removed_order_ids {
-            self.orders.remove(&order_id).unwrap();
-        }
-        removed_orders
     }
 }
 
@@ -384,54 +168,6 @@ impl GetOrders for OrderManager {
 mod tests {
     use super::*;
     use hftbacktest::types::{OrdType, Side, TimeInForce};
-
-    fn tracked_order(manager: &mut OrderManager) -> String {
-        let mut order = Order::new(
-            7,
-            100,
-            1.0,
-            1.0,
-            Side::Buy,
-            OrdType::Limit,
-            TimeInForce::GTC,
-        );
-        order.exch_timestamp = 1_000_000;
-        order.status = Status::New;
-        manager
-            .prepare_client_order_id("btcusdt".to_string(), order)
-            .unwrap()
-    }
-
-    fn rest_update(client_order_id: &str, update_time: i64, status: &str) -> OrderResponse {
-        serde_json::from_str(
-            &serde_json::json!({
-                "clientOrderId": client_order_id,
-                "cumQty": "0.5",
-                "executedQty": "0.5",
-                "orderId": 7,
-                "origQty": "1",
-                "price": "100",
-                "reduceOnly": false,
-                "side": "BUY",
-                "positionSide": "BOTH",
-                "status": status,
-                "stopPrice": "0",
-                "closePosition": false,
-                "symbol": "BTCUSDT",
-                "timeInForce": "GTC",
-                "type": "LIMIT",
-                "origType": "LIMIT",
-                "updateTime": update_time,
-                "workingType": "CONTRACT_PRICE",
-                "priceProtect": false,
-                "priceMatch": "NONE",
-                "selfTradePreventionMode": "NONE",
-                "goodTillDate": 0
-            })
-            .to_string(),
-        )
-        .unwrap()
-    }
 
     fn ws_update(client_order_id: &str, transaction_time: i64, status: &str) -> OrderTradeUpdate {
         serde_json::from_str(
@@ -464,22 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn stale_ws_update_does_not_regress_newer_rest_state() {
-        let mut manager = OrderManager::new("t-");
-        let client_order_id = tracked_order(&mut manager);
-        let rest = rest_update(&client_order_id, 20, "PARTIALLY_FILLED");
-        let updated = manager.update_from_rest(&client_order_id, &rest).unwrap();
-        assert_eq!(updated.exch_timestamp, 20_000_000);
-        assert_eq!(updated.status, Status::PartiallyFilled);
-
-        let stale = ws_update(&client_order_id, 10, "NEW");
-        let unchanged = manager.update_from_ws(&stale).unwrap().unwrap();
-        assert_eq!(unchanged.exch_timestamp, 20_000_000);
-        assert_eq!(unchanged.status, Status::PartiallyFilled);
-        assert_eq!(unchanged.leaves_qty, 0.5);
-    }
-
-    #[test]
     fn tracked_rest_order_flows_through_private_ws_without_legacy_prefix() {
         let mut manager = OrderManager::new("t-");
         let client_order_id = "0123456789abcdef0123456789abcdef";
@@ -504,19 +224,5 @@ mod tests {
             .unwrap();
         assert_eq!(updated.status, Status::Filled);
         assert_eq!(updated.leaves_qty, 0.5);
-    }
-
-    #[test]
-    fn terminal_rest_and_ws_updates_are_published_only_once() {
-        let mut manager = OrderManager::new("t-");
-        let client_order_id = tracked_order(&mut manager);
-
-        let ws = ws_update(&client_order_id, 20, "FILLED");
-        assert!(manager.update_from_ws(&ws).unwrap().is_some());
-        assert!(manager.update_from_ws(&ws).unwrap().is_none());
-
-        let rest = rest_update(&client_order_id, 20, "FILLED");
-        assert!(manager.update_from_rest(&client_order_id, &rest).is_none());
-        assert!(!manager.orders.contains_key(&client_order_id));
     }
 }
