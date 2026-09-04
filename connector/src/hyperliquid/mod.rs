@@ -13,7 +13,7 @@ use std::{
 
 use hftbacktest::{
     prelude::get_precision,
-    types::{ErrorKind, LiveError, OrdType, Order, Side, Status, TimeInForce, Value},
+    types::{ErrorKind, LiveError, OrdType, Order, Side, TimeInForce, Value},
 };
 use serde::Deserialize;
 use thiserror::Error;

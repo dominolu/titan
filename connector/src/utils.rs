@@ -8,13 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use base64::{Engine as _, engine::general_purpose};
 use chrono::Utc;
-use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, pkcs8::DecodePrivateKey};
 use hashbrown::Equivalent;
 use hftbacktest::prelude::OrderId;
 use hmac::{Hmac, Mac};
-use rand::Rng;
 use serde::{
     Deserialize, Deserializer, de,
     de::{Error, Visitor},
@@ -112,14 +109,6 @@ where
     deserializer.deserialize_option(OptionF64Visitor)
 }
 
-pub fn to_uppercase<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    Ok(s.to_uppercase())
-}
-
 pub fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -137,16 +126,6 @@ pub fn sign_hmac_sha256(secret: &str, s: &str) -> String {
         write!(&mut tmp, "{c:02x}").unwrap();
     }
     tmp
-}
-
-pub fn sign_ed25519(private_key: &str, s: &str) -> String {
-    let private_key = SigningKey::from_pkcs8_pem(private_key).unwrap();
-    let signature: Ed25519Signature = private_key.sign(s.as_bytes());
-    general_purpose::STANDARD.encode(signature.to_bytes())
-}
-
-pub fn get_timestamp() -> u64 {
-    Utc::now().timestamp_millis() as u64
 }
 
 /// Returns a monotonically increasing nonce. The wall-clock millisecond is used as the base so
@@ -314,19 +293,6 @@ impl Equivalent<SymbolOrderId> for RefSymbolOrderId<'_> {
     fn equivalent(&self, key: &SymbolOrderId) -> bool {
         key.symbol == self.symbol && key.order_id == self.order_id
     }
-}
-
-pub fn generate_rand_string(length: usize) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
-                             abcdefghijklmnopqrstuvwxyz\
-                             0123456789";
-    let mut rng = rand::rng();
-    (0..length)
-        .map(|_| {
-            let idx = rng.random_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,15 +1,13 @@
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
-use hashbrown::HashMap;
-use hftbacktest::types::{Order, Status};
-use tracing::error;
-
 use crate::{
     binancefutures::{BinanceFuturesError, msg::stream::OrderTradeUpdate},
     connector::GetOrders,
     utils::{RefSymbolOrderId, SymbolOrderId},
 };
+use chrono::Utc;
+use hashbrown::HashMap;
+use hftbacktest::types::{Order, Status};
 
 #[derive(Debug)]
 struct OrderExt {
