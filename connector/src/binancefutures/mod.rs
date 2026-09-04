@@ -16,7 +16,7 @@ use thiserror::Error;
 use titan_market_plugin::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tokio_tungstenite::tungstenite;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::{
     binancefutures::{
