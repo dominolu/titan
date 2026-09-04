@@ -10,7 +10,7 @@ use connector::{
 use hftbacktest::prelude::{
     LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
     LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
-    LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent,
+    LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };
 use titan_market_plugin::MarketDataKind;
 
@@ -166,12 +166,12 @@ async fn run_once(symbol: &str, stream_url: &str, duration: Duration) -> Result<
                     }
                 }
             }
-            PublishEvent::LiveEvent(LiveEvent::Funding {
+            PublishEvent::Funding {
                 symbol: event_symbol,
                 funding_rate,
                 next_funding_time,
                 ..
-            }) => {
+            } => {
                 observed.insert("funding");
                 funding_count += 1;
                 println!(

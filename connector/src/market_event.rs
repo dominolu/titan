@@ -9,8 +9,7 @@ use std::{
 };
 
 use hftbacktest::types::{
-    BUY_EVENT, DEPTH_BBO_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event, LiveEvent, SELL_EVENT,
-    TRADE_EVENT,
+    BUY_EVENT, DEPTH_BBO_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event, SELL_EVENT, TRADE_EVENT,
 };
 use titan_market_plugin::{
     AssetId, BBO_EVENT, ConnectorError, DEPTH_BATCH_EVENT, DepthItemV1, FUNDING_RATE_EVENT,
@@ -472,26 +471,18 @@ fn publish_event(
             events,
             *stream,
         ),
-        PublishEvent::LiveEvent(LiveEvent::Feed { symbol, event }) => publish_events(
-            context,
-            symbols,
-            units,
-            active_kinds,
-            symbol,
-            std::slice::from_ref(event),
-            None,
-        ),
-        PublishEvent::LiveEvent(LiveEvent::Funding {
+        PublishEvent::Funding {
             symbol,
             funding_rate,
+            next_funding_time,
             exch_ts,
-            ..
-        }) => publish_funding(
+        } => publish_funding(
             context,
             symbols,
             active_kinds,
             symbol,
             *funding_rate,
+            *next_funding_time,
             *exch_ts,
         ),
         PublishEvent::MarkPrice {
@@ -506,7 +497,7 @@ fn publish_event(
             *mark_price,
             *exch_ts,
         ),
-        PublishEvent::LiveEvent(LiveEvent::Error(error)) => {
+        PublishEvent::ConnectorError(error) => {
             Err(ConnectorError::new(format!("connector error: {error:?}")))
         }
         _ => Ok(()),
@@ -652,6 +643,7 @@ fn publish_funding(
     active_kinds: &Mutex<HashMap<AssetId, HashSet<MarketDataKind>>>,
     symbol: &str,
     funding_rate: f64,
+    _next_funding_time: i64,
     exchange_ts: i64,
 ) -> Result<(), ConnectorError> {
     let asset_id = symbols

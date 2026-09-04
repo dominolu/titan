@@ -8,7 +8,7 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use hftbacktest::prelude::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
-    LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent,
+    LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };
 use titan_market_plugin::MarketDataKind;
 use tokio::{
@@ -30,7 +30,7 @@ use crate::{
         client::HyperliquidClient,
         msg::{
             BboData, CancelAction, CancelWire, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg,
-            WsSubscribe, WsUserFunding, WsUserFundings,
+            WsSubscribe,
         },
         ordermanager::SharedOrderManager,
         signing::sign_l1_action,
@@ -129,11 +129,8 @@ impl HyperliquidWs {
     }
 
     fn reset_private_subscriptions(&mut self) {
-        self.pending_private_subscriptions = HashSet::from([
-            "orderUpdates".to_string(),
-            "userEvents".to_string(),
-            "userFundings".to_string(),
-        ]);
+        self.pending_private_subscriptions =
+            HashSet::from(["orderUpdates".to_string(), "userEvents".to_string()]);
     }
 
     fn subscription_response_type(msg: &WsMsg) -> Option<&str> {
@@ -199,9 +196,9 @@ impl HyperliquidWs {
                 if let Some(levels) = &bbo.bbo {
                     for lvl in &levels.bids {
                         self.ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                            .send(PublishEvent::FeedBatch {
                                 symbol: bbo.coin.clone(),
-                                event: Event {
+                                events: vec![Event {
                                     ev: LOCAL_BID_DEPTH_BBO_EVENT,
                                     exch_ts,
                                     local_ts,
@@ -210,15 +207,16 @@ impl HyperliquidWs {
                                     qty: lvl.sz.parse().unwrap_or(0.0),
                                     ival: 0,
                                     fval: 0.0,
-                                },
-                            }))
+                                }],
+                                stream: None,
+                            })
                             .unwrap();
                     }
                     for lvl in &levels.asks {
                         self.ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                            .send(PublishEvent::FeedBatch {
                                 symbol: bbo.coin.clone(),
-                                event: Event {
+                                events: vec![Event {
                                     ev: LOCAL_ASK_DEPTH_BBO_EVENT,
                                     exch_ts,
                                     local_ts,
@@ -227,14 +225,12 @@ impl HyperliquidWs {
                                     qty: lvl.sz.parse().unwrap_or(0.0),
                                     ival: 0,
                                     fval: 0.0,
-                                },
-                            }))
+                                }],
+                                stream: None,
+                            })
                             .unwrap();
                     }
                 }
-            }
-            "userFundings" => {
-                self.handle_user_fundings(data).await?;
             }
             "allMids"
             | "activeAssetCtx"
@@ -259,54 +255,6 @@ impl HyperliquidWs {
             }
         }
         Ok(())
-    }
-
-    /// 处理 `userFundings`：
-    /// - 快照（isSnapshot=true）：每个已注册标的最多取一条最新记录，避免历史流水灌入引擎；
-    /// - 流式（isSnapshot=false）：逐条发布（HL 每小时结算推送一次）。
-    async fn handle_user_fundings(&self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
-        let msg: WsUserFundings = serde_json::from_value(data.clone())?;
-        let symbols: HashSet<String> = self.symbols.lock().unwrap().iter().cloned().collect();
-        if msg.is_snapshot {
-            let mut latest: HashMap<String, &WsUserFunding> = HashMap::new();
-            for f in &msg.fundings {
-                if !symbols.contains(&f.coin) {
-                    continue;
-                }
-                let replace = match latest.get(&f.coin) {
-                    Some(prev) => f.time >= prev.time,
-                    None => true,
-                };
-                if replace {
-                    latest.insert(f.coin.clone(), f);
-                }
-            }
-            for f in latest.values() {
-                self.emit_funding(f);
-            }
-        } else {
-            for f in &msg.fundings {
-                if symbols.contains(&f.coin) {
-                    self.emit_funding(f);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_funding(&self, f: &WsUserFunding) {
-        self.ev_tx
-            .send(PublishEvent::LiveEvent(LiveEvent::FundingSettlement {
-                symbol: f.coin.clone(),
-                event_id: f.time,
-                amount: f.usdc.parse().unwrap_or(0.0),
-                position_qty: f.szi.parse().unwrap_or(0.0),
-                funding_rate: f.funding_rate.parse().unwrap_or(0.0),
-                mark_price: 0.0,
-                currency: 0,
-                exch_ts: (f.time * 1_000_000) as i64,
-            }))
-            .unwrap();
     }
 
     async fn handle_l2_book(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
@@ -375,9 +323,9 @@ impl HyperliquidWs {
         let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
         for trade in trades {
             self.ev_tx
-                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                .send(PublishEvent::FeedBatch {
                     symbol: trade.coin.clone(),
-                    event: Event {
+                    events: vec![Event {
                         ev: if trade_side_is_sell(&trade.side) {
                             LOCAL_SELL_TRADE_EVENT
                         } else {
@@ -390,8 +338,9 @@ impl HyperliquidWs {
                         qty: trade.sz.parse().unwrap_or(0.0),
                         ival: 0,
                         fval: 0.0,
-                    },
-                }))
+                    }],
+                    stream: None,
+                })
                 .unwrap();
         }
         Ok(())
@@ -594,7 +543,7 @@ impl HyperliquidWs {
             if let Err(error) = self.seed_positions().await {
                 error!(?error, "Couldn't seed the initial positions.");
             }
-            for channel in ["orderUpdates", "userEvents", "userFundings"] {
+            for channel in ["orderUpdates", "userEvents"] {
                 let subscribe = WsSubscribe {
                     method: "subscribe".to_string(),
                     subscription: serde_json::json!({
@@ -771,6 +720,7 @@ async fn get_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hyperliquid::msg::WsUserFundings;
 
     #[tokio::test]
     async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
@@ -843,7 +793,7 @@ mod tests {
         );
         ws.reset_private_subscriptions();
 
-        for kind in ["l2Book", "orderUpdates", "orderUpdates", "userEvents"] {
+        for kind in ["l2Book", "orderUpdates", "orderUpdates"] {
             let message = serde_json::json!({
                 "channel": "subscriptionResponse",
                 "data": {"subscription": {"type": kind}}
@@ -858,7 +808,7 @@ mod tests {
 
         let final_ack = serde_json::json!({
             "channel": "subscriptionResponse",
-            "data": {"subscription": {"type": "userFundings"}}
+            "data": {"subscription": {"type": "userEvents"}}
         });
         ws.handle_msg(&final_ack.to_string()).await.unwrap();
         assert!(matches!(
@@ -968,82 +918,5 @@ mod tests {
         let msg: WsUserFundings = serde_json::from_str(json).unwrap();
         assert!(!msg.is_snapshot);
         assert_eq!(msg.fundings[0].funding_rate, "0.000052");
-    }
-
-    /// 实盘冒烟：订阅 `userFundings` 并验证快照消息可用本模块结构解析。
-    /// 需设置 `HYPERLIQUID_USER`（可选 `HYPERLIQUID_WS_URL`）。
-    /// 运行：`HYPERLIQUID_USER=0x... cargo test --all-features hyperliquid::ws::tests::live_user_fundings -- --ignored --nocapture`
-    #[tokio::test]
-    #[ignore]
-    async fn live_user_fundings_subscription() {
-        let Ok(user) = std::env::var("HYPERLIQUID_USER") else {
-            eprintln!("skip: HYPERLIQUID_USER not set");
-            return;
-        };
-        let url = std::env::var("HYPERLIQUID_WS_URL")
-            .unwrap_or_else(|_| "wss://api.hyperliquid.xyz/ws".to_string());
-        // 环境网络偶发 WS 抖动，重试连接。
-        let mut ws_stream = None;
-        for attempt in 0..3 {
-            match tokio_tungstenite::connect_async(&url).await {
-                Ok(conn) => {
-                    ws_stream = Some(conn);
-                    break;
-                }
-                Err(e) if attempt < 2 => {
-                    eprintln!("ws connect attempt {attempt} failed: {e}; retrying");
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
-                Err(e) => {
-                    // 环境网络抖动时允许跳过（该测试为手动验证用）。
-                    eprintln!("skip: ws connect failed: {e}");
-                    return;
-                }
-            }
-        }
-        let (ws_stream, _) = ws_stream.unwrap();
-        let (mut write, mut read) = ws_stream.split();
-        let sub = serde_json::json!({
-            "method": "subscribe",
-            "subscription": {"type": "userFundings", "user": user},
-        });
-        write
-            .send(Message::Text(sub.to_string().into()))
-            .await
-            .unwrap();
-
-        let mut got_snapshot = false;
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            match read.next().await {
-                Some(Ok(Message::Text(text))) => {
-                    let msg: WsMsg = serde_json::from_str(&text).unwrap();
-                    if msg.channel == "userFundings" {
-                        let data = msg.data.unwrap_or_default();
-                        let fundings: WsUserFundings = serde_json::from_value(data).unwrap();
-                        println!(
-                            "userFundings snapshot={} count={}",
-                            fundings.is_snapshot,
-                            fundings.fundings.len()
-                        );
-                        if let Some(f) = fundings.fundings.first() {
-                            println!(
-                                "sample: coin={} rate={} usdc={} time={}",
-                                f.coin, f.funding_rate, f.usdc, f.time
-                            );
-                        }
-                        got_snapshot = true;
-                        break;
-                    }
-                    if msg.channel == "subscriptionResponse" {
-                        println!("subscription accepted");
-                    }
-                }
-                Some(Ok(_)) => {}
-                Some(Err(e)) => panic!("ws error: {e}"),
-                None => break,
-            }
-        }
-        assert!(got_snapshot, "no userFundings snapshot received");
     }
 }

@@ -12,7 +12,7 @@ use std::{
 
 use hftbacktest::{
     prelude::get_precision,
-    types::{ErrorKind, LiveError, LiveEvent, Order, Status, Value},
+    types::{ErrorKind, LiveError, Order, Status, Value},
 };
 use serde::Deserialize;
 use thiserror::Error;
@@ -206,10 +206,10 @@ impl BinanceFutures {
                             "An error occurred in the market data stream connection."
                         );
                         ev_tx
-                            .send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
+                            .send(PublishEvent::ConnectorError(LiveError::with(
                                 ErrorKind::ConnectionInterrupted,
                                 error.into(),
-                            ))))
+                            )))
                             .unwrap();
                         Ok(())
                     })
@@ -411,139 +411,6 @@ impl Connector for BinanceFutures {
 
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
         Some(Arc::new(self.client.clone()))
-    }
-
-    fn submit(&self, symbol: String, mut order: Order, tx: crate::connector::PublishSender) {
-        let client = self.client.clone();
-        let order_manager = self.order_manager.clone();
-
-        tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
-                .prepare_client_order_id(symbol.clone(), order.clone());
-
-            match client_order_id {
-                Some(client_order_id) => {
-                    let result = client
-                        .submit_order(
-                            &client_order_id,
-                            &symbol,
-                            order.side,
-                            order.price_tick as f64 * order.tick_size,
-                            get_precision(order.tick_size),
-                            order.qty,
-                            order.order_type,
-                            order.time_in_force,
-                        )
-                        .await;
-                    match result {
-                        Ok(resp) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_from_rest(&client_order_id, &resp)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                        }
-                        Err(error) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_submit_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::OrderError,
-                                error.into(),
-                            ))))
-                            .unwrap();
-                        }
-                    }
-                }
-                None => {
-                    warn!(
-                        ?order,
-                        "Coincidentally, creates a duplicated client order id. \
-                        This order request will be expired."
-                    );
-                    order.req = Status::None;
-                    order.status = Status::Expired;
-                    tx.send(PublishEvent::LiveEvent(LiveEvent::Order { symbol, order }))
-                        .unwrap();
-                }
-            }
-        });
-    }
-
-    fn cancel(&self, symbol: String, order: Order, tx: crate::connector::PublishSender) {
-        let client = self.client.clone();
-        let order_manager = self.order_manager.clone();
-
-        tokio::spawn(async move {
-            let client_order_id = order_manager
-                .lock()
-                .unwrap()
-                .get_client_order_id(&symbol, order.order_id);
-
-            match client_order_id {
-                Some(client_order_id) => {
-                    let result = client.cancel_order(&client_order_id, &symbol).await;
-                    match result {
-                        Ok(resp) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_from_rest(&client_order_id, &resp)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-                        }
-                        Err(error) => {
-                            if let Some(order) = order_manager
-                                .lock()
-                                .unwrap()
-                                .update_cancel_fail(&client_order_id, &error)
-                            {
-                                tx.send(PublishEvent::LiveEvent(LiveEvent::Order {
-                                    symbol,
-                                    order,
-                                }))
-                                .unwrap();
-                            }
-
-                            tx.send(PublishEvent::LiveEvent(LiveEvent::Error(LiveError::with(
-                                ErrorKind::OrderError,
-                                error.into(),
-                            ))))
-                            .unwrap();
-                        }
-                    }
-                }
-                None => {
-                    warn!(
-                        order_id = order.order_id,
-                        "client_order_id corresponding to order_id is not found; \
-                        this may be due to the order already being canceled or filled."
-                    );
-                }
-            }
-        });
     }
 
     async fn shutdown(&self) -> Result<(), String> {

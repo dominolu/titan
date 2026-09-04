@@ -5,7 +5,7 @@ use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use hftbacktest::prelude::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
     LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
-    LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, LiveEvent,
+    LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };
 use titan_market_plugin::MarketDataKind;
 use tokio::{
@@ -314,9 +314,9 @@ impl PublicStream {
                 let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
                 for trade in trades {
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                        .send(PublishEvent::FeedBatch {
                             symbol: trade.inst_id.clone(),
-                            event: Event {
+                            events: vec![Event {
                                 ev: if trade.side == "sell" {
                                     LOCAL_SELL_TRADE_EVENT
                                 } else {
@@ -329,8 +329,9 @@ impl PublicStream {
                                 qty: trade.sz.parse().unwrap_or(0.0),
                                 ival: 0,
                                 fval: 0.0,
-                            },
-                        }))
+                            }],
+                            stream: None,
+                        })
                         .unwrap();
                 }
             }
@@ -338,13 +339,13 @@ impl PublicStream {
                 for value in &data.data {
                     let funding: FundingRate = serde_json::from_value(value.clone())?;
                     self.ev_tx
-                        .send(PublishEvent::LiveEvent(LiveEvent::Funding {
+                        .send(PublishEvent::Funding {
                             symbol: funding.inst_id,
                             funding_rate: funding.funding_rate.parse().unwrap_or(0.0),
                             next_funding_time: funding.next_funding_time.parse().unwrap_or(0)
                                 * 1_000_000,
                             exch_ts: funding.funding_time.parse().unwrap_or(0) * 1_000_000,
-                        }))
+                        })
                         .unwrap();
                 }
             }
@@ -413,9 +414,9 @@ impl PublicStream {
                     if let Ok(bid_px) = bbo.bid_px.parse::<f64>() {
                         if bid_px > 0.0 {
                             self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                                .send(PublishEvent::FeedBatch {
                                     symbol: bbo.inst_id.clone(),
-                                    event: Event {
+                                    events: vec![Event {
                                         ev: LOCAL_BID_DEPTH_BBO_EVENT,
                                         exch_ts,
                                         local_ts,
@@ -424,17 +425,18 @@ impl PublicStream {
                                         qty: bbo.bid_sz.parse().unwrap_or(0.0),
                                         ival: 0,
                                         fval: 0.0,
-                                    },
-                                }))
+                                    }],
+                                    stream: None,
+                                })
                                 .unwrap();
                         }
                     }
                     if let Ok(ask_px) = bbo.ask_px.parse::<f64>() {
                         if ask_px > 0.0 {
                             self.ev_tx
-                                .send(PublishEvent::LiveEvent(LiveEvent::Feed {
+                                .send(PublishEvent::FeedBatch {
                                     symbol: bbo.inst_id,
-                                    event: Event {
+                                    events: vec![Event {
                                         ev: LOCAL_ASK_DEPTH_BBO_EVENT,
                                         exch_ts,
                                         local_ts,
@@ -443,8 +445,9 @@ impl PublicStream {
                                         qty: bbo.ask_sz.parse().unwrap_or(0.0),
                                         ival: 0,
                                         fval: 0.0,
-                                    },
-                                }))
+                                    }],
+                                    stream: None,
+                                })
                                 .unwrap();
                         }
                     }

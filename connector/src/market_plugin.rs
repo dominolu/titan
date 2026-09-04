@@ -182,18 +182,13 @@ impl MarketConnector for MarketConnectorRuntime {
                 DirectPublication::Event(value) => (
                     event_bridge.publish(value),
                     value.lossy_market_symbol(),
-                    matches!(
-                        value,
-                        PublishEvent::LiveEvent(hftbacktest::types::LiveEvent::Error(_))
-                    ),
+                    matches!(value, PublishEvent::ConnectorError(_)),
                     matches!(
                         value,
                         PublishEvent::FeedBatch { .. }
                             | PublishEvent::StreamInvalidated { .. }
-                            | PublishEvent::LiveEvent(hftbacktest::types::LiveEvent::Feed { .. })
-                            | PublishEvent::LiveEvent(
-                                hftbacktest::types::LiveEvent::Funding { .. }
-                            )
+                            | PublishEvent::Funding { .. }
+                            | PublishEvent::MarkPrice { .. }
                     ),
                 ),
                 DirectPublication::NativeMarket(batch) => {
@@ -863,20 +858,6 @@ mod tests {
                     })
                 );
             }
-        }
-        fn submit(
-            &self,
-            _: String,
-            _: hftbacktest::types::Order,
-            _: crate::connector::PublishSender,
-        ) {
-        }
-        fn cancel(
-            &self,
-            _: String,
-            _: hftbacktest::types::Order,
-            _: crate::connector::PublishSender,
-        ) {
         }
         async fn shutdown(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push("shutdown".to_owned());
