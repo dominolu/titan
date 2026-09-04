@@ -28,6 +28,7 @@ async-trait = "0.1"
 toml = "0.9.8"
 titan-market-plugin = { path = "../crates/titan-market-plugin" }
 titan-account-plugin = { path = "../crates/titan-account-plugin" }
+titan-runtime-abi = { path = "../crates/titan-runtime-abi" }
 titan-plugin-engine = { path = "../crates/titan-plugin-engine" }
 tracing-subscriber = "0.3.22"
 hashbrown = "0.16.1"

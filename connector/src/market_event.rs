@@ -17,6 +17,7 @@ use titan_market_plugin::{
     STREAM_INVALIDATED_EVENT, TRADE_BATCH_EVENT,
 };
 use titan_plugin_engine::TraceContext;
+use titan_runtime_abi::DecimalUnit;
 
 use crate::connector::{MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent};
 
@@ -24,124 +25,87 @@ use crate::connector::{MarketStreamMetadata, NativeDepthLevels, NativeMarketBatc
 pub(crate) struct InstrumentUnits {
     pub(crate) price_tick: f64,
     pub(crate) quantity_lot: f64,
-    price_decimal: Option<DecimalUnit>,
-    quantity_decimal: Option<DecimalUnit>,
+    price_unit: DecimalUnit,
+    quantity_unit: DecimalUnit,
 }
 
-#[derive(Clone, Copy)]
-struct DecimalUnit {
-    decimals: u32,
-    scale: u64,
-    quantum: u64,
-}
-
-impl DecimalUnit {
-    const POW10: [u64; 13] = [
-        1,
-        10,
-        100,
-        1_000,
-        10_000,
-        100_000,
-        1_000_000,
-        10_000_000,
-        100_000_000,
-        1_000_000_000,
-        10_000_000_000,
-        100_000_000_000,
-        1_000_000_000_000,
-    ];
-
-    fn from_f64(unit: f64) -> Option<Self> {
-        if !unit.is_finite() || unit <= 0.0 {
-            return None;
-        }
-        let mut factor = 1.0;
-        for decimals in 0..=12 {
-            let scaled = unit * factor;
-            let rounded = scaled.round();
-            if rounded >= 1.0 && (scaled - rounded).abs() <= scaled.abs().max(1.0) * 1e-12 {
-                return Some(Self {
-                    decimals,
-                    scale: Self::POW10[decimals as usize],
-                    quantum: rounded as u64,
-                });
-            }
-            factor *= 10.0;
-        }
-        None
+fn parse_exact_decimal(value: &str, unit: DecimalUnit, field: &str) -> Result<i64, ConnectorError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err(ConnectorError::new(format!("empty {field}")));
+    }
+    let (index, negative) = match bytes[0] {
+        b'-' => (1, true),
+        b'+' => (1, false),
+        _ => (0, false),
+    };
+    let unsigned = &bytes[index..];
+    let decimal_at = unsigned
+        .iter()
+        .position(|value| *value == b'.')
+        .unwrap_or(unsigned.len());
+    let whole_bytes = &unsigned[..decimal_at];
+    let fraction_bytes = if decimal_at < unsigned.len() {
+        &unsigned[decimal_at + 1..]
+    } else {
+        &[]
+    };
+    if whole_bytes.is_empty() && fraction_bytes.is_empty() {
+        return Err(ConnectorError::new(format!("invalid {field}")));
     }
 
-    fn parse(self, value: &str, field: &str) -> Result<i64, ConnectorError> {
-        let bytes = value.as_bytes();
-        if bytes.is_empty() {
-            return Err(ConnectorError::new(format!("empty {field}")));
-        }
-        let (index, negative) = match bytes[0] {
-            b'-' => (1, true),
-            b'+' => (1, false),
-            _ => (0, false),
-        };
-        let unsigned = &bytes[index..];
-        let decimal_at = unsigned
-            .iter()
-            .position(|value| *value == b'.')
-            .unwrap_or(unsigned.len());
-        let whole_bytes = &unsigned[..decimal_at];
-        let fraction_bytes = if decimal_at < unsigned.len() {
-            &unsigned[decimal_at + 1..]
-        } else {
-            &[]
-        };
-        if whole_bytes.is_empty() && fraction_bytes.is_empty() {
-            return Err(ConnectorError::new(format!("invalid {field}")));
-        }
-
-        let parse_digits = |digits: &[u8]| -> Result<u64, ConnectorError> {
-            let mut value = 0_u64;
-            for &digit in digits {
-                if !digit.is_ascii_digit() {
-                    return Err(ConnectorError::new(format!("invalid {field}")));
-                }
-                let digit = u64::from(digit - b'0');
-                if value > (u64::MAX - digit) / 10 {
-                    return Err(ConnectorError::new(format!("{field} is out of range")));
-                }
-                value = value * 10 + digit;
+    let parse_digits = |digits: &[u8]| -> Result<u64, ConnectorError> {
+        let mut value = 0_u64;
+        for &digit in digits {
+            if !digit.is_ascii_digit() {
+                return Err(ConnectorError::new(format!("invalid {field}")));
             }
-            Ok(value)
-        };
-        let whole = parse_digits(whole_bytes)?;
-        let retained_fraction_digits = fraction_bytes.len().min(self.decimals as usize);
-        let mut fraction = parse_digits(&fraction_bytes[..retained_fraction_digits])?;
-        let discarded_fraction = &fraction_bytes[retained_fraction_digits..];
-        if discarded_fraction.iter().any(|digit| *digit != b'0') {
-            return Err(ConnectorError::new(format!(
-                "{field} is not aligned to its instrument unit"
-            )));
-        }
-        fraction = fraction
-            .checked_mul(Self::POW10[self.decimals as usize - retained_fraction_digits])
-            .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
-        let mantissa = whole
-            .checked_mul(self.scale)
-            .and_then(|value| value.checked_add(fraction))
-            .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
-        if mantissa % self.quantum != 0 {
-            return Err(ConnectorError::new(format!(
-                "{field} is not aligned to its instrument unit"
-            )));
-        }
-        let scaled = mantissa / self.quantum;
-        if negative {
-            if scaled > i64::MAX as u64 + 1 {
+            let digit = u64::from(digit - b'0');
+            if value > (u64::MAX - digit) / 10 {
                 return Err(ConnectorError::new(format!("{field} is out of range")));
             }
-            Ok(-(scaled as i128) as i64)
-        } else {
-            i64::try_from(scaled)
-                .map_err(|_| ConnectorError::new(format!("{field} is out of range")))
+            value = value * 10 + digit;
         }
+        Ok(value)
+    };
+
+    let scale = usize::from(unit.scale());
+    let whole = parse_digits(whole_bytes)?;
+    let retained = fraction_bytes.len().min(scale);
+    let mut fraction = parse_digits(&fraction_bytes[..retained])?;
+    if fraction_bytes[retained..]
+        .iter()
+        .any(|digit| *digit != b'0')
+    {
+        return Err(ConnectorError::new(format!(
+            "{field} is not aligned to its instrument unit"
+        )));
+    }
+    let pow10 = u64::checked_pow(10, (scale - retained) as u32)
+        .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
+    fraction = fraction
+        .checked_mul(pow10)
+        .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
+    let mantissa_scale = u64::checked_pow(10, scale as u32)
+        .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
+    let mantissa = whole
+        .checked_mul(mantissa_scale)
+        .and_then(|value| value.checked_add(fraction))
+        .ok_or_else(|| ConnectorError::new(format!("{field} is out of range")))?;
+    let coefficient = unit.coefficient();
+    if mantissa % coefficient != 0 {
+        return Err(ConnectorError::new(format!(
+            "{field} is not aligned to its instrument unit"
+        )));
+    }
+    let scaled = mantissa / coefficient;
+    if negative {
+        if scaled > i64::MAX as u64 + 1 {
+            return Err(ConnectorError::new(format!("{field} is out of range")));
+        }
+        Ok(-(scaled as i128) as i64)
+    } else {
+        i64::try_from(scaled).map_err(|_| ConnectorError::new(format!("{field} is out of range")))
     }
 }
 
@@ -166,10 +130,10 @@ impl MarketEventBridge {
                 (
                     binding.asset_id,
                     InstrumentUnits {
-                        price_tick: binding.price_tick,
-                        quantity_lot: binding.quantity_lot,
-                        price_decimal: DecimalUnit::from_f64(binding.price_tick),
-                        quantity_decimal: DecimalUnit::from_f64(binding.quantity_lot),
+                        price_tick: binding.price_tick.as_f64(),
+                        quantity_lot: binding.quantity_lot.as_f64(),
+                        price_unit: binding.price_tick,
+                        quantity_unit: binding.quantity_lot,
                     },
                 )
             })
@@ -316,42 +280,22 @@ impl MarketEventBridge {
                     .map_err(ConnectorError::new)?;
                 let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
                 for (side, levels) in [(1, bids), (2, asks)] {
-                    let mut encode_level =
-                        |price: &str, quantity: &str| -> Result<(), ConnectorError> {
-                            let price_ticks = units.price_decimal.map_or_else(
-                                || {
-                                    scaled(
-                                        price.parse::<f64>().map_err(|error| {
-                                            ConnectorError::new(error.to_string())
-                                        })?,
-                                        units.price_tick,
-                                        "price",
-                                    )
-                                },
-                                |unit| unit.parse(price, "price"),
-                            )?;
-                            let quantity_lots = units.quantity_decimal.map_or_else(
-                                || {
-                                    scaled(
-                                        quantity.parse::<f64>().map_err(|error| {
-                                            ConnectorError::new(error.to_string())
-                                        })?,
-                                        units.quantity_lot,
-                                        "quantity",
-                                    )
-                                },
-                                |unit| unit.parse(quantity, "quantity"),
-                            )?;
-                            let end = offset + DepthItemV1::ENCODED_LEN;
-                            let output = &mut payload[offset..end];
-                            output[0..8].copy_from_slice(&price_ticks.to_le_bytes());
-                            output[8..16].copy_from_slice(&quantity_lots.to_le_bytes());
-                            output[16] = side;
-                            output[17] = if quantity_lots == 0 { 2 } else { 1 };
-                            output[18..24].fill(0);
-                            offset = end;
-                            Ok(())
-                        };
+                    let mut encode_level = |price: &str,
+                                            quantity: &str|
+                     -> Result<(), ConnectorError> {
+                        let price_ticks = parse_exact_decimal(price, units.price_unit, "price")?;
+                        let quantity_lots =
+                            parse_exact_decimal(quantity, units.quantity_unit, "quantity")?;
+                        let end = offset + DepthItemV1::ENCODED_LEN;
+                        let output = &mut payload[offset..end];
+                        output[0..8].copy_from_slice(&price_ticks.to_le_bytes());
+                        output[8..16].copy_from_slice(&quantity_lots.to_le_bytes());
+                        output[16] = side;
+                        output[17] = if quantity_lots == 0 { 2 } else { 1 };
+                        output[18..24].fill(0);
+                        offset = end;
+                        Ok(())
+                    };
                     match levels {
                         NativeDepthLevels::Owned(levels) => {
                             for (price, quantity) in levels {
@@ -736,7 +680,8 @@ pub(crate) fn scaled(value: f64, unit: f64, field: &str) -> Result<i64, Connecto
 
 #[cfg(test)]
 mod tests {
-    use super::{DecimalUnit, scaled};
+    use super::{parse_exact_decimal, scaled};
+    use titan_runtime_abi::DecimalUnit;
 
     #[test]
     fn decimal_scaling_rejects_invalid_values() {
@@ -749,12 +694,21 @@ mod tests {
 
     #[test]
     fn decimal_unit_parses_exchange_numbers_without_float_roundtrip() {
-        let tick = DecimalUnit::from_f64(0.1).unwrap();
-        let lot = DecimalUnit::from_f64(0.0001).unwrap();
-        assert_eq!(tick.parse("12345.60000000", "price").unwrap(), 123_456);
-        assert_eq!(lot.parse("0.01230000", "quantity").unwrap(), 123);
-        assert_eq!(lot.parse("0.00000000", "quantity").unwrap(), 0);
-        assert!(tick.parse("1.25", "price").is_err());
-        assert!(lot.parse("1e-4", "quantity").is_err());
+        let tick: DecimalUnit = "0.1".parse().unwrap();
+        let lot: DecimalUnit = "0.0001".parse().unwrap();
+        assert_eq!(
+            parse_exact_decimal("12345.60000000", tick, "price").unwrap(),
+            123_456
+        );
+        assert_eq!(
+            parse_exact_decimal("0.01230000", lot, "quantity").unwrap(),
+            123
+        );
+        assert_eq!(
+            parse_exact_decimal("0.00000000", lot, "quantity").unwrap(),
+            0
+        );
+        assert!(parse_exact_decimal("1.25", tick, "price").is_err());
+        assert!(parse_exact_decimal("1e-4", lot, "quantity").is_err());
     }
 }

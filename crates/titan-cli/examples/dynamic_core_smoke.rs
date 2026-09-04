@@ -206,8 +206,8 @@ fn market_source(
         instruments: vec![MarketInstrumentBinding {
             native_symbol: native_symbol.into(),
             asset_id: AssetId(asset_id),
-            price_tick: 0.1,
-            quantity_lot: 0.001,
+            price_tick: "0.1".parse().unwrap(),
+            quantity_lot: "0.001".parse().unwrap(),
         }]
         .into(),
         enabled: false,

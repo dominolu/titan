@@ -1,12 +1,13 @@
 use std::{
     fmt,
-    str::FromStr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Instant, SystemTime},
 };
+
+pub use titan_runtime_abi::DecimalUnit;
 
 use serde::{Deserialize, Serialize};
 use titan_plugin_engine::{
@@ -35,76 +36,6 @@ pub struct CurrencyId(pub u32);
 pub struct AccountHandle {
     pub account_id: AccountId,
     pub generation: u64,
-}
-
-/// Exact positive decimal unit represented as `coefficient * 10^-scale`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct DecimalUnit {
-    coefficient: u64,
-    scale: u8,
-}
-
-impl DecimalUnit {
-    pub const MAX_SCALE: u8 = 18;
-
-    pub fn new(coefficient: u64, scale: u8) -> Result<Self, &'static str> {
-        if coefficient == 0 || scale > Self::MAX_SCALE {
-            return Err("decimal unit must be positive and have at most 18 decimal places");
-        }
-        let mut coefficient = coefficient;
-        let mut scale = scale;
-        while scale > 0 && coefficient % 10 == 0 {
-            coefficient /= 10;
-            scale -= 1;
-        }
-        Ok(Self { coefficient, scale })
-    }
-
-    pub fn coefficient(self) -> u64 {
-        self.coefficient
-    }
-    pub fn scale(self) -> u8 {
-        self.scale
-    }
-}
-
-impl fmt::Display for DecimalUnit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.scale == 0 {
-            return write!(f, "{}", self.coefficient);
-        }
-        let digits = self.coefficient.to_string();
-        let scale = usize::from(self.scale);
-        if digits.len() <= scale {
-            write!(f, "0.{:0>width$}", digits, width = scale)
-        } else {
-            let split = digits.len() - scale;
-            write!(f, "{}.{}", &digits[..split], &digits[split..])
-        }
-    }
-}
-
-impl FromStr for DecimalUnit {
-    type Err = &'static str;
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let input = input.trim();
-        if input.is_empty() || input.starts_with('-') || input.starts_with('+') {
-            return Err("invalid positive decimal unit");
-        }
-        let (whole, fraction) = input.split_once('.').unwrap_or((input, ""));
-        if whole.is_empty()
-            || fraction.len() > usize::from(Self::MAX_SCALE)
-            || !whole
-                .bytes()
-                .chain(fraction.bytes())
-                .all(|b| b.is_ascii_digit())
-        {
-            return Err("invalid positive decimal unit");
-        }
-        let digits = format!("{whole}{fraction}");
-        let coefficient = digits.parse::<u64>().map_err(|_| "decimal unit overflow")?;
-        Self::new(coefficient, fraction.len() as u8)
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

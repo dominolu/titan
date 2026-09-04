@@ -12,15 +12,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hftbacktest::{
-    prelude::get_precision,
-    types::{ErrorKind, LiveError, OrdType, Order, Side, Status, TimeInForce, Value},
-};
+use hftbacktest::types::{ErrorKind, LiveError, Order, Value};
 use serde::Deserialize;
 use thiserror::Error;
 use titan_market_plugin::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::{
     connector::{

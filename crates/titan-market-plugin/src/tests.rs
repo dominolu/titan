@@ -194,8 +194,8 @@ fn definition(key: &str, asset: u32) -> MarketSourceDefinition {
         instruments: Arc::from([MarketInstrumentBinding {
             native_symbol: Arc::from("BTCUSDT"),
             asset_id: AssetId(asset),
-            price_tick: 0.1,
-            quantity_lot: 0.001,
+            price_tick: "0.1".parse().unwrap(),
+            quantity_lot: "0.001".parse().unwrap(),
         }]),
         enabled: true,
         definition_version: 1,
@@ -493,7 +493,7 @@ fn duplicate_assets_capacity_and_failed_factory_are_rolled_back() {
         matches!(admin_call(&plugin_engine, MarketAdminRequest::List).unwrap(), MarketAdminResponse::Sources(values) if values.is_empty())
     );
     let mut invalid_units = definition("invalid-units", 9);
-    Arc::make_mut(&mut invalid_units.instruments)[0].price_tick = 0.0;
+    Arc::make_mut(&mut invalid_units.instruments)[0].native_symbol = Arc::from("");
     assert_eq!(
         admin_call(&plugin_engine, MarketAdminRequest::Create(invalid_units))
             .unwrap_err()
