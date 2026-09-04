@@ -329,8 +329,10 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   Order/Fill 更新不再因“未知 client id”被丢弃。
 - [x] Binance/OKX 私有流对已登记 client id 不再强制旧前缀；Hyperliquid 统一
   32-hex ↔ `0x` cloid 编码（REST 提交与 OrderManager 键一致）。
-- [ ] CommandJournal 终态释放：事件已能带 client/command 身份后，仍需把 encoder/私有流
-  终态回写 journal（释放已完成命令、保留 pending/unknown），并接入现有 1,024 历史上限语义。
+- [x] CommandJournal 终态释放：私有流/encoder 的终态 OrderChanged 按 client id 回写释放
+  submit/amend/cancel 条目；REST 已知终态、明确失败和 CancelAll/CancelAllAfter 释放对应
+  command；unknown 结果与仍开放的订单命令保留用于幂等，容量仍由 command queue 上限约束。
+  2026-09-04 在 Binance 主网探针路径复验未回归。
 
 ### 4.10 Binance REST→私有流主网字段语义验收（2026-09-04）
 
