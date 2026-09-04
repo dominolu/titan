@@ -4,10 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "binancespot", "bybit"]
+default = ["binancefutures", "okx", "hyperliquid"]
 binancefutures = []
-binancespot = []
-bybit = []
 okx = []
 hyperliquid = []
 
@@ -27,13 +25,11 @@ futures-util = { version = "0.3.31" }
 sha2 = "0.10.9"
 hmac = "0.12.1"
 async-trait = "0.1"
-iceoryx2 = { version = "0.6.1", features = ["logger_tracing"] }
 toml = "0.9.8"
 titan-market-plugin = { path = "../crates/titan-market-plugin" }
 titan-account-plugin = { path = "../crates/titan-account-plugin" }
 titan-plugin-engine = { path = "../crates/titan-plugin-engine" }
 tracing-subscriber = "0.3.22"
-clap = { version = "4.5.53", features = ["derive"] }
 hashbrown = "0.16.1"
 crc32fast = "1"
 rand = "0.9.2"

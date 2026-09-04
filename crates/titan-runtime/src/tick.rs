@@ -107,17 +107,6 @@ pub fn validate_runtime_capabilities(
     )
 }
 
-#[cfg(feature = "live")]
-type HashMapMarketDepthLiveBot = hftbacktest::live::LiveBot<
-    hftbacktest::live::ipc::iceoryx::IceoryxUnifiedChannel,
-    hftbacktest::depth::HashMapMarketDepth,
->;
-#[cfg(feature = "live")]
-type ROIVectorMarketDepthLiveBot = hftbacktest::live::LiveBot<
-    hftbacktest::live::ipc::iceoryx::IceoryxUnifiedChannel,
-    hftbacktest::depth::ROIVectorMarketDepth,
->;
-
 pub struct TickFrameSource<'a, B, MD> {
     hbt: &'a mut B,
     frame_interval: i64,
@@ -278,98 +267,6 @@ where
         Vec<hftbacktest::backtest::result::AccountSnapshot>,
     ) {
         Backtest::shared_account_snapshots(self)
-    }
-}
-
-#[cfg(feature = "live")]
-impl RuntimeBotEvents for HashMapMarketDepthLiveBot {
-    type RuntimeError = hftbacktest::live::BotError;
-    fn set_runtime_capture(&mut self, enabled: bool) {
-        self.set_runtime_capture(enabled);
-    }
-    fn runtime_feed_events(&self) -> &[(usize, Event)] {
-        self.runtime_feed_events()
-    }
-    fn clear_runtime_feed_events(&mut self) {
-        self.clear_runtime_feed_events();
-    }
-    fn runtime_order_events(&self) -> &[(usize, i64, Order)] {
-        self.runtime_order_events()
-    }
-    fn clear_runtime_order_events(&mut self) {
-        self.clear_runtime_order_events();
-    }
-    fn drain_runtime_projected_events(
-        &mut self,
-        output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
-    ) {
-        self.drain_runtime_projected_events(output);
-    }
-    fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
-        self.runtime_funding_events()
-    }
-    fn clear_runtime_funding_events(&mut self) {
-        self.clear_runtime_funding_events();
-    }
-    fn settle_runtime_funding(
-        &mut self,
-        _scheduled: hftbacktest::backtest::execution::ScheduledFunding,
-        _engine: &mut hftbacktest::backtest::execution::FundingEngine,
-        _sequence: u64,
-    ) -> Result<Option<hftbacktest::backtest::execution::FundingReport>, Self::RuntimeError> {
-        Ok(None)
-    }
-    fn deliver_runtime_funding(
-        &mut self,
-        _report: hftbacktest::backtest::execution::FundingReport,
-    ) -> Result<(), Self::RuntimeError> {
-        Ok(())
-    }
-}
-
-#[cfg(feature = "live")]
-impl RuntimeBotEvents for ROIVectorMarketDepthLiveBot {
-    type RuntimeError = hftbacktest::live::BotError;
-    fn set_runtime_capture(&mut self, enabled: bool) {
-        self.set_runtime_capture(enabled);
-    }
-    fn runtime_feed_events(&self) -> &[(usize, Event)] {
-        self.runtime_feed_events()
-    }
-    fn clear_runtime_feed_events(&mut self) {
-        self.clear_runtime_feed_events();
-    }
-    fn runtime_order_events(&self) -> &[(usize, i64, Order)] {
-        self.runtime_order_events()
-    }
-    fn clear_runtime_order_events(&mut self) {
-        self.clear_runtime_order_events();
-    }
-    fn drain_runtime_projected_events(
-        &mut self,
-        output: &mut Vec<(usize, hftbacktest::backtest::execution::ProjectedEvent)>,
-    ) {
-        self.drain_runtime_projected_events(output);
-    }
-    fn runtime_funding_events(&self) -> &[(usize, RuntimeFunding)] {
-        self.runtime_funding_events()
-    }
-    fn clear_runtime_funding_events(&mut self) {
-        self.clear_runtime_funding_events();
-    }
-    fn settle_runtime_funding(
-        &mut self,
-        _scheduled: hftbacktest::backtest::execution::ScheduledFunding,
-        _engine: &mut hftbacktest::backtest::execution::FundingEngine,
-        _sequence: u64,
-    ) -> Result<Option<hftbacktest::backtest::execution::FundingReport>, Self::RuntimeError> {
-        Ok(None)
-    }
-    fn deliver_runtime_funding(
-        &mut self,
-        _report: hftbacktest::backtest::execution::FundingReport,
-    ) -> Result<(), Self::RuntimeError> {
-        Ok(())
     }
 }
 

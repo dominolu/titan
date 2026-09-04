@@ -6,8 +6,8 @@
 > [Bar/Tick 回测与实盘统一策略接口](bar_tick_numba_strategy.md)。Rust trait 将作为核心
 > 内部接口、测试接口或迁移期兼容层保留，不应被视为最终 Python API。
 
-Rust 策略通过 `hftbacktest::strategy::Strategy` trait 编写，同一份实现直接跑回测
-（`Backtest`）和实盘（`LiveBot`）——这就是「研究到实盘零差异」的核心兑现方式。
+Rust 策略通过 `hftbacktest::strategy::Strategy` trait 编写，跑在 hftbacktest
+回测引擎（`Backtest`）上；实盘走 Titan 的 EventEngine/PluginEngine 新链路。
 可运行的最小参考实现是 [examples](../examples/src/market_making.rs) crate 里的
 `MarketMaking`（对标根 README 的 Python 做市示例）。
 
@@ -134,17 +134,10 @@ hbt.clear_inactive_orders(Some(asset_no)); // 从本地订单表移除已成交/
 
 ## 实盘接线
 
-连接器进程 + 机器人通过 iceoryx 共享内存通信，策略代码不变：
-
-```console
-# 1. 启动连接器（OKX 模拟盘示例，配置文件见 connector/examples/okx.toml）
-cargo run -p connector --features okx -- --name my-okx --connector okx --config okx_demo.toml
-
-# 2. 启动策略（examples/src/bin/live.rs）
-cargo run -p titan-examples --bin live -- \
-    --connector-name my-okx --symbol BTC-USDT-SWAP \
-    --tick-size 0.1 --lot-size 0.001 --run-seconds 30
-```
+旧连接器进程 + iceoryx IPC 的实盘路径已随重构删除。当前实盘统一走 `titan` CLI：
+PluginEngine 动态加载交易所插件包，Market/AccountPlugin 经 EventEngine 与策略 consumer 相连；
+Rust 侧市场做市示例 `MarketMaking` 保留用于回测，Numba 策略与配置见 README 与
+[`bar_tick_numba_strategy.md`](bar_tick_numba_strategy.md)。
 
 ## 回测接线
 

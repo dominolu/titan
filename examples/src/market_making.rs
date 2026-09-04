@@ -1,6 +1,6 @@
 //! Rust 版做市示例策略（对标 README 中的 Python 示例）。
 //!
-//! 同一个 `MarketMaking` 实现直接跑回测（`Backtest`）和实盘（`LiveBot`），
+//! 同一个 `MarketMaking` 实现跑 hftbacktest 回测（`Backtest`），
 //! 通过 [`Strategy`] trait 的 `on_tick`/`on_bar` 回调驱动：
 //!
 //! * 每帧从两级 `StrategyCtx` 快照读取行情（`market -> instrument`）；

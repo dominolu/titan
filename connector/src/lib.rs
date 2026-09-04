@@ -23,10 +23,6 @@ mod utils;
 
 #[cfg(feature = "binancefutures")]
 pub mod binancefutures;
-#[cfg(feature = "binancespot")]
-pub mod binancespot;
-#[cfg(feature = "bybit")]
-pub mod bybit;
 #[cfg(feature = "hyperliquid")]
 pub mod hyperliquid;
 #[cfg(feature = "okx")]

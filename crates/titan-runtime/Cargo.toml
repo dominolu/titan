@@ -5,9 +5,8 @@ edition = "2024"
 rust-version = "1.94.0"
 
 [features]
-default = ["backtest", "live"]
+default = ["backtest"]
 backtest = ["hftbacktest/backtest"]
-live = ["hftbacktest/live"]
 
 [dependencies]
 hftbacktest = { path = "../../hftbacktest", default-features = false }

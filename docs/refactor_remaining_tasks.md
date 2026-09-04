@@ -407,6 +407,27 @@ connector/src/main.rs（iceoryx2 连接器进程）
 代码层“单一事实无双重发布”通过 direct/direct-exclusive 设计约束与 EventEngine 路由隔离测试已覆盖，
 待上述第 3 步完成后在 connector 边界再补一条断言即可收尾。
 
+### 4.12 方案 B：删除旧 LiveBot/Iceoryx 与旧 venue 模块（2026-09-04）
+
+经产品确认采取彻底删除方案，已落地：
+
+- [x] 删除 `hftbacktest/src/live`（LiveBot、Iceoryx IPC、recorder）与 `live` feature；
+  hftbacktest 保留回测/行情/策略接口，`default` 仅含 `backtest`。
+- [x] 删除 `titan-runtime` 的 `live` feature 与 `RuntimeBotEvents for LiveBot` 兼容实现，
+  `titan-cli` 不再启用该 feature。
+- [x] 删除旧连接器进程 `connector/src/main.rs`、`connector` 的 iceoryx2/clap 依赖，
+  以及 `binancespot`、`bybit` 模块与对应 feature/config/示例。
+- [x] 删除 `examples/src/bin/live.rs`、`examples/binance_ws_to_numba_on_tick_latency.py`、
+  `connector/scripts/run_binance_ws_to_on_tick_latency.sh`。
+- [x] 更新根 README、`connector/README.md`、`hftbacktest/README.md`、`docs/rust_strategy.md`
+  与 PluginEngine 示例，旧“连接器进程 + iceoryx IPC”不再作为产品入口。
+- [x] 回测/新链路回归：`hftbacktest --lib` 106 项、`connector --lib` 220 项、
+  `titan-runtime`/`titan-strategy-plugin` 测试均通过；全 workspace `--all-targets` 编译通过。
+
+connector 内部 queued `PublishTransport/PublishReceiver` 与残余 `PublishEvent`（含 venue 测试
+的 queued 通道、MarketEventBridge 仍在消费的 LiveEvent 格式）尚未随本方案删除，继续按 4.11
+第 1-3 步迁移 venue 发布格式与测试后收尾。
+
 ## 5. ABI 与文档同步
 
 - [x] Strategy ABI v8 Funding 配置字段、布局和冲突校验已实现。
