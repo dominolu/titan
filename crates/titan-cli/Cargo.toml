@@ -21,7 +21,7 @@ sha2 = "0.10"
 signal-hook = "0.3"
 sysinfo = "0.37"
 titan-python-host = { path = "../titan-python-host" }
-titan-runtime = { path = "../titan-runtime", default-features = false, features = ["backtest", "live"] }
+titan-runtime = { path = "../titan-runtime", default-features = false, features = ["backtest"] }
 titan-runtime-abi = { path = "../titan-runtime-abi" }
 titan-event-engine = { path = "../titan-event-engine" }
 titan-plugin-engine = { path = "../titan-plugin-engine" }

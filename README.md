@@ -112,7 +112,7 @@ def on_bar(s):
 - 行情延迟、订单延迟、手续费和资金费建模
 - Bar、Tick、Hybrid 和 Live 统一事件生命周期
 - 多资产、多交易所回测
-- 独立交易所连接器与 iceoryx2 共享内存 IPC
+- EventEngine/PluginEngine 驱动的动态交易所插件连接器
 - 带 SHA-256 manifest 的权威 ResultBundle
 - worker 状态、日志、停止和异常恢复
 
@@ -123,8 +123,6 @@ def on_bar(s):
 | Binance Futures | USD-M 永续合约 | ✅ 生产可用 | 主网/测试网，已接入统一 Broker API |
 | OKX | V5 SWAP | ✅ 生产可用 | 实盘/模拟盘，已接入统一 Broker API |
 | Hyperliquid | 永续合约 | ✅ 生产可用 | 主网/测试网，支持 EIP-712 签名 |
-| Binance Spot | 现货 | 🚧 开发中 | 连接器框架已具备，Broker API 尚未完整接入 |
-| Bybit | 线性合约 | 🚧 开发中 | 连接器框架已具备，Broker API 尚未完整接入 |
 
 ## 数据与结果
 

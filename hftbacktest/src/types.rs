@@ -190,9 +190,8 @@ pub enum LiveEvent {
         request: u8,
         account_delta: Option<LiveAccountDelta>,
     },
-    /// A connector-ingress feed batch. Iceoryx transports this variant as a fixed-layout
-    /// `Event[]` payload; the enum representation remains available to non-Iceoryx channels and
-    /// tests. Appended to preserve the encoded discriminants of existing IPC variants.
+    /// A connector-ingress feed batch shared by connector channels and tests. The variant is kept
+    /// to preserve the encoded discriminants used by existing channels.
     FeedBatch {
         instrument_id: u64,
         events: Vec<Event>,

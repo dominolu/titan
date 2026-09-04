@@ -1123,7 +1123,7 @@ reporting: optional
 
 ```text
 account / okx-main   -> AccountPlugin.AccountConnector[okx-main]
-account / bybit-main -> AccountPlugin.AccountConnector[bybit-main]
+account / hyperliquid-main -> AccountPlugin.AccountConnector[hyperliquid-main]
 ```
 
 PluginEngine只处理 `CUSTOM(namespace, key)`，不理解 `account` 的含义。
@@ -1780,11 +1780,11 @@ market_sources:
     symbols:
       - BTC-USDT-SWAP
 
-  - source_id: bybit-market
-    connector: bybit
+  - source_id: hyperliquid-market
+    connector: hyperliquid
     capabilities: [market_data]
     symbols:
-      - BTCUSDT
+      - BTC
 
 accounts:
   - account_id: okx-main
@@ -1795,9 +1795,9 @@ accounts:
       - order_entry
       - reconciliation
 
-  - account_id: bybit-main
-    connector: bybit
-    credentials: secret://bybit/main
+  - account_id: hyperliquid-main
+    connector: hyperliquid
+    credentials: secret://hyperliquid/main
     capabilities:
       - account_data
       - order_entry
@@ -1808,13 +1808,13 @@ strategies:
     strategy_type: cross-exchange
     account_ids:
       - okx-main
-      - bybit-main
+      - hyperliquid-main
 
     market_symbols:
       - source_id: okx-market
         symbol: BTC-USDT-SWAP
-      - source_id: bybit-market
-        symbol: BTCUSDT
+      - source_id: hyperliquid-market
+        symbol: BTC
 
     event_channel_capacity: 16384
 ```
@@ -1962,7 +1962,7 @@ AccountConnector。插件本身不维护第二套MarketView、AccountView或交�
 
 ```text
 OkxConnector
-BybitConnector
+HyperliquidConnector
 BinanceConnector
 ```
 
