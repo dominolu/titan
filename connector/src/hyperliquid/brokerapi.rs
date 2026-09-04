@@ -1513,6 +1513,16 @@ async fn build_wire(
     build_wire_with_index(asset, req)
 }
 
+fn to_exchange_cloid(client_order_id: Option<String>) -> Option<String> {
+    client_order_id.map(|id| {
+        if id.len() == 32 && !id.starts_with("0x") {
+            format!("0x{id}")
+        } else {
+            id
+        }
+    })
+}
+
 /// 统一订单请求 → HL order wire（资产索引由调用方提供，便于离线单测）。
 pub(crate) fn build_wire_with_index(
     asset: u32,
@@ -1580,7 +1590,7 @@ pub(crate) fn build_wire_with_index(
         s: req.qty.to_string(),
         r: req.reduce_only,
         t,
-        c: req.client_order_id.clone(),
+        c: to_exchange_cloid(req.client_order_id.clone()),
     })
 }
 
@@ -1670,6 +1680,17 @@ mod tests {
         let json = serde_json::to_value(&wire).unwrap();
         assert_eq!(json["t"]["limit"]["tif"], "Gtc");
         assert!(json.get("trigger_px").is_none());
+    }
+
+    #[test]
+    fn account_client_order_id_is_prefixed_as_exchange_cloid() {
+        let mut req = limit_req();
+        req.client_order_id = Some("0123456789abcdef0123456789abcdef".to_string());
+        let wire = build_wire_with_index(0, &req).unwrap();
+        assert_eq!(
+            wire.c.as_deref(),
+            Some("0x0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]

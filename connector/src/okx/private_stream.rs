@@ -167,7 +167,14 @@ impl PrivateStream {
                         Ok(Some(order)) => {
                             let symbol = order_update.inst_id.clone();
                             self.ev_tx
-                                .send_account(AccountPublication::Order { symbol, order })
+                                .send_account(AccountPublication::Order {
+                                    symbol,
+                                    client_order_id: (!order_update.cl_ord_id.is_empty())
+                                        .then(|| order_update.cl_ord_id.clone()),
+                                    venue_order_id: (!order_update.ord_id.is_empty())
+                                        .then(|| order_update.ord_id.clone()),
+                                    order,
+                                })
                                 .unwrap();
                         }
                         Ok(None) => {}
@@ -361,6 +368,8 @@ pub async fn cancel_all(
         ev_tx
             .send_account(AccountPublication::Order {
                 symbol: symbol.clone(),
+                client_order_id: None,
+                venue_order_id: None,
                 order,
             })
             .unwrap();

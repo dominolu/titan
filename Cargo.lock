@@ -4678,6 +4678,7 @@ dependencies = [
  "titan-python-host",
  "titan-runtime",
  "titan-runtime-abi",
+ "tracing",
 ]
 
 [[package]]

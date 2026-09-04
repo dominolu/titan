@@ -1462,6 +1462,11 @@ fn resolve_core_live_run_spec(
     event_mode: EventMode,
     config_path: &Path,
 ) -> Result<RunSpec, CliError> {
+    if !matches!(event_mode, EventMode::Tick) {
+        return Err(CliError::Engine(
+            "live Core Runtime currently supports tick mode only; Bar/Hybrid live profiles are disabled until a production BarBatch publisher is implemented".into(),
+        ));
+    }
     let config_path = fs::canonicalize(config_path).map_err(|source| CliError::Read {
         path: config_path.into(),
         source,

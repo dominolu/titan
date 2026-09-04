@@ -415,7 +415,12 @@ impl HyperliquidWs {
             match order_manager.update_from_ws(&update.order, &update.status) {
                 Ok(Some(order)) => {
                     self.ev_tx
-                        .send_account(AccountPublication::Order { symbol, order })
+                        .send_account(AccountPublication::Order {
+                            symbol,
+                            client_order_id: update.order.cloid.clone(),
+                            venue_order_id: Some(update.order.oid.to_string()),
+                            order,
+                        })
                         .unwrap();
                 }
                 Ok(None) => {}
@@ -727,6 +732,8 @@ async fn cancel_open_orders(
         ev_tx
             .send_account(AccountPublication::Order {
                 symbol: symbol.clone(),
+                client_order_id: None,
+                venue_order_id: None,
                 order,
             })
             .unwrap();

@@ -86,6 +86,41 @@ impl OrderManager {
             .cloned()
     }
 
+    fn normalize_cloid(client_order_id: &str) -> String {
+        if client_order_id.starts_with("0x") {
+            client_order_id.to_owned()
+        } else {
+            format!("0x{client_order_id}")
+        }
+    }
+
+    pub fn track_managed_order(
+        &mut self,
+        symbol: &str,
+        client_order_id: &str,
+        order: Order,
+    ) -> bool {
+        let cloid = Self::normalize_cloid(client_order_id);
+        if self.orders.contains_key(&cloid) {
+            return false;
+        }
+        self.order_id_map.insert(
+            SymbolOrderId::new(symbol.to_owned(), order.order_id),
+            cloid.clone(),
+        );
+        self.orders.insert(
+            cloid,
+            OrderExt {
+                symbol: symbol.to_owned(),
+                order,
+                oid: None,
+                removed_by_ws: false,
+                removed_by_rest: false,
+            },
+        );
+        true
+    }
+
     pub fn get_oid(&self, symbol: &str, order_id: OrderId) -> Option<u64> {
         let cloid = self.get_cloid(symbol, order_id)?;
         self.orders.get(&cloid).and_then(|ext| ext.oid)

@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
+use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
 use titan_account_plugin as account;
 use titan_account_plugin::SecretValue;
 use titan_plugin_engine::{ClosureResource, TraceContext};
@@ -232,6 +232,9 @@ impl IdInterner {
 
     fn contains_text(&self, text: &str) -> bool {
         self.by_text.contains_key(text)
+            || parse_hex_id(text)
+                .map(|id| self.by_id.contains_key(&id))
+                .unwrap_or(false)
     }
 }
 
@@ -503,6 +506,7 @@ impl account::AccountConnector for AccountRuntime {
                                         command,
                                         &context,
                                         &*api,
+                                        connector.as_ref(),
                                         &epoch,
                                         &version,
                                         &reconciling,
@@ -812,18 +816,33 @@ impl AccountEventEncoder {
             return Ok(());
         }
         match event {
-            AccountPublication::Order { symbol, order } => {
+            AccountPublication::Order {
+                symbol,
+                client_order_id,
+                venue_order_id,
+                order,
+            } => {
                 let binding = self
                     .context
                     .instruments
                     .iter()
                     .find(|b| b.native_symbol.eq_ignore_ascii_case(symbol))
                     .ok_or_else(|| rejected("unbound private order symbol"))?;
+                let venue_text = match venue_order_id {
+                    Some(text) => text.clone(),
+                    None => order.order_id.to_string(),
+                };
                 let id = self
                     .ids
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .intern(&order.order_id.to_string());
+                    .intern(&venue_text);
+                let client_order_id = client_order_id.as_deref().map(|text| {
+                    self.ids
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .intern(text)
+                });
                 let changed = account::OrderChangedV1 {
                     header: self.header(
                         account::event_kind::ORDER_CHANGED,
@@ -847,6 +866,7 @@ impl AccountEventEncoder {
                     )?,
                     average_price_ticks: order.exec_price_tick,
                     venue_order_id: id,
+                    client_order_id: client_order_id.unwrap_or_default(),
                     ..Default::default()
                 };
                 self.context
@@ -870,6 +890,7 @@ impl AccountEventEncoder {
                             binding.quantity_lot,
                         )?,
                         venue_order_id: id,
+                        client_order_id: client_order_id.unwrap_or_default(),
                         ..Default::default()
                     };
                     self.context
@@ -1039,7 +1060,7 @@ async fn reconcile<A: ReconcileApi + ?Sized>(
                         version,
                         account::event_kind::POSITION_CHANGED,
                         account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
-                        value.update_time,
+                        value.update_time * 1_000_000,
                     ),
                     &snapshot,
                 );
@@ -1074,7 +1095,7 @@ async fn reconcile<A: ReconcileApi + ?Sized>(
                         version,
                         account::event_kind::BALANCE_CHANGED,
                         account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
-                        info.timestamp,
+                        info.timestamp * 1_000_000,
                     ),
                     &snapshot,
                 );
@@ -1154,6 +1175,7 @@ async fn handle_command(
     command: Command,
     context: &account::AccountConnectorContext,
     api: &dyn BrokerApi,
+    connector: &dyn Connector,
     epoch: &AtomicU64,
     version: &AtomicU64,
     reconciling: &AtomicBool,
@@ -1238,18 +1260,30 @@ async fn handle_command(
                 .iter()
                 .find(|b| b.asset_id == c.asset_id)
                 .unwrap();
+            let side = match c.side {
+                1 => Some(ApiSide::Buy),
+                // Strategy ABI sells are i8 -1, which enters this u8 domain as 255.
+                2 | 255 => Some(ApiSide::Sell),
+                _ => None,
+            };
+            let order_type = match c.order_type {
+                0 => Some(ApiOrderType::Limit),
+                1 => Some(ApiOrderType::Market),
+                _ => None,
+            };
+            let validation_error = if side.is_none() {
+                Some("invalid submit side")
+            } else if order_type.is_none() {
+                Some("invalid submit order type")
+            } else if c.time_in_force > 3 {
+                Some("invalid submit time in force")
+            } else {
+                None
+            };
             let req = UnifiedOrderRequest {
                 symbol: b.native_symbol.to_string(),
-                side: if c.side == 1 {
-                    ApiSide::Buy
-                } else {
-                    ApiSide::Sell
-                },
-                order_type: if c.order_type == 0 {
-                    ApiOrderType::Limit
-                } else {
-                    ApiOrderType::Market
-                },
+                side: side.unwrap(),
+                order_type: order_type.unwrap(),
                 price: (c.order_type == 0).then(|| from_units(c.price_ticks, b.price_tick)),
                 qty: from_units(c.quantity_lots, b.quantity_lot),
                 time_in_force: api_tif(c.time_in_force),
@@ -1262,7 +1296,24 @@ async fn handle_command(
                 c.command_id,
                 c.client_order_id,
                 c.trace,
-                api.submit_order(&req).await.map(Some),
+                if let Some(message) = validation_error {
+                    Err(crate::api::ApiError::new(
+                        "connector",
+                        "INVALID_SUBMIT",
+                        message,
+                    ))
+                } else {
+                    if let Some(client_order_id) = c.client_order_id
+                        && let Ok(order) = managed_account_order(c, b)
+                    {
+                        connector.track_managed_order(
+                            &b.native_symbol,
+                            &id_text(client_order_id),
+                            &order,
+                        );
+                    }
+                    api.submit_order(&req).await.map(Some)
+                },
             )
         }
         Command::Amend(c) => {
@@ -1523,7 +1574,9 @@ fn publish_order_snapshot(
             version,
             account::event_kind::ORDER_CHANGED,
             flags,
-            source.update_time,
+            // BrokerApi timestamps are venue milliseconds; the account ABI header is ns and must
+            // stay in the same clock domain as private-stream facts for cross-source ordering.
+            source.update_time * 1_000_000,
         ),
         asset_id: s.asset_id.0,
         side: s.side,
@@ -1660,6 +1713,45 @@ fn to_units(value: f64, unit: account::DecimalUnit) -> Result<i64, account::Acco
 }
 fn from_units(value: i64, unit: account::DecimalUnit) -> f64 {
     value as f64 * unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
+}
+fn decimal_unit_f64(unit: &account::DecimalUnit) -> f64 {
+    unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
+}
+fn managed_account_order(
+    command: &account::SubmitOrderCommand,
+    binding: &account::AccountInstrumentBinding,
+) -> Result<Order, account::AccountConnectorError> {
+    let side = if command.side == 1 {
+        Side::Buy
+    } else {
+        Side::Sell
+    };
+    let order_type = if command.order_type == 0 {
+        OrdType::Limit
+    } else {
+        OrdType::Market
+    };
+    let time_in_force = match command.time_in_force {
+        0 => TimeInForce::GTC,
+        1 => TimeInForce::GTX,
+        2 => TimeInForce::FOK,
+        3 => TimeInForce::IOC,
+        _ => return Err(rejected("invalid submit time in force")),
+    };
+    let qty = from_units(command.quantity_lots, binding.quantity_lot);
+    let order_id = u64::from_le_bytes(command.command_id.0[..8].try_into().unwrap());
+    let mut order = Order::new(
+        order_id,
+        command.price_ticks,
+        decimal_unit_f64(&binding.price_tick),
+        qty,
+        side,
+        order_type,
+        time_in_force,
+    );
+    order.status = Status::New;
+    order.req = Status::None;
+    Ok(order)
 }
 fn id_text(id: account::Id128) -> String {
     id.0.iter().map(|b| format!("{b:02x}")).collect()

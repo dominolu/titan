@@ -110,6 +110,15 @@ EventEngine v1.4 的 `RELIABLE_ORDERED pending`、admitted/dispatched/committed 
 SubscriberHealth 和 SnapshotBarrier 是 StrategyPlugin 进入实现前的阻塞依赖。四项能力未通过上游验收
 前，StrategyPlugin 不得把 Async FastLane 作为账户、风险和策略关键事实的唯一交付路径。
 
+当前冻结边界（2026-09-03）：`CanonicalStrategyEventAdapter` 只接受 Tick（Depth/Trade/Bbo）、
+Order、Fill 与 BarBatch；Position/Balance/CommandResult/Funding 等尚未具备类型化 ABI view 的
+canonical 事实在订阅校验阶段被拒绝，并在 adapter 层 fail-fast，禁止再落入按事件名字猜测回调的
+兜底分支。实盘 CLI 同步禁止 Bar/Hybrid 模式和 BarBatch 订阅，直到出现生产级 BarBatch 发布者；
+Timer 与 Amend 等尚无命令通道的 capability 也在 manifest 校验阶段显式拒绝。同一批改动还实现
+了断流可见性：实例 supervisor 在 `PrimaryAsyncLane` 进入 ResyncRequired/Failed 时把 runtime
+切换为 `Invalidated` 并关闭 gate；`StrategyRuntimeHealthSnapshot` 同步反映 lane 权威状态，
+不再允许 “Running + healthy” 的假健康。
+
 ## 2. 最终职责边界
 
 ### 2.1 StrategyPlugin 负责

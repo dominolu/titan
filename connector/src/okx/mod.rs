@@ -421,6 +421,13 @@ impl Connector for Okx {
         self.start_safety_heartbeat();
     }
 
+    fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {
+        self.order_manager
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .track_managed_order(symbol, client_order_id, order.clone());
+    }
+
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
         Some(Arc::new(self.client.clone()))
     }

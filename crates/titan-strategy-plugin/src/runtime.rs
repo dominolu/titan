@@ -107,6 +107,12 @@ pub trait StrategyRuntime: EventHandler + Send + Sync {
     fn start(&self) -> LocalResult<StrategyOperationId>;
     fn pause(&self, reason: PauseReason) -> LocalResult<StrategyOperationId>;
     fn resume(&self) -> LocalResult<StrategyOperationId>;
+    /// Transitions the runtime to `Invalidated` at its lane safe point.
+    ///
+    /// Used by the instance supervisor when the authoritative subscriber health leaves `Normal`
+    /// (ResyncRequired/Failed). A Fresh-only runtime has no automatic recovery path, so the
+    /// strategy must become observably unhealthy instead of staying `Running` with closed gates.
+    fn invalidate(&self, reason: Arc<str>) -> LocalResult<StrategyOperationId>;
     fn stop(&self, deadline: Instant) -> LocalResult<StrategyOperationId>;
     fn freeze_state(
         &self,
@@ -373,23 +379,18 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
                 StrategyEventKind::Order
             }
             _ => {
-                context.payload_ptr = event.payload.as_ptr().cast();
-                context.payload_len = event.payload.len();
-                let kind = if event.event_type.contains("Bar") {
-                    StrategyEventKind::Bar
-                } else if event.event_type.contains("Timer") {
-                    StrategyEventKind::Timer
-                } else if event.event_type.contains("Funding") {
-                    StrategyEventKind::Funding
-                } else if event.event_type.contains("Position") {
-                    StrategyEventKind::Position
-                } else {
-                    StrategyEventKind::Tick
-                };
-                callbacks
-                    .invoke(kind, context)
-                    .map_err(|_| adapter_error("callback"))?;
-                kind
+                // Deliberate fail-fast boundary: canonical facts without a typed Strategy ABI
+                // view (Position/Balance/CommandResult/Funding/MarkPrice/control facts, ...) must
+                // never be heuristically mapped to a callback and silently handed a raw payload.
+                return Err(StrategyError::new(
+                    StrategyErrorKind::CallbackFailed,
+                    "event_adapter",
+                    "unsupported_canonical_event",
+                    format!(
+                        "strategy adapter cannot decode {} schema v{}",
+                        event.event_type, event.schema_version
+                    ),
+                ));
             }
         };
         context.clear_views();
@@ -575,6 +576,19 @@ impl EventHandler for NativeStrategyRuntime {
         ) {
             return Ok(());
         }
+        if self.core.lane.get().is_some_and(|lane| {
+            matches!(
+                lane.health().state,
+                SubscriberState::ResyncRequired
+                    | SubscriberState::Failed
+                    | SubscriberState::Stopped
+            )
+        }) {
+            // The authoritative subscriber lane is not Normal. Suppress queued callbacks instead
+            // of running user code against a stream that has already declared a gap/overflow;
+            // the supervisor concurrently transitions this instance to Invalidated.
+            return Ok(());
+        }
         if !self.core.context.activation.is_open() {
             // Account/risk facts may still update framework state while paused. The current
             // adapter is stateless, so it deliberately suppresses user callbacks here.
@@ -757,6 +771,13 @@ impl StrategyRuntime for NativeStrategyRuntime {
             if inner.lifecycle != StrategyLifecycle::Ready {
                 return Err(runtime_error("invalid_start_state"));
             }
+            if core
+                .lane
+                .get()
+                .is_some_and(|lane| lane.health().state != SubscriberState::Normal)
+            {
+                return Err(runtime_error("subscriber_not_normal"));
+            }
             let mut context = callback_context(core, &mut inner);
             if inner
                 .artifact
@@ -818,6 +839,38 @@ impl StrategyRuntime for NativeStrategyRuntime {
         })
     }
 
+    fn invalidate(&self, reason: Arc<str>) -> LocalResult<StrategyOperationId> {
+        self.core.context.command_gate.close();
+        self.core.context.activation.close();
+        self.schedule(move |core| {
+            let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            if !matches!(
+                inner.lifecycle,
+                StrategyLifecycle::Ready
+                    | StrategyLifecycle::WaitingDependencies
+                    | StrategyLifecycle::Running
+                    | StrategyLifecycle::Paused
+                    | StrategyLifecycle::Recovering
+            ) {
+                return Ok(());
+            }
+            inner.lifecycle = StrategyLifecycle::Invalidated;
+            inner.last_error = Some(reason.clone());
+            if inner.flight_records.len() == 128 {
+                inner.flight_records.pop_front();
+            }
+            let sequence = inner.next_flight_sequence;
+            inner.flight_records.push_back(StrategyFlightRecord {
+                sequence,
+                observed_at: SystemTime::now(),
+                category: Arc::from("fault"),
+                detail: reason,
+            });
+            inner.next_flight_sequence = inner.next_flight_sequence.wrapping_add(1);
+            Ok(())
+        })
+    }
+
     fn stop(&self, deadline: Instant) -> LocalResult<StrategyOperationId> {
         self.core.context.command_gate.close();
         self.core.context.activation.close();
@@ -867,13 +920,28 @@ impl StrategyRuntime for NativeStrategyRuntime {
 
     fn health(&self) -> StrategyRuntimeHealthSnapshot {
         let inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let lane_state = self.core.lane.get().map(|lane| lane.health().state);
+        let lane_unhealthy = matches!(
+            lane_state,
+            Some(SubscriberState::ResyncRequired | SubscriberState::Failed)
+        );
+        let degraded_reason = inner.last_error.clone().or_else(|| {
+            lane_unhealthy.then(|| {
+                let reason = if lane_state == Some(SubscriberState::ResyncRequired) {
+                    "subscriber_resync_required"
+                } else {
+                    "subscriber_failed"
+                };
+                Arc::from(reason)
+            })
+        });
         StrategyRuntimeHealthSnapshot {
             lifecycle: inner.lifecycle,
             healthy: !matches!(
                 inner.lifecycle,
                 StrategyLifecycle::Failed | StrategyLifecycle::Invalidated
-            ),
-            degraded_reason: inner.last_error.clone(),
+            ) && !lane_unhealthy,
+            degraded_reason,
             callback_budget_violations: inner.budget_violations,
             heartbeat_at: SystemTime::now(),
         }

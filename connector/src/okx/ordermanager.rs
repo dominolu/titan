@@ -94,10 +94,35 @@ impl OrderManager {
             .cloned()
     }
 
+    pub fn track_managed_order(
+        &mut self,
+        symbol: &str,
+        client_order_id: &str,
+        order: Order,
+    ) -> bool {
+        if self.orders.contains_key(client_order_id) {
+            return false;
+        }
+        self.order_id_map.insert(
+            SymbolOrderId::new(symbol.to_owned(), order.order_id),
+            client_order_id.to_owned(),
+        );
+        self.orders.insert(
+            client_order_id.to_owned(),
+            OrderExt {
+                symbol: symbol.to_owned(),
+                order,
+                removed_by_ws: false,
+                removed_by_rest: false,
+            },
+        );
+        true
+    }
+
     /// Updates the order state with the data received from the private WebSocket stream
     /// (`orders` channel). Returns the order to be published when the update is meaningful.
     pub fn update_from_ws(&mut self, data: &OrderUpdate) -> Result<Option<Order>, OkxError> {
-        if !data.cl_ord_id.starts_with(&self.prefix) {
+        if !self.orders.contains_key(&data.cl_ord_id) && !data.cl_ord_id.starts_with(&self.prefix) {
             return Err(OkxError::PrefixUnmatched);
         }
         let order_ext = self
@@ -419,6 +444,21 @@ mod tests {
             .unwrap();
         assert_eq!(order.status, Status::Expired);
         assert_eq!(order.req, Status::None);
+    }
+
+    #[test]
+    fn tracked_rest_order_flows_through_private_ws_without_legacy_prefix() {
+        let mut manager = OrderManager::new("t-");
+        let client_order_id = "0123456789abcdef0123456789abcdef";
+        let mut order = test_order(3);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC-USDT-SWAP", client_order_id, order));
+
+        let updated = manager
+            .update_from_ws(&order_update(client_order_id, "filled"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, Status::Filled);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{Message, client::IntoClientRequest},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     binancefutures::{
@@ -78,24 +78,40 @@ impl UserDataStream {
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
+                info!(
+                    client_order_id = %data.order.client_order_id,
+                    order_status = ?data.order.order_status,
+                    order_id = data.order.order_id,
+                    "binance user-data execution report received"
+                );
                 match self.order_manager.lock().unwrap().update_from_ws(&data) {
                     Ok(Some(order)) => {
+                        info!(
+                            venue_order_id = data.order.order_id,
+                            client_order_id = %data.order.client_order_id,
+                            "binance execution report published"
+                        );
                         self.ev_tx
                             .send_account(AccountPublication::Order {
                                 symbol: data.order.symbol,
+                                client_order_id: Some(data.order.client_order_id.clone()),
+                                venue_order_id: Some(data.order.order_id.to_string()),
                                 order,
                             })
                             .unwrap();
                     }
                     Ok(None) => {
+                        info!("binance execution report already finalized");
                         // This order is already deleted.
                     }
                     Err(BinanceFuturesError::PrefixUnmatched) => {
+                        info!("binance execution report prefix unmatched");
                         // This order is not created by this connector.
                     }
                     Err(error) => {
                         error!(
                             ?error,
+                            client_order_id = %data.order.client_order_id,
                             ?data,
                             "Couldn't update the order from OrderTradeUpdate message."
                         );
@@ -117,6 +133,7 @@ impl UserDataStream {
         let request = url.into_client_request()?;
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, mut read) = ws_stream.split();
+        info!("binance user data websocket connected");
         self.ev_tx
             .send(PublishEvent::PrivateStreamReady)
             .map_err(|_| BinanceFuturesError::ConnectionInterrupted)?;
@@ -186,6 +203,7 @@ impl UserDataStream {
                 }
                 message = read.next() => match message {
                     Some(Ok(Message::Text(text))) => {
+                        debug!("binance user data ws text frame received");
                         match serde_json::from_str::<Stream>(&text) {
                             Ok(Stream::EventStream(stream)) => {
                                 self.process_message(stream)?;
