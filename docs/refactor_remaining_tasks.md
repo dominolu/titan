@@ -173,7 +173,9 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 - [x] 消除新 AccountPlugin 路径的 `PublishEvent::LiveEvent` bridge：三家私有流通过
   `AccountPublication` 同步直达 per-account encoder 并编码进入 EventEngine；旧 CLI 队列所需兼容转换仅保留
   在 `PublishSender` 边界，随旧 CLI 一并退休。
-- [ ] 删除旧账户发布入口和重复账户缓存。
+- [x] 删除旧账户发布入口和重复账户缓存（2026-09-04）：queued `PublishSender`
+  的 `send_account -> into_legacy` bridge 与旧连接器进程一并删除，账户事实只经
+  `AccountPublication -> AccountEventEncoder` 单条 direct 路径编码。
 - [x] 完成故障注入、长稳、stop/restart、shutdown policy 和资源泄漏测试。
   shutdown policy 的 LeaveOpen/CancelAll/CancelAllAfter 选择、venue reject、deadline 传播，以及 Market
   runtime 非协作 shutdown 的有界返回与后续 JoinHandle 回收已覆盖；Account 本地长稳测试已连续执行
@@ -231,7 +233,11 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   `public/ws`（Depth/Trade/BBO）与 `market/ws`（markPrice/Funding）后复测：XRPUSDT、BTCUSDT 均实时
   收到 `titan.market.MarkPrice` 与 Funding 事件，Depth snapshot/delta、Trade、BBO 保持通过，Mark
   Price/Funding 实时流因此更新为通过；独立 Python WebSocket 与 connector 探针结论一致。
-- [ ] 完成新入口切换后删除旧行情发布入口和重复 bridge。
+- [x] 完成新入口切换后删除旧行情发布入口和重复 bridge（2026-09-04）：queued
+  `PublishTransport/PublishReceiver` 与 QueueOverflow/BatchStart/BatchEnd/
+  RegisterInstrument 变体删除；行情与账户统一走 `direct_publish_sender`。
+  `MarketEventBridge` 保留为连接器内部 FeedBatch/NativeMarket 到 Market ABI
+  的单一翻译点，不再存在可双写的旧队列入口。
 
 ### 4.3 PluginEngine 剩余设计项
 
@@ -300,8 +306,14 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   `DYLD_LIBRARY_PATH`。
 - [x] 将完整 workspace、全 feature Connector、动态插件和端到端链路测试纳入 CI。
 - [x] 删除 CLI 的旧 LiveBot/Iceoryx 启动路径。
-- [ ] 删除 Connector 中不再使用的旧 PublishSender、PublishEvent 和重复 Runtime 管理代码。
-- [ ] 确认同一业务事实不存在新旧路径双重发布或双重消费。
+- [x] 删除 Connector 中旧（queued）PublishSender/PublishEvent 和重复 Runtime 管理代码
+  （2026-09-04）：旧连接器进程、Iceoryx、binancespot/bybit、LiveBot/Iceoryx 示例、
+  `PublishReceiver`、queued transport 与旧事件变体均已删除；保留 direct-only
+  `PublishSender/PublishEvent` 作为 Market/AccountPlugin 新链路的事件载体。
+- [x] 确认同一业务事实不存在新旧路径双重发布或双重消费（2026-09-04）：
+  `PublishSender` 为单 transport direct 枚举，事件只投递一次；connector 测试新增
+  `publish_event_is_delivered_once_through_the_direct_sender`，账户侧保留
+  `account_publication_is_delivered_directly_without_a_live_event_bridge`。
 
 ### 4.7 断流状态与健康可见性（2026-09-03 增量）
 
@@ -424,9 +436,10 @@ connector/src/main.rs（iceoryx2 连接器进程）
 - [x] 回测/新链路回归：`hftbacktest --lib` 106 项、`connector --lib` 220 项、
   `titan-runtime`/`titan-strategy-plugin` 测试均通过；全 workspace `--all-targets` 编译通过。
 
-connector 内部 queued `PublishTransport/PublishReceiver` 与残余 `PublishEvent`（含 venue 测试
-的 queued 通道、MarketEventBridge 仍在消费的 LiveEvent 格式）尚未随本方案删除，继续按 4.11
-第 1-3 步迁移 venue 发布格式与测试后收尾。
+connector 已删除 queued transport 并改为 direct-only；残余的 `PublishEvent::LiveEvent`
+（OKX/Hyperliquid/BinanceFutures 少量 `LiveEvent::Feed/Funding` 归一化格式，以及
+`MarketEventBridge` 的对应翻译）是连接器内部发布格式，仍可继续迁移为
+FeedBatch/专属 Funding 事件后移除，不影响“单一事实只发布一次”的 direct 约束。
 
 ## 5. ABI 与文档同步
 
