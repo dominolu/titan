@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::utils::from_str_to_f64;
 use serde::{Deserialize, Serialize};
 

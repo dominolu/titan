@@ -1628,8 +1628,8 @@ fn fake_market_connector_reaches_numba_over_primary_lane_without_python_hot_path
                 instruments: Arc::from([MarketInstrumentBinding {
                     native_symbol: Arc::from("BTCUSDT"),
                     asset_id: market::AssetId(1),
-                    price_tick: 1.0,
-                    quantity_lot: 1.0,
+                    price_tick: "1".parse().unwrap(),
+                    quantity_lot: "1".parse().unwrap(),
                 }]),
                 enabled: true,
                 definition_version: 1,

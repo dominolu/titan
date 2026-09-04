@@ -24,6 +24,7 @@ pub struct HyperliquidClient {
     nonce_counter: Arc<Mutex<u64>>,
 }
 
+#[allow(dead_code)]
 impl HyperliquidClient {
     pub fn new(info_url: &str, exchange_url: &str) -> Self {
         Self {

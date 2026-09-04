@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use hftbacktest::types::{Event, LiveError, Order};
 use titan_market_plugin::MarketDataKind;
+#[allow(unused_imports)]
 use tokio::sync::mpsc::{self, error::TrySendError};
 
 /// Exchange-owned stream coordinates attached by the concrete market-data connector. The plugin

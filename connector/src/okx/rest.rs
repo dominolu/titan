@@ -24,6 +24,7 @@ pub struct OkxClient {
     td_mode: String,
 }
 
+#[allow(dead_code)]
 impl OkxClient {
     pub fn new(url: &str, api_key: &str, secret: &str, passphrase: &str) -> Self {
         Self::with_options(

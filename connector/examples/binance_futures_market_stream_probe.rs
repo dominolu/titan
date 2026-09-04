@@ -87,6 +87,7 @@ async fn main() -> Result<()> {
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 struct ProbeResult {
     mark_price_seen: bool,
     mark_price_count: usize,

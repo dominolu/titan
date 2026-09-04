@@ -130,6 +130,7 @@ fn all_market_kinds() -> Vec<MarketDataKind> {
 type SharedAssets = Arc<Mutex<HashMap<String, usize>>>;
 
 /// Number of decimal places allowed by the instrument's lot size, e.g. "0.001" -> 3.
+#[cfg(test)]
 fn lot_sz_decimals(lot_sz: &str) -> usize {
     match lot_sz.split('.').nth(1) {
         Some(fraction) => fraction.trim_end_matches('0').len(),
@@ -137,24 +138,10 @@ fn lot_sz_decimals(lot_sz: &str) -> usize {
     }
 }
 
-/// Resolves the quantity precision for an instrument, fetching the metadata once and caching it.
-async fn ensure_asset_decimals(
-    client: &OkxClient,
-    assets: &SharedAssets,
-    symbol: &str,
-) -> Result<usize, OkxError> {
-    if let Some(&decimals) = assets.lock().unwrap().get(symbol) {
-        return Ok(decimals);
-    }
-    let instrument = client.get_instruments(symbol).await?;
-    let decimals = lot_sz_decimals(&instrument.lot_sz);
-    assets.lock().unwrap().insert(symbol.to_string(), decimals);
-    Ok(decimals)
-}
-
 pub struct Okx {
     config: Config,
     symbols: SharedSymbolSet,
+    #[allow(dead_code)]
     assets: SharedAssets,
     order_manager: SharedOrderManager,
     client: OkxClient,
