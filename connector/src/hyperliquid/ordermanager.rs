@@ -2,15 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, OrderId, Status};
-use rand::Rng;
+use hftbacktest::types::{Order, Status};
 
 use crate::{
     connector::GetOrders,
-    hyperliquid::{
-        HyperliquidError,
-        msg::{OrderState, OrderStatus},
-    },
+    hyperliquid::{HyperliquidError, msg::OrderState},
     utils::{RefSymbolOrderId, SymbolOrderId},
 };
 
@@ -24,7 +20,6 @@ struct OrderExt {
 }
 
 pub type SharedOrderManager = Arc<Mutex<OrderManager>>;
-
 pub type Cloid = String;
 
 fn from_str_to_status(status: &str) -> Status {
@@ -37,9 +32,8 @@ fn from_str_to_status(status: &str) -> Status {
     }
 }
 
-/// Hyperliquid has two channels for order state: the synchronous `POST /exchange` response and
-/// the asynchronous `orderUpdates` WebSocket channel. Deletions (cancel/fill) are confirmed by
-/// both channels before the order is removed from memory, preventing ghost orders.
+/// Tracks AccountPlugin REST orders so the `orderUpdates` channel can be correlated back to the
+/// deterministic owner cloid.
 #[derive(Default, Debug)]
 pub struct OrderManager {
     orders: HashMap<Cloid, OrderExt>,
@@ -49,41 +43,6 @@ pub struct OrderManager {
 impl OrderManager {
     pub fn new() -> Self {
         Default::default()
-    }
-
-    pub fn prepare_cloid(&mut self, symbol: String, order: Order) -> Option<String> {
-        let symbol_order_id = SymbolOrderId::new(symbol.clone(), order.order_id);
-        if self.order_id_map.contains_key(&symbol_order_id) {
-            return None;
-        }
-
-        let mut rng = rand::rng();
-        // Hyperliquid expects the cloid as "0x" + 32 lowercase hex chars (16 bytes). The exchange
-        // normalizes this value when rebuilding the msgpack action for signature verification, so
-        // the exact format must match the official SDK's Cloid.
-        let cloid = format!("0x{:032x}", rng.random::<u128>());
-        if self.orders.contains_key(&cloid) {
-            return None;
-        }
-
-        self.order_id_map.insert(symbol_order_id, cloid.clone());
-        self.orders.insert(
-            cloid.clone(),
-            OrderExt {
-                symbol,
-                order,
-                oid: None,
-                removed_by_ws: false,
-                removed_by_rest: false,
-            },
-        );
-        Some(cloid)
-    }
-
-    pub fn get_cloid(&self, symbol: &str, order_id: OrderId) -> Option<String> {
-        self.order_id_map
-            .get(&RefSymbolOrderId::new(symbol, order_id))
-            .cloned()
     }
 
     fn normalize_cloid(client_order_id: &str) -> String {
@@ -121,12 +80,6 @@ impl OrderManager {
         true
     }
 
-    pub fn get_oid(&self, symbol: &str, order_id: OrderId) -> Option<u64> {
-        let cloid = self.get_cloid(symbol, order_id)?;
-        self.orders.get(&cloid).and_then(|ext| ext.oid)
-    }
-
-    /// Updates the order with an `orderUpdates` WebSocket event.
     pub fn update_from_ws(
         &mut self,
         state: &OrderState,
@@ -134,7 +87,6 @@ impl OrderManager {
     ) -> Result<Option<Order>, HyperliquidError> {
         let cloid = match state.cloid.clone() {
             Some(cloid) if self.orders.contains_key(&cloid) => cloid,
-            // Orders placed without a client id (e.g. by another tool) must be matched by oid.
             _ => self
                 .orders
                 .iter()
@@ -184,108 +136,6 @@ impl OrderManager {
         }
 
         Ok(result)
-    }
-
-    /// Updates the order with the synchronous `POST /exchange` order response.
-    pub fn update_from_exchange_submit(
-        &mut self,
-        cloid: &str,
-        status: &OrderStatus,
-    ) -> Result<Option<Order>, HyperliquidError> {
-        let order_ext = self
-            .orders
-            .get_mut(cloid)
-            .ok_or(HyperliquidError::OrderNotFound)?;
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-
-        order_ext.order.req = Status::None;
-        match status {
-            OrderStatus::Resting { resting } => {
-                order_ext.oid = Some(resting.oid);
-                if !already_removed {
-                    order_ext.order.status = Status::New;
-                }
-            }
-            OrderStatus::Filled { filled } => {
-                order_ext.oid = Some(filled.oid);
-                order_ext.order.status = Status::Filled;
-                order_ext.order.exec_qty = filled.total_sz.parse().unwrap_or(0.0);
-                order_ext.order.leaves_qty = 0.0;
-                order_ext.order.exec_price_tick = (filled.avg_px.parse::<f64>().unwrap_or(0.0)
-                    / order_ext.order.tick_size)
-                    .round() as i64;
-                order_ext.order.exch_timestamp = Utc::now().timestamp_nanos_opt().unwrap();
-                order_ext.removed_by_rest = true;
-            }
-            OrderStatus::Error { .. } => {
-                order_ext.order.status = Status::Rejected;
-                order_ext.removed_by_rest = true;
-            }
-        }
-
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-
-        if order_ext.removed_by_rest {
-            if !already_removed {
-                self.order_id_map.remove(&RefSymbolOrderId::new(
-                    &order_ext.symbol,
-                    order_ext.order.order_id,
-                ));
-            }
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(cloid).unwrap();
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Updates the order with the synchronous `POST /exchange` cancel response.
-    pub fn update_from_exchange_cancel(
-        &mut self,
-        cloid: &str,
-        success: bool,
-    ) -> Result<Option<Order>, HyperliquidError> {
-        let order_ext = self
-            .orders
-            .get_mut(cloid)
-            .ok_or(HyperliquidError::OrderNotFound)?;
-        let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-        order_ext.order.req = Status::None;
-        if success {
-            order_ext.order.status = Status::Canceled;
-            order_ext.removed_by_rest = true;
-        }
-
-        let result = if already_removed {
-            None
-        } else {
-            Some(order_ext.order.clone())
-        };
-
-        if order_ext.removed_by_rest {
-            if !already_removed {
-                self.order_id_map.remove(&RefSymbolOrderId::new(
-                    &order_ext.symbol,
-                    order_ext.order.order_id,
-                ));
-            }
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                self.orders.remove(cloid).unwrap();
-            }
-        }
-
-        Ok(result)
-    }
-
-    pub fn update_cancel_fail(&mut self, cloid: &str) -> Option<Order> {
-        let order_ext = self.orders.get_mut(cloid)?;
-        order_ext.order.req = Status::None;
-        Some(order_ext.order.clone())
     }
 
     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
@@ -357,7 +207,6 @@ impl GetOrders for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hyperliquid::msg::{Filled, Resting};
     use hftbacktest::types::{OrdType, Side, TimeInForce};
 
     fn test_order(order_id: u64) -> Order {
@@ -390,254 +239,59 @@ mod tests {
     }
 
     #[test]
-    fn test_update_from_ws_matches_by_cloid() {
+    fn tracked_order_flows_through_private_ws_without_legacy_prefix() {
         let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        manager
-            .update_from_exchange_submit(
-                &cloid,
-                &OrderStatus::Resting {
-                    resting: Resting { oid: 42 },
-                },
-            )
-            .unwrap();
-
-        let result = manager
-            .update_from_ws(&order_state(Some(cloid), 42), "open")
-            .unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().status, Status::New);
-    }
-
-    #[test]
-    fn test_update_from_ws_falls_back_to_oid() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        manager
-            .update_from_exchange_submit(
-                &cloid,
-                &OrderStatus::Resting {
-                    resting: Resting { oid: 42 },
-                },
-            )
-            .unwrap();
-
-        // The exchange may not echo the cloid (e.g. orders placed by other tools).
-        let result = manager
-            .update_from_ws(&order_state(None, 42), "filled")
-            .unwrap();
-        let order = result.expect("order should be updated by oid");
-        assert_eq!(order.status, Status::Filled);
-        // The update carries the state's filled quantity ("0" in this test).
-        assert_eq!(order.exec_qty, 0.0);
-        assert_eq!(order.leaves_qty, 1.0);
-    }
-
-    #[test]
-    fn test_dual_channel_removal() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
+        let client_order_id = "0123456789abcdef0123456789abcdef";
         let mut order = test_order(1);
         order.status = Status::New;
-
-        // REST confirms the cancel.
-        let rest_update = manager.update_from_exchange_cancel(&cloid, true).unwrap();
-        assert!(rest_update.is_some());
-        assert_eq!(manager.orders.len(), 1);
-
-        // WS confirms the cancel: the order is removed and no further update is published.
-        let ws_update = manager
-            .update_from_ws(&order_state(Some(cloid), 42), "canceled")
-            .unwrap();
-        assert!(ws_update.is_none());
-        assert!(manager.orders.is_empty());
-    }
-
-    #[test]
-    fn test_submit_filled_status() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        let order = manager
-            .update_from_exchange_submit(
-                &cloid,
-                &OrderStatus::Filled {
-                    filled: Filled {
-                        total_sz: "0.001".to_string(),
-                        avg_px: "64200".to_string(),
-                        oid: 42,
-                    },
-                },
+        assert!(manager.track_managed_order("BTC", client_order_id, order));
+        let result = manager
+            .update_from_ws(
+                &order_state(Some(format!("0x{client_order_id}")), 42),
+                "open",
             )
-            .unwrap()
             .unwrap();
-        assert_eq!(order.status, Status::Filled);
-        assert_eq!(order.exec_qty, 0.001);
-        assert_eq!(order.leaves_qty, 0.0);
-        // A filled order is removed from the lookup table (terminal state).
-        assert!(manager.get_oid("BTC", 1).is_none());
-    }
-
-    #[test]
-    fn test_submit_error_status() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        let order = manager
-            .update_from_exchange_submit(
-                &cloid,
-                &OrderStatus::Error {
-                    error: "insufficient balance".to_string(),
-                },
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(order.status, Status::Rejected);
-        assert_eq!(order.req, Status::None);
-    }
-
-    #[test]
-    fn test_cancel_failure_keeps_status() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        let order = manager
-            .update_from_exchange_cancel(&cloid, false)
-            .unwrap()
-            .unwrap();
-        assert_eq!(order.status, Status::None);
-        assert!(manager.orders.contains_key(&cloid));
-    }
-
-    #[test]
-    fn test_dual_channel_removal_ws_first() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-
-        // WS confirms the cancel first.
-        let ws_update = manager
-            .update_from_ws(&order_state(Some(cloid.clone()), 42), "canceled")
-            .unwrap();
-        assert!(ws_update.is_some());
-        assert_eq!(ws_update.unwrap().status, Status::Canceled);
-        assert_eq!(manager.orders.len(), 1);
-
-        // REST then confirms: the order is removed and no further update is published.
-        let rest_update = manager.update_from_exchange_cancel(&cloid, true).unwrap();
-        assert!(rest_update.is_none());
-        assert!(manager.orders.is_empty());
+        assert_eq!(result.unwrap().status, Status::New);
     }
 
     #[test]
     fn test_gc_removes_stale_orders() {
         let mut manager = OrderManager::new();
-
-        // A: filled long ago (stale, exch_timestamp 0).
+        let stale_cloid = "0x0123456789abcdef0123456789abcdef";
         let mut stale = test_order(1);
         stale.status = Status::New;
-        let stale_cloid = manager.prepare_cloid("BTC".to_string(), stale).unwrap();
-        let stale_state = OrderState {
-            coin: "BTC".to_string(),
-            side: "B".to_string(),
-            limit_px: "63000".to_string(),
-            sz: "1.0".to_string(),
-            oid: 42,
-            timestamp: 0,
-            orig_sz: "1.0".to_string(),
-            filled: "1.0".to_string(),
-            avg_px: "63000".to_string(),
-            cloid: Some(stale_cloid.clone()),
-            reduce_only: false,
-            tif: Some("Gtc".to_string()),
-        };
-        manager.update_from_ws(&stale_state, "filled").unwrap();
+        assert!(manager.track_managed_order("BTC", stale_cloid, stale));
+        let mut stale_state = order_state(Some(stale_cloid.to_string()), 42);
+        stale_state.timestamp = 0;
+        stale_state.filled = "1.0".to_string();
+        manager
+            .update_from_ws(&stale_state, "filled")
+            .unwrap()
+            .unwrap();
 
-        // B: still active (New), must survive gc.
         let mut fresh = test_order(2);
         fresh.status = Status::New;
-        manager.prepare_cloid("BTC".to_string(), fresh);
-
+        assert!(manager.track_managed_order("BTC", "fresh", fresh));
         manager.gc();
-
-        assert!(!manager.orders.contains_key(&stale_cloid));
+        assert!(!manager.orders.contains_key(stale_cloid));
         assert_eq!(manager.orders.len(), 1);
-        // The stale order is also gone from the lookup table.
-        assert!(manager.get_cloid("BTC", 1).is_none());
     }
 
     #[test]
     fn test_orders_filters_active_and_symbol() {
         let mut manager = OrderManager::new();
-
         let mut btc_active = test_order(1);
         btc_active.status = Status::New;
         let mut btc_filled = test_order(2);
         btc_filled.status = Status::Filled;
         let mut eth_active = test_order(3);
         eth_active.status = Status::New;
-
-        manager.prepare_cloid("BTC".to_string(), btc_active);
-        manager.prepare_cloid("BTC".to_string(), btc_filled);
-        manager.prepare_cloid("ETH".to_string(), eth_active);
-
+        manager.track_managed_order("BTC", "btc-active", btc_active);
+        manager.track_managed_order("BTC", "btc-filled", btc_filled);
+        manager.track_managed_order("ETH", "eth-active", eth_active);
         let all = manager.orders(None);
         assert_eq!(all.len(), 2);
-        let btc = manager.orders(Some("BTC".to_string()));
-        assert_eq!(btc.len(), 1);
-        assert_eq!(btc[0].order_id, 1);
-    }
-
-    #[test]
-    fn test_prepare_cloid_rejects_duplicate() {
-        let mut manager = OrderManager::new();
-        assert!(
-            manager
-                .prepare_cloid("BTC".to_string(), test_order(1))
-                .is_some()
-        );
-        assert!(
-            manager
-                .prepare_cloid("BTC".to_string(), test_order(1))
-                .is_none()
-        );
-        // A different bot order id for the same symbol is fine.
-        assert!(
-            manager
-                .prepare_cloid("BTC".to_string(), test_order(2))
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_cloid_format() {
-        let mut manager = OrderManager::new();
-        let cloid = manager
-            .prepare_cloid("BTC".to_string(), test_order(1))
-            .unwrap();
-        assert!(cloid.starts_with("0x"));
-        assert_eq!(cloid.len(), 34);
-        assert!(hex::decode(&cloid[2..]).is_ok());
-    }
-
-    #[test]
-    fn test_update_cancel_fail_clears_req() {
-        let mut manager = OrderManager::new();
-        let mut order = test_order(1);
-        order.req = Status::Canceled;
-        let cloid = manager.prepare_cloid("BTC".to_string(), order).unwrap();
-        let updated = manager.update_cancel_fail(&cloid).unwrap();
-        assert_eq!(updated.req, Status::None);
+        assert_eq!(manager.orders(Some("BTC".to_string())).len(), 1);
     }
 
     #[test]
