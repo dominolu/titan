@@ -403,7 +403,9 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
   `submit(post-only) -> 私有流 NEW -> REST cancel -> 私有流 CANCELED -> Full reconcile`；
   `clOrdId`/`ordId`/`uTime` 三路径一致性实测通过，公共流探针
   `connector/examples/okx_market_stream_probe.rs` 覆盖 `books`/`trades`/`bbo-tbt`/`funding-rate`。
-  实测语义差异：OKX 价格限制为双向 ±1%，不支持远价 post-only；下单响应无时间戳字段，撤单响应
+  实测语义差异：OKX 价格限制按品种配置（`/public/price-limit` 的 `buyLmt`/`sellLmt`），
+  不支持远价 post-only，探针按实时 price-limit 与盘口动态定价，不做品种假设；下单响应无
+  时间戳字段，撤单响应
   `ts` 已回填 `OrderInfo.update_time`。探针暴露并修复：`bbo-tbt` 扁平字段解析错误导致 BBO 全部
   静默丢帧、`/trade/cancel-all-orders` 端点不存在（404）、`orders-pending` 的字符串布尔
   `reduceOnly` 阻断 reconcile、撤单 `ts` 未解析。详见 blocking_issues B-02。

@@ -62,9 +62,11 @@
   一致；`ordId` 经 IdInterner 在 REST 与私有流两侧归一为同一 Id128；私有流
   `uTime`（ms→ns）与 reconcile 快照 `uTime` 完全相等且毫秒对齐；撤单响应 `ts`
   回填后 REST 撤单事实与私有流终态 exchange_ts 完全相等；
-- 语义差异已确认：OKX 价格限制为双向 ±1%（`buyLmt`/`sellLmt`），不支持 Binance 式
-  “远高于市场”的 post-only 挂单，探针改为盘口上方 1% 以内；OKX 下单/撤单响应无
-  统一时间戳字段（撤单响应有 `ts`，下单响应没有），因此 REST *命令*事实的
+- 语义差异已确认：OKX 价格限制按品种配置（`/api/v5/public/price-limit` 的
+  `buyLmt`/`sellLmt`，XRP-USDT-SWAP 当前约为 ±1%，非固定规则），不支持 Binance 式
+  “远高于市场”的 post-only 挂单；探针启动时实时拉取该品种的 price-limit 与盘口最优卖价
+  动态计算 resting 价格（`OKX_PROBE_PRICE_MARGIN_PCT` 可调），不做任何品种假设；OKX 下单/
+  撤单响应无统一时间戳字段（撤单响应有 `ts`，下单响应没有），因此 REST *命令*事实的
   exchange_ts 以 reconcile 快照与撤单 `ts` 为准；partial-fill 无法以最小订单
   （0.01 张 = 1 XRP）确定性制造，与 Binance 同口径豁免；
 - 最终独立原始接口复核：零挂单、零仓位、零条件单，余额无损。
