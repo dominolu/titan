@@ -1,10 +1,10 @@
 #[allow(dead_code)]
 mod brokerapi;
-mod msg;
+pub mod msg;
 mod ordermanager;
 mod private_stream;
 mod public_stream;
-mod rest;
+pub mod rest;
 
 use std::{
     collections::{HashMap, HashSet},

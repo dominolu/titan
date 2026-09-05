@@ -103,7 +103,8 @@ fn client_hex_equal(id: Id128, text: &str) -> bool {
     id_text(id) == text.strip_prefix("0x").unwrap_or(text)
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_target(true)
@@ -114,19 +115,13 @@ fn main() -> Result<()> {
     let symbol = std::env::var("OKX_PROBE_SYMBOL")
         .unwrap_or_else(|_| "XRP-USDT-SWAP".to_owned())
         .to_uppercase();
-    // Post-only sell above the best ask so it rests; OKX enforces a tight two-sided price
-    // limit (floatPxLmtPct ~1%), so "far above market" like the Binance probe is rejected.
-    // Default 1.4165 sits ~1% over the XRP mark and below buyLmt; tune per instrument.
-    let price_usdt: f64 = std::env::var("OKX_PROBE_PRICE_USDT")
+    // Post-only sell above the best ask so it rests. OKX price limits are per-instrument
+    // (buyLmt/sellLmt from /public/price-limit), so the resting price is derived from live
+    // metadata below instead of assuming any fixed percentage.
+    let price_margin_pct: f64 = std::env::var("OKX_PROBE_PRICE_MARGIN_PCT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1.4165);
-    let price_tick: f64 = std::env::var("OKX_PROBE_PRICE_TICK")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0001);
-    // One lot in connector units; OKX XRP-USDT-SWAP minSz/lotSz is 0.01 contract (1 XRP).
-    let quantity_lot = std::env::var("OKX_PROBE_QUANTITY_LOT").unwrap_or_else(|_| "0.01".to_owned());
+        .unwrap_or(0.8);
     let quantity_lots: i64 = std::env::var("OKX_PROBE_QUANTITY_LOTS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -136,12 +131,54 @@ fn main() -> Result<()> {
     let simulated = std::env::var("OKX_PROBE_SIMULATED")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+
+    // Live instrument metadata: tick/lot precision, per-instrument price limit and the
+    // current best ask. Credentials stay empty — these are all public no-auth endpoints.
+    let public_client = connector::okx::rest::OkxClient::new("https://www.okx.com", "", "", "");
+    let instrument = public_client
+        .get_instruments(&symbol)
+        .await
+        .context("fetch OKX instrument metadata")?;
+    let price_tick: f64 = instrument
+        .tick_sz
+        .parse()
+        .context("instrument tickSz is not a number")?;
+    ensure!(price_tick > 0.0, "instrument tickSz must be positive");
+    let quantity_lot = instrument.lot_sz.clone();
+    let min_qty: f64 = instrument.min_sz.parse().unwrap_or(0.0);
     ensure!(
-        price_usdt > 0.0 && price_tick > 0.0,
-        "probe price and tick must be positive"
+        quantity_lots as f64 * quantity_lot.parse::<f64>()? >= min_qty,
+        "order size {quantity_lots} x {quantity_lot} is below OKX minSz {min_qty}"
     );
-    let price_ticks = (price_usdt / price_tick).round() as i64;
-    ensure!(price_ticks > 0, "probe price ticks must be positive");
+    let price_limit = public_client
+        .get_price_limit(&symbol)
+        .await
+        .context("fetch OKX price limit")?;
+    let buy_lmt: f64 = price_limit
+        .buy_lmt
+        .parse()
+        .context("buyLmt is not a number")?;
+    let book = public_client
+        .get_books(&symbol, 1)
+        .await
+        .context("fetch OKX order book")?;
+    let best_ask: f64 = book
+        .asks
+        .first()
+        .and_then(|level| level.first())
+        .and_then(|px| px.parse().ok())
+        .context("order book has no best ask")?;
+    // Resting price: a small configurable margin over the best ask, capped by the
+    // per-instrument buyLmt (conservative upper bound for resting sells), floored to the
+    // instrument tick grid.
+    let raw_price = best_ask * (1.0 + price_margin_pct / 100.0);
+    let price_ticks = (((raw_price.min(buy_lmt - price_tick)) / price_tick).floor() as i64)
+        .max(1);
+    let price_usdt = price_ticks as f64 * price_tick;
+    ensure!(price_usdt > best_ask, "derived resting price crosses the book");
+    println!(
+        "derived_order_price symbol={symbol} best_ask={best_ask} buy_lmt={buy_lmt} tick={price_tick} margin_pct={price_margin_pct} price={price_usdt} quantity_lot={quantity_lot}"
+    );
 
     let secret_ref = SecretRef::new("env://okx-rest-ws-probe");
     let secret_provider: Arc<dyn SecretProvider> = Arc::new(EnvironmentSecret {
