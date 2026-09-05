@@ -196,8 +196,11 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   API-key-only 公共请求、批量请求编码与 HTTP method、修改订单必填字段与可见性窗口、条件单新参数、
   symbol 大小写过滤、错误对象误解析为空订单、未绑定 symbol 触发 reconcile 风暴，以及私有流连接时误执行
   cancel-all 等问题。最终独立原始接口全账户复核为零仓位、零普通挂单、零条件单和零保证金占用；XRPUSDT
-  为 CROSSED/5x，账户为单向持仓并开启 Multi-Assets。该总项继续保持未完成：5 USDT 最小订单无法
-  确定性制造部分成交，且 OKX、Hyperliquid 的真实账户验收尚未执行。
+  为 CROSSED/5x，账户为单向持仓并开启 Multi-Assets。
+  OKX 已于 2026-09-05 在同一目标机完成主网订单闭环（详见 4.10 与 blocking_issues B-02）：post-only
+  卖单 `REST 提交 -> 私有流 NEW -> REST 撤单 -> 私有流终态 CANCELED -> Full reconcile` 连续两代通过，
+  最终复核零挂单、零仓位、零条件单、余额无损。该总项继续保持未完成：两家最小订单均无法确定性制造
+  部分成交，且 Hyperliquid 的真实账户验收尚未执行。
 
 ### 4.2 MarketPlugin 与三家 MarketConnector
 
@@ -395,8 +398,21 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
   （1=NEW/4=CANCELED）、side/type/price/quantity 实测一致；即使 WS 帧先于 REST 回包到达也一致。
 - [x] 探针 `connector/examples/binance_futures_account_rest_ws_probe.rs` 增加 REST↔WS 一致性
   自校验（client id、venue id、exchange_ts、状态），可作为后续 CI/验收样例。
-- [ ] OKX/Hyperliquid 私有流尚未实盘接入：其 cancel-all 聚合路径没有交易所 orderId 回填、WS
-  exchange_ts 与 REST reconcile 的换算需在各自主网逐一实测；接入顺序先 Binance（已通）再其余两家。
+- [x] OKX 实盘私有流与字段语义验收（2026-09-05，目标机 `43.165.184.116`，主网 XRP-USDT-SWAP）：
+  探针 `connector/examples/okx_account_rest_ws_probe.rs` 连续两代完成
+  `submit(post-only) -> 私有流 NEW -> REST cancel -> 私有流 CANCELED -> Full reconcile`；
+  `clOrdId`/`ordId`/`uTime` 三路径一致性实测通过，公共流探针
+  `connector/examples/okx_market_stream_probe.rs` 覆盖 `books`/`trades`/`bbo-tbt`/`funding-rate`。
+  实测语义差异：OKX 价格限制为双向 ±1%，不支持远价 post-only；下单响应无时间戳字段，撤单响应
+  `ts` 已回填 `OrderInfo.update_time`。探针暴露并修复：`bbo-tbt` 扁平字段解析错误导致 BBO 全部
+  静默丢帧、`/trade/cancel-all-orders` 端点不存在（404）、`orders-pending` 的字符串布尔
+  `reduceOnly` 阻断 reconcile、撤单 `ts` 未解析。详见 blocking_issues B-02。
+  REST cancel-all 命令路径已可用（`orders-pending` + 按 `ordId` 批量撤销并逐单校验）；
+  重连时 `order_manager.cancel_all` 本地合成的事实仍无 client/venue id 回填，属低概率
+  边缘路径，随 Hyperliquid 验收一并处理。
+- [ ] Hyperliquid 私有流尚未实盘接入：其 cancel-all 聚合路径没有交易所 orderId 回填、WS
+  exchange_ts 与 REST reconcile 的换算需在其主网逐一实测；接入顺序先 Binance（已通）→ OKX（已通）
+  → Hyperliquid。
 
 ### 4.11 EventEngine 容量扫描与旧路径清理审计（2026-09-04）
 

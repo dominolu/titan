@@ -411,45 +411,47 @@ impl PublicStream {
                     let bbo: BboTbt = serde_json::from_value(value.clone())?;
                     let exch_ts = bbo.ts.parse::<i64>().unwrap_or(0) * 1_000_000;
                     let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
-                    if let Ok(bid_px) = bbo.bid_px.parse::<f64>() {
-                        if bid_px > 0.0 {
-                            self.ev_tx
-                                .send(PublishEvent::FeedBatch {
-                                    symbol: bbo.inst_id.clone(),
-                                    events: vec![Event {
-                                        ev: LOCAL_BID_DEPTH_BBO_EVENT,
-                                        exch_ts,
-                                        local_ts,
-                                        order_id: 0,
-                                        px: bid_px,
-                                        qty: bbo.bid_sz.parse().unwrap_or(0.0),
-                                        ival: 0,
-                                        fval: 0.0,
-                                    }],
-                                    stream: None,
-                                })
-                                .unwrap();
-                        }
+                    if let Some((bid_px, bid_sz)) = bbo.best_bid()
+                        && let Ok(bid_px) = bid_px.parse::<f64>()
+                        && bid_px > 0.0
+                    {
+                        self.ev_tx
+                            .send(PublishEvent::FeedBatch {
+                                symbol: bbo.inst_id.clone(),
+                                events: vec![Event {
+                                    ev: LOCAL_BID_DEPTH_BBO_EVENT,
+                                    exch_ts,
+                                    local_ts,
+                                    order_id: 0,
+                                    px: bid_px,
+                                    qty: bid_sz.parse().unwrap_or(0.0),
+                                    ival: 0,
+                                    fval: 0.0,
+                                }],
+                                stream: None,
+                            })
+                            .unwrap();
                     }
-                    if let Ok(ask_px) = bbo.ask_px.parse::<f64>() {
-                        if ask_px > 0.0 {
-                            self.ev_tx
-                                .send(PublishEvent::FeedBatch {
-                                    symbol: bbo.inst_id,
-                                    events: vec![Event {
-                                        ev: LOCAL_ASK_DEPTH_BBO_EVENT,
-                                        exch_ts,
-                                        local_ts,
-                                        order_id: 0,
-                                        px: ask_px,
-                                        qty: bbo.ask_sz.parse().unwrap_or(0.0),
-                                        ival: 0,
-                                        fval: 0.0,
-                                    }],
-                                    stream: None,
-                                })
-                                .unwrap();
-                        }
+                    if let Some((ask_px, ask_sz)) = bbo.best_ask()
+                        && let Ok(ask_px) = ask_px.parse::<f64>()
+                        && ask_px > 0.0
+                    {
+                        self.ev_tx
+                            .send(PublishEvent::FeedBatch {
+                                symbol: bbo.inst_id.clone(),
+                                events: vec![Event {
+                                    ev: LOCAL_ASK_DEPTH_BBO_EVENT,
+                                    exch_ts,
+                                    local_ts,
+                                    order_id: 0,
+                                    px: ask_px,
+                                    qty: ask_sz.parse().unwrap_or(0.0),
+                                    ival: 0,
+                                    fval: 0.0,
+                                }],
+                                stream: None,
+                            })
+                            .unwrap();
                     }
                 }
             }

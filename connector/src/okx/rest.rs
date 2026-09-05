@@ -197,22 +197,47 @@ impl OkxClient {
         check_cancel_result(resp.data)
     }
 
+    /// OKX 没有 `/trade/cancel-all-orders` 端点（返回 HTTP 404）；全撤只能通过
+    /// `orders-pending` 查询后按 20 单一批走 `cancel-batch-orders`。
     pub async fn cancel_all_orders(
         &self,
         inst_id: &str,
-        td_mode: &str,
-        pos_side: Option<&str>,
+        _td_mode: &str,
+        _pos_side: Option<&str>,
     ) -> Result<(), OkxError> {
-        let pos_side = pos_side
-            .map(|side| format!(",\"posSide\":\"{side}\""))
-            .unwrap_or_default();
-        let body = format!("{{\"instId\":\"{inst_id}\",\"tdMode\":\"{td_mode}\"{pos_side}}}");
-        let resp: CancelResponse = self.post("/api/v5/trade/cancel-all-orders", body).await?;
-        if resp.code != "0" {
-            return Err(OkxError::OrderError {
-                code: resp.code,
-                msg: resp.msg,
-            });
+        let pending = self.get_orders_pending(inst_id).await?;
+        for chunk in pending.chunks(20) {
+            let bodies = chunk
+                .iter()
+                .map(|order| format!("{{\"instId\":\"{inst_id}\",\"ordId\":\"{}\"}}", order.ord_id))
+                .collect::<Vec<_>>();
+            if bodies.is_empty() {
+                continue;
+            }
+            let resp: CancelResponse = self
+                .post("/api/v5/trade/cancel-batch-orders", format!("[{}]", bodies.join(",")))
+                .await?;
+            if resp.code != "0" {
+                return Err(OkxError::OrderError {
+                    code: resp.code,
+                    msg: resp.msg,
+                });
+            }
+            // 批量响应逐单校验业务结果；51401（订单不存在，多为已被撤/终态）视为已撤。
+            if resp.code != "0" {
+                return Err(OkxError::OrderError {
+                    code: resp.code,
+                    msg: resp.msg,
+                });
+            }
+            for result in &resp.data {
+                if result.s_code != "0" && result.s_code != "51401" {
+                    return Err(OkxError::OrderError {
+                        code: result.s_code.clone(),
+                        msg: result.s_msg.clone(),
+                    });
+                }
+            }
         }
         Ok(())
     }

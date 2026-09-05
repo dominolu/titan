@@ -3,16 +3,16 @@
 状态：本文件只收录“当前无法仅在代码内闭环解决、需要外部环境或进一步现场验证”的问题。
 可内部修复的问题不在本清单，直接按主清单执行。
 
-更新时间：2026-09-04
+更新时间：2026-09-05
 
 ## 汇总
 
 | ID | 标题 | 严重度 | 当前状态 | 主要阻塞条件 |
 |---|---|---|---|---|
 | B-01 | Binance 私有流偶发连接后零 executionReport | 高（影响“静默断流”保证） | 观测中，未定位根因 | 需要持续主网运行 + 日志/抓包复现 |
-| B-02 | OKX/Hyperliquid 实盘私有流与字段语义验收 | 高（阻断多交易所闭环） | 未执行 | OKX/Hyperliquid 凭据与资金环境 |
+| B-02 | OKX/Hyperliquid 实盘私有流与字段语义验收 | 高（阻断多交易所闭环） | OKX 已完成（2026-09-05）；Hyperliquid 未执行 | Hyperliquid 凭据与资金环境 |
 | B-03 | 生产 P99/P99.9 PerformanceEnvelope 冻结 | 中（不阻塞功能） | 仅有 synthetic 基线 | 目标机上约定的真实 Market/Account 双源负载 |
-| B-04 | 多 venue e2e/roundtrip 覆盖在方案 B 删除后未补齐 | 中 | 待补 | B-02 的实盘环境；本地可先补 brokerapi 合流测试 |
+| B-04 | 多 venue e2e/roundtrip 覆盖在方案 B 删除后未补齐 | 中 | OKX venue 级闭环已由探针补上；Hyperliquid 待补 | B-02 的实盘环境；本地可先补 brokerapi 合流测试 |
 
 ---
 
@@ -48,17 +48,53 @@
 
 ## B-02 OKX / Hyperliquid 实盘私有流与字段语义验收
 
+### OKX（2026-09-05 已完成）
+
+在目标机 `43.165.184.116` 用 OKX 主网真实完成验收，探针
+`connector/examples/okx_account_rest_ws_probe.rs`（私有流）与
+`connector/examples/okx_market_stream_probe.rs`（公共流）连续两代通过：
+
+- 公共流：XRP-USDT-SWAP 的 Depth snapshot/delta（`books`）、Trade、BBO（`bbo-tbt`）、
+  FundingRate 全部实时到达 direct publisher；
+- 私有流：login → orders/positions 订阅 → READY → Full reconcile；REST 提交
+  post-only 卖单 → 私有流 NEW → REST 撤单 → 私有流终态 CANCELED → Full reconcile；
+- 字段一致性实测通过：32-hex `clOrdId` 三路径（REST 命令回执、私有流、reconcile 快照）
+  一致；`ordId` 经 IdInterner 在 REST 与私有流两侧归一为同一 Id128；私有流
+  `uTime`（ms→ns）与 reconcile 快照 `uTime` 完全相等且毫秒对齐；撤单响应 `ts`
+  回填后 REST 撤单事实与私有流终态 exchange_ts 完全相等；
+- 语义差异已确认：OKX 价格限制为双向 ±1%（`buyLmt`/`sellLmt`），不支持 Binance 式
+  “远高于市场”的 post-only 挂单，探针改为盘口上方 1% 以内；OKX 下单/撤单响应无
+  统一时间戳字段（撤单响应有 `ts`，下单响应没有），因此 REST *命令*事实的
+  exchange_ts 以 reconcile 快照与撤单 `ts` 为准；partial-fill 无法以最小订单
+  （0.01 张 = 1 XRP）确定性制造，与 Binance 同口径豁免；
+- 最终独立原始接口复核：零挂单、零仓位、零条件单，余额无损。
+
+验收过程中发现并修复的代码缺口（均由探针暴露）：
+
+1. `bbo-tbt` 帧解析使用了不存在的扁平 `bidPx/bidSz` 字段，因 serde 全默认字段而
+   静默丢帧且无任何错误（`connector/src/okx/msg/stream.rs`，改为解析
+   `bids/asks` 顶档数组）；
+2. `/api/v5/trade/cancel-all-orders` 端点不存在（HTTP 404，`code` 为整数导致
+   `CancelResponse` 解码失败），改为 `orders-pending` 查询 + `cancel-batch-orders`
+   逐单校验（`connector/src/okx/rest.rs`）；
+3. `orders-pending` 的 `reduceOnly` 以字符串 `"false"` 返回导致整个订单记录解码
+   失败、Full reconcile 无法完成（新增 `from_lenient_bool` 宽松布尔解析）；
+4. 撤单响应 `ts` 未解析，REST 撤单事实 exchange_ts 恒为 0（已回填至
+   `OrderInfo.update_time`）。
+
+### Hyperliquid（未执行）
+
 范围（详见 [refactor_remaining_tasks.md](refactor_remaining_tasks.md) 4.10）：
 
 - cancel-all 聚合路径尚未回填交易所 orderId；
 - WS 与 REST reconcile 的 exchange_ts 换算需在主网逐字段实测；
-- REST→私有流 client/venue id、状态与时间戳一致性需复刻 Binance 探针方式验证；
+- REST→私有流 client/venue id、状态与时间戳一致性需复刻 Binance/OKX 探针方式验证；
 - 小额 submit/cancel/partial-fill/reconnect 与最终 orders/positions/balances 对账。
 
-阻塞原因：两家交易所的 API 凭据与小额资金环境尚未提供；凭据不得写入仓库。
+阻塞原因：Hyperliquid 的 API 凭据与小额资金环境尚未提供；凭据不得写入仓库。
 
 解除条件：提供只读/小额交易凭据后，复用
-`connector/examples/binance_futures_account_rest_ws_probe.rs` 的结构建立 OKX/HL 对应探针，并跑通
+`connector/examples/okx_account_rest_ws_probe.rs` 的结构建立 HL 对应探针，并跑通
 `submit → 私有流事实 → cancel → 私有流终态 → Full reconcile`。
 
 ---

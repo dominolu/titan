@@ -1006,8 +1006,10 @@ impl BrokerApi for OkxClient {
             time_in_force: ApiTimeInForce::Unknown,
             reduce_only: false,
             position_side: ApiPositionSide::Unknown,
+            // OKX 撤单响应携带完成时间（毫秒），回填后 REST 撤单事实的
+            // exchange_ts 才与私有流终态事件处于同一时钟域。
             create_time: 0,
-            update_time: 0,
+            update_time: i(&result.ts),
             stop_price: None,
         })
     }
@@ -1675,10 +1677,11 @@ mod tests {
         assert_eq!(books5.bids[0][0], "50000.0");
 
         let bbo: s::BboTbt = serde_json::from_str(
-            r#"{"instId":"BTC-USDT-SWAP","askPx":"50001.0","askSz":"1.0","bidPx":"50000.0","bidSz":"1.5","ts":"1700000000000"}"#,
+            r#"{"instId":"BTC-USDT-SWAP","asks":[["50001.0","1.0","0","2"]],"bids":[["50000.0","1.5","0","3"]],"ts":"1700000000000"}"#,
         )
         .unwrap();
-        assert_eq!(bbo.bid_px, "50000.0");
+        assert_eq!(bbo.best_bid(), Some(("50000.0", "1.5")));
+        assert_eq!(bbo.best_ask(), Some(("50001.0", "1.0")));
 
         let ticker: s::TickerWs = serde_json::from_str(
             r#"{"instId":"BTC-USDT-SWAP","last":"50000.0","ts":"1700000000000"}"#,
