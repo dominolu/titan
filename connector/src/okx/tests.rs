@@ -507,6 +507,7 @@ fn test_check_cancel_result_variants() {
             ord_id: "1".to_string(),
             s_code: "0".to_string(),
             s_msg: String::new(),
+            ts: String::new(),
         }])
         .is_ok()
     );
@@ -517,6 +518,7 @@ fn test_check_cancel_result_variants() {
             ord_id: "1".to_string(),
             s_code: "51401".to_string(),
             s_msg: "Order does not exist".to_string(),
+            ts: String::new(),
         }]),
         Err(OkxError::OrderError { code, .. }) if code == "51401"
     ));

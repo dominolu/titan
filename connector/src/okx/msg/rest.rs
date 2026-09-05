@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::utils::from_str_to_f64;
+use crate::utils::{from_lenient_bool, from_str_to_f64};
 use serde::{Deserialize, Serialize};
 
 /// OKX 统一响应包装：`{code, msg, data: [...]}`。
@@ -70,6 +70,9 @@ pub struct CancelResult {
     pub s_code: String,
     #[serde(default)]
     pub s_msg: String,
+    /// 撤单完成时间（毫秒 epoch 字符串），REST 撤单事实 exchange_ts 的来源。
+    #[serde(default)]
+    pub ts: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -357,7 +360,7 @@ pub struct Order {
     pub rebate: f64,
     #[serde(default)]
     pub rebate_ccy: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "from_lenient_bool")]
     pub reduce_only: bool,
     #[serde(default)]
     pub sl_trigger_px: String,

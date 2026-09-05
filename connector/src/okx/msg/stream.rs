@@ -144,22 +144,32 @@ pub struct Books5 {
     pub ts: String,
 }
 
-/// `bbo-tbt` 频道的最优买卖价。
+/// `bbo-tbt` 频道的最优买卖价。OKX 实际推送 `bids`/`asks` 顶档数组
+/// （如 `[["1.4025","140.37","0","26"]]`），而不是扁平的 `bidPx` 字段。
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct BboTbt {
     #[serde(default)]
     pub inst_id: String,
     #[serde(default)]
-    pub ask_px: String,
+    pub asks: Vec<Vec<String>>,
     #[serde(default)]
-    pub ask_sz: String,
-    #[serde(default)]
-    pub bid_px: String,
-    #[serde(default)]
-    pub bid_sz: String,
+    pub bids: Vec<Vec<String>>,
     #[serde(default)]
     pub ts: String,
+}
+
+impl BboTbt {
+    /// 顶档 `(price, size)`；数组为空或字段缺失时返回 `None`。
+    pub fn best_bid(&self) -> Option<(&str, &str)> {
+        let level = self.bids.first()?;
+        Some((level.first()?.as_str(), level.get(1)?.as_str()))
+    }
+
+    pub fn best_ask(&self) -> Option<(&str, &str)> {
+        let level = self.asks.first()?;
+        Some((level.first()?.as_str(), level.get(1)?.as_str()))
+    }
 }
 
 /// `tickers` 频道。

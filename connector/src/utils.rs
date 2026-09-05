@@ -109,6 +109,38 @@ where
     deserializer.deserialize_option(OptionF64Visitor)
 }
 
+/// OKX 不同端点对同一布尔字段会分别返回真布尔或字符串 `"true"/"false"`
+/// （如 `orders-pending` 的 `reduceOnly` 是字符串，私有流 `orders` 频道是布尔），
+/// 该反序列化器同时接受两种形态。
+pub fn from_lenient_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct LenientBoolVisitor;
+
+    impl Visitor<'_> for LenientBoolVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a boolean or the strings \"true\"/\"false\"")
+        }
+
+        fn visit_bool<E: Error>(self, value: bool) -> Result<bool, E> {
+            Ok(value)
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<bool, E> {
+            match value {
+                "true" => Ok(true),
+                "false" | "" => Ok(false),
+                other => Err(Error::custom(format!("invalid boolean string: {other}"))),
+            }
+        }
+    }
+
+    deserializer.deserialize_any(LenientBoolVisitor)
+}
+
 pub fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
