@@ -30,3 +30,4 @@ backtest_reports/
 # IDE
 .vscode/
 .idea/
+.secrets/
