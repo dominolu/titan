@@ -29,3 +29,5 @@ pub mod evm;
 pub mod hyperliquid;
 #[cfg(feature = "okx")]
 pub mod okx;
+#[cfg(feature = "solana")]
+pub mod solana;
