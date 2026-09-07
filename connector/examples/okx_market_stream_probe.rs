@@ -11,7 +11,9 @@ use std::{collections::BTreeSet, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use connector::{
-    connector::{Connector, ConnectorBuilder, DirectPublication, PublishEvent, direct_publish_sender},
+    connector::{
+        Connector, ConnectorBuilder, DirectPublication, PublishEvent, direct_publish_sender,
+    },
     okx::Okx,
 };
 use hftbacktest::prelude::{
@@ -30,8 +32,8 @@ async fn main() -> Result<()> {
     let symbol = std::env::var("OKX_PROBE_SYMBOL")
         .unwrap_or_else(|_| "XRP-USDT-SWAP".to_owned())
         .to_uppercase();
-    let public_ws_url =
-        std::env::var("OKX_TEST_PUBLIC_WS_URL").unwrap_or_else(|_| "wss://ws.okx.com:8443/ws/v5/public".to_owned());
+    let public_ws_url = std::env::var("OKX_TEST_PUBLIC_WS_URL")
+        .unwrap_or_else(|_| "wss://ws.okx.com:8443/ws/v5/public".to_owned());
     let window_seconds = std::env::var("OKX_MARKET_WINDOW_SECONDS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -99,7 +101,11 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            PublishEvent::Funding { symbol, funding_rate, .. } => {
+            PublishEvent::Funding {
+                symbol,
+                funding_rate,
+                ..
+            } => {
                 observed.insert("funding");
                 funding_count += 1;
                 println!("funding_event symbol={symbol} funding_rate={funding_rate}");
