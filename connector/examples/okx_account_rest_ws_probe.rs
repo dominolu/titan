@@ -172,10 +172,12 @@ async fn main() -> Result<()> {
     // per-instrument buyLmt (conservative upper bound for resting sells), floored to the
     // instrument tick grid.
     let raw_price = best_ask * (1.0 + price_margin_pct / 100.0);
-    let price_ticks = (((raw_price.min(buy_lmt - price_tick)) / price_tick).floor() as i64)
-        .max(1);
+    let price_ticks = (((raw_price.min(buy_lmt - price_tick)) / price_tick).floor() as i64).max(1);
     let price_usdt = price_ticks as f64 * price_tick;
-    ensure!(price_usdt > best_ask, "derived resting price crosses the book");
+    ensure!(
+        price_usdt > best_ask,
+        "derived resting price crosses the book"
+    );
     println!(
         "derived_order_price symbol={symbol} best_ask={best_ask} buy_lmt={buy_lmt} tick={price_tick} margin_pct={price_margin_pct} price={price_usdt} quantity_lot={quantity_lot}"
     );
@@ -410,7 +412,9 @@ fn run_probe(
         println!("position_lots_after_cancel={position_lots}; closing with market buy");
         let close_receipt = connector
             .submit(SubmitOrderCommand {
-                command_id: Id128([64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79]),
+                command_id: Id128([
+                    64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+                ]),
                 client_order_id: Some(Id128([
                     79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 67, 66, 65, 64,
                 ])),

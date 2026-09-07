@@ -209,13 +209,21 @@ impl OkxClient {
         for chunk in pending.chunks(20) {
             let bodies = chunk
                 .iter()
-                .map(|order| format!("{{\"instId\":\"{inst_id}\",\"ordId\":\"{}\"}}", order.ord_id))
+                .map(|order| {
+                    format!(
+                        "{{\"instId\":\"{inst_id}\",\"ordId\":\"{}\"}}",
+                        order.ord_id
+                    )
+                })
                 .collect::<Vec<_>>();
             if bodies.is_empty() {
                 continue;
             }
             let resp: CancelResponse = self
-                .post("/api/v5/trade/cancel-batch-orders", format!("[{}]", bodies.join(",")))
+                .post(
+                    "/api/v5/trade/cancel-batch-orders",
+                    format!("[{}]", bodies.join(",")),
+                )
                 .await?;
             if resp.code != "0" {
                 return Err(OkxError::OrderError {
