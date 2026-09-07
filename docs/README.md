@@ -6,6 +6,10 @@
 
 - [Titan 项目重构剩余任务清单](refactor_remaining_tasks.md)
 
+## 架构与发布
+
+- [Titan 新一代实盘内核：EventEngine 与 PluginEngine 重构](event_plugin_engine_refactor_story.md)
+
 ## CLI
 
 - [Titan CLI 与 Agent 接口](titan_cli.md)
