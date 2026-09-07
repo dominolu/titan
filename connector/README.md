@@ -6,8 +6,8 @@ supported venues as dynamic plugin factories:
 | Venue | Market | Status |
 |---|---|---|
 | Binance Futures | USD-M perpetual | ✅ live (mainnet verified) |
-| OKX | V5 SWAP | ✅ unified connector ready; real-account acceptance pending credentials |
-| Hyperliquid | Perpetual | ✅ unified connector ready; real-account acceptance pending credentials |
+| OKX | V5 SWAP | ✅ live (mainnet verified) |
+| Hyperliquid | Perpetual | ✅ live (mainnet verified) |
 
 There is no standalone `connector` executable and no iceoryx/IPC bridge. Live trading runs through
 the `titan` CLI → `TitanCoreRuntime` → PluginEngine/EventEngine chain:
@@ -21,11 +21,11 @@ MarketPlugin/AccountPlugin
 
 ## Usage
 
-Binance Futures mainnet REST→private-stream probes are under
-[`connector/examples/`](examples). They use real credentials only through environment variables and
-never place fillable orders or leave state behind. See the probe source and
-[`docs/refactor_remaining_tasks.md`](../docs/refactor_remaining_tasks.md) for the accepted
-field-semantics contract.
+Mainnet REST→private-stream probes are implemented as ignored live tests or examples and use real
+credentials only through environment variables. Every order probe has bounded notional exposure,
+explicit remainder cancellation and final REST reconciliation. Hyperliquid has completed public
+REST/WS, private reconnect, submit/amend/cancel, full-fill and partial-fill acceptance; see the
+[`Hyperliquid mainnet acceptance report`](../docs/validation/hyperliquid_2026-09-07/README.md).
 
 ## Order safety
 

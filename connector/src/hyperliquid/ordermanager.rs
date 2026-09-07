@@ -84,8 +84,9 @@ impl OrderManager {
         &mut self,
         state: &OrderState,
         status: &str,
+        status_timestamp: u64,
     ) -> Result<Option<Order>, HyperliquidError> {
-        let cloid = match state.cloid.clone() {
+        let cloid = match state.cloid.as_deref().map(Self::normalize_cloid) {
             Some(cloid) if self.orders.contains_key(&cloid) => cloid,
             _ => self
                 .orders
@@ -98,20 +99,48 @@ impl OrderManager {
             .orders
             .get_mut(&cloid)
             .ok_or(HyperliquidError::OrderNotFound)?;
+        let next_status = from_str_to_status(status);
+        let current_oid = order_ext.oid;
+
+        // Hyperliquid implements modify as cancel-old + open-new with the same cloid. The two
+        // updates are not guaranteed to arrive in lifecycle order. Once the replacement oid is
+        // open, a delayed terminal update for the old oid must not close the replacement order.
+        let terminal = next_status != Status::New
+            && next_status != Status::PartiallyFilled
+            && next_status != Status::Unsupported;
+        if terminal && state.oid != 0 && current_oid.is_some() && current_oid != Some(state.oid) {
+            return Ok(None);
+        }
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
+        let update_ts = if status_timestamp > 0 {
+            status_timestamp
+        } else {
+            state.timestamp
+        } * 1_000_000;
 
         if state.oid != 0 {
             order_ext.oid = Some(state.oid);
         }
-        if (state.timestamp * 1_000_000) as i64 >= order_ext.order.exch_timestamp {
-            order_ext.order.status = from_str_to_status(status);
-            order_ext.order.exec_qty = state.filled.parse().unwrap_or(0.0);
-            order_ext.order.leaves_qty =
-                state.sz.parse::<f64>().unwrap_or(0.0) - order_ext.order.exec_qty;
+        if (update_ts as i64) >= order_ext.order.exch_timestamp {
+            let original_qty = state.orig_sz.parse().unwrap_or(order_ext.order.qty);
+            let leaves_qty = state.sz.parse().unwrap_or(original_qty);
+            let derived_filled = (original_qty - leaves_qty).max(0.0);
+            order_ext.order.price_tick = (state.limit_px.parse::<f64>().unwrap_or(0.0)
+                / order_ext.order.tick_size)
+                .round() as i64;
+            order_ext.order.qty = original_qty;
+            order_ext.order.exec_qty = state.filled.parse().unwrap_or(derived_filled);
+            order_ext.order.status = if next_status == Status::New && order_ext.order.exec_qty > 0.0
+            {
+                Status::PartiallyFilled
+            } else {
+                next_status
+            };
+            order_ext.order.leaves_qty = leaves_qty;
             order_ext.order.exec_price_tick = (state.avg_px.parse::<f64>().unwrap_or(0.0)
                 / order_ext.order.tick_size)
                 .round() as i64;
-            order_ext.order.exch_timestamp = (state.timestamp * 1_000_000) as i64;
+            order_ext.order.exch_timestamp = update_ts as i64;
         }
 
         let result = if already_removed {
@@ -136,33 +165,6 @@ impl OrderManager {
         }
 
         Ok(result)
-    }
-
-    pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
-        let mut removed_order_ids = Vec::new();
-        let mut removed_orders = Vec::new();
-        for (cloid, order_ext) in &mut self.orders {
-            if order_ext.symbol != symbol {
-                continue;
-            }
-            let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
-            order_ext.removed_by_rest = true;
-            order_ext.order.status = Status::Canceled;
-            order_ext.order.req = Status::None;
-            order_ext.order.exch_timestamp = Utc::now().timestamp_nanos_opt().unwrap();
-            if !already_removed {
-                self.order_id_map
-                    .remove(&RefSymbolOrderId::new(symbol, order_ext.order.order_id));
-                removed_orders.push(order_ext.order.clone());
-            }
-            if order_ext.removed_by_ws && order_ext.removed_by_rest {
-                removed_order_ids.push(cloid.clone());
-            }
-        }
-        for cloid in removed_order_ids {
-            self.orders.remove(&cloid).unwrap();
-        }
-        removed_orders
     }
 
     pub fn gc(&mut self) {
@@ -249,9 +251,29 @@ mod tests {
             .update_from_ws(
                 &order_state(Some(format!("0x{client_order_id}")), 42),
                 "open",
+                2_000,
             )
             .unwrap();
         assert_eq!(result.unwrap().status, Status::New);
+    }
+
+    #[test]
+    fn tracked_order_matches_unprefixed_cloid() {
+        let mut manager = OrderManager::new();
+        let client_order_id = "fedcba9876543210fedcba9876543210";
+        let mut order = test_order(99);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC", client_order_id, order));
+        let result = manager
+            .update_from_ws(
+                &order_state(Some(client_order_id.to_string()), 123),
+                "filled",
+                3_000,
+            )
+            .unwrap();
+        let order = result.unwrap();
+        assert_eq!(order.order_id, 99);
+        assert_eq!(order.status, Status::Filled);
     }
 
     #[test]
@@ -265,7 +287,7 @@ mod tests {
         stale_state.timestamp = 0;
         stale_state.filled = "1.0".to_string();
         manager
-            .update_from_ws(&stale_state, "filled")
+            .update_from_ws(&stale_state, "filled", 2_000)
             .unwrap()
             .unwrap();
 
@@ -275,6 +297,97 @@ mod tests {
         manager.gc();
         assert!(!manager.orders.contains_key(stale_cloid));
         assert_eq!(manager.orders.len(), 1);
+    }
+
+    #[test]
+    fn test_update_from_ws_uses_status_timestamp_fallback() {
+        let mut manager = OrderManager::new();
+        let mut order = test_order(1);
+        order.status = Status::New;
+        order.exch_timestamp = 1_000_000_000;
+        assert!(manager.track_managed_order("BTC", "fallback", order));
+
+        let mut state = order_state(Some("fallback".into()), 10);
+        state.timestamp = 1_500;
+        state.filled = "1.0".to_string();
+
+        let updated = manager
+            .update_from_ws(&state, "filled", 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, Status::Filled);
+        assert_eq!(updated.exch_timestamp, 1_500_000_000);
+    }
+
+    #[test]
+    fn test_update_from_ws_ignores_out_of_order_timestamp() {
+        let mut manager = OrderManager::new();
+        let mut order = test_order(1);
+        order.status = Status::Filled;
+        order.exch_timestamp = 5_000_000_000;
+        assert!(manager.track_managed_order("BTC", "stale", order));
+
+        let mut state = order_state(Some("stale".into()), 11);
+        state.timestamp = 3_000;
+        state.filled = "0.3".to_string();
+
+        let updated = manager
+            .update_from_ws(&state, "open", 3_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, Status::Filled);
+        assert_eq!(updated.exch_timestamp, 5_000_000_000);
+    }
+
+    #[test]
+    fn amend_does_not_let_delayed_old_cancel_close_replacement() {
+        let mut manager = OrderManager::new();
+        let cloid = "0xcccccccccccccccccccccccccccccccc";
+        let mut order = test_order(1);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC", cloid, order));
+
+        manager
+            .update_from_ws(&order_state(Some(cloid.into()), 100), "open", 1_000)
+            .unwrap()
+            .unwrap();
+        manager
+            .update_from_ws(&order_state(Some(cloid.into()), 200), "open", 2_000)
+            .unwrap()
+            .unwrap();
+
+        let stale_cancel = manager
+            .update_from_ws(&order_state(Some(cloid.into()), 100), "canceled", 3_000)
+            .unwrap();
+        assert!(stale_cancel.is_none());
+        assert_eq!(manager.orders(None).len(), 1);
+
+        let replacement_cancel = manager
+            .update_from_ws(&order_state(Some(cloid.into()), 200), "canceled", 4_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(replacement_cancel.status, Status::Canceled);
+        assert!(manager.orders(None).is_empty());
+    }
+
+    #[test]
+    fn open_order_with_executed_quantity_is_partially_filled() {
+        let mut manager = OrderManager::new();
+        let cloid = "0xdddddddddddddddddddddddddddddddd";
+        let mut order = test_order(1);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC", cloid, order));
+
+        let mut state = order_state(Some(cloid.into()), 100);
+        state.filled = "0.25".to_string();
+        state.sz = "0.75".to_string();
+        let updated = manager
+            .update_from_ws(&state, "open", 1_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.status, Status::PartiallyFilled);
+        assert_eq!(updated.exec_qty, 0.25);
+        assert_eq!(updated.leaves_qty, 0.75);
     }
 
     #[test]

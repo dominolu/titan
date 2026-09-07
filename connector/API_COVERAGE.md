@@ -4,7 +4,7 @@
 频道，以及统一 API 层（`src/api.rs`）的覆盖情况。
 状态图例：✅ 已验证（实测/单测）｜⚠️ 已实现，端到端待验证 ｜🔧 已实现未接线
 
-> 最后更新：2026-09-03
+> 最后更新：2026-09-07
 >
 > 本文件是接口状态的唯一事实来源；[API_GAP_ANALYSIS.md](API_GAP_ANALYSIS.md) 仅保留状态
 > 定义和维护规则。
@@ -86,10 +86,10 @@
 |---|---|---|---|---|
 | REST | `post_info` / `get_meta` / `get_clearinghouse_state` / `get_open_orders` | client.rs | 基础 info | ✅ 实测 |
 | REST | info 全量（allMids、userFills、userFillsByTime、orderStatus、l2Book、candleSnapshot、historicalOrders、fundingHistory、predictedFundings、userFunding、subAccounts、vaultDetails、userFees、portfolio、referral、spotMeta、spotMetaAndAssetCtxs、spotClearinghouseState、tokenDetails 等 ~50 种） | brokerapi.rs | 对照官方 gitbook 补齐 | ✅ 解析单测 |
-| REST | `post_exchange`（order/cancel/cancelByCloid） | client.rs | 签名交易（EIP-712 phantom agent） | ✅ 测试网 e2e 验证 |
-| REST | exchange 全量（modify、batchModify、scheduleCancel、updateLeverage、updateIsolatedMargin、twapOrder、twapCancel、approveAgent、approveBuilderFee、usdClassTransfer、spotSend、withdraw3 等） | brokerapi.rs | 签名后提交 | ✅ 签名器单测 |
+| REST | `post_exchange`（order/cancel/cancelByCloid） | client.rs | 签名交易（EIP-712 phantom agent） | ✅ 主网 agent 签名实测：下单/查单/改单/撤单生命周期闭环，端态零残留 |
+| REST | exchange 全量（modify、batchModify、scheduleCancel、updateLeverage、updateIsolatedMargin、twapOrder、twapCancel、approveAgent、approveBuilderFee、usdClassTransfer、spotSend、withdraw3 等） | brokerapi.rs | 签名后提交 | ⚠️ modify 已主网修复并实测（撤旧挂新语义，需按 cloid 解析新 oid）；其余签名器单测 |
 | WS | `l2Book` / `trades` | ws.rs | 订单簿 / 成交 | ✅ 实测 |
-| WS | `orderUpdates` / `userEvents` | ws.rs | 订单状态 / 用户成交 | ⚠️ 状态机有单测 |
+| WS | `orderUpdates` / `userEvents` | ws.rs | 订单状态 / 用户成交 | ✅ 主网重连、submit/amend/cancel、完整成交与部分成交的 REST/WS 字段一致性已验证 |
 | WS | `allMids`/`bbo`/`candle`/`userFills`/`userFundings`/`activeAssetCtx`/`clearinghouseState`/`openOrders`/`notification`/`spotState`/`twapStates` 等 | ws.rs | 补充频道解析；bbo → BBO 事件 | ✅ 解析单测 |
 
 ## 跨交易所对比

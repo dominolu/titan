@@ -173,15 +173,33 @@ fn main() {
     let elapsed = started.elapsed();
     let metrics = engine.metrics().snapshot();
     println!(
-        "events={events} target_rate={target_rate:?} elapsed={elapsed:?} throughput={:.0}/s dispatch_p99_bucket_ns={} subscriber_p99_bucket_ns={} drop_total={} resync_total={} arena_exhausted={:?} fast_lane_drop_total={}",
+        "events={events} target_rate={target_rate:?} elapsed={elapsed:?} throughput={:.0}/s dispatch_p50_ns={} dispatch_p99_ns={} dispatch_p999_ns={} dispatch_max_ns={} subscriber_p50_ns={} subscriber_p99_ns={} subscriber_p999_ns={} subscriber_max_ns={} drop_total={} resync_total={} arena_exhausted={:?} fast_lane_drop_total={}",
         events as f64 / elapsed.as_secs_f64(),
+        metrics.dispatch_latency.p50_ns,
         metrics.dispatch_latency.p99_ns,
+        metrics.dispatch_latency.p999_ns,
+        metrics.dispatch_latency.max_ns,
+        metrics.subscriber_latency.p50_ns,
         metrics.subscriber_latency.p99_ns,
+        metrics.subscriber_latency.p999_ns,
+        metrics.subscriber_latency.max_ns,
         metrics.drop_total,
         metrics.resync_total,
         metrics.arena_exhausted,
         metrics.fast_lane_drop_total,
     );
+    if let Some(limit) = std::env::var("TITAN_EVENT_BENCH_MAX_DISPATCH_P999_NS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        assert!(metrics.dispatch_latency.p999_ns <= limit);
+    }
+    if let Some(limit) = std::env::var("TITAN_EVENT_BENCH_MAX_SUBSCRIBER_P999_NS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        assert!(metrics.subscriber_latency.p999_ns <= limit);
+    }
     println!(
         "config small_event_slots={} market_batch_slots={} snapshot_slots={} critical_capacity={} market_capacity={} subscriber_capacity={} critical_reserve={} pending_global={} pending_subscriber={}",
         profile.0,

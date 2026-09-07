@@ -101,9 +101,14 @@ fn status_from_hl(s: &str) -> ApiOrderStatus {
     }
 }
 
-fn order_info_from_historical(o: &m::HistoricalOrder) -> OrderInfo {
+fn order_info_from_historical(o: &m::HistoricalOrder, status_timestamp: Option<u64>) -> OrderInfo {
     let qty = f(&o.orig_sz);
-    let executed = f(&o.filled);
+    let remaining = f(&o.sz);
+    let executed = if o.filled.is_empty() {
+        (qty - remaining).max(0.0)
+    } else {
+        f(&o.filled)
+    };
     OrderInfo {
         symbol: o.coin.clone(),
         order_id: o.oid.to_string(),
@@ -126,7 +131,7 @@ fn order_info_from_historical(o: &m::HistoricalOrder) -> OrderInfo {
         reduce_only: o.reduce_only,
         position_side: ApiPositionSide::Unknown,
         create_time: o.timestamp as i64,
-        update_time: o.timestamp as i64,
+        update_time: status_timestamp.unwrap_or(o.timestamp) as i64,
         stop_price: if o.trigger_px.parse::<f64>().unwrap_or(0.0) > 0.0 {
             Some(f(&o.trigger_px))
         } else {
@@ -252,19 +257,14 @@ pub struct ApiScheduleCancelAction {
     pub time: u64,
 }
 
-#[derive(Serialize)]
-pub struct ApiModifyWire {
-    pub a: u32,
-    pub o: u64,
-    pub p: String,
-    pub s: String,
-}
-
+/// 单笔改单 action：官方格式为 {"type":"modify","oid":..,"order":{完整订单字段}}，
+/// order 必须携带改单后的全部字段（a/b/p/s/r/t），缺字段会被整体拒绝反序列化。
 #[derive(Serialize)]
 pub struct ApiModifyAction {
     #[serde(rename = "type")]
     pub type_: String,
-    pub modifies: Vec<ApiModifyWire>,
+    pub oid: u64,
+    pub order: ApiOrderWire,
 }
 
 #[derive(Serialize)]
@@ -390,6 +390,10 @@ impl HyperliquidClient {
             "type".to_string(),
             serde_json::Value::String("orderStatus".into()),
         );
+        // orderStatus 是按账户查询：缺 user 服务器会返回空响应体
+        if let Some(user) = self.account_address() {
+            body.insert("user".to_string(), serde_json::Value::String(user.into()));
+        }
         if let Some(oid) = oid {
             body.insert("oid".to_string(), serde_json::Value::Number(oid.into()));
         }
@@ -1100,7 +1104,11 @@ impl BrokerApi for HyperliquidClient {
     }
 
     async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), ApiError> {
-        let time = chrono::Utc::now().timestamp_millis() as u64 + timeout_ms;
+        let time = if timeout_ms == 0 {
+            0
+        } else {
+            chrono::Utc::now().timestamp_millis() as u64 + timeout_ms
+        };
         let action = ApiScheduleCancelAction {
             type_: "scheduleCancel".to_string(),
             time,
@@ -1127,19 +1135,77 @@ impl BrokerApi for HyperliquidClient {
         let qty = req
             .new_qty
             .ok_or_else(|| ApiError::new("hyperliquid", "INVALID", "new_qty required"))?;
+
+        // modify wire 需要完整订单字段（b/r/t 不能缺省），从现有挂单取回
+        let existing = self
+            .get_order_status(Some(oid), None)
+            .await
+            .map_err(|e| ApiError::new("hyperliquid", "ERR", e.to_string()))?
+            .order
+            .and_then(|entry| entry.order)
+            .ok_or_else(|| ApiError::new("hyperliquid", "NOT_FOUND", "order not found"))?;
+        let is_buy = existing.side.eq_ignore_ascii_case("b");
+        let reduce_only = existing.reduce_only;
+        let order_type: ApiOrderTypeWire = if existing.trigger_px.parse::<f64>().unwrap_or(0.0)
+            > 0.0
+            || existing.order_type.contains("Stop")
+            || existing.order_type.contains("Take Profit")
+        {
+            ApiOrderTypeWire::Trigger(ApiTriggerOrderType {
+                trigger: ApiTriggerWire {
+                    is_market: existing.order_type.contains("Market"),
+                    trigger_px: existing.trigger_px.clone(),
+                    tpsl: if existing.order_type.contains("Take Profit") {
+                        "tp".to_string()
+                    } else {
+                        "sl".to_string()
+                    },
+                },
+            })
+        } else {
+            ApiOrderTypeWire::Limit(ApiLimitOrderType {
+                limit: ApiTif {
+                    tif: existing.tif.clone().unwrap_or_else(|| "Gtc".to_string()),
+                },
+            })
+        };
         let action = ApiModifyAction {
             type_: "modify".to_string(),
-            modifies: vec![ApiModifyWire {
+            oid,
+            order: ApiOrderWire {
                 a: asset,
-                o: oid,
-                p: price.to_string(),
-                s: qty.to_string(),
-            }],
+                b: is_buy,
+                p: price_to_wire(price)?,
+                s: qty_to_wire(qty)?,
+                r: reduce_only,
+                t: order_type,
+                c: existing.cloid.clone(),
+            },
         };
-        let _ = self.sign_and_post(&action).await?;
+        let resp = self.sign_and_post(&action).await?;
+        // HL modify 是撤旧挂新：响应 resting.oid 即新订单 oid（cloid 保持不变）。
+        // 双保险：再用 openOrders 按 cloid 匹配当前活单。
+        let mut final_oid = resp
+            .response
+            .as_ref()
+            .and_then(|r| r.data.as_ref())
+            .and_then(|d| d.get("statuses"))
+            .and_then(|s| s.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|st| st.get("resting"))
+            .and_then(|r| r.get("oid"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(oid);
+        if let Some(cloid) = existing.cloid.as_deref() {
+            if let Ok(orders) = self.get_open_orders(user).await {
+                if let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
+                    final_oid = live.oid;
+                }
+            }
+        }
         Ok(OrderInfo {
             symbol: req.symbol.clone(),
-            order_id: oid.to_string(),
+            order_id: final_oid.to_string(),
             client_order_id: req.client_order_id.clone().unwrap_or_default(),
             side: ApiSide::Unknown,
             order_type: ApiOrderType::Unknown,
@@ -1174,12 +1240,21 @@ impl BrokerApi for HyperliquidClient {
                 format!("unknown order: {}", resp.status),
             ));
         }
-        let order = resp
+        // 外层 status 对挂单是 "order"，真实订单状态取内层 entry.status（"open"/"filled"/...）
+        let entry = resp
             .order
             .ok_or_else(|| ApiError::new("hyperliquid", "EMPTY", "missing order in response"))?;
-        let mut info = order_info_from_historical(&order);
+        let status = entry
+            .status
+            .as_deref()
+            .map(status_from_hl)
+            .unwrap_or_else(|| status_from_hl(&resp.status));
+        let order = entry
+            .order
+            .ok_or_else(|| ApiError::new("hyperliquid", "EMPTY", "missing order in response"))?;
+        let mut info = order_info_from_historical(&order, Some(entry.status_timestamp));
         info.symbol = symbol.to_lowercase();
-        info.status = status_from_hl(&resp.status);
+        info.status = status;
         Ok(info)
     }
 
@@ -1222,7 +1297,7 @@ impl BrokerApi for HyperliquidClient {
             .iter()
             .filter(|o| o.coin == symbol)
             .take(limit.min(500) as usize)
-            .map(order_info_from_historical)
+            .map(|o| order_info_from_historical(o, None))
             .collect())
     }
 
@@ -1485,8 +1560,8 @@ impl HyperliquidClient {
     ) -> Result<u64, ApiError> {
         if let Some(cloid) = client_order_id {
             if let Ok(resp) = self.get_order_status(None, Some(cloid)).await {
-                if let Some(o) = resp.order {
-                    return Ok(o.oid);
+                if let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
+                    return Ok(oid);
                 }
             }
         }
@@ -1509,8 +1584,38 @@ async fn build_wire(
     client: &HyperliquidClient,
     req: &UnifiedOrderRequest,
 ) -> Result<ApiOrderWire, ApiError> {
+    // 官方 SDK 语义：HL 没有 market wire 类型，市价单 = 标记价 ± 滑点的 IOC 限价单
+    // （p:"0" 会被服务器整体拒绝反序列化）。
+    let req = if req.order_type == ApiOrderType::Market {
+        let mids = client
+            .get_all_mids()
+            .await
+            .map_err(|e| ApiError::new("hyperliquid", "ERR", e.to_string()))?;
+        let mid = mids
+            .get(&req.symbol)
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|m| *m > 0.0)
+            .ok_or_else(|| ApiError::new("hyperliquid", "INVALID", "no mid for symbol"))?;
+        const SLIPPAGE: f64 = 0.03;
+        let raw = if req.side == ApiSide::Buy {
+            mid * (1.0 + SLIPPAGE)
+        } else {
+            mid * (1.0 - SLIPPAGE)
+        };
+        // 价格 ≤ 5 位有效数字（官方 float_to_wire 约定）
+        let decimals = (4 - raw.log10().floor() as i32).clamp(0, 6);
+        let scaled = 10f64.powi(decimals);
+        let px = (raw * scaled).round() / scaled;
+        let mut adjusted = req.clone();
+        adjusted.price = Some(px);
+        adjusted.order_type = ApiOrderType::Limit;
+        adjusted.time_in_force = ApiTimeInForce::IOC;
+        adjusted
+    } else {
+        req.clone()
+    };
     let asset = client.asset_index(&req.symbol).await?;
-    build_wire_with_index(asset, req)
+    build_wire_with_index(asset, &req)
 }
 
 fn to_exchange_cloid(client_order_id: Option<String>) -> Option<String> {
@@ -1523,6 +1628,46 @@ fn to_exchange_cloid(client_order_id: Option<String>) -> Option<String> {
     })
 }
 
+fn price_to_wire(price: f64) -> Result<String, ApiError> {
+    if !price.is_finite() || price <= 0.0 {
+        return Err(ApiError::new(
+            "hyperliquid",
+            "INVALID",
+            "price must be finite and positive",
+        ));
+    }
+    // Hyperliquid accepts at most five significant figures (and at most six decimals for perps).
+    // Fixed-precision formatting is intentional: f64::to_string can expose arithmetic residue
+    // such as 0.18778999999999998, which the exchange rejects before signature validation.
+    let decimals = (4 - price.log10().floor() as i32).clamp(0, 6) as usize;
+    let formatted = format!("{price:.decimals$}");
+    Ok(if formatted.contains('.') {
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    } else {
+        formatted
+    })
+}
+
+fn qty_to_wire(qty: f64) -> Result<String, ApiError> {
+    if !qty.is_finite() || qty <= 0.0 {
+        return Err(ApiError::new(
+            "hyperliquid",
+            "INVALID",
+            "quantity must be finite and positive",
+        ));
+    }
+    // Perp sizes use at most the asset's szDecimals (currently <= 8). Formatting to that
+    // envelope removes f64 arithmetic residue while preserving every valid size increment.
+    let formatted = format!("{qty:.8}");
+    Ok(formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string())
+}
+
 /// 统一订单请求 → HL order wire（资产索引由调用方提供，便于离线单测）。
 pub(crate) fn build_wire_with_index(
     asset: u32,
@@ -1530,16 +1675,18 @@ pub(crate) fn build_wire_with_index(
 ) -> Result<ApiOrderWire, ApiError> {
     let is_buy = side_to_hl(req.side)?;
     let (p, t) = match req.order_type {
-        ApiOrderType::Limit => (
-            req.price
-                .ok_or_else(|| ApiError::new("hyperliquid", "INVALID", "limit price required"))?
-                .to_string(),
-            ApiOrderTypeWire::Limit(ApiLimitOrderType {
-                limit: ApiTif {
-                    tif: tif_to_hl(req.time_in_force).to_string(),
-                },
-            }),
-        ),
+        ApiOrderType::Limit => {
+            (
+                price_to_wire(req.price.ok_or_else(|| {
+                    ApiError::new("hyperliquid", "INVALID", "limit price required")
+                })?)?,
+                ApiOrderTypeWire::Limit(ApiLimitOrderType {
+                    limit: ApiTif {
+                        tif: tif_to_hl(req.time_in_force).to_string(),
+                    },
+                }),
+            )
+        }
         ApiOrderType::Market => (
             "0".to_string(),
             ApiOrderTypeWire::Market(ApiMarketOrderType {
@@ -1587,7 +1734,7 @@ pub(crate) fn build_wire_with_index(
         a: asset,
         b: is_buy,
         p,
-        s: req.qty.to_string(),
+        s: qty_to_wire(req.qty)?,
         r: req.reduce_only,
         t,
         c: to_exchange_cloid(req.client_order_id.clone()),
@@ -1632,7 +1779,7 @@ pub(crate) fn build_algo_wire_with_index(
         a: asset,
         b: is_buy,
         p,
-        s: req.qty.to_string(),
+        s: qty_to_wire(req.qty)?,
         r: req.reduce_only.unwrap_or(false),
         t: ApiOrderTypeWire::Trigger(ApiTriggerOrderType {
             trigger: ApiTriggerWire {
@@ -1680,6 +1827,22 @@ mod tests {
         let json = serde_json::to_value(&wire).unwrap();
         assert_eq!(json["t"]["limit"]["tif"], "Gtc");
         assert!(json.get("trigger_px").is_none());
+    }
+
+    #[test]
+    fn limit_price_wire_hides_binary_float_residue() {
+        let mut req = limit_req();
+        req.price = Some(0.18780_f64 - 0.00001_f64);
+        let wire = build_wire_with_index(201, &req).unwrap();
+        assert_eq!(wire.p, "0.18779");
+    }
+
+    #[test]
+    fn quantity_wire_hides_binary_float_residue() {
+        let mut req = limit_req();
+        req.qty = 50.400000000000006;
+        let wire = build_wire_with_index(105, &req).unwrap();
+        assert_eq!(wire.s, "50.4");
     }
 
     #[test]
@@ -1848,11 +2011,13 @@ mod tests {
         assert!(resp.order.is_none());
 
         let resp: m::OrderStatusResponse = serde_json::from_str(
-            r#"{"status":"filled","order":{"coin":"BTC","oid":123,"side":"B","limitPx":"50000.0","sz":"1.0","origSz":"1.0","orderType":"Limit","filled":"1.0","avgPx":"50001.0","timestamp":1700000000000}}"#,
+            r#"{"status":"filled","order":{"order":{"coin":"BTC","oid":123,"side":"B","limitPx":"50000.0","sz":"1.0","origSz":"1.0","orderType":"Limit","filled":"1.0","avgPx":"50001.0","timestamp":1700000000000,"tif":"Gtc"},"status":"filled","statusTimestamp":1700000000001}}"#,
         )
         .unwrap();
         assert_eq!(resp.status, "filled");
-        let info = order_info_from_historical(&resp.order.unwrap());
+        let entry = resp.order.as_ref().unwrap();
+        let order = entry.order.as_ref().unwrap();
+        let info = order_info_from_historical(order, Some(entry.status_timestamp));
         assert_eq!(info.order_id, "123");
         assert_eq!(info.status, ApiOrderStatus::Filled);
         assert_eq!(info.side, ApiSide::Buy);
@@ -2008,5 +2173,229 @@ mod tests {
 
         let klines = retry(|| api.get_klines("BTC", "1m", 5)).await;
         println!("klines={}", klines.len());
+    }
+
+    /// 实盘冒烟：签名私有链路（API wallet / agent 钱包）。运行：
+    ///
+    /// ```text
+    /// HL_PRIVATE_KEY=0x.. HL_ACCOUNT_ADDRESS=0x.. \
+    /// cargo test -p connector --no-default-features \
+    ///   --features binancefutures,okx,hyperliquid hyperliquid::brokerapi::tests::live \
+    ///   -- --ignored --nocapture
+    /// ```
+    ///
+    /// HL_PRIVATE_KEY 为 agent（API wallet）私钥，HL_ACCOUNT_ADDRESS 为主账户地址。
+    /// 下单使用市价 50% 的深价 GTC 单并在验证后撤销，正常情况下不产生成交；
+    /// 账户无保证金时预期被交易所拒单，此时视作签名链路验证通过。
+    #[tokio::test]
+    #[ignore]
+    async fn live_private_api_smoke() {
+        use crate::api::{AmendOrderRequest, CancelOrderRequest};
+
+        let key_hex = std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required");
+        let account = std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required");
+        let key_hex = key_hex.trim().strip_prefix("0x").unwrap_or(key_hex.trim());
+        let mut key = [0u8; 32];
+        hex::decode_to_slice(key_hex, &mut key).expect("HL_PRIVATE_KEY must be 32-byte hex");
+
+        let client = HyperliquidClient::new(
+            "https://api.hyperliquid.xyz/info",
+            "https://api.hyperliquid.xyz/exchange",
+        )
+        .with_signer(key, account.clone(), true);
+        let api: &dyn BrokerApi = &client;
+        println!("agent-signed main account: {account}");
+
+        // 只读账户链路
+        let acct = api.get_account().await.expect("get_account");
+        println!("account={acct:?}");
+        let positions = api.get_positions(None).await.expect("get_positions");
+        println!("positions={}", positions.len());
+        let fills = api.get_fills("", 10).await.expect("get_fills");
+        println!("recent fills={}", fills.len());
+
+        // 深价 GTC 下单（mid 的 50%，不会成交）
+        let ticker = api.get_ticker("ETH").await.expect("get_ticker");
+        let mid = ticker.mark_price.unwrap_or(ticker.last_price);
+        let deep_px = (mid * 0.5 * 10.0).round() / 10.0;
+        let req = UnifiedOrderRequest {
+            symbol: "ETH".to_string(),
+            side: ApiSide::Buy,
+            order_type: ApiOrderType::Limit,
+            price: Some(deep_px),
+            qty: 0.01,
+            time_in_force: ApiTimeInForce::GTC,
+            reduce_only: false,
+            position_side: None,
+            // HL cloid 是 128-bit hex：0x + 32 个十六进制字符
+            client_order_id: Some("0x9f2c4b6e8a1d3f570b6c9e2d4a8f1c3b".to_string()),
+            stop_price: None,
+        };
+        println!("submit deep GTC: buy 0.01 ETH @ {deep_px}");
+
+        match api.submit_order(&req).await {
+            Ok(order) => {
+                println!("submitted: {:?}", order);
+                assert!(
+                    !order.order_id.is_empty(),
+                    "submit must return venue order id"
+                );
+
+                let got = api
+                    .get_order("ETH", Some(&order.order_id), None)
+                    .await
+                    .expect("get_order");
+                println!("order_status={:?}", got.status);
+
+                let new_px = (deep_px * 0.98 * 10.0).round() / 10.0;
+                let amended = api
+                    .amend_order(&AmendOrderRequest {
+                        symbol: "ETH".to_string(),
+                        order_id: Some(order.order_id.clone()),
+                        client_order_id: None,
+                        new_price: Some(new_px),
+                        new_qty: Some(0.01),
+                        new_stop_price: None,
+                    })
+                    .await
+                    .expect("amend_order");
+                println!(
+                    "amended to px={} (new oid {})",
+                    amended.price, amended.order_id
+                );
+
+                api.cancel_order(&CancelOrderRequest {
+                    symbol: "ETH".to_string(),
+                    // modify 是撤旧挂新，必须撤 amend 返回的新 oid
+                    order_id: Some(amended.order_id.clone()),
+                    client_order_id: None,
+                })
+                .await
+                .expect("cancel_order");
+
+                let open = api.get_open_orders("ETH").await.expect("get_open_orders");
+                assert!(
+                    open.iter().all(|o| o.order_id != amended.order_id),
+                    "canceled order must not appear in open orders"
+                );
+                println!("cancel verified, {} resting orders remain", open.len());
+            }
+            Err(e) => {
+                let msg = format!("{e:?}").to_lowercase();
+                assert!(
+                    msg.contains("margin") || msg.contains("minimum value"),
+                    "unexpected submit error: {e:?}"
+                );
+                println!("submit rejected (signature accepted, insufficient funds): {e:?}");
+            }
+        }
+    }
+
+    /// Emergency cleanup for a single known test order. This deliberately requires an exact oid
+    /// and never calls cancel-all, so unrelated account orders are left untouched.
+    #[tokio::test]
+    #[ignore]
+    async fn live_cancel_single_order_cleanup() {
+        use crate::api::CancelOrderRequest;
+
+        let key_hex = std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required");
+        let account = std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required");
+        let order_id =
+            std::env::var("HL_CLEANUP_ORDER_ID").expect("HL_CLEANUP_ORDER_ID is required");
+        assert!(order_id.bytes().all(|byte| byte.is_ascii_digit()));
+        let key_hex = key_hex.trim().strip_prefix("0x").unwrap_or(key_hex.trim());
+        let mut key = [0u8; 32];
+        hex::decode_to_slice(key_hex, &mut key).expect("HL_PRIVATE_KEY must be 32-byte hex");
+        let client = HyperliquidClient::new(
+            "https://api.hyperliquid.xyz/info",
+            "https://api.hyperliquid.xyz/exchange",
+        )
+        .with_signer(key, account, true);
+        client
+            .cancel_order(&CancelOrderRequest {
+                symbol: "ETH".to_string(),
+                order_id: Some(order_id.clone()),
+                client_order_id: None,
+            })
+            .await
+            .expect("targeted cleanup cancel");
+        println!("targeted cleanup canceled oid={order_id}");
+    }
+
+    /// 实盘冒烟：现货市价卖出全部 USDH → USDC（agent 签名，IOC 吃单）。
+    ///
+    /// USDH 现货对为 `@230`（token 360），现货资产索引 = 10000 + pair index。
+    /// 运行方式同 `live_private_api_smoke`（HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS）。
+    #[tokio::test]
+    #[ignore]
+    async fn live_spot_sell_usdh_smoke() {
+        let key_hex = std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required");
+        let account = std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required");
+        let key_hex = key_hex.trim().strip_prefix("0x").unwrap_or(key_hex.trim());
+        let mut key = [0u8; 32];
+        hex::decode_to_slice(key_hex, &mut key).expect("HL_PRIVATE_KEY must be 32-byte hex");
+
+        let client = HyperliquidClient::new(
+            "https://api.hyperliquid.xyz/info",
+            "https://api.hyperliquid.xyz/exchange",
+        )
+        .with_signer(key, account.clone(), true);
+
+        // 查现货 USDH 余额
+        let spot = client
+            .post_info(serde_json::json!({"type": "spotClearinghouseState", "user": account}))
+            .await
+            .expect("spotClearinghouseState");
+        let bal = spot["balances"]
+            .as_array()
+            .and_then(|bs| {
+                bs.iter()
+                    .find(|b| b["coin"] == "USDH")
+                    .and_then(|b| b["total"].as_str())
+                    .and_then(|t| t.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0);
+        println!("USDH spot balance: {bal}");
+        assert!(bal > 1.0, "no meaningful USDH balance to sell");
+
+        // IOC 卖单：0.99 略低于买一（盘口 ~0.9926），保证立即成交；szDecimals=2
+        let wire = ApiOrderWire {
+            a: 10000 + 230,
+            b: false,
+            p: "0.99".to_string(),
+            s: format!("{bal:.2}"),
+            r: false,
+            t: ApiOrderTypeWire::Limit(ApiLimitOrderType {
+                limit: ApiTif {
+                    tif: "Ioc".to_string(),
+                },
+            }),
+            c: None,
+        };
+        let action = ApiOrderAction {
+            type_: "order".to_string(),
+            orders: vec![wire],
+            grouping: "na".to_string(),
+        };
+        let resp = client.sign_and_post(&action).await.expect("sign_and_post");
+        println!("sell response: {:?}", resp);
+        assert_eq!(resp.status, "ok", "sell order must be accepted");
+
+        // 复核现货余额
+        let spot2 = client
+            .post_info(serde_json::json!({"type": "spotClearinghouseState", "user": account}))
+            .await
+            .expect("spotClearinghouseState after sell");
+        let usdc = spot2["balances"]
+            .as_array()
+            .and_then(|bs| {
+                bs.iter()
+                    .find(|b| b["coin"] == "USDC")
+                    .and_then(|b| b["total"].as_str())
+                    .and_then(|t| t.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0);
+        println!("USDC spot balance after sell: {usdc:.6}");
+        assert!(usdc > bal * 0.9, "USDC proceeds should reflect the sale");
     }
 }

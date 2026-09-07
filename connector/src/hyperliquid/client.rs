@@ -167,11 +167,13 @@ impl HyperliquidClient {
             nonce,
             signature: signature.clone(),
         };
+        let body = serde_json::to_string(&req)?;
         let resp = self
             .client
             .post(&self.exchange_url)
             .header("Accept", "application/json")
-            .json(&req)
+            .header("Content-Type", "application/json")
+            .body(body.clone())
             .send()
             .await?
             .text()
@@ -183,7 +185,19 @@ impl HyperliquidClient {
                     %resp,
                     "Failed to parse the Hyperliquid exchange response: {error}"
                 );
-                Err(HyperliquidError::Serde(error))
+                Err(HyperliquidError::ConnectionAbort(format!(
+                    "unparseable /exchange response: {error}; body: {}; request: {}",
+                    if resp.len() > 500 {
+                        &resp[..500]
+                    } else {
+                        &resp
+                    },
+                    if body.len() > 500 {
+                        &body[..500]
+                    } else {
+                        &body
+                    }
+                )))
             }
         }
     }
