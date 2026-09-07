@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "okx", "hyperliquid"]
+default = ["binancefutures", "okx", "hyperliquid", "evm"]
 binancefutures = []
 okx = []
 hyperliquid = []
+evm = []
 
 [dependencies]
 hftbacktest = { path = "../hftbacktest" }
@@ -49,6 +50,22 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 sha3 = "0.10"
 hex = "0.4"
 smallvec = { version = "1", features = ["serde"] }
+alloy-primitives = "1.7"
+alloy-sol-types = "1.7"
+alloy-consensus = "2.4"
+# ArbTxEnvelope::Legacy 的 payload 来自 arb_sequencer_consensus 依赖树里的 consensus 1.x，
+# 测试需要同一实例的类型才能构造 envelope。
+alloy-consensus-arb = { package = "alloy-consensus", version = "1.8" }
+alloy-network = "2.4"
+alloy-provider = { version = "2.4", features = ["ws", "reqwest"] }
+alloy-transport = "2.4"
+alloy-pubsub = "2.4"
+alloy-eips = "2.4"
+alloy-signer-local = "2.4"
+alloy-transport-ws = "2.4"
+alloy-rpc-types-eth = "2.4"
+sequencer_client = "0.5"
+arb-sequencer-consensus = "0.5"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 [dev-dependencies]

@@ -2004,6 +2004,12 @@ fn build_okx(config: &str) -> Result<Box<dyn Connector>, String> {
         .map(|v| Box::new(v) as Box<dyn Connector>)
         .map_err(|e| e.to_string())
 }
+#[cfg(feature = "evm")]
+fn build_evm(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::evm::Evm::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
 #[cfg(feature = "hyperliquid")]
 fn build_hyperliquid(config: &str) -> Result<Box<dyn Connector>, String> {
     crate::hyperliquid::Hyperliquid::build_from(config)
@@ -2027,6 +2033,11 @@ pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory
     values.push(Arc::new(VenueAccountConnectorFactory::new(
         "hyperliquid-account",
         build_hyperliquid,
+    )));
+    #[cfg(feature = "evm")]
+    values.push(Arc::new(VenueAccountConnectorFactory::new(
+        "evm-account",
+        build_evm,
     )));
     values
 }
