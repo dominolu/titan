@@ -1,4 +1,4 @@
-# Hyperliquid 主网验收记录（titan-live）
+# Hyperliquid 主网验收记录
 
 日期：2026-09-07（Asia/Shanghai）
 
