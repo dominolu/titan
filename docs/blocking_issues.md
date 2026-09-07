@@ -50,7 +50,7 @@
 
 ### OKX（2026-09-05 已完成）
 
-在目标机 `43.165.184.116` 用 OKX 主网真实完成验收，探针
+在目标机上用 OKX 主网真实完成验收，探针
 `connector/examples/okx_account_rest_ws_probe.rs`（私有流）与
 `connector/examples/okx_market_stream_probe.rs`（公共流）连续两代通过：
 

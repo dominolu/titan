@@ -1,4 +1,4 @@
-# Hyperliquid 主网验收记录（43.165.184.116）
+# Hyperliquid 主网验收记录
 
 日期：2026-09-07（Asia/Shanghai）
 

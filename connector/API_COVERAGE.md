@@ -56,7 +56,7 @@
 | WS 公共 | `{symbol}@trade` / `@depth@0ms` / `@markPrice` / `@bookTicker` | market_data_stream.rs | 成交/深度/资金费/BBO | ✅ 2026-09-03 目标机 production 实测：`public/ws`（Depth/Trade/BBO）+ `market/ws`（markPrice/Funding）事件均到达 |
 | WS 私有 | listenKey 用户数据流 | user_data_stream.rs | AccountUpdate / OrderTradeUpdate / ListenKeyExpired | ✅ 2026-09-03 目标机实测：listenKey start/keepalive/close + 私有流两代 READY/Full reconcile/事件发布/干净 stop（静态 Factory） |
 
-> 2026-09-03 目标机（43.165.184.116）Binance 主网验收：只读接口盘点 60/60 PASS；XRPUSDT 小额订单
+> 2026-09-03 目标机 Binance 主网验收：只读接口盘点 60/60 PASS；XRPUSDT 小额订单
 > 闭环（批量 submit/amend/cancel、单笔 submit/query/cancel、市价开仓、reduce-only 平仓、fills 查询）
 > 通过；可逆写接口 16/16 PASS（杠杆/保证金/仓位模式/多资产模式/countdown cancel/算法单/持仓保证金/
 > get_open_order/cancel_all/income async），且全部恢复原值、账户零仓位零挂单。

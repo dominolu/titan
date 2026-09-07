@@ -39,7 +39,7 @@ ConnectorFactory 不由 Titan main 或 CLI 静态逐个注册。Binance Futures�
 
 当前未勾选项的执行前提：
 
-- 目标机已确定为 `43.165.184.116`：Ubuntu 24.04.4 LTS、2 vCPU（AMD EPYC 9754）、约
+- 目标机环境：Ubuntu 24.04.4 LTS、2 vCPU（AMD EPYC 9754）、约
   1.9 GiB RAM 和 1.9 GiB swap。Rust/Cargo 1.94.0 位于 `/home/ubuntu/.cargo/bin`；非交互 SSH
   必须显式补充该 PATH。主机上已有三套 Titan Cargo 工作区/构建目录，但截至 2026-09-03 没有
   Titan systemd/user service、容器或常驻进程在运行。
@@ -285,7 +285,7 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   lane 退休后才释放 core 供下一 generation 使用。Worker 启动通过握手确认操作系统 affinity 调用成功，
   不支持线程绑核的平台（如当前 macOS runner）会明确返回 `CpuAffinityFailed`，不会伪报隔离成功。
 - [x] 调优 Arena、Ingress、Async lane、pending 和 staging 的有界容量（2026-09-04）。
-  机制层已经具备配置化边界；目标机 `43.165.184.116`（2 vCPU/1.9 GiB）上以
+  机制层已经具备配置化边界；目标机（2 vCPU/1.9 GiB）上以
   `EventEngineConfig::default()` 作为已冻结档跑通 500k/s、800k/s 定速与 1M burst 零丢单/零
   RESYNC（RSS ~152 MB），过小档会可靠进入 RESYNC/投递超时。冻结档显式记录如下（与默认值一致）：
 
@@ -385,7 +385,7 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 
 ### 4.10 Binance REST→私有流主网字段语义验收（2026-09-04）
 
-2026-09-04 在目标机 `43.165.184.116` 用 Binance USD-M 主网真实完成
+2026-09-04 在目标机上用 Binance USD-M 主网真实完成
 `submit(GTX, XRPUSDT, 100 USDT) → private-stream NEW → REST cancel → private-stream CANCELED →
 Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测语义与修复：
 
@@ -399,7 +399,7 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
   （1=NEW/4=CANCELED）、side/type/price/quantity 实测一致；即使 WS 帧先于 REST 回包到达也一致。
 - [x] 探针 `connector/examples/binance_futures_account_rest_ws_probe.rs` 增加 REST↔WS 一致性
   自校验（client id、venue id、exchange_ts、状态），可作为后续 CI/验收样例。
-- [x] OKX 实盘私有流与字段语义验收（2026-09-05，目标机 `43.165.184.116`，主网 XRP-USDT-SWAP）：
+- [x] OKX 实盘私有流与字段语义验收（2026-09-05，目标机，主网 XRP-USDT-SWAP）：
   探针 `connector/examples/okx_account_rest_ws_probe.rs` 连续两代完成
   `submit(post-only) -> 私有流 NEW -> REST cancel -> 私有流 CANCELED -> Full reconcile`；
   `clOrdId`/`ordId`/`uTime` 三路径一致性实测通过，公共流探针
@@ -413,14 +413,14 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
   REST cancel-all 命令路径已可用（`orders-pending` + 按 `ordId` 批量撤销并逐单校验）；
   重连时 `order_manager.cancel_all` 本地合成的事实仍无 client/venue id 回填，属低概率
   边缘路径，随 Hyperliquid 验收一并处理。
-- [x] Hyperliquid 私有流完整实盘验收（2026-09-07，目标机 `43.165.184.116`）：真实 socket
+- [x] Hyperliquid 私有流完整实盘验收（2026-09-07，目标机）：真实 socket
   重连与私有订阅重放后，submit/amend/cancel 的 REST/WS cloid、oid、status、price、qty、
   executed/leaves、status timestamp 逐字段一致；0.01 ETH 开仓/reduce-only 平仓最终零挂单零仓位；
   自动薄档 IOC 取得 GAS 10.2/16.1 的部分成交并完成 REST/WS/fills 对账及清仓。B-02 已解除。
 
 ### 4.11 EventEngine 容量扫描与旧路径清理审计（2026-09-04）
 
-#### 容量扫描（目标机 `43.165.184.116`，2 vCPU / 1.9 GiB RAM，release）
+#### 容量扫描（目标机，2 vCPU / 1.9 GiB RAM，release）
 
 把 `titan-event-engine` 基准改为可复现的容量扫描工具：
 `TITAN_EVENT_BENCH_DEFAULT_CONFIG=1` 使用 `EventEngineConfig::default()` 基线；
