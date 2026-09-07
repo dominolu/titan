@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "okx", "hyperliquid", "evm"]
+default = ["binancefutures", "okx", "hyperliquid", "evm", "solana"]
 binancefutures = []
 okx = []
 hyperliquid = []
 evm = []
+solana = []
 
 [dependencies]
 hftbacktest = { path = "../hftbacktest" }
@@ -43,6 +44,8 @@ ed25519-dalek = { version = "2.2.0", features = [
     "pkcs8",
     "pem",
 ] }
+curve25519-dalek = "4.1"
+bs58 = "0.5"
 base64 = "0.22.1"
 serde_qs = "0.15.0"
 rmp-serde = "1.3"

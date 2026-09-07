@@ -1,0 +1,39 @@
+# Solana 链上 venue（方案 B：JSON-RPC 全链路，gRPC 预链插槽待接）
+#
+# 同一份 TOML 用于行情连接（不需要 keypair）与账户连接（必须 keypair）。
+# RPC/WS 可用不同主机；实测 solana-rpc.publicnode.com 支持 HTTP + WS（wss）。
+
+rpc_url = "https://solana-rpc.publicnode.com"
+ws_url = "wss://solana-rpc.publicnode.com"
+
+# solana-keygen 格式 keypair（64 字节数字数组）。行情连接可留空。
+# 注意：在公共 RPC 上 blockhash 必须用 finalized 档（connector 已内置处理）。
+keypair_path = "/path/to/keypair.json"
+
+# 优先费（micro-lamports / CU）。公共网络建议 >= 50_000。
+priority_fee_micro_lamports = 100_000
+compute_unit_limit = 300_000
+
+# 市价单滑点保护（基点，双边）。
+slippage_bps = 200
+# AMM 手续费（基点），用于本地报价/滑点下限。Raydium V4 常见 25。
+fee_bps = 25
+# 收据等待超时；超时视为 dropped。
+tx_timeout_ms = 60000
+book_levels = 10
+
+[[pools]]
+symbol = "FORGER/WSOL"
+# Raydium AMM V4 池账户；同时充当 targetOrders 与全部 serum 占位账户
+# （新版程序按实盘 CPI 模板接受该形式，账户布局：coinVault@336 pcVault@368
+#  coinMint@400 pcMint@432，可用 getAccountInfo 自行校验）。
+amm_id = "DuYCVcXhgDUpwMPTLdGkdaR3jfSXTu53874mjayoMHAd"
+base_mint = "FoRGERiW7odcCBGU1bztZi16osPBHjxharvDathL5eds"
+quote_mint = "So11111111111111111111111111111111111111112"   # WSOL
+base_vault = "CHEg2jyU7oGwuG7JjCB5ktUrbL8RqshuuxThv9S8RFCi"
+quote_vault = "CzQVmNkzZfpyaAJ3gmJXD3uiqMe9SGirARncMQsGxnnX"
+base_decimals = 6
+quote_decimals = 9
+
+# WSOL 交易的 wrap/unwrap（ATA 创建 + SyncNative + CloseAccount）由 connector
+# 在同一笔交易内自动处理，无需额外配置。

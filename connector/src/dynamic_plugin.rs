@@ -25,6 +25,8 @@ use crate::market_plugin::EvmMarketFactory;
 use crate::market_plugin::HyperliquidMarketFactory;
 #[cfg(feature = "okx")]
 use crate::market_plugin::OkxMarketFactory;
+#[cfg(feature = "solana")]
+use crate::market_plugin::SolanaMarketFactory;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DynamicVenue {
@@ -32,6 +34,7 @@ pub enum DynamicVenue {
     Okx,
     Hyperliquid,
     Evm,
+    Solana,
 }
 
 impl DynamicVenue {
@@ -41,6 +44,7 @@ impl DynamicVenue {
             Self::Okx => "okx",
             Self::Hyperliquid => "hyperliquid",
             Self::Evm => "evm",
+            Self::Solana => "solana",
         }
     }
 
@@ -50,6 +54,7 @@ impl DynamicVenue {
             Self::Okx => "okx-account",
             Self::Hyperliquid => "hyperliquid-account",
             Self::Evm => "evm-account",
+            Self::Solana => "solana-account",
         }
     }
 }
@@ -299,6 +304,12 @@ fn market_factory(venue: DynamicVenue) -> Result<Arc<dyn market::MarketConnector
             return Ok(Arc::new(EvmMarketFactory));
             #[cfg(not(feature = "evm"))]
             return Err("evm feature is disabled".into());
+        }
+        DynamicVenue::Solana => {
+            #[cfg(feature = "solana")]
+            return Ok(Arc::new(SolanaMarketFactory));
+            #[cfg(not(feature = "solana"))]
+            return Err("solana feature is disabled".into());
         }
     }
 }

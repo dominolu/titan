@@ -2590,8 +2590,10 @@ dependencies = [
  "async-trait",
  "base64",
  "bincode",
+ "bs58",
  "chrono",
  "crc32fast",
+ "curve25519-dalek",
  "ed25519-dalek",
  "futures-util",
  "hashbrown 0.16.1",
@@ -6983,6 +6985,15 @@ dependencies = [
 
 [[package]]
 name = "titan-connector-okx-plugin"
+version = "0.1.0"
+dependencies = [
+ "connector",
+ "serde_json",
+ "titan-plugin-engine",
+]
+
+[[package]]
+name = "titan-connector-solana-plugin"
 version = "0.1.0"
 dependencies = [
  "connector",

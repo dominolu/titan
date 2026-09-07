@@ -16,6 +16,7 @@ members = [
   "crates/titan-connector-okx-plugin",
   "crates/titan-connector-hyperliquid-plugin",
   "crates/titan-connector-evm-plugin",
+  "crates/titan-connector-solana-plugin",
   "crates/titan-connector-loader",
   "collector",
   "connector",
