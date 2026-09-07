@@ -16,6 +16,11 @@
 - [Bar/Tick 与 Numba 策略接口](bar_tick_numba_strategy.md)
 - [Rust Strategy trait](rust_strategy.md)
 
+## 策略设计
+
+- [OKX–Hyperliquid 跨所做市需求](okx_hyperliquid_cross_exchange_market_making_requirements.md)
+- [OKX–Hyperliquid 跨所做市技术设计](okx_hyperliquid_cross_exchange_market_making_technical_design.md)
+
 ## 数据协议
 
 - [ResultBundle schema v1](result_bundle_schema.md)
