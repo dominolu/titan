@@ -1,0 +1,4 @@
+    Finished `bench` profile [optimized] target(s) in 0.17s
+     Running benches/event_engine.rs (target/release/deps/event_engine-9204c1fd4024f650)
+events=1000000 target_rate=Some(300000) elapsed=3.333349848s throughput=299999/s dispatch_p50_ns=1023 dispatch_p99_ns=2097151 dispatch_p999_ns=2097151 dispatch_max_ns=4194303 subscriber_p50_ns=65535 subscriber_p99_ns=4194303 subscriber_p999_ns=8388607 subscriber_max_ns=8388607 drop_total=0 resync_total=0 arena_exhausted=[0, 0, 0] fast_lane_drop_total=0
+config small_event_slots=32768 market_batch_slots=8192 snapshot_slots=512 critical_capacity=8192 market_capacity=65536 subscriber_capacity=16384 critical_reserve=2048 pending_global=8192 pending_subscriber=1024

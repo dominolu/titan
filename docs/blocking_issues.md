@@ -3,16 +3,16 @@
 状态：本文件只收录“当前无法仅在代码内闭环解决、需要外部环境或进一步现场验证”的问题。
 可内部修复的问题不在本清单，直接按主清单执行。
 
-更新时间：2026-09-05
+更新时间：2026-09-07
 
 ## 汇总
 
 | ID | 标题 | 严重度 | 当前状态 | 主要阻塞条件 |
 |---|---|---|---|---|
 | B-01 | Binance 私有流偶发连接后零 executionReport | 高（影响“静默断流”保证） | 观测中，未定位根因 | 需要持续主网运行 + 日志/抓包复现 |
-| B-02 | OKX/Hyperliquid 实盘私有流与字段语义验收 | 高（阻断多交易所闭环） | OKX 已完成（2026-09-05）；Hyperliquid 未执行 | Hyperliquid 凭据与资金环境 |
-| B-03 | 生产 P99/P99.9 PerformanceEnvelope 冻结 | 中（不阻塞功能） | 仅有 synthetic 基线 | 目标机上约定的真实 Market/Account 双源负载 |
-| B-04 | 多 venue e2e/roundtrip 覆盖在方案 B 删除后未补齐 | 中 | OKX venue 级闭环已由探针补上；Hyperliquid 待补 | B-02 的实盘环境；本地可先补 brokerapi 合流测试 |
+| B-02 | OKX/Hyperliquid 实盘私有流与字段语义验收 | 高（阻断多交易所闭环） | 2026-09-07 已完成并解除 | 无 |
+| B-03 | 生产 P99/P99.9 PerformanceEnvelope 冻结 | 中（不阻塞功能） | 2026-09-07 已按目标机 300k/s + HL 主网 60s 契约冻结 | 无 |
+| B-04 | 多 venue e2e/roundtrip 覆盖在方案 B 删除后未补齐 | 中 | OKX/Hyperliquid venue 级闭环均已由探针补上 | Binance 静默断流仍归 B-01 观测 |
 
 ---
 
@@ -84,20 +84,25 @@
 4. 撤单响应 `ts` 未解析，REST 撤单事实 exchange_ts 恒为 0（已回填至
    `OrderInfo.update_time`）。
 
-### Hyperliquid（未执行）
+### Hyperliquid（2026-09-07 已完成）
 
 范围（详见 [refactor_remaining_tasks.md](refactor_remaining_tasks.md) 4.10）：
 
-- cancel-all 聚合路径尚未回填交易所 orderId；
-- WS 与 REST reconcile 的 exchange_ts 换算需在主网逐字段实测；
+- cancel-all 聚合路径已补齐交易所 orderId/状态时间戳回填逻辑（离线与 unit test 阶段）；
+- WS 与 REST reconcile 的 exchange_ts 换算仍需主网逐字段实测；
 - REST→私有流 client/venue id、状态与时间戳一致性需复刻 Binance/OKX 探针方式验证；
 - 小额 submit/cancel/partial-fill/reconnect 与最终 orders/positions/balances 对账。
 
-阻塞原因：Hyperliquid 的 API 凭据与小额资金环境尚未提供；凭据不得写入仓库。
+目标机主网已完成真实 socket 重连、私有订阅重放，以及 submit/amend/cancel 的 REST/WS
+cloid、oid、status、price、qty、executed/leaves、status timestamp 逐字段断言；另完成 0.01 ETH
+市价开仓与 reduce-only 平仓，最终零挂单、零仓位。验收中发现并修复 amend 乱序 oid、WS amend
+价格未更新、动态浮点价格 wire 三个实盘问题。
 
-解除条件：提供只读/小额交易凭据后，复用
-`connector/examples/okx_account_rest_ws_probe.rs` 的结构建立 HL 对应探针，并跑通
-`submit → 私有流事实 → cancel → 私有流终态 → Full reconcile`。
+最终通过自动扫描薄顶档并只跨第一档的 IOC，在 20 USDC 上限内取得 GAS 10.2/16.1 的真实
+partial-fill；REST、私有 WS、fills 逐字段一致，reduce-only 平仓后零挂单零仓位。无需配套
+对手账户或提高风险上限。证据见 `validation/hyperliquid_2026-09-07/README.md`。
+
+解除条件已满足：小额凭据环境中的提交、修改、撤单、重连、完整成交、部分成交和最终对账均通过。
 
 ---
 
@@ -108,7 +113,10 @@
 - EventEngine bench 容量扫描与目标机 synthetic 基线（默认档 500k/800k 定速、1M burst 零丢单/零 RESYNC，RSS ~152 MB）；
 - 冻结档配置已记录在 [refactor_remaining_tasks.md](refactor_remaining_tasks.md) 4.11。
 
-阻塞原因：真实生产负载（Market Batch 长度分布、多 Primary lane、账户事实混合、恢复窗口）尚未在目标部署形态下定义并测量。
+2026-09-07 已在目标机按当前部署容量契约冻结：默认容量、1M events、300k/s 连续三轮零
+drop/resync/arena exhaustion，dispatch/subscriber P99.9 门槛分别为 8,388,607/16,777,215 ns；
+Hyperliquid 主网 MarketPlugin→EventEngine 60 秒样本的 fast-lane enqueue/handler P99.9 分别为
+8,191/4,095 ns，零 drop/resync。后续若生产品种数或目标事件率变化，需版本化重测而不是沿用本门槛。
 
 解除条件：给出目标负载契约（品种数、订阅 kind、事件率、恢复频率、允许的 RESYNC/重放次数），在目标机测得
 publisher admission / worker dispatch / handler commit 的 P50/P99/P99.9 并设置 CI 回归门槛。
@@ -117,15 +125,15 @@ publisher admission / worker dispatch / handler commit 的 P50/P99/P99.9 并设�
 
 ## B-04 方案 B 后多 venue e2e 覆盖缺口
 
-删除旧 `Connector::submit/cancel`、venue 级 roundtrip 与 LiveBot/Iceoryx 时，Binance 真实主网闭环已由
-探针补上；OKX/Hyperliquid venue 级 e2e 与“双通道 REST/WS 乱序合并”回归覆盖暂时降低。
+删除旧 `Connector::submit/cancel`、venue 级 roundtrip 与 LiveBot/Iceoryx 后，三家 venue 的真实主网
+闭环均已由探针补上；Binance 偶发静默断流继续由 B-01 独立观测。
 
 非外部部分（本地可做）：
 
 - 在 brokerapi/account 集成层补 REST/WS 乱序合流回归（用本地 mock 而非实盘）；
 - 在 EventEngine/AccountPlugin 层补 journal 终态释放的运行时级断言。
 
-实盘部分由 B-02 一并验收。
+实盘部分已由 B-02 一并验收。
 
 ---
 

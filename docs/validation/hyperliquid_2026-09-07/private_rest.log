@@ -1,0 +1,28 @@
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:147:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+147 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `connector` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src/lib.rs (target/debug/deps/connector-36bb46e5454e25f3)
+
+running 1 test
+agent-signed main account: 0x0a7ffBB0e836b4859F01ece24c361DCE5dF11957
+account=AccountInfo { total_wallet_balance: 0.0, total_margin_balance: 0.0, total_unrealized_pnl: 0.0, available_balance: 0.0, balances: [Balance { asset: "USDC", wallet_balance: 0.0, available_balance: 0.0, unrealized_pnl: 0.0, margin_balance: 0.0 }], timestamp: 1788756521740 }
+positions=0
+recent fills=0
+submit deep GTC: buy 0.01 ETH @ 1248.7
+submitted: OrderInfo { symbol: "ETH", order_id: "538129488247", client_order_id: "0x9f2c4b6e8a1d3f570b6c9e2d4a8f1c3b", side: Buy, order_type: Limit, status: New, price: 1248.7, qty: 0.01, executed_qty: 0.0, avg_price: 0.0, leaves_qty: 0.01, time_in_force: GTC, reduce_only: false, position_side: Unknown, create_time: 0, update_time: 0, stop_price: None }
+order_status=New
+amended to px=1223.7 (new oid 538129493260)
+cancel verified, 0 resting orders remain
+test hyperliquid::brokerapi::tests::live_private_api_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 2.16s

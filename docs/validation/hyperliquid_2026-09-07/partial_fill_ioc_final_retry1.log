@@ -1,0 +1,24 @@
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:170:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+170 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `connector` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.80s
+     Running unittests src/lib.rs (target/debug/deps/connector-36bb46e5454e25f3)
+
+running 1 test
+waiting for partial fill: buy 16.1 GAS @ 1.2383 against top ask qty=10.2 notional=12.6307 (max $20)
+  passive fact: Position("GAS", 10.2)
+  passive fact: Order { client_order_id: Some("0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001"), venue_order_id: Some("538214479574"), order: Order { qty: 16.1, leaves_qty: 16.1, price_tick: 12383, tick_size: 0.0001, side: Buy, time_in_force: IOC, exch_timestamp: 1788765716459000000, status: New, local_timestamp: 0, req: None, exec_price_tick: 0, exec_qty: 0.0, order_id: 0, maker: false, order_type: Limit } }
+  passive fact: Order { client_order_id: Some("0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001"), venue_order_id: Some("538214479574"), order: Order { qty: 16.1, leaves_qty: 5.9, price_tick: 12383, tick_size: 0.0001, side: Buy, time_in_force: IOC, exch_timestamp: 1788765716459000000, status: Filled, local_timestamp: 0, req: None, exec_price_tick: 0, exec_qty: 10.200000000000001, order_id: 0, maker: false, order_type: Limit } }
+partial reconcile OK: symbol=GAS qty=16.1 filled=10.200000000000001 REST=WS=fills, final orders=0 positions=0, balance_delta=0.017029
+test hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 222 filtered out; finished in 2.71s

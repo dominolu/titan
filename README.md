@@ -8,7 +8,14 @@ Titan 是面向加密货币永续合约的 Rust 高频交易框架，支持逐�
 titan CLI controller
 └── spawn titan run-worker
     ├── 加载并编译 Numba 策略
-    ├── 运行唯一的 Rust Runtime
+    ├── TitanCoreRuntime
+    │   ├── EventEngine
+    │   │   ├── Primary / Async lane（可靠账户事实）
+    │   │   └── FastLane（低延迟行情）
+    │   └── PluginEngine
+    │       ├── StrategyPlugin
+    │       ├── MarketPlugin → 动态 ConnectorFactory
+    │       └── AccountPlugin → 动态 ConnectorFactory
     ├── 驱动 Bar / Tick / Hybrid / Live backend
     └── 原子写入 ResultBundle
 ```
@@ -18,6 +25,51 @@ titan CLI controller
 - 事件热路径为 `Rust Runtime → C ABI → Numba nopython callback`，不经过 Python、PyO3 或 GIL。
 - 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
 - Python reporting 只读取并渲染 ResultBundle，不重新计算交易结果。
+
+## 近期重要重构
+
+### EventEngine：统一的有界事件运行时
+
+- 使用预分配的多级 `EventArena`、带 generation 校验的事件句柄和最后引用回收，限制实盘热路径的内存增长。
+- 账户等可靠事实通过 Primary/Async lane 投递，支持有界 pending、FIFO 重试、sequence gap 检测、
+  `RESYNC_REQUIRED` 截止和订阅者健康状态。
+- 高频行情通过 zero-copy MarketBatch reservation 和 FastLane 投递；支持 inline handler 或有界异步 worker，
+  保留事件顺序并统计 queue drop、最大队列深度和 P50/P99/P99.9/max 延迟。
+- 路由变更由 `EventControl` 在 EventLoop safe point 原子提交；启动、订阅退休、handler 退出和 Arena lease
+  释放纳入 `TitanCoreRuntime` 的统一生命周期。
+- 目标机 release 基准已冻结：默认容量、100 万事件、30 万 events/s 连续三轮无 drop、resync 或 Arena
+  exhaustion；dispatch/subscriber P99.9 门槛分别为 8.39 ms 和 16.78 ms。
+
+详细设计与运行方法见 [Titan EventEngine](crates/titan-event-engine/README.md)。
+
+### PluginEngine：交易所与策略的动态插件化
+
+- Binance Futures、OKX、Hyperliquid 的 ConnectorFactory 已从 CLI/Core 静态注册迁移到独立动态插件包；
+  新增交易所无需修改 EventEngine、MarketPlugin、AccountPlugin 或 Titan main。
+- 插件加载会校验 package manifest、SHA-256、ABI、schema/config version、capability 和 Core Runtime API
+  兼容性，校验完成后才创建服务端点。
+- `PluginPlan`、预绑定 endpoint generation、ActivationGate 和事务化 route commit 保证插件整体激活；创建、
+  绑定或激活失败会按相反顺序回滚。
+- `ResourceScope`、endpoint/event lease 和动态库 code lease 防止仍有线程、服务句柄或事件引用时卸载代码；
+  配置替换支持 quiesce、stop 和 generation 隔离。
+- 热路径只持有预绑定的 `ServiceHandle`、`EventPublisher` 或路由句柄，不查询 PluginRegistry/ServiceRegistry。
+
+详细控制面契约见 [Titan PluginEngine](crates/titan-plugin-engine/README.md)。
+
+### Hyperliquid Connector：主网闭环完成
+
+- 已接入统一 MarketConnector、AccountConnector 和 Broker API，覆盖公共 REST/WS 行情、EIP-712 签名、
+  私有 `orderUpdates`/`userEvents`、orders/positions/balances reconcile 及 scheduled-cancel heartbeat。
+- 完成真实 socket 断线重连与订阅重放，以及 `submit → amend → cancel` 的 REST/私有 WS 逐字段对账；
+  cloid、oid、status、price、qty、executed/leaves 和 exchange timestamp 均一致。
+- 完成 0.01 ETH 开仓/reduce-only 平仓，以及 20 USDC 风险上限内 GAS 10.2/16.1 的真实部分成交；
+  REST、私有 WS、fills 对账一致，测试结束后均为零挂单、零仓位。
+- 实盘探针推动修复了 amend 新旧 oid 乱序、WS amend 字段刷新、价格/数量浮点 wire 格式、公共行情关闭
+  错误要求签名，以及 rustls provider 初始化冲突。
+- Hyperliquid 主网 MarketPlugin → EventEngine 60 秒验证零 drop/resync；FastLane enqueue/handler P99.9
+  分别为 8.19 µs 和 4.10 µs。该 connector 的外部实盘验收门禁已全部解除。
+
+完整记录与原始证据见 [Hyperliquid 主网验收报告](docs/validation/hyperliquid_2026-09-07/README.md)。
 
 ## 环境
 

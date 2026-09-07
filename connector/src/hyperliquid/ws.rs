@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
@@ -28,14 +30,9 @@ use crate::{
     hyperliquid::{
         HyperliquidError, SharedAssets, SharedMarketSubscriptions, SharedSymbolSet,
         client::HyperliquidClient,
-        msg::{
-            BboData, CancelAction, CancelWire, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg,
-            WsSubscribe,
-        },
+        msg::{BboData, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg, WsSubscribe},
         ordermanager::SharedOrderManager,
-        signing::sign_l1_action,
     },
-    utils::next_nonce,
 };
 
 /// Classifies an incoming WebSocket channel for message dispatch.
@@ -81,17 +78,16 @@ pub struct HyperliquidWs {
     order_manager: SharedOrderManager,
     assets: SharedAssets,
     symbols: SharedSymbolSet,
-    nonce_counter: Arc<Mutex<u64>>,
     positions: Arc<Mutex<HashMap<String, f64>>>,
     stream_epochs: HashMap<String, u64>,
     account_address: String,
-    private_key: [u8; 32],
-    is_mainnet: bool,
     client: HyperliquidClient,
     command_rx: Receiver<MarketDataCommand>,
     market_subscriptions: SharedMarketSubscriptions,
     private_channels: bool,
     pending_private_subscriptions: HashSet<String>,
+    #[cfg(test)]
+    reconnect_fault: Arc<AtomicU8>,
 }
 
 impl HyperliquidWs {
@@ -100,31 +96,28 @@ impl HyperliquidWs {
         order_manager: SharedOrderManager,
         assets: SharedAssets,
         symbols: SharedSymbolSet,
-        nonce_counter: Arc<Mutex<u64>>,
         account_address: String,
-        private_key: [u8; 32],
-        is_mainnet: bool,
         client: HyperliquidClient,
         command_rx: Receiver<MarketDataCommand>,
         market_subscriptions: SharedMarketSubscriptions,
         private_channels: bool,
+        #[cfg(test)] reconnect_fault: Arc<AtomicU8>,
     ) -> Self {
         Self {
             ev_tx,
             order_manager,
             assets,
             symbols,
-            nonce_counter,
             positions: Default::default(),
             stream_epochs: Default::default(),
             account_address,
-            private_key,
-            is_mainnet,
             client,
             command_rx,
             market_subscriptions,
             private_channels,
             pending_private_subscriptions: HashSet::new(),
+            #[cfg(test)]
+            reconnect_fault,
         }
     }
 
@@ -142,7 +135,10 @@ impl HyperliquidWs {
     }
 
     async fn handle_msg(&mut self, text: &str) -> Result<(), HyperliquidError> {
-        let msg: WsMsg = serde_json::from_str(text)?;
+        let msg: WsMsg = serde_json::from_str(text).map_err(|error| {
+            warn!(%error, text, "Unparseable websocket message.");
+            HyperliquidError::OrderError("unparseable websocket message".to_string())
+        })?;
         let channel = msg.channel.clone();
         if channel == "subscriptionResponse" {
             debug!(?msg, "subscription response");
@@ -154,6 +150,14 @@ impl HyperliquidWs {
                     self.ev_tx
                         .send(PublishEvent::PrivateStreamReady)
                         .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
+                    #[cfg(test)]
+                    if self
+                        .reconnect_fault
+                        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return Err(HyperliquidError::ConnectionInterrupted);
+                    }
                 }
             }
             return Ok(());
@@ -361,7 +365,11 @@ impl HyperliquidWs {
         for update in updates {
             let symbol = update.order.coin.clone();
             let mut order_manager = self.order_manager.lock().unwrap();
-            match order_manager.update_from_ws(&update.order, &update.status) {
+            match order_manager.update_from_ws(
+                &update.order,
+                &update.status,
+                update.status_timestamp,
+            ) {
                 Ok(Some(order)) => {
                     self.ev_tx
                         .send_account(AccountPublication::Order {
@@ -393,23 +401,22 @@ impl HyperliquidWs {
             _ => vec![serde_json::from_value(data.clone())?],
         };
         for event in events {
-            if event.type_ != "fill" {
-                continue;
-            }
-            if let Some(fill) = event.fill {
-                let mut positions = self.positions.lock().unwrap();
-                let position = positions.entry(fill.coin.clone()).or_insert(0.0);
-                let sz: f64 = fill.sz.parse().unwrap_or(0.0);
-                apply_fill(position, &fill.side, sz);
-                let qty = *position;
-                drop(positions);
-                self.ev_tx
-                    .send_account(AccountPublication::Position {
-                        symbol: fill.coin.clone(),
-                        qty,
-                        exch_ts: (fill.time * 1_000_000) as i64,
-                    })
-                    .unwrap();
+            if let Some(fills) = event.fills {
+                for fill in fills {
+                    let mut positions = self.positions.lock().unwrap();
+                    let position = positions.entry(fill.coin.clone()).or_insert(0.0);
+                    let sz: f64 = fill.sz.parse().unwrap_or(0.0);
+                    apply_fill(position, &fill.side, sz);
+                    let qty = *position;
+                    drop(positions);
+                    self.ev_tx
+                        .send_account(AccountPublication::Position {
+                            symbol: fill.coin.clone(),
+                            qty,
+                            exch_ts: (fill.time * 1_000_000) as i64,
+                        })
+                        .unwrap();
+                }
             }
         }
         Ok(())
@@ -495,32 +502,11 @@ impl HyperliquidWs {
     async fn init_symbol(&self, symbol: String) {
         let client = self.client.clone();
         let account_address = self.account_address.clone();
-        let order_manager = self.order_manager.clone();
         let ev_tx = self.ev_tx.clone();
-        let private_key = self.private_key;
-        let is_mainnet = self.is_mainnet;
         let assets = self.assets.clone();
-        let nonce_counter = self.nonce_counter.clone();
         let positions = self.positions.clone();
 
         tokio::spawn(async move {
-            // Cancel all open orders for the symbol to start with a clean state.
-            if let Err(error) = cancel_open_orders(
-                client.clone(),
-                account_address.clone(),
-                symbol.clone(),
-                private_key,
-                is_mainnet,
-                assets.clone(),
-                nonce_counter,
-                order_manager.clone(),
-                ev_tx.clone(),
-            )
-            .await
-            {
-                error!(?error, %symbol, "Couldn't cancel open orders.");
-            }
-
             // Fetches the initial position.
             if let Err(error) =
                 get_position(client, account_address, symbol, ev_tx, positions, assets).await
@@ -633,63 +619,6 @@ impl HyperliquidWs {
     }
 }
 
-async fn cancel_open_orders(
-    client: HyperliquidClient,
-    account_address: String,
-    symbol: String,
-    private_key: [u8; 32],
-    is_mainnet: bool,
-    assets: SharedAssets,
-    nonce_counter: Arc<Mutex<u64>>,
-    order_manager: SharedOrderManager,
-    ev_tx: crate::connector::PublishSender,
-) -> Result<(), HyperliquidError> {
-    if assets.lock().unwrap().is_empty() {
-        super::ensure_assets(&client, &assets).await?;
-    }
-    let open_orders = client.get_open_orders(&account_address).await?;
-    let mut cancels = Vec::new();
-    for order in open_orders {
-        if order.coin == symbol {
-            match assets
-                .lock()
-                .unwrap()
-                .get(&order.coin)
-                .map(|info| info.index)
-            {
-                Some(asset_index) => cancels.push(CancelWire {
-                    a: asset_index,
-                    o: order.oid,
-                }),
-                None => {
-                    warn!(coin = %order.coin, "Unknown asset; skipping its open-order cancel.");
-                }
-            }
-        }
-    }
-    if !cancels.is_empty() {
-        let action = CancelAction {
-            type_: "cancel".to_string(),
-            cancels,
-        };
-        let nonce = next_nonce(&nonce_counter);
-        let signature = sign_l1_action(&action, &private_key, nonce, None, is_mainnet)?;
-        let _resp = client.post_exchange(&action, nonce, &signature).await?;
-    }
-    let orders = order_manager.lock().unwrap().cancel_all(&symbol);
-    for order in orders {
-        ev_tx
-            .send_account(AccountPublication::Order {
-                symbol: symbol.clone(),
-                client_order_id: None,
-                venue_order_id: None,
-                order,
-            })
-            .unwrap();
-    }
-    Ok(())
-}
-
 async fn get_position(
     client: HyperliquidClient,
     account_address: String,
@@ -733,14 +662,12 @@ mod tests {
             )),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashSet::from(["BTC".to_owned()]))),
-            Arc::new(Mutex::new(0)),
             String::new(),
-            [0; 32],
-            false,
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Arc::new(Mutex::new(HashMap::new())),
             false,
+            Arc::new(AtomicU8::new(0)),
         );
         let image = serde_json::json!({
             "coin": "BTC",
@@ -782,14 +709,12 @@ mod tests {
             )),
             Default::default(),
             Default::default(),
-            Default::default(),
             String::new(),
-            [0; 32],
-            false,
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
             true,
+            Arc::new(AtomicU8::new(0)),
         );
         ws.reset_private_subscriptions();
 
@@ -833,20 +758,43 @@ mod tests {
             Default::default(),
             Default::default(),
             Default::default(),
-            Default::default(),
             String::new(),
-            [0; 32],
-            false,
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
             true,
+            Arc::new(AtomicU8::new(0)),
         );
         let error = ws
             .handle_msg(r#"{"channel":"error","error":"bad subscription"}"#)
             .await
             .unwrap_err();
         assert!(matches!(error, HyperliquidError::ConnectionInterrupted));
+    }
+
+    #[tokio::test]
+    async fn websocket_unparseable_message_is_reported_as_connection_error() {
+        let (events, _receiver) = crate::connector::test_publish_channel();
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Default::default(),
+            true,
+            Arc::new(AtomicU8::new(0)),
+        );
+        let error = ws.handle_msg("not-json").await.unwrap_err();
+        match error {
+            HyperliquidError::OrderError(msg) => {
+                assert_eq!(msg, "unparseable websocket message");
+            }
+            _ => panic!("unexpected error: {error:?}"),
+        }
     }
 
     #[test]

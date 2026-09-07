@@ -1,0 +1,32 @@
+   Compiling connector v0.1.0 (/home/ubuntu/titan_sync/connector)
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:164:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+164 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `connector` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.99s
+     Running unittests src/lib.rs (target/debug/deps/connector-36bb46e5454e25f3)
+
+running 1 test
+private stream READY #1
+  pre-ready: AccountError: LiveError { kind: ConnectionInterrupted, value: String("ConnectionInterrupted") }
+  pre-ready: AccountError: LiveError { kind: ConnectionInterrupted, value: String("ConnectionInterrupted") }
+private stream READY #2
+private stream reconnect OK
+submitted oid=538132454339
+  fact: Order venue_id=Some("538132454339") status=New
+amended new oid=538132458500
+canceled oid=538132458500
+  fact: Order venue_id=Some("538132458500") status=New
+  fact: Order venue_id=Some("538132458500") status=Canceled
+private streams OK: submit/amend/cancel facts all received
+test hyperliquid::live_ws_tests::live_ws_private_stream_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 218 filtered out; finished in 2.71s

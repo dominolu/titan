@@ -1488,20 +1488,27 @@ ws_url = "wss://api.hyperliquid.xyz/ws"
             .unwrap()
             .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            let counts = observed
-                .0
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if required_event_types
-                .iter()
-                .all(|event_type| counts.get(event_type).copied().unwrap_or(0) > 0)
-            {
-                break;
+        if let Some(seconds) = std::env::var("TITAN_LIVE_PIPELINE_DURATION_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            std::thread::sleep(Duration::from_secs(seconds));
+        } else {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline {
+                let counts = observed
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if required_event_types
+                    .iter()
+                    .all(|event_type| counts.get(event_type).copied().unwrap_or(0) > 0)
+                {
+                    break;
+                }
+                drop(counts);
+                std::thread::sleep(Duration::from_millis(50));
             }
-            drop(counts);
-            std::thread::sleep(Duration::from_millis(50));
         }
         let counts = observed
             .0
@@ -1512,6 +1519,7 @@ ws_url = "wss://api.hyperliquid.xyz/ws"
             .call(MarketRequest::Health(source), TraceContext::default())
             .unwrap()
             .unwrap();
+        let performance = event_engine.metrics().snapshot();
         admin
             .call(
                 MarketAdminRequest::Stop(source, Instant::now() + Duration::from_secs(5)),
@@ -1522,6 +1530,17 @@ ws_url = "wss://api.hyperliquid.xyz/ws"
         plugins.shutdown(StopReason::Shutdown).unwrap();
         events.unregister_fast_lane(lane);
         event_engine.stop().unwrap();
+
+        println!(
+            "live_pipeline counts={counts:?} dispatch={:?} subscriber={:?} fast_lane_enqueue={:?} fast_lane_handler={:?} drops={} resync={} fast_lane_drops={}",
+            performance.dispatch_latency,
+            performance.subscriber_latency,
+            performance.fast_lane_enqueue_latency,
+            performance.fast_lane_latency,
+            performance.drop_total,
+            performance.resync_total,
+            performance.fast_lane_drop_total,
+        );
 
         assert!(
             matches!(
@@ -1543,6 +1562,7 @@ ws_url = "wss://api.hyperliquid.xyz/ws"
     #[test]
     #[ignore = "requires public Hyperliquid network access"]
     fn hyperliquid_live_market_plugin_pipeline() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         live_public_event_pipeline(
             MarketSourceDefinition {
                 source_key: Arc::from("hyperliquid-live"),

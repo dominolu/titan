@@ -17,7 +17,7 @@ dist/
 build/
 
 # Local data and artifacts
-data/
+/data/
 artifacts/
 backtest_reports/
 .titan/

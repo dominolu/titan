@@ -1,11 +1,13 @@
 mod brokerapi;
-mod client;
+pub mod client;
 #[allow(dead_code)]
 mod msg;
 mod ordermanager;
 mod signing;
 mod ws;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
@@ -98,6 +100,15 @@ fn default_safety_timeout_ms() -> u64 {
     30_000
 }
 
+fn validate_safety_timeout_ms(timeout_ms: u64) -> Result<(), HyperliquidError> {
+    if timeout_ms != 0 && timeout_ms < 5_000 {
+        return Err(HyperliquidError::InvalidArg(
+            "safety_timeout_ms must be 0 (disabled) or >= 5000",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct AssetInfo {
     pub index: u32,
@@ -116,13 +127,14 @@ pub struct Hyperliquid {
     config: Config,
     private_key: [u8; 32],
     account_address: String,
-    nonce_counter: Arc<Mutex<u64>>,
     symbols: SharedSymbolSet,
     assets: SharedAssets,
     order_manager: SharedOrderManager,
     client: HyperliquidClient,
     market_tx: Sender<MarketDataCommand>,
     market_subscriptions: SharedMarketSubscriptions,
+    #[cfg(test)]
+    reconnect_fault: Arc<AtomicU8>,
 }
 
 async fn ensure_assets(
@@ -177,13 +189,12 @@ impl Hyperliquid {
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
         let symbols = self.symbols.clone();
-        let nonce_counter = self.nonce_counter.clone();
         let account_address = self.account_address.clone();
-        let private_key = self.private_key;
-        let is_mainnet = self.config.is_mainnet;
         let client = self.client.clone();
         let market_tx = self.market_tx.clone();
         let market_subscriptions = self.market_subscriptions.clone();
+        #[cfg(test)]
+        let reconnect_fault = self.reconnect_fault.clone();
 
         tokio::spawn(async move {
             let _ = Retry::new(ExponentialBackoff::default())
@@ -202,14 +213,13 @@ impl Hyperliquid {
                         order_manager.clone(),
                         assets.clone(),
                         symbols.clone(),
-                        nonce_counter.clone(),
                         account_address.clone(),
-                        private_key,
-                        is_mainnet,
                         client.clone(),
                         market_tx.subscribe(),
                         market_subscriptions.clone(),
                         private_channels,
+                        #[cfg(test)]
+                        reconnect_fault.clone(),
                     );
                     if let Err(error) = stream.connect(&ws_url).await {
                         error!(?error, "A connection error occurred.");
@@ -258,6 +268,7 @@ impl ConnectorBuilder for Hyperliquid {
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
         let config: Config = toml::from_str(config)?;
+        validate_safety_timeout_ms(config.safety_timeout_ms)?;
         let private_key_hex = config.private_key.trim_start_matches("0x");
         let private_key_bytes = hex::decode(private_key_hex)?;
         if private_key_bytes.len() != 32 {
@@ -291,13 +302,14 @@ impl ConnectorBuilder for Hyperliquid {
             config,
             private_key,
             account_address,
-            nonce_counter: Default::default(),
             symbols: Default::default(),
             assets: Default::default(),
             order_manager,
             client,
             market_tx,
             market_subscriptions: Default::default(),
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
         })
     }
 }
@@ -307,6 +319,7 @@ impl Hyperliquid {
     /// Account construction continues to use `ConnectorBuilder` and requires a valid private key.
     pub(crate) fn build_market_from(config: &str) -> Result<Self, HyperliquidError> {
         let mut config: Config = toml::from_str(config)?;
+        validate_safety_timeout_ms(config.safety_timeout_ms)?;
         config.private_key.clear();
         config.account_address.clear();
         let client = HyperliquidClient::new(&config.info_url, &config.exchange_url);
@@ -315,14 +328,20 @@ impl Hyperliquid {
             config,
             private_key: [0; 32],
             account_address: String::new(),
-            nonce_counter: Default::default(),
             symbols: Default::default(),
             assets: Default::default(),
             order_manager: Arc::new(Mutex::new(OrderManager::new())),
             client,
             market_tx,
             market_subscriptions: Default::default(),
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
         })
+    }
+
+    #[cfg(test)]
+    fn arm_private_reconnect_fault(&self) {
+        self.reconnect_fault.store(1, Ordering::Release);
     }
 }
 
@@ -449,6 +468,14 @@ impl Connector for Hyperliquid {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
+        // Public market-data connectors are intentionally built without a signer and have no
+        // account orders or scheduled-cancel heartbeat to clear.
+        if self.private_key == [0; 32] {
+            return Ok(());
+        }
+        if let Err(error) = BrokerApi::cancel_all_after(&self.client, 0).await {
+            return Err(format!("failed to clear scheduled cancellation: {error}"));
+        }
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         let mut errors = Vec::new();
         for symbol in symbols {
@@ -983,5 +1010,561 @@ ws_url = "ws://localhost/ws"
         let agent_address = "0x0a7ffbb0e836b4859f01ece24c361dce5df11957";
         let connector = Hyperliquid::build_from(&config_str(&key_hex, agent_address)).unwrap();
         assert_eq!(connector.account_address, agent_address.to_string());
+    }
+}
+
+/// 实盘 WS 探针：公共流（l2Book/trades）+ 私有流（orderUpdates/userEvents + 下单触发）。
+///
+/// 运行方式同 `hyperliquid::brokerapi::tests::live_private_api_smoke`
+/// （HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS 环境变量，--ignored --nocapture）。
+#[cfg(test)]
+mod live_ws_tests {
+    use super::*;
+    use crate::api::{
+        AmendOrderRequest, ApiOrderType, ApiSide, ApiTimeInForce, CancelOrderRequest,
+        UnifiedOrderRequest,
+    };
+    use crate::connector::{
+        AccountPublication, DirectPublication, PublishEvent, direct_publish_sender,
+    };
+    use hftbacktest::types::{DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, TRADE_EVENT};
+    use std::time::Duration;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[allow(dead_code)]
+    #[derive(Debug)]
+    enum PrivateFact {
+        Ready,
+        Error(String),
+        Order {
+            client_order_id: Option<String>,
+            venue_order_id: Option<String>,
+            order: hftbacktest::types::Order,
+        },
+        Position(String, f64),
+    }
+
+    async fn wait_private_order(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<PrivateFact>,
+        expected_cloid: &str,
+        venue_order_id: &str,
+        expected_status: hftbacktest::types::Status,
+    ) -> hftbacktest::types::Order {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let fact = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for private order fact")
+                .expect("publisher channel closed");
+            println!("  fact: {fact:?}");
+            if let PrivateFact::Order {
+                client_order_id,
+                venue_order_id: Some(venue),
+                order,
+            } = fact
+                && venue == venue_order_id
+                && order.status == expected_status
+            {
+                assert_eq!(client_order_id.as_deref(), Some(expected_cloid));
+                return order;
+            }
+        }
+    }
+
+    fn assert_rest_ws_fields(
+        rest: &crate::api::OrderInfo,
+        ws: &hftbacktest::types::Order,
+        expected_status: hftbacktest::types::Status,
+    ) {
+        let ws_price = ws.price_tick as f64 * ws.tick_size;
+        assert!((rest.price - ws_price).abs() <= ws.tick_size / 2.0);
+        assert!((rest.qty - ws.qty).abs() < 1e-12);
+        assert!((rest.executed_qty - ws.exec_qty).abs() < 1e-12);
+        assert!((rest.leaves_qty - ws.leaves_qty).abs() < 1e-12);
+        assert_eq!(ws.status, expected_status);
+        assert_eq!(format!("{:?}", rest.status), format!("{expected_status:?}"));
+        if rest.update_time > 0 && ws.exch_timestamp > 0 {
+            assert_eq!(rest.update_time * 1_000_000, ws.exch_timestamp);
+        }
+    }
+
+    async fn spot_usdc(client: &HyperliquidClient, account: &str) -> f64 {
+        client
+            .post_info(serde_json::json!({"type": "spotClearinghouseState", "user": account}))
+            .await
+            .expect("spotClearinghouseState")["balances"]
+            .as_array()
+            .and_then(|balances| balances.iter().find(|balance| balance["coin"] == "USDC"))
+            .and_then(|balance| balance["total"].as_str())
+            .and_then(|total| total.parse().ok())
+            .unwrap_or(0.0)
+    }
+
+    const MAINNET_CFG: &str = concat!(
+        "info_url = \"https://api.hyperliquid.xyz/info\"\n",
+        "exchange_url = \"https://api.hyperliquid.xyz/exchange\"\n",
+        "ws_url = \"wss://api.hyperliquid.xyz/ws\"\n",
+        "safety_timeout_ms = 0\n",
+        "is_mainnet = true\n"
+    );
+
+    fn env_creds() -> (String, String) {
+        (
+            std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required"),
+            std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required"),
+        )
+    }
+
+    /// 公共流：订阅 BTC Depth+Trades，20s 内应各收到至少一批 FeedBatch。
+    #[tokio::test]
+    #[ignore]
+    async fn live_ws_public_streams_probe() {
+        // workspace 同时启用 aws-lc-rs 与 ring，测试进程需手动选择 provider
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut connector = Hyperliquid::build_market_from(MAINNET_CFG).unwrap();
+        connector.subscribe_market_data(
+            "BTC".to_owned(),
+            vec![MarketDataKind::Depth, MarketDataKind::Trades],
+        );
+        let (events, mut receiver) = crate::connector::test_publish_channel();
+        connector.run_market_data(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let (mut saw_depth, mut saw_trade) = (false, false);
+        while !(saw_depth && saw_trade) {
+            let ev = tokio::time::timeout_at(deadline, receiver.recv())
+                .await
+                .expect("timeout waiting for public streams")
+                .expect("publish channel closed");
+            match ev {
+                PublishEvent::FeedBatch { events, .. } => {
+                    for e in &events {
+                        if e.is(TRADE_EVENT) {
+                            saw_trade = true;
+                        }
+                        if e.is(DEPTH_EVENT) || e.is(DEPTH_SNAPSHOT_EVENT) {
+                            saw_depth = true;
+                        }
+                    }
+                }
+                PublishEvent::ConnectorError(e) => panic!("public stream error: {e:?}"),
+                _ => {}
+            }
+        }
+        println!("public streams OK: depth={saw_depth} trades={saw_trade}");
+    }
+
+    /// 私有流：连接 orderUpdates/userEvents，经 REST 下深价单/改单/撤单，
+    /// 每一步都应通过私有流推回 AccountPublication::Order 事实。
+    #[tokio::test]
+    #[ignore]
+    async fn live_ws_private_stream_probe() {
+        // 同上：aws-lc-rs / ring 双 feature 下需显式安装 provider
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (key, account) = env_creds();
+        let config =
+            format!("{MAINNET_CFG}private_key = \"{key}\"\naccount_address = \"{account}\"\n");
+        let mut connector = Hyperliquid::build_from(&config).unwrap();
+        connector.register_account("ETH".to_owned());
+        connector.arm_private_reconnect_fault();
+
+        // 自定义 publisher：Event 与 Account 两条路都记录
+        let (tx, mut rx) = unbounded_channel::<PrivateFact>();
+        let publisher = direct_publish_sender(move |publication| match publication {
+            DirectPublication::Event(e) => match e {
+                PublishEvent::PrivateStreamReady => {
+                    let _ = tx.send(PrivateFact::Ready);
+                }
+                PublishEvent::ConnectorError(err) => {
+                    let _ = tx.send(PrivateFact::Error(format!("ConnectorError: {err:?}")));
+                }
+                _ => {}
+            },
+            DirectPublication::Account(a) => match a {
+                AccountPublication::Order {
+                    client_order_id,
+                    venue_order_id,
+                    order,
+                    ..
+                } => {
+                    let _ = tx.send(PrivateFact::Order {
+                        client_order_id: client_order_id.clone(),
+                        venue_order_id: venue_order_id.clone(),
+                        order: order.clone(),
+                    });
+                }
+                AccountPublication::Position { symbol, qty, .. } => {
+                    let _ = tx.send(PrivateFact::Position(symbol.clone(), *qty));
+                }
+                AccountPublication::Error(e) => {
+                    let _ = tx.send(PrivateFact::Error(format!("AccountError: {e:?}")));
+                }
+            },
+            DirectPublication::NativeMarket(_) => {}
+        });
+        connector.run_account(publisher);
+
+        let api = connector.broker_api().expect("broker api available");
+
+        // 首次 READY 后注入一次真实 socket 断开；连接器必须重连并重放两个私有订阅。
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut ready_count = 0;
+        while ready_count < 2 {
+            let m = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for private stream reconnect")
+                .expect("publisher channel closed");
+            if matches!(m, PrivateFact::Ready) {
+                ready_count += 1;
+                println!("private stream READY #{ready_count}");
+                continue;
+            }
+            println!("  pre-ready: {m:?}");
+        }
+        println!("private stream reconnect OK");
+
+        // 深价 GTC 下单（mid 的 50%，不成交）
+        let ticker = api.get_ticker("ETH").await.unwrap();
+        let mid = ticker.mark_price.unwrap_or(ticker.last_price);
+        let deep_px = (mid * 0.5 * 10.0).round() / 10.0;
+        let req = UnifiedOrderRequest {
+            symbol: "ETH".to_string(),
+            side: ApiSide::Buy,
+            order_type: ApiOrderType::Limit,
+            price: Some(deep_px),
+            qty: 0.01,
+            time_in_force: ApiTimeInForce::GTC,
+            reduce_only: false,
+            position_side: None,
+            client_order_id: Some("0xcccccccccccccccccccccccccccccccc".to_string()),
+            stop_price: None,
+        };
+        // 私有流只发布 OrderManager 已跟踪的订单：把本次下单注册进去
+        // （真实路径中由 AccountPlugin 下单命令完成同样的动作）
+        let mut tracked = hftbacktest::types::Order::new(
+            0,
+            (deep_px / 0.1).round() as i64,
+            0.1,
+            0.01,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::GTC,
+        );
+        tracked.status = hftbacktest::types::Status::New;
+        connector.track_managed_order("ETH", req.client_order_id.as_deref().unwrap(), &tracked);
+
+        let order = api.submit_order(&req).await.expect("submit_order");
+        println!("submitted oid={}", order.order_id);
+
+        // 等私有流推回该订单的 Order 事实
+        let submitted_id = order.order_id.clone();
+        let ws_submit = wait_private_order(
+            &mut rx,
+            req.client_order_id.as_deref().unwrap(),
+            &submitted_id,
+            hftbacktest::types::Status::New,
+        )
+        .await;
+        let rest_submit = api
+            .get_order("ETH", Some(&submitted_id), None)
+            .await
+            .expect("REST get submitted order");
+
+        // 改单（撤旧挂新，oid 会变）
+        let amend = api
+            .amend_order(&AmendOrderRequest {
+                symbol: "ETH".to_string(),
+                order_id: Some(submitted_id.clone()),
+                client_order_id: None,
+                new_price: Some((deep_px * 0.98 * 10.0).round() / 10.0),
+                new_qty: Some(0.01),
+                new_stop_price: None,
+            })
+            .await
+            .expect("amend_order");
+        println!("amended new oid={}", amend.order_id);
+        let ws_amend = wait_private_order(
+            &mut rx,
+            req.client_order_id.as_deref().unwrap(),
+            &amend.order_id,
+            hftbacktest::types::Status::New,
+        )
+        .await;
+        let rest_amend = api
+            .get_order("ETH", Some(&amend.order_id), None)
+            .await
+            .expect("REST get amended order");
+
+        api.cancel_order(&CancelOrderRequest {
+            symbol: "ETH".to_string(),
+            order_id: Some(amend.order_id.clone()),
+            client_order_id: None,
+        })
+        .await
+        .expect("cancel_order");
+        println!("canceled oid={}", amend.order_id);
+
+        let ws_cancel = wait_private_order(
+            &mut rx,
+            req.client_order_id.as_deref().unwrap(),
+            &amend.order_id,
+            hftbacktest::types::Status::Canceled,
+        )
+        .await;
+        let rest_cancel = api
+            .get_order("ETH", Some(&amend.order_id), None)
+            .await
+            .expect("REST get canceled order");
+        let expected_cloid = req.client_order_id.as_deref().unwrap();
+        assert_eq!(rest_submit.client_order_id, expected_cloid);
+        assert_eq!(rest_amend.client_order_id, expected_cloid);
+        assert_eq!(rest_cancel.client_order_id, expected_cloid);
+        assert_rest_ws_fields(&rest_submit, &ws_submit, hftbacktest::types::Status::New);
+        assert_rest_ws_fields(&rest_amend, &ws_amend, hftbacktest::types::Status::New);
+        assert_rest_ws_fields(
+            &rest_cancel,
+            &ws_cancel,
+            hftbacktest::types::Status::Canceled,
+        );
+        println!("private streams OK: reconnect + submit/amend/cancel REST/WS fields match");
+    }
+
+    /// Takes only the current best ask and cancels the IOC remainder, then immediately closes the
+    /// acquired position. The cap defaults to 20 USDC and can be lowered with HL_PARTIAL_MAX_USD.
+    #[tokio::test]
+    #[ignore]
+    async fn live_partial_fill_reconcile_probe() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (key, account) = env_creds();
+        let candidates = std::env::var("HL_PARTIAL_SYMBOL")
+            .map(|symbol| vec![symbol])
+            .unwrap_or_else(|_| {
+                [
+                    "GAS", "UMA", "BANANA", "STABLE", "RESOLV", "HYPER", "kLUNC", "MANTA", "TRB",
+                    "INIT", "MERL", "BSV", "BABY", "BIO",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+            });
+        let max_usd = std::env::var("HL_PARTIAL_MAX_USD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .unwrap_or(20.0);
+        assert!((10.0..=25.0).contains(&max_usd));
+        let config =
+            format!("{MAINNET_CFG}private_key = \"{key}\"\naccount_address = \"{account}\"\n");
+        let mut connector = Hyperliquid::build_from(&config).unwrap();
+        for symbol in &candidates {
+            connector.register_account(symbol.clone());
+        }
+
+        let (tx, mut rx) = unbounded_channel::<PrivateFact>();
+        let publisher = direct_publish_sender(move |publication| match publication {
+            DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
+                let _ = tx.send(PrivateFact::Ready);
+            }
+            DirectPublication::Event(PublishEvent::ConnectorError(error)) => {
+                let _ = tx.send(PrivateFact::Error(format!("ConnectorError: {error:?}")));
+            }
+            DirectPublication::Account(AccountPublication::Order {
+                client_order_id,
+                venue_order_id,
+                order,
+                ..
+            }) => {
+                let _ = tx.send(PrivateFact::Order {
+                    client_order_id: client_order_id.clone(),
+                    venue_order_id: venue_order_id.clone(),
+                    order: order.clone(),
+                });
+            }
+            DirectPublication::Account(AccountPublication::Position { symbol, qty, .. }) => {
+                let _ = tx.send(PrivateFact::Position(symbol.clone(), *qty));
+            }
+            DirectPublication::Account(AccountPublication::Error(error)) => {
+                let _ = tx.send(PrivateFact::Error(format!("AccountError: {error:?}")));
+            }
+            _ => {}
+        });
+        connector.run_account(publisher);
+        let api = connector.broker_api().unwrap();
+        loop {
+            if matches!(
+                tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("private stream ready timeout")
+                    .expect("publisher channel closed"),
+                PrivateFact::Ready
+            ) {
+                break;
+            }
+        }
+
+        let before_balance = spot_usdc(&connector.client, &account).await;
+        let instruments = api.get_instruments().await.unwrap();
+        let scan_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        let (symbol, instrument, ask, qty) = 'scan: loop {
+            assert!(
+                tokio::time::Instant::now() < scan_deadline,
+                "no usable thin best ask appeared within 180 seconds"
+            );
+            for symbol in &candidates {
+                let instrument = instruments
+                    .iter()
+                    .find(|instrument| instrument.symbol == *symbol)
+                    .expect("partial-fill symbol exists");
+                let book = api.get_order_book(symbol, 2).await.unwrap();
+                let Some(ask) = book.asks.first() else {
+                    continue;
+                };
+                let qty =
+                    ((max_usd / ask.price) / instrument.lot_size).floor() * instrument.lot_size;
+                let top_ask_notional = ask.price * ask.qty;
+                if top_ask_notional >= 10.0 && ask.qty + instrument.lot_size <= qty {
+                    break 'scan (symbol.clone(), instrument.clone(), ask.clone(), qty);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        };
+        let significant_tick = 10f64.powi(ask.price.log10().floor() as i32 - 4);
+        let decimal_tick = 10f64.powi(-(6_i32 - instrument.qty_precision as i32));
+        let tick_size = significant_tick.max(decimal_tick);
+        // Cross exactly the current best ask with an IOC whose quantity is larger than that one
+        // level. If the book is unchanged at matching time, the first level fills and the
+        // remainder cancels without crossing the next price level.
+        let price = ask.price;
+        let top_ask_notional = ask.price * ask.qty;
+        let cloid = "0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001";
+        let mut tracked = hftbacktest::types::Order::new(
+            0,
+            (price / tick_size).round() as i64,
+            tick_size,
+            qty,
+            hftbacktest::types::Side::Buy,
+            hftbacktest::types::OrdType::Limit,
+            hftbacktest::types::TimeInForce::IOC,
+        );
+        tracked.status = hftbacktest::types::Status::New;
+        connector.track_managed_order(&symbol, cloid, &tracked);
+        let submitted = api
+            .submit_order(&UnifiedOrderRequest {
+                symbol: symbol.clone(),
+                side: ApiSide::Buy,
+                order_type: ApiOrderType::Limit,
+                price: Some(price),
+                qty,
+                time_in_force: ApiTimeInForce::IOC,
+                reduce_only: false,
+                position_side: None,
+                client_order_id: Some(cloid.to_string()),
+                stop_price: None,
+            })
+            .await
+            .expect("bounded one-level IOC partial-fill order");
+        println!(
+            "waiting for partial fill: buy {} {} @ {} against top ask qty={} notional={top_ask_notional:.4} (max ${max_usd})",
+            qty, symbol, price, ask.qty
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut ws_partial = None;
+        while tokio::time::Instant::now() < deadline {
+            let fact = match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(fact)) => fact,
+                _ => break,
+            };
+            println!("  passive fact: {fact:?}");
+            if let PrivateFact::Order {
+                venue_order_id: Some(venue),
+                order,
+                ..
+            } = fact
+                && venue == submitted.order_id
+                && order.exec_qty > 0.0
+            {
+                ws_partial = Some(order);
+                break;
+            }
+        }
+        // Always remove any unfilled remainder before assertions or reconciliation.
+        let _ = api
+            .cancel_order(&CancelOrderRequest {
+                symbol: symbol.clone(),
+                order_id: Some(submitted.order_id.clone()),
+                client_order_id: None,
+            })
+            .await;
+        let rest_partial = api
+            .get_order(&symbol, Some(&submitted.order_id), None)
+            .await
+            .expect("REST partial order after cancel");
+
+        if rest_partial.executed_qty > 0.0 {
+            let close_cloid = "0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00002";
+            let mut close_tracked = hftbacktest::types::Order::new(
+                0,
+                0,
+                tick_size,
+                rest_partial.executed_qty,
+                hftbacktest::types::Side::Sell,
+                hftbacktest::types::OrdType::Market,
+                hftbacktest::types::TimeInForce::IOC,
+            );
+            close_tracked.status = hftbacktest::types::Status::New;
+            connector.track_managed_order(&symbol, close_cloid, &close_tracked);
+            api.submit_order(&UnifiedOrderRequest {
+                symbol: symbol.clone(),
+                side: ApiSide::Sell,
+                order_type: ApiOrderType::Market,
+                price: None,
+                qty: rest_partial.executed_qty,
+                time_in_force: ApiTimeInForce::IOC,
+                reduce_only: true,
+                position_side: None,
+                client_order_id: Some(close_cloid.to_string()),
+                stop_price: None,
+            })
+            .await
+            .expect("close partial-fill position");
+        }
+
+        assert!(rest_partial.executed_qty > 0.0);
+        assert!(rest_partial.executed_qty < rest_partial.qty);
+        let ws_partial = ws_partial.expect("no fill arrived within 30 seconds");
+        assert_eq!(rest_partial.order_id, submitted.order_id);
+        assert_eq!(rest_partial.client_order_id, cloid);
+        assert_rest_ws_fields(
+            &rest_partial,
+            &ws_partial,
+            hftbacktest::types::Status::Filled,
+        );
+        assert!(ws_partial.leaves_qty > 0.0);
+        let fills = api.get_fills(&symbol, 100).await.unwrap();
+        let opened: f64 = fills
+            .iter()
+            .filter(|fill| fill.order_id == submitted.order_id)
+            .map(|fill| fill.qty)
+            .sum();
+        assert!((opened - rest_partial.executed_qty).abs() < 1e-12);
+
+        for _ in 0..30 {
+            if api.get_positions(Some(&symbol)).await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(api.get_open_orders(&symbol).await.unwrap().is_empty());
+        assert!(api.get_positions(Some(&symbol)).await.unwrap().is_empty());
+        let after_balance = spot_usdc(&connector.client, &account).await;
+        assert!(
+            before_balance - after_balance < 1.0,
+            "unexpected balance loss"
+        );
+        println!(
+            "partial reconcile OK: symbol={symbol} qty={} filled={} REST=WS=fills, final orders=0 positions=0, balance_delta={:.6}",
+            rest_partial.qty,
+            rest_partial.executed_qty,
+            before_balance - after_balance
+        );
     }
 }

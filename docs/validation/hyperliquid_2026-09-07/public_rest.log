@@ -1,0 +1,27 @@
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:147:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+147 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `connector` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.91s
+     Running unittests src/lib.rs (target/debug/deps/connector-36bb46e5454e25f3)
+
+running 1 test
+server_time=1788756503647
+instruments=233
+ticker=Ticker { symbol: "BTC", last_price: 79663.0, mark_price: Some(79663.0), index_price: Some(79692.0), funding_rate: Some(1.25e-5), next_funding_time: None, open_24h: 79890.0, high_24h: 0.0, low_24h: 0.0, volume_24h: 11827.26374, quote_volume_24h: 944931384.6576303, timestamp: 0 }
+book bids=20 asks=20
+funding=FundingRate { symbol: "BTC", funding_rate: 1.25e-5, next_funding_time: 0, timestamp: 0 }
+open_interest=OpenInterest { symbol: "BTC", open_interest: 35171.3933, timestamp: 0 }
+trades=5
+klines=6
+test hyperliquid::brokerapi::tests::live_public_api_smoke ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 216 filtered out; finished in 1.37s

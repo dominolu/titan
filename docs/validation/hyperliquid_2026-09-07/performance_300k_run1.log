@@ -1,0 +1,37 @@
+   Compiling referencing v0.33.0
+   Compiling fancy-regex v0.16.2
+   Compiling fraction v0.15.4
+   Compiling generator v0.8.9
+   Compiling email_address v0.2.9
+   Compiling regex v1.13.1
+   Compiling num_cpus v1.17.0
+   Compiling thiserror-impl v2.0.20
+   Compiling num-cmp v0.1.0
+   Compiling bytecount v0.6.9
+   Compiling cpufeatures v0.2.17
+   Compiling base64 v0.22.1
+   Compiling jsonschema v0.33.0
+   Compiling thiserror v2.0.20
+   Compiling sha2 v0.10.9
+   Compiling core_affinity v0.8.3
+   Compiling tracing-log v0.2.0
+   Compiling tracing v0.1.44
+   Compiling crossbeam-channel v0.5.16
+   Compiling tokio v1.53.1
+   Compiling sharded-slab v0.1.7
+   Compiling arc-swap v1.9.2
+   Compiling matchers v0.2.0
+   Compiling semver v1.0.28
+   Compiling thread_local v1.1.10
+   Compiling libloading v0.8.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling tracing-subscriber v0.3.23
+   Compiling titan-plugin-engine v0.1.0 (/home/ubuntu/titan_sync/crates/titan-plugin-engine)
+   Compiling crossbeam-queue v0.3.13
+   Compiling scoped-tls v1.0.1
+   Compiling loom v0.7.2
+   Compiling titan-event-engine v0.1.0 (/home/ubuntu/titan_sync/crates/titan-event-engine)
+    Finished `bench` profile [optimized] target(s) in 45.47s
+     Running benches/event_engine.rs (target/release/deps/event_engine-9204c1fd4024f650)
+events=1000000 target_rate=Some(300000) elapsed=3.333411299s throughput=299993/s dispatch_p50_ns=1023 dispatch_p99_ns=2097151 dispatch_p999_ns=4194303 dispatch_max_ns=4194303 subscriber_p50_ns=65535 subscriber_p99_ns=4194303 subscriber_p999_ns=8388607 subscriber_max_ns=8388607 drop_total=0 resync_total=0 arena_exhausted=[0, 0, 0] fast_lane_drop_total=0
+config small_event_slots=32768 market_batch_slots=8192 snapshot_slots=512 critical_capacity=8192 market_capacity=65536 subscriber_capacity=16384 critical_reserve=2048 pending_global=8192 pending_subscriber=1024

@@ -283,13 +283,17 @@ pub struct OrderState {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct UserEvent {
-    #[serde(rename = "type")]
-    pub type_: String,
     #[serde(default)]
-    pub fill: Option<Fill>,
+    pub fills: Option<Vec<Fill>>,
+    #[serde(default)]
+    pub funding: Option<serde_json::Value>,
+    #[serde(default)]
+    pub liquidations: Option<serde_json::Value>,
+    #[serde(rename = "nonUserCancel", default)]
+    pub non_user_cancel: Option<serde_json::Value>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Fill {
     pub coin: String,
@@ -496,6 +500,8 @@ pub struct HistoricalOrder {
     #[serde(default)]
     pub order_type: String,
     #[serde(default)]
+    pub tif: Option<String>,
+    #[serde(default)]
     pub reduce_only: bool,
     #[serde(default)]
     pub timestamp: u64,
@@ -507,13 +513,26 @@ pub struct HistoricalOrder {
     pub avg_px: String,
 }
 
-/// orderStatus 响应：`{"status": "unknownOid"}` 或 `{"status": "...", "order": {...}}`。
+/// orderStatus 响应：`{"status": "unknownOid"}` 或
+/// `{"status": "...", "order": {"order": {...}, "status": "open", "statusTimestamp": ..}}`。
 #[derive(Deserialize, Debug, Clone)]
 pub struct OrderStatusResponse {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    pub order: Option<OrderStatusEntry>,
+}
+
+/// orderStatus 的 order 包装层：真实订单字段在内层 `order`。
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderStatusEntry {
+    #[serde(default)]
     pub order: Option<HistoricalOrder>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub status_timestamp: u64,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -718,20 +737,18 @@ mod tests {
     fn test_deserialize_user_event_fill() {
         let event: UserEvent = serde_json::from_str(
             r#"{
-                "type":"fill",
-                "fill":{
+                "fills":[{
                     "coin":"BTC",
                     "px":"64200",
                     "sz":"0.001",
                     "side":"B",
                     "time":1787000000000,
                     "startPosition":"0.5"
-                }
+                }]
             }"#,
         )
         .unwrap();
-        assert_eq!(event.type_, "fill");
-        let fill = event.fill.unwrap();
+        let fill = event.fills.unwrap_or_default().first().cloned().unwrap();
         assert_eq!(fill.coin, "BTC");
         assert_eq!(fill.side, "B");
         assert_eq!(fill.sz, "0.001");

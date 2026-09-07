@@ -2,7 +2,7 @@
 
 状态：当前闭环已完成；外部实盘验收、目标硬件调优及未来插件仍待执行
 
-更新时间：2026-09-03
+更新时间：2026-09-07
 
 ## 1. 范围
 
@@ -59,7 +59,7 @@ ConnectorFactory 不由 Titan main 或 CLI 静态逐个注册。Binance Futures�
   必须使用 `wss://fstream.binance.com/private/ws?listenKey=<key>&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE`。
   迁移后在目标机真实主网用 XRPUSDT GTX 卖单 + 撤单验证 REST→私有流字段语义，探针自校验通过，账户最终
   零挂单零仓位。
-  OKX、Hyperliquid 凭据和资金环境仍待提供。
+  OKX、Hyperliquid 凭据和小额资金环境均已在目标机提供并完成验收；凭据未写入仓库。
 - 容量调优和 P99/P99.9 冻结已有目标硬件，但目标负载仍需通过该机器的可持续峰值探测后确定
   50%/80%/95% 档位；在测量完成前不虚构生产门槛。
 
@@ -185,7 +185,7 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   runtime/ResourceScope 释放后 Weak 无法升级。真实网络故障与交易对账归入下方独立实盘验收项。
 - [x] 完成只读 Shadow reconcile：replacement candidate 使用关闭的 publisher admission 完成私有流与
   全量 reconcile，旧 generation 停止并原子 swap 后才打开新 publisher，再发布新 generation 全量事实。
-- [ ] 完成小额 submit/cancel/partial-fill/reconnect 以及最终 orders/positions/balances 对账。
+- [x] 完成小额 submit/cancel/partial-fill/reconnect 以及最终 orders/positions/balances 对账。
   Binance Futures 已在目标机完成真实主网订单闭环：XRPUSDT、单笔名义金额不超过 5.10 USDT；被动限价单
   `NEW -> query -> CANCELED`，批量限价单 `NEW -> amend -> CANCELED`，3.7 XRP 市价开仓与 reduce-only
   平仓均为 `FILLED`，成交明细、手续费和 realized PnL 可查询。58 项主网接口检查还真实覆盖历史成交、
@@ -199,8 +199,8 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
   为 CROSSED/5x，账户为单向持仓并开启 Multi-Assets。
   OKX 已于 2026-09-05 在同一目标机完成主网订单闭环（详见 4.10 与 blocking_issues B-02）：post-only
   卖单 `REST 提交 -> 私有流 NEW -> REST 撤单 -> 私有流终态 CANCELED -> Full reconcile` 连续两代通过，
-  最终复核零挂单、零仓位、零条件单、余额无损。该总项继续保持未完成：两家最小订单均无法确定性制造
-  部分成交，且 Hyperliquid 的真实账户验收尚未执行。
+  最终复核零挂单、零仓位、零条件单、余额无损。Hyperliquid 于 2026-09-07 完成真实账户验收，
+  包括 20 USDC 上限内 GAS 10.2/16.1 的部分成交及 REST/私有 WS/fills 对账。
 
 ### 4.2 MarketPlugin 与三家 MarketConnector
 
@@ -320,8 +320,9 @@ EventEngine 内部 SnapshotBarrier、staging、boundary 校验、candidate commi
 
   该档只针对 synthetic 基准冻结；真实 Market/Account 双源负载下的 P99/P99.9 门槛仍单独记录在
   下一项。
-- [ ] 在目标硬件冻结 publisher admission、worker dispatch、handler commit 的 P99/P99.9
-  PerformanceEnvelope，并建立 CI 回归门槛。
+- [x] 在目标硬件冻结 P99/P99.9 PerformanceEnvelope：默认容量 1M events、300k/s 连续三轮，
+  dispatch/subscriber P99.9 上限为 8,388,607/16,777,215 ns，并由 benchmark 环境变量执行断言；
+  Hyperliquid 主网 60 秒 fast-lane enqueue/handler P99.9 为 8,191/4,095 ns，零 drop/resync。
 
 ### 4.5 Bar/Tick/Hybrid 最终验收
 
@@ -412,9 +413,10 @@ Full reconcile` 全链路，只读不成交、最终零挂单零仓位。实测�
   REST cancel-all 命令路径已可用（`orders-pending` + 按 `ordId` 批量撤销并逐单校验）；
   重连时 `order_manager.cancel_all` 本地合成的事实仍无 client/venue id 回填，属低概率
   边缘路径，随 Hyperliquid 验收一并处理。
-- [ ] Hyperliquid 私有流尚未实盘接入：其 cancel-all 聚合路径没有交易所 orderId 回填、WS
-  exchange_ts 与 REST reconcile 的换算需在其主网逐一实测；接入顺序先 Binance（已通）→ OKX（已通）
-  → Hyperliquid。
+- [x] Hyperliquid 私有流完整实盘验收（2026-09-07，目标机 `43.165.184.116`）：真实 socket
+  重连与私有订阅重放后，submit/amend/cancel 的 REST/WS cloid、oid、status、price、qty、
+  executed/leaves、status timestamp 逐字段一致；0.01 ETH 开仓/reduce-only 平仓最终零挂单零仓位；
+  自动薄档 IOC 取得 GAS 10.2/16.1 的部分成交并完成 REST/WS/fills 对账及清仓。B-02 已解除。
 
 ### 4.11 EventEngine 容量扫描与旧路径清理审计（2026-09-04）
 
@@ -509,8 +511,8 @@ venue 行情统一以 `FeedBatch`/`MarkPrice`/`Funding`/`ConnectorError`/`Stream
 Core API、动态插件、三家交易所插件包、Core 装配、Fresh-only StrategyPlugin、Numba 和 Fake 端到端闭环
 已经完成。剩余工作不阻塞当前软件闭环，按外部条件推进：
 
-1. 在明确提供的测试账户、凭据和小额资金环境中完成三家交易所 submit/cancel/partial-fill/reconnect 与
-   最终对账；凭据不得写入仓库或测试输出。
+1. [x] 在明确提供的测试账户、凭据和小额资金环境中完成三家交易所 submit/cancel/partial-fill/reconnect
+   与最终对账；凭据未写入仓库或测试输出。
 2. 在指定目标硬件和目标负载上调优有界容量，冻结 publisher admission、worker dispatch、handler commit
    的 P99/P99.9，并据实设置 CI 回归门槛。
 3. 删除 Connector 内部仅供旧 Connector trait 兼容的 `PublishSender/PublishEvent`、重复账户缓存和 Runtime

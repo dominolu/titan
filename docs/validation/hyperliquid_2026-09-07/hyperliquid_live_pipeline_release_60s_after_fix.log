@@ -1,0 +1,52 @@
+   Compiling connector v0.1.0 (/home/ubuntu/titan_sync/connector)
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:170:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+170 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `0` is never read
+    --> connector/src/hyperliquid/mod.rs:1037:15
+     |
+1037 |         Error(String),
+     |         ----- ^^^^^^
+     |         |
+     |         field in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1037 -         Error(String),
+1037 +         Error(()),
+     |
+
+warning: fields `0` and `1` are never read
+    --> connector/src/hyperliquid/mod.rs:1043:18
+     |
+1043 |         Position(String, f64),
+     |         -------- ^^^^^^  ^^^
+     |         |
+     |         fields in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the fields to be of unit type to suppress this warning while preserving the field numbering, or remove the fields
+     |
+1043 -         Position(String, f64),
+1043 +         Position((), ()),
+     |
+
+warning: `connector` (lib test) generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 3m 03s
+     Running unittests src/lib.rs (target/release/deps/connector-488bf74fa89c7619)
+
+running 1 test
+test market_plugin::tests::hyperliquid_live_market_plugin_pipeline has been running for over 60 seconds
+live_pipeline counts={"titan.market.DepthBatch": 12, "titan.market.TradeBatch": 101} dispatch=LatencySummary { count: 0, p50_ns: 0, p99_ns: 0, p999_ns: 0, max_ns: 0 } subscriber=LatencySummary { count: 0, p50_ns: 0, p99_ns: 0, p999_ns: 0, max_ns: 0 } fast_lane_enqueue=LatencySummary { count: 113, p50_ns: 1023, p99_ns: 8191, p999_ns: 8191, max_ns: 8191 } fast_lane_handler=LatencySummary { count: 113, p50_ns: 2047, p99_ns: 2047, p999_ns: 4095, max_ns: 4095 } drops=0 resync=0 fast_lane_drops=0
+test market_plugin::tests::hyperliquid_live_market_plugin_pipeline ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 220 filtered out; finished in 60.15s

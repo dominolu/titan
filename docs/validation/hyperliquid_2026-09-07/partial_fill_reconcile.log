@@ -1,0 +1,61 @@
+   Compiling connector v0.1.0 (/home/ubuntu/titan_sync/connector)
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:170:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+170 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `0` is never read
+    --> connector/src/hyperliquid/mod.rs:1032:15
+     |
+1032 |         Error(String),
+     |         ----- ^^^^^^
+     |         |
+     |         field in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1032 -         Error(String),
+1032 +         Error(()),
+     |
+
+warning: fields `0` and `1` are never read
+    --> connector/src/hyperliquid/mod.rs:1038:18
+     |
+1038 |         Position(String, f64),
+     |         -------- ^^^^^^  ^^^
+     |         |
+     |         fields in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the fields to be of unit type to suppress this warning while preserving the field numbering, or remove the fields
+     |
+1038 -         Position(String, f64),
+1038 +         Position((), ()),
+     |
+
+warning: `connector` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.54s
+     Running unittests src/lib.rs (target/debug/deps/connector-36bb46e5454e25f3)
+
+running 1 test
+
+thread 'hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe' (363218) panicked at connector/src/hyperliquid/mod.rs:1425:9:
+best ask is too large for bounded partial fill: 184.26 NEO = $400.0100
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe ... FAILED
+
+failures:
+
+failures:
+    hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 220 filtered out; finished in 0.33s
+
+error: test failed, to rerun pass `-p connector --lib`

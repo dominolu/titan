@@ -1,0 +1,65 @@
+   Compiling connector v0.1.0 (/home/ubuntu/titan_sync/connector)
+warning: method `cancel_all` is never used
+   --> connector/src/hyperliquid/ordermanager.rs:170:12
+    |
+ 43 | impl OrderManager {
+    | ----------------- method in this implementation
+...
+170 |     pub fn cancel_all(&mut self, symbol: &str) -> Vec<Order> {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `0` is never read
+    --> connector/src/hyperliquid/mod.rs:1037:15
+     |
+1037 |         Error(String),
+     |         ----- ^^^^^^
+     |         |
+     |         field in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1037 -         Error(String),
+1037 +         Error(()),
+     |
+
+warning: fields `0` and `1` are never read
+    --> connector/src/hyperliquid/mod.rs:1043:18
+     |
+1043 |         Position(String, f64),
+     |         -------- ^^^^^^  ^^^
+     |         |
+     |         fields in this variant
+     |
+     = note: `PrivateFact` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the fields to be of unit type to suppress this warning while preserving the field numbering, or remove the fields
+     |
+1043 -         Position(String, f64),
+1043 +         Position((), ()),
+     |
+
+warning: `connector` (lib test) generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 3m 00s
+     Running unittests src/lib.rs (target/release/deps/connector-488bf74fa89c7619)
+
+running 1 test
+waiting for partial fill: sell 107 PROVE @ 0.18683 (max $20)
+  passive fact: Order { client_order_id: Some("0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001"), venue_order_id: Some("538158028167"), order: Order { qty: 107.0, leaves_qty: 107.0, price_tick: 18683, tick_size: 1e-5, side: Sell, time_in_force: GTC, exch_timestamp: 1788759532976000000, status: New, local_timestamp: 0, req: None, exec_price_tick: 0, exec_qty: 0.0, order_id: 0, maker: false, order_type: Limit } }
+  passive fact: Position("PROVE", -107.0)
+  passive fact: Order { client_order_id: Some("0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001"), venue_order_id: Some("538158028167"), order: Order { qty: 107.0, leaves_qty: 0.0, price_tick: 18683, tick_size: 1e-5, side: Sell, time_in_force: GTC, exch_timestamp: 1788759533776000000, status: Filled, local_timestamp: 0, req: None, exec_price_tick: 0, exec_qty: 107.0, order_id: 0, maker: false, order_type: Limit } }
+
+thread 'hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe' (371554) panicked at connector/src/hyperliquid/mod.rs:1509:9:
+assertion failed: rest_partial.executed_qty < rest_partial.qty
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe ... FAILED
+
+failures:
+
+failures:
+    hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 221 filtered out; finished in 3.49s
+
+error: test failed, to rerun pass `-p connector --lib`
