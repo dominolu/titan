@@ -760,6 +760,28 @@ impl MarketConnectorFactory for OkxMarketFactory {
     }
 }
 
+#[cfg(feature = "evm")]
+pub struct EvmMarketFactory;
+#[cfg(feature = "evm")]
+impl MarketConnectorFactory for EvmMarketFactory {
+    fn connector_type(&self) -> &str {
+        "evm"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        let config = std::str::from_utf8(&definition.connector_config)
+            .map_err(|_| ConnectorError::new("connector_config must be UTF-8 TOML"))?;
+        let venue = crate::evm::Evm::build_market_from(config)
+            .map_err(|error| ConnectorError::new(format!("invalid connector config: {error:?}")))?;
+        let connector = MarketConnectorRuntime::new(Box::new(venue), context);
+        register_resource(&connector)?;
+        Ok(connector)
+    }
+}
+
 #[cfg(feature = "hyperliquid")]
 pub struct HyperliquidMarketFactory;
 #[cfg(feature = "hyperliquid")]
@@ -791,6 +813,8 @@ pub fn builtin_market_plugin_factory() -> MarketPluginFactory {
     let factory = factory.with_factory(Arc::new(OkxMarketFactory));
     #[cfg(feature = "hyperliquid")]
     let factory = factory.with_factory(Arc::new(HyperliquidMarketFactory));
+    #[cfg(feature = "evm")]
+    let factory = factory.with_factory(Arc::new(EvmMarketFactory));
     factory
 }
 

@@ -19,6 +19,8 @@ use titan_plugin_engine::{
 
 #[cfg(feature = "binancefutures")]
 use crate::market_plugin::BinanceFuturesMarketFactory;
+#[cfg(feature = "evm")]
+use crate::market_plugin::EvmMarketFactory;
 #[cfg(feature = "hyperliquid")]
 use crate::market_plugin::HyperliquidMarketFactory;
 #[cfg(feature = "okx")]
@@ -29,6 +31,7 @@ pub enum DynamicVenue {
     BinanceFutures,
     Okx,
     Hyperliquid,
+    Evm,
 }
 
 impl DynamicVenue {
@@ -37,6 +40,7 @@ impl DynamicVenue {
             Self::BinanceFutures => "binance-futures",
             Self::Okx => "okx",
             Self::Hyperliquid => "hyperliquid",
+            Self::Evm => "evm",
         }
     }
 
@@ -45,6 +49,7 @@ impl DynamicVenue {
             Self::BinanceFutures => "binance-futures-account",
             Self::Okx => "okx-account",
             Self::Hyperliquid => "hyperliquid-account",
+            Self::Evm => "evm-account",
         }
     }
 }
@@ -288,6 +293,12 @@ fn market_factory(venue: DynamicVenue) -> Result<Arc<dyn market::MarketConnector
             return Ok(Arc::new(HyperliquidMarketFactory));
             #[cfg(not(feature = "hyperliquid"))]
             return Err("hyperliquid feature is disabled".into());
+        }
+        DynamicVenue::Evm => {
+            #[cfg(feature = "evm")]
+            return Ok(Arc::new(EvmMarketFactory));
+            #[cfg(not(feature = "evm"))]
+            return Err("evm feature is disabled".into());
         }
     }
 }

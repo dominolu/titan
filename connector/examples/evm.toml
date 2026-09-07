@@ -1,0 +1,48 @@
+# EVM 链上 venue（方案 A）—— Arbitrum One + Uniswap V2 类 AMM
+#
+# 同一份 TOML 同时用于行情连接（不需要私钥）与账户连接（必须私钥）。
+# 任意 Arbitrum Orbit 链（含 Robinhood Chain）只需替换 RPC/WS/feed 端点、
+# chain_id、router 与 pool 合约地址。
+
+rpc_url = "https://arb1.arbitrum.io/rpc"
+ws_url = "wss://arb1.arbitrum.io/ws"
+
+# Arbitrum sequencer feed（预链视图，可选）。缺省不启用；Orbit 链各有自己的端点。
+# 注意：chain_id 必须显式提供才能启用 feed。
+feed_url = "wss://arb1-feed.arbitrum.io/feed"
+chain_id = 42161
+
+# Uniswap V2 风格 router（Arbitrum One 上的 SushiSwap 兼容 router 示例）。
+# 发单前须由热钱包对 router 完成输入代币授权（connector 会自动补 approve）。
+router_address = "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"
+
+# 热钱包私钥（32 字节 hex，可选 0x 前缀）。行情连接可留空。
+private_key = ""
+
+# 市价单滑点保护（基点，双边）。30 = 0.3%。
+slippage_bps = 30
+# 单笔交易 gas 上限价（gwei）；Arbitrum 通常 ~0.1 gwei。
+max_gas_price_gwei = 0.5
+# 收据等待超时：超时视为 dropped（订单状态 Canceled）。
+tx_timeout_ms = 120000
+# 合成订单簿档数（由 reserve 按常数乘积积分生成）。
+book_levels = 10
+# taker 手续费率（基点），用于 get_fee_rates。V2 = 30。
+fee_bps = 30
+
+[[pools]]
+symbol = "WETH/USDC"
+pair_address = "0xc31e54faf074f5c3191d1f3a92849a4b7424e6e2"   # Uniswap V2 WETH/USDC (Arbitrum)
+base_token = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"     # WETH
+quote_token = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"    # USDC (native)
+base_decimals = 18
+quote_decimals = 6
+
+# 更多池按同样格式追加；订阅 filter 始终覆盖全部配置池。
+# [[pools]]
+# symbol = "ARB/WETH"
+# pair_address = "0x..."
+# base_token = "0x912CE59144191C1204E64559FE8253a0e49E6548"
+# quote_token = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+# base_decimals = 18
+# quote_decimals = 18
