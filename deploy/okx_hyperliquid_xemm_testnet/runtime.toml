@@ -100,7 +100,7 @@ definition_version = 1
 [[strategies]]
 strategy_key = "okx_hyperliquid_xemm"
 strategy_id = 9001
-package = { loader_type = "numba-python", uri = "file://../../strategies/okx_hyperliquid_xemm", expected_digest = [132, 74, 23, 112, 233, 198, 15, 85, 68, 80, 26, 163, 16, 189, 229, 97, 14, 183, 64, 29, 253, 106, 85, 138, 172, 170, 195, 70, 13, 108, 56, 14] }
+package = { loader_type = "numba-python", uri = "file://../../strategies/okx_hyperliquid_xemm", expected_digest = [30, 254, 173, 70, 232, 79, 251, 134, 57, 198, 228, 106, 35, 66, 160, 0, 38, 127, 203, 83, 168, 233, 87, 95, 36, 218, 237, 95, 11, 214, 168, 25] }
 entrypoint = "okx_hyperliquid_xemm.strategy:build"
 parameters = '''{"order_amount_base":0.0001,"min_profitability_bps":10.0,"cancel_profitability_bps":5.0,"maker_fee_bps":5.0,"taker_fee_bps":10.0,"hedge_slippage_bps":50.0,"taker_volume_factor":0.1,"quote_conversion_rate":1.0,"maker_price_tick":0.1,"maker_quantity_lot":0.01,"maker_contract_base_multiplier":0.01,"hedge_price_tick":0.1,"hedge_quantity_lot":0.00001,"hedge_contract_base_multiplier":1.0,"max_order_notional":10.0,"max_abs_position_base":0.0003,"max_unhedged_base":0.0002,"max_unhedged_notional":20.0,"market_stale_ms":3000,"conversion_expiry_ns":1893456000000000000,"requote_threshold_ticks":2,"anti_hysteresis_ms":5000,"price_sample_interval_ms":1000,"price_sample_window":12,"hedge_retry_limit":5,"hedge_retry_backoff_ms":250,"adjust_order_enabled":true}'''
 parameter_schema_version = 1
