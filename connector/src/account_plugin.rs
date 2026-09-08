@@ -2873,7 +2873,11 @@ safety_timeout_ms = 5000
         .await
         .unwrap();
         assert!(ready.load(Ordering::Acquire));
-        assert_eq!(balances.lock().unwrap().len(), 1);
+        let reconciled_balances = balances.lock().unwrap().clone();
+        assert_eq!(reconciled_balances.len(), 1);
+        println!("reconciled balances={reconciled_balances:?}");
+        assert!(reconciled_balances[0].wallet_units > 0);
+        assert!(reconciled_balances[0].available_units > 0);
 
         let runtime_scope = titan_plugin_engine::ResourceScope::new(
             titan_plugin_engine::PluginIdentity::new("test", "hyperliquid-account-runtime"),
