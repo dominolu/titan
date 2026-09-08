@@ -2319,6 +2319,8 @@ mod tests {
     async fn live_private_api_smoke() {
         use crate::api::{AmendOrderRequest, CancelOrderRequest};
 
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let key_hex = std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required");
         let account = std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required");
         let key_hex = key_hex.trim().strip_prefix("0x").unwrap_or(key_hex.trim());
