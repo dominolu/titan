@@ -888,10 +888,21 @@ impl StrategyPluginCore {
                     handle.strategy_id.0, handle.generation
                 ))
                 .spawn(move || {
+                    let mut timer_error_reported = false;
                     while timer_flag.load(Ordering::Acquire) {
                         std::thread::park_timeout(interval);
                         if timer_flag.load(Ordering::Acquire) {
-                            let _ = timer_runtime.fire_timer(1);
+                            match timer_runtime.fire_timer(1) {
+                                Ok(()) => timer_error_reported = false,
+                                Err(error) if !timer_error_reported => {
+                                    warn!(
+                                        reason_code = error.reason_code.as_ref(),
+                                        "strategy timer safe point could not be queued",
+                                    );
+                                    timer_error_reported = true;
+                                }
+                                Err(_) => {}
+                            }
                         }
                     }
                 })

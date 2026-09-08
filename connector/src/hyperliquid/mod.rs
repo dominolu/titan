@@ -1121,7 +1121,7 @@ mod live_ws_tests {
         )
     }
 
-    /// 公共流：订阅 BTC Depth+Trades，20s 内应各收到至少一批 FeedBatch。
+    /// 公共流：订阅 BTC Depth+Trades，20s 内应收到持续深度流与至少一批成交。
     #[tokio::test]
     #[ignore]
     async fn live_ws_public_streams_probe() {
@@ -1136,20 +1136,28 @@ mod live_ws_tests {
         connector.run_market_data(events);
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        let (mut saw_depth, mut saw_trade) = (false, false);
-        while !(saw_depth && saw_trade) {
+        let started = tokio::time::Instant::now();
+        let (mut depth_batches, mut saw_trade) = (0_u32, false);
+        while !(depth_batches >= 3 && saw_trade) {
             let ev = tokio::time::timeout_at(deadline, receiver.recv())
                 .await
                 .expect("timeout waiting for public streams")
                 .expect("publish channel closed");
             match ev {
                 PublishEvent::FeedBatch { events, .. } => {
+                    if events
+                        .iter()
+                        .any(|event| event.is(DEPTH_EVENT) || event.is(DEPTH_SNAPSHOT_EVENT))
+                    {
+                        depth_batches += 1;
+                        println!(
+                            "depth batch {depth_batches} after {:?}",
+                            started.elapsed()
+                        );
+                    }
                     for e in &events {
                         if e.is(TRADE_EVENT) {
                             saw_trade = true;
-                        }
-                        if e.is(DEPTH_EVENT) || e.is(DEPTH_SNAPSHOT_EVENT) {
-                            saw_depth = true;
                         }
                     }
                 }
@@ -1157,7 +1165,7 @@ mod live_ws_tests {
                 _ => {}
             }
         }
-        println!("public streams OK: depth={saw_depth} trades={saw_trade}");
+        println!("public streams OK: depth_batches={depth_batches} trades={saw_trade}");
     }
 
     /// 私有流：连接 orderUpdates/userEvents，经 REST 下深价单/改单/撤单，

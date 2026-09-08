@@ -1,11 +1,16 @@
 # OKX mainnet + Hyperliquid mainnet 联调部署
 
-`runtime.toml` 默认是 shadow 门禁：`min_profitability_bps = 10000`，能建立真实公共/私有订阅和账户
-快照，但不会生成可成交报价。完成 shadow 验证后，必须先从两个交易所实时 instrument metadata 校验
-`price_tick`、`quantity_lot` 与 OKX `ctVal`，再把盈利门槛降到 canary 值。
+`runtime.toml` 当前是已经完成 shadow 验证的最小规模主网 canary：`min_profitability_bps = 10`、
+`order_amount_base = 0.0001 BTC`、`max_order_notional = 10 USDT`。切换账户或品种前必须重新从两个
+交易所的实时 instrument metadata 校验 `price_tick`、`quantity_lot` 与 OKX `ctVal`，并先恢复高盈利
+门槛完成 shadow 验证。
 
 该配置的 OKX 与 Hyperliquid 都是真实主网。默认 Shadow 门禁不得在账户资金、净仓位、API 权限和
 最小下单量验证完成前降低；canary 阶段仍应限制为交易所允许的最小订单。
+
+Hyperliquid `l2Book` 是完整、幂等但非固定频率的快照流；主网探针观测到约 5.5 秒的正常包间隔，因此
+canary 使用 `market_stale_ms = 12000`。修改此值前应重新运行 ignored 公共流探针并保留至少两倍的
+实测最大间隔；超时后策略会撤掉 OKX maker 报价。
 
 凭据只允许放在本目录的 `secrets/` 中，文件权限必须为 `0600`：
 
