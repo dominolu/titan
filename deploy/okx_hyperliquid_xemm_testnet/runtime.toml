@@ -91,7 +91,7 @@ is_mainnet = true
 safety_timeout_ms = 30000
 '''
 instruments = [{ native_symbol = "BTC", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 5 }, contract_multiplier = { coefficient = 1, scale = 0 } }]
-currencies = [{ native_currency = "USDC", currency_id = 2, amount_unit = { coefficient = 1, scale = 6 } }]
+currencies = [{ native_currency = "USDC", currency_id = 2, amount_unit = { coefficient = 1, scale = 8 } }]
 ownership = "ObserveAll"
 shutdown_order_policy = "CancelAll"
 enabled = true
