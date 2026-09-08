@@ -476,7 +476,11 @@ impl Connector for Hyperliquid {
             return Ok(());
         }
         if let Err(error) = BrokerApi::cancel_all_after(&self.client, 0).await {
-            return Err(format!("failed to clear scheduled cancellation: {error}"));
+            // Clearing an exchange-side dead-man switch is best effort. Some Hyperliquid
+            // accounts are not eligible for scheduleCancel until they reach the venue's volume
+            // threshold. That must not prevent the stronger shutdown action below from
+            // explicitly cancelling every order on each registered symbol.
+            tracing::warn!(?error, "failed to clear scheduled cancellation during shutdown");
         }
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         let mut errors = Vec::new();

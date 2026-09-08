@@ -333,6 +333,7 @@ impl ConfigurationAdapter {
         }
 
         validate_runtime_definitions(&config.market_sources, &config.accounts)?;
+        validate_account_source_capacity(&config.event_engine, &config.accounts)?;
         if !config.accounts.is_empty() && account_secret_root.is_none() {
             return Err(ConfigurationError::Invalid(
                 "account definitions require titan.account config.secret_root".into(),
@@ -707,6 +708,28 @@ fn validate_runtime_definitions(
                 account.account_key
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_account_source_capacity(
+    event_engine: &EventEngineConfig,
+    accounts: &[AccountDefinition],
+) -> Result<(), ConfigurationError> {
+    let required_sources = accounts
+        .iter()
+        .map(|account| {
+            u64::from(account.account_id.0)
+                .saturating_mul(2)
+                .saturating_add(2)
+        })
+        .max()
+        .unwrap_or(0);
+    if required_sources > event_engine.ingress.max_sources as u64 {
+        return Err(ConfigurationError::Invalid(format!(
+            "event_engine.ingress.max_sources={} is too small for account source streams; at least {required_sources} is required",
+            event_engine.ingress.max_sources
+        )));
     }
     Ok(())
 }
@@ -1088,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn xemm_testnet_runtime_template_deserializes_human_readable_byte_fields() {
+    fn xemm_mainnet_runtime_template_deserializes_human_readable_byte_fields() {
         let config: ApplicationConfig = toml::from_str(include_str!(
             "../../../deploy/okx_hyperliquid_xemm_testnet/runtime.toml"
         ))
@@ -1097,9 +1120,16 @@ mod tests {
         assert!(
             std::str::from_utf8(&config.market_sources[0].connector_config)
                 .unwrap()
-                .contains("simulated = true")
+                .contains("simulated = false")
+        );
+        assert!(
+            std::str::from_utf8(&config.market_sources[1].connector_config)
+                .unwrap()
+                .contains("is_mainnet = true")
         );
         assert_eq!(config.accounts.len(), 2);
+        assert_eq!(config.event_engine.ingress.max_sources, 8_192);
+        validate_account_source_capacity(&config.event_engine, &config.accounts).unwrap();
         assert_eq!(config.strategies.len(), 1);
         assert!(
             std::str::from_utf8(&config.strategies[0].parameters)

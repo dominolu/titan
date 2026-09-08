@@ -292,6 +292,7 @@ struct AccountRuntime {
     positions: Arc<Mutex<Arc<[account::PositionSnapshot]>>>,
     balances: Arc<Mutex<Arc<[account::BalanceSnapshot]>>>,
     external_order_count: Arc<AtomicU64>,
+    last_reconcile_error: Arc<Mutex<Option<String>>>,
     journal: Arc<Mutex<CommandJournal>>,
     ids: Arc<Mutex<IdInterner>>,
 }
@@ -321,6 +322,7 @@ impl AccountRuntime {
             positions: Arc::new(Mutex::new(Arc::from([]))),
             balances: Arc::new(Mutex::new(Arc::from([]))),
             external_order_count: Arc::new(AtomicU64::new(0)),
+            last_reconcile_error: Arc::new(Mutex::new(None)),
             journal: Arc::new(Mutex::new(CommandJournal::new(journal_capacity))),
             ids: Arc::new(Mutex::new(IdInterner::default())),
         });
@@ -467,6 +469,7 @@ impl account::AccountConnector for AccountRuntime {
         let positions = self.positions.clone();
         let balances = self.balances.clone();
         let external_order_count = self.external_order_count.clone();
+        let last_reconcile_error = self.last_reconcile_error.clone();
         let operations = self.operations.clone();
         let ids = self.ids.clone();
         let journal = self.journal.clone();
@@ -570,6 +573,7 @@ impl account::AccountConnector for AccountRuntime {
                                         &positions,
                                         &balances,
                                         &external_order_count,
+                                        &last_reconcile_error,
                                         &operations,
                                         &ids,
                                         &journal,
@@ -735,8 +739,19 @@ impl account::AccountConnector for AccountRuntime {
         ))
     }
     fn health(&self) -> account::AccountConnectorHealthSnapshot {
+        let ready = self.ready.load(Ordering::Acquire);
+        let message = if ready {
+            Arc::from("private stream and reconciliation active")
+        } else {
+            self.last_reconcile_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_deref()
+                .map(|error| Arc::from(format!("account reconciliation failed: {error}")))
+                .unwrap_or_else(|| Arc::from("account connector not ready"))
+        };
         account::AccountConnectorHealthSnapshot {
-            state: if self.ready.load(Ordering::Acquire) {
+            state: if ready {
                 account::AccountLifecycle::Ready
             } else if self.reconciling.load(Ordering::Acquire) {
                 account::AccountLifecycle::Reconciling
@@ -745,11 +760,7 @@ impl account::AccountConnector for AccountRuntime {
             } else {
                 account::AccountLifecycle::Stopped
             },
-            message: Arc::from(if self.ready.load(Ordering::Acquire) {
-                "private stream and reconciliation active"
-            } else {
-                "account connector not ready"
-            }),
+            message,
             observed_at: SystemTime::now(),
         }
     }
@@ -1240,6 +1251,7 @@ async fn handle_command(
     positions: &Mutex<Arc<[account::PositionSnapshot]>>,
     balances: &Mutex<Arc<[account::BalanceSnapshot]>>,
     external_order_count: &AtomicU64,
+    last_reconcile_error: &Mutex<Option<String>>,
     operations: &Mutex<Operations>,
     ids: &Mutex<IdInterner>,
     journal: &Arc<Mutex<CommandJournal>>,
@@ -1262,6 +1274,10 @@ async fn handle_command(
                 ids,
             )
             .await;
+            *last_reconcile_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                result.as_ref().err().map(ToString::to_string);
             if result.is_err() {
                 publish_invalidated(context, epoch, version, 2);
                 schedule_reconcile(recovery_tx.clone());
@@ -1297,6 +1313,10 @@ async fn handle_command(
                 ids,
             )
             .await;
+            *last_reconcile_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                result.as_ref().err().map(ToString::to_string);
             if result.is_err() {
                 publish_invalidated(context, epoch, version, 2);
                 schedule_reconcile(recovery_tx.clone());
@@ -2790,5 +2810,94 @@ safety_timeout_ms = 5000
         let error = encoder.publish(&fact).unwrap_err();
         assert_eq!(error.kind, account::AccountErrorKind::QueueFull);
         assert_eq!(encoder.pending.lock().unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "hyperliquid")]
+    #[tokio::test]
+    #[ignore = "requires explicit Hyperliquid mainnet credentials"]
+    async fn hyperliquid_mainnet_full_reconcile_probe() {
+        let key = std::env::var("HL_PRIVATE_KEY").expect("HL_PRIVATE_KEY is required");
+        let account_address =
+            std::env::var("HL_ACCOUNT_ADDRESS").expect("HL_ACCOUNT_ADDRESS is required");
+        let config = format!(
+            "info_url = \"https://api.hyperliquid.xyz/info\"\n\
+             exchange_url = \"https://api.hyperliquid.xyz/exchange\"\n\
+             ws_url = \"wss://api.hyperliquid.xyz/ws\"\n\
+             is_mainnet = true\n\
+             safety_timeout_ms = 30000\n\
+             private_key = {key:?}\n\
+             account_address = {account_address:?}\n"
+        );
+        let venue = crate::hyperliquid::Hyperliquid::build_from(&config).unwrap();
+        let api = venue.broker_api().unwrap();
+        let sink = Arc::new(RecordingAccountSink(Mutex::new(Vec::new())));
+        let context = reconciliation_context(account::OrderOwnershipPolicy::ObserveAll, sink);
+        let context = account::AccountConnectorContext {
+            instruments: Arc::from([account::AccountInstrumentBinding {
+                native_symbol: Arc::from("BTC"),
+                asset_id: account::AssetId(11),
+                price_tick: "0.1".parse().unwrap(),
+                quantity_lot: "0.00001".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+            }]),
+            currencies: Arc::from([account::AccountCurrencyBinding {
+                native_currency: Arc::from("USDC"),
+                currency_id: account::CurrencyId(1),
+                amount_unit: "0.000001".parse().unwrap(),
+            }]),
+            ..context
+        };
+        let epoch = AtomicU64::new(0);
+        let version = AtomicU64::new(0);
+        let reconciling = AtomicBool::new(true);
+        let ready = AtomicBool::new(false);
+        let orders = Mutex::new(Arc::<[account::OrderSnapshot]>::from([]));
+        let positions = Mutex::new(Arc::<[account::PositionSnapshot]>::from([]));
+        let balances = Mutex::new(Arc::<[account::BalanceSnapshot]>::from([]));
+        let external = AtomicU64::new(0);
+        let ids = Mutex::new(IdInterner::default());
+        reconcile(
+            &context,
+            api.as_ref(),
+            account::ReconcileScope::Full,
+            &epoch,
+            &version,
+            &reconciling,
+            &ready,
+            &orders,
+            &positions,
+            &balances,
+            &external,
+            &ids,
+        )
+        .await
+        .unwrap();
+        assert!(ready.load(Ordering::Acquire));
+        assert_eq!(balances.lock().unwrap().len(), 1);
+
+        let runtime_scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "hyperliquid-account-runtime"),
+        );
+        let runtime_context = account::AccountConnectorContext {
+            resources: runtime_scope.handle(),
+            ..context
+        };
+        let runtime = AccountRuntime::new(
+            Box::new(venue),
+            api,
+            account::ShutdownOrderPolicy::LeaveOpen,
+            runtime_context,
+        );
+        runtime.start().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while runtime.health().state != account::AccountLifecycle::Ready
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(runtime.health().state, account::AccountLifecycle::Ready);
+        runtime
+            .stop(Instant::now() + Duration::from_secs(5))
+            .unwrap();
     }
 }

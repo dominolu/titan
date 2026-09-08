@@ -190,6 +190,7 @@ impl AccountConnectorFactory for DynamicAccountConnectorFactory {
         let mut host_context = Box::new(AccountHostContext {
             publisher: context.event_publisher,
             secrets: context.secrets,
+            last_publish_error: Mutex::new(None),
         });
         let host = Box::new(TitanAccountHostApiV1 {
             struct_size: std::mem::size_of::<TitanAccountHostApiV1>() as u32,
@@ -258,6 +259,7 @@ impl AccountConnectorFactory for DynamicAccountConnectorFactory {
 struct AccountHostContext {
     publisher: AccountEventPublisher,
     secrets: crate::ScopedSecretResolver,
+    last_publish_error: Mutex<Option<Arc<str>>>,
 }
 
 struct DynamicAccountConnector {
@@ -380,12 +382,26 @@ impl AccountConnector for DynamicAccountConnector {
     }
 
     fn health(&self) -> AccountConnectorHealthSnapshot {
-        self.call("health", self.api.health.unwrap(), &())
+        let mut health = self
+            .call("health", self.api.health.unwrap(), &())
             .unwrap_or_else(|error| AccountConnectorHealthSnapshot {
                 state: AccountLifecycle::Failed,
                 message: Arc::from(error.to_string()),
                 observed_at: SystemTime::now(),
-            })
+            });
+        let last_publish_error = self
+            .host_context
+            .last_publish_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(error) = last_publish_error {
+            health.message = Arc::from(format!(
+                "{}; host account event publication failed: {error}",
+                health.message
+            ));
+        }
+        health
     }
 
     fn diagnostics(&self) -> AccountConnectorDiagnosticSnapshot {
@@ -429,24 +445,41 @@ unsafe extern "C" fn host_publish_account(
     trace_id: u64,
     causation_id: u64,
 ) -> TitanStatus {
-    callback_status(|| {
+    match catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: the proxy retains this boxed context until foreign connector destruction.
         let context = unsafe { (context as *const AccountHostContext).as_ref() }.ok_or(())?;
         // SAFETY: plugin owns readable callback inputs for the duration of this invocation.
         let event_type = unsafe { foreign_str(event_type, event_type_len) }?;
         let payload = unsafe { foreign_bytes(payload, payload_len) }?;
-        context
-            .publisher
-            .publish(
-                event_type,
-                payload,
-                TraceContext {
-                    trace_id,
-                    causation_id,
-                },
-            )
-            .map_err(|_| ())
-    })
+        match context.publisher.publish(
+            event_type,
+            payload,
+            TraceContext {
+                trace_id,
+                causation_id,
+            },
+        ) {
+            Ok(()) => {
+                *context
+                    .last_publish_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                Ok(())
+            }
+            Err(error) => {
+                *context
+                    .last_publish_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(Arc::from(format!("{event_type}: {error}")));
+                Err(())
+            }
+        }
+    })) {
+        Ok(Ok(())) => TITAN_STATUS_OK,
+        Ok(Err(())) => TITAN_STATUS_HOST_ERROR,
+        Err(_) => TITAN_STATUS_PANIC,
+    }
 }
 
 unsafe extern "C" fn host_resolve_secret(
@@ -495,14 +528,6 @@ unsafe extern "C" fn free_secret_buffer(data: *mut u8, len: usize, capacity: usi
     // SAFETY: this exact allocation tuple was produced by host_resolve_secret and is freed once.
     let mut bytes = unsafe { Vec::from_raw_parts(data, len, capacity) };
     bytes.zeroize();
-}
-
-fn callback_status(call: impl FnOnce() -> Result<(), ()>) -> TitanStatus {
-    match catch_unwind(AssertUnwindSafe(call)) {
-        Ok(Ok(())) => TITAN_STATUS_OK,
-        Ok(Err(())) => TITAN_STATUS_HOST_ERROR,
-        Err(_) => TITAN_STATUS_PANIC,
-    }
 }
 
 fn validate_api(api: &TitanAccountConnectorFactoryApiV1) -> Result<(), AccountConnectorError> {

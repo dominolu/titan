@@ -300,6 +300,7 @@ impl OkxClient {
 }
 
 fn default_http_client() -> reqwest::Client {
+    crate::ensure_rustls_crypto_provider();
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
