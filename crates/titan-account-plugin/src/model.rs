@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -92,6 +93,7 @@ pub struct AccountDefinition {
     pub account_id: AccountId,
     pub connector_type: Arc<str>,
     pub credential_ref: SecretRef,
+    #[serde(deserialize_with = "titan_runtime_abi::deserialize_arc_bytes")]
     pub connector_config: Arc<[u8]>,
     pub instruments: Arc<[AccountInstrumentBinding]>,
     pub currencies: Arc<[AccountCurrencyBinding]>,
@@ -146,13 +148,73 @@ pub trait SecretProvider: Send + Sync + 'static {
     fn resolve(&self, reference: &SecretRef) -> Result<SecretValue, AccountConnectorError>;
 }
 
+/// Reads connector credential overlays from one pre-authorized directory.
+///
+/// References use `secret://file/<relative-path>`. Canonicalization prevents `..` and symlink
+/// escapes, files are capped to 64 KiB, and Unix files must not be accessible by group or other.
+#[derive(Clone, Debug)]
+pub struct DirectorySecretProvider {
+    root: PathBuf,
+}
+
+impl DirectorySecretProvider {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, AccountConnectorError> {
+        let root = std::fs::canonicalize(root).map_err(|_| credential_unavailable())?;
+        if !root.is_dir() {
+            return Err(credential_unavailable());
+        }
+        Ok(Self { root })
+    }
+}
+
+impl SecretProvider for DirectorySecretProvider {
+    fn resolve(&self, reference: &SecretRef) -> Result<SecretValue, AccountConnectorError> {
+        let relative = reference
+            .as_str()
+            .strip_prefix("secret://file/")
+            .ok_or_else(credential_unavailable)?;
+        let relative = Path::new(relative);
+        if relative.as_os_str().is_empty()
+            || relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(credential_unavailable());
+        }
+        let path = std::fs::canonicalize(self.root.join(relative))
+            .map_err(|_| credential_unavailable())?;
+        if !path.starts_with(&self.root) {
+            return Err(credential_unavailable());
+        }
+        let metadata = std::fs::metadata(&path).map_err(|_| credential_unavailable())?;
+        if !metadata.is_file() || metadata.len() > 64 * 1024 {
+            return Err(credential_unavailable());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(credential_unavailable());
+            }
+        }
+        std::fs::read(path)
+            .map(SecretValue::new)
+            .map_err(|_| credential_unavailable())
+    }
+}
+
+fn credential_unavailable() -> AccountConnectorError {
+    AccountConnectorError::new(
+        AccountErrorKind::CredentialUnavailable,
+        "credential unavailable",
+    )
+}
+
 pub struct UnavailableSecretProvider;
 impl SecretProvider for UnavailableSecretProvider {
     fn resolve(&self, _: &SecretRef) -> Result<SecretValue, AccountConnectorError> {
-        Err(AccountConnectorError::new(
-            AccountErrorKind::CredentialUnavailable,
-            "credential unavailable",
-        ))
+        Err(credential_unavailable())
     }
 }
 

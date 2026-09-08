@@ -1,0 +1,122 @@
+schema_version = 1
+connector_plugin_packages = ["plugins/okx/plugin.json", "plugins/hyperliquid/plugin.json"]
+
+[[plugins]]
+instance_id = "market"
+plugin_type = "titan.market"
+config = {}
+
+[[plugins]]
+instance_id = "account"
+plugin_type = "titan.account"
+config = { secret_root = "secrets", stop_timeout_ms = 15000 }
+
+[[plugins]]
+instance_id = "strategy"
+plugin_type = "titan.strategy"
+config = { allowed_artifact_roots = ["../../strategies"], python_paths = ["../../strategies", "../../python/titan-strategy-sdk"] }
+
+[plugins.execution]
+model = "Dedicated"
+
+[[market_sources]]
+source_key = "okx-btc-demo"
+connector_type = "okx"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
+api_key = ""
+secret = ""
+passphrase = ""
+simulated = true
+proxy = ""
+td_mode = "cross"
+order_prefix = ""
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 } }]
+enabled = true
+definition_version = 1
+
+[[market_sources]]
+source_key = "hyperliquid-btc-testnet"
+connector_type = "hyperliquid"
+connector_config = '''
+info_url = "https://api.hyperliquid-testnet.xyz/info"
+exchange_url = "https://api.hyperliquid-testnet.xyz/exchange"
+ws_url = "wss://api.hyperliquid-testnet.xyz/ws"
+is_mainnet = false
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 5 } }]
+enabled = true
+definition_version = 1
+
+[[accounts]]
+account_key = "okx-maker-demo"
+account_id = 2001
+connector_type = "okx-account"
+credential_ref = "secret://file/okx-demo.toml"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://wspap.okx.com:8443/ws/v5/private"
+simulated = true
+proxy = ""
+td_mode = "cross"
+order_prefix = ""
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 }, contract_multiplier = { coefficient = 1, scale = 0 } }]
+currencies = [{ native_currency = "USDT", currency_id = 1, amount_unit = { coefficient = 1, scale = 8 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = true
+definition_version = 1
+
+[[accounts]]
+account_key = "hyperliquid-hedge-testnet"
+account_id = 2002
+connector_type = "hyperliquid-account"
+credential_ref = "secret://file/hyperliquid-testnet.toml"
+connector_config = '''
+info_url = "https://api.hyperliquid-testnet.xyz/info"
+exchange_url = "https://api.hyperliquid-testnet.xyz/exchange"
+ws_url = "wss://api.hyperliquid-testnet.xyz/ws"
+is_mainnet = false
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 5 }, contract_multiplier = { coefficient = 1, scale = 0 } }]
+currencies = [{ native_currency = "USDC", currency_id = 2, amount_unit = { coefficient = 1, scale = 6 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = true
+definition_version = 1
+
+[[strategies]]
+strategy_key = "okx_hyperliquid_xemm"
+strategy_id = 9001
+package = { loader_type = "numba-python", uri = "file://../../strategies/okx_hyperliquid_xemm", expected_digest = [107, 127, 19, 233, 94, 220, 164, 111, 28, 82, 142, 221, 100, 16, 196, 45, 136, 20, 141, 237, 130, 209, 164, 1, 151, 198, 71, 54, 37, 58, 116, 162] }
+entrypoint = "okx_hyperliquid_xemm.strategy:build"
+parameters = '''{"order_amount_base":0.0001,"min_profitability_bps":10000.0,"cancel_profitability_bps":20.0,"maker_fee_bps":5.0,"taker_fee_bps":10.0,"hedge_slippage_bps":50.0,"taker_volume_factor":0.1,"quote_conversion_rate":1.0,"maker_price_tick":0.1,"maker_quantity_lot":0.01,"maker_contract_base_multiplier":0.01,"hedge_price_tick":0.1,"hedge_quantity_lot":0.00001,"hedge_contract_base_multiplier":1.0,"max_order_notional":10.0,"max_abs_position_base":0.0003,"max_unhedged_base":0.0002,"max_unhedged_notional":20.0,"market_stale_ms":3000,"conversion_expiry_ns":1893456000000000000,"requote_threshold_ticks":2,"anti_hysteresis_ms":5000,"price_sample_interval_ms":1000,"price_sample_window":12,"hedge_retry_limit":5,"hedge_retry_backoff_ms":250,"adjust_order_enabled":true}'''
+parameter_schema_version = 1
+markets = [
+  { local_market_no = 0, local_asset_no = 0, source_key = "okx-btc-demo", asset_id = 1001, data_mode = "tick" },
+  { local_market_no = 1, local_asset_no = 1, source_key = "hyperliquid-btc-testnet", asset_id = 1002, data_mode = "tick" },
+]
+accounts = [
+  { local_account_no = 0, account_key = "okx-maker-demo", tradable_assets = [{ local_asset_no = 0, asset_id = 1001 }] },
+  { local_account_no = 1, account_key = "hyperliquid-hedge-testnet", tradable_assets = [{ local_asset_no = 1, asset_id = 1002 }] },
+]
+subscriptions = [
+  { event_type = "titan.market.Bbo", schema_version = 1, routing_keys = [1001], qos = "Latest" },
+  { event_type = "titan.market.DepthBatch", schema_version = 1, routing_keys = [1002], qos = "Latest" },
+  { event_type = "titan.account.Fill", schema_version = 2, routing_keys = [2001, 2002], qos = "ReliableOrdered" },
+]
+risk_scope = "testnet-canary"
+runtime = { async_lane_capacity = 16384, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", command_capacity = 64, timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, state_f64_capacity = 1024, state_i64_capacity = 1024, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
+recovery = "fresh"
+shutdown = "cancel_owned_orders"
+enabled = true
+definition_version = 1

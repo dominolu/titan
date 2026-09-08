@@ -63,6 +63,8 @@ pub fn project_execution_report(
 ) {
     let reason = execution_reason_code(report.reason);
     orders.push(OrderEvent {
+        local_account_no: 0,
+        _account_reserved: 0,
         asset_no: report.asset_no as u64,
         order_id: report.order_id,
         venue_order_id: report.venue_order_id,
@@ -86,6 +88,8 @@ pub fn project_execution_report(
         .contains(&Some(ProjectedEventKind::Filled))
     {
         fills.push(FillEvent {
+            local_account_no: 0,
+            _account_reserved: 0,
             asset_no: report.asset_no as u64,
             order_id: report.order_id,
             venue_order_id: report.venue_order_id,

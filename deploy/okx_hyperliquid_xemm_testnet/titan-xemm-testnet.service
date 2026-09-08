@@ -1,0 +1,17 @@
+[Unit]
+Description=Titan OKX-Hyperliquid XEMM testnet canary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/titan
+ExecStart=%h/titan/target/release/titan core-run --config %h/titan/deploy/okx_hyperliquid_xemm_testnet/runtime.toml --json
+Restart=no
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=append:%h/titan/deploy/okx_hyperliquid_xemm_testnet/logs/runtime.log
+StandardError=append:%h/titan/deploy/okx_hyperliquid_xemm_testnet/logs/runtime.log
+
+[Install]
+WantedBy=default.target

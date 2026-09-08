@@ -93,6 +93,10 @@ pub struct StrategyRuntimeSpec {
     pub worker_policy: SubscriberRuntimeMode,
     pub command_capacity: usize,
     pub timer_capacity: usize,
+    /// Optional live housekeeping callback cadence. Timer callbacks are serialized on the
+    /// strategy's primary lane and therefore share ordering with account and market facts.
+    #[serde(default)]
+    pub timer_interval: Option<Duration>,
     pub state_f64_capacity: usize,
     pub state_i64_capacity: usize,
     pub callback_budget: CallbackBudget,
@@ -110,6 +114,7 @@ impl Default for StrategyRuntimeSpec {
             worker_policy: SubscriberRuntimeMode::SpinSleep,
             command_capacity: 64,
             timer_capacity: 64,
+            timer_interval: None,
             state_f64_capacity: 1_024,
             state_i64_capacity: 1_024,
             callback_budget: CallbackBudget {
@@ -145,6 +150,7 @@ pub struct StrategyDefinition {
     pub strategy_id: StrategyId,
     pub package: StrategyPackageRef,
     pub entrypoint: Arc<str>,
+    #[serde(deserialize_with = "titan_runtime_abi::deserialize_arc_bytes")]
     pub parameters: Arc<[u8]>,
     pub parameter_schema_version: u32,
     pub markets: Arc<[StrategyMarketBinding]>,

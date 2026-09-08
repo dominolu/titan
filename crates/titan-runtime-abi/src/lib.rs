@@ -5,12 +5,12 @@
 //! which breaks the current engine/runtime dependency cycle without creating a second
 //! executable runtime.
 
-use std::{ffi::c_void, fmt, str::FromStr};
+use std::{ffi::c_void, fmt, marker::PhantomData, str::FromStr, sync::Arc};
 
 use bincode::{Decode, Encode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
-pub const STRATEGY_ABI_VERSION: u32 = 9;
+pub const STRATEGY_ABI_VERSION: u32 = 10;
 pub const EVENT_SLOT_COUNT: usize = 32;
 
 pub const BAR_COMPLETE: u64 = 1 << 0;
@@ -18,6 +18,64 @@ pub const BAR_EMPTY: u64 = 1 << 1;
 pub const BAR_SYNTHETIC: u64 = 1 << 2;
 pub const BAR_NATIVE: u64 = 1 << 3;
 pub const BAR_PARTIAL: u64 = 1 << 4;
+
+/// Deserializes an immutable byte buffer from either a UTF-8 string or an integer sequence.
+/// Human-authored runtime TOML can use strings while existing JSON callers retain byte arrays.
+pub fn deserialize_arc_bytes<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ArcBytesVisitor(PhantomData<Arc<[u8]>>);
+
+    impl<'de> de::Visitor<'de> for ArcBytesVisitor {
+        type Value = Arc<[u8]>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a UTF-8 string or a sequence of bytes")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Arc::from(value.as_bytes()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Arc::from(value.into_bytes()))
+        }
+
+        fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Arc::from(value))
+        }
+
+        fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Arc::from(value))
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+            while let Some(byte) = sequence.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(Arc::from(bytes))
+        }
+    }
+
+    deserializer.deserialize_any(ArcBytesVisitor(PhantomData))
+}
 
 /// Exact positive decimal unit represented as `coefficient * 10^-scale`. This is the single
 /// authoritative tick/lot unit shared by Market and Account definitions.
@@ -147,6 +205,8 @@ impl Bar {
 #[repr(C)]
 pub struct FillEvent {
     pub asset_no: u64,
+    pub local_account_no: u32,
+    pub _account_reserved: u32,
     pub order_id: u64,
     pub venue_order_id: u64,
     pub exch_ts: i64,
@@ -170,6 +230,8 @@ pub struct FillEvent {
 #[repr(C)]
 pub struct OrderEvent {
     pub asset_no: u64,
+    pub local_account_no: u32,
+    pub _account_reserved: u32,
     pub order_id: u64,
     pub venue_order_id: u64,
     pub exch_ts: i64,
@@ -187,6 +249,97 @@ pub struct OrderEvent {
     pub request: u8,
     pub maker: u8,
     pub _reserved: [u8; 4],
+}
+
+/// One depth level inside a callback-scoped [`DepthBatchEvent`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct DepthItemEvent {
+    pub price: f64,
+    pub qty: f64,
+    pub side: u8,
+    pub action: u8,
+    pub _reserved: [u8; 6],
+}
+
+/// Full canonical depth envelope. Unlike the legacy Tick projection this preserves the
+/// provider epoch, sequence range, snapshot flags and per-level actions.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct DepthBatchEvent {
+    pub asset_no: u64,
+    pub market_no: u32,
+    pub kind: u32,
+    pub flags: u32,
+    pub stream_epoch: u64,
+    pub first_update_sequence: u64,
+    pub last_update_sequence: u64,
+    pub exch_ts: i64,
+    pub local_ts: i64,
+    pub items_ptr: *const DepthItemEvent,
+    pub num_items: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct PositionEvent {
+    pub asset_no: u64,
+    pub local_account_no: u32,
+    pub margin_currency_id: u32,
+    pub account_epoch: u64,
+    pub sequence: u64,
+    pub quantity: f64,
+    pub entry_price: f64,
+    pub liquidation_price: f64,
+    pub realized_pnl: f64,
+    pub unrealized_pnl: f64,
+    pub position_side: u8,
+    pub margin_type: u8,
+    pub _reserved: [u8; 6],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct BalanceEvent {
+    pub local_account_no: u32,
+    pub currency_id: u32,
+    pub account_epoch: u64,
+    pub sequence: u64,
+    pub wallet: f64,
+    pub available: f64,
+    pub margin: f64,
+    pub unrealized_pnl: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct CommandResultEvent {
+    pub local_account_no: u32,
+    pub reason: u32,
+    pub order_id: u64,
+    pub command_id_hi: u64,
+    pub command_id_lo: u64,
+    pub account_epoch: u64,
+    pub sequence: u64,
+    pub outcome: u8,
+    pub final_result: u8,
+    pub _reserved: [u8; 6],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct AccountStateEvent {
+    pub local_account_no: u32,
+    pub reason: u32,
+    pub account_epoch: u64,
+    pub sequence: u64,
+    pub terminal_version: u64,
+    pub kind: u32,
+    pub flags: u32,
+    pub state: u8,
+    pub success: u8,
+    pub scope: u8,
+    pub _reserved: [u8; 5],
 }
 
 /// Read-only top-of-book state refreshed before every market callback.
@@ -478,6 +631,10 @@ pub enum StrategyEventKind {
     Timer = 7,
     Error = 8,
     Stop = 9,
+    Balance = 10,
+    CommandResult = 11,
+    AccountState = 12,
+    Depth = 13,
 }
 
 impl StrategyEventKind {
@@ -528,7 +685,8 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             ival: AbiType::I64 => i64, fval: AbiType::F64 => f64,
         ),
         abi_struct!(FillEvent,
-            asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
+            asset_no: AbiType::U64 => u64, local_account_no: AbiType::U32 => u32,
+            _account_reserved: AbiType::U32 => u32, order_id: AbiType::U64 => u64,
             venue_order_id: AbiType::U64 => u64, exch_ts: AbiType::I64 => i64,
             local_ts: AbiType::I64 => i64, sequence: AbiType::U64 => u64,
             price: AbiType::F64 => f64,
@@ -540,7 +698,8 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 2 } => [u8; 2],
         ),
         abi_struct!(OrderEvent,
-            asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
+            asset_no: AbiType::U64 => u64, local_account_no: AbiType::U32 => u32,
+            _account_reserved: AbiType::U32 => u32, order_id: AbiType::U64 => u64,
             venue_order_id: AbiType::U64 => u64, exch_ts: AbiType::I64 => i64,
             local_ts: AbiType::I64 => i64, sequence: AbiType::U64 => u64,
             price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
@@ -550,6 +709,53 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             status: AbiType::U8 => u8, request: AbiType::U8 => u8,
             maker: AbiType::U8 => u8,
             _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 4 } => [u8; 4],
+        ),
+        abi_struct!(DepthItemEvent,
+            price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
+            side: AbiType::U8 => u8, action: AbiType::U8 => u8,
+            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 6 } => [u8; 6],
+        ),
+        abi_struct!(DepthBatchEvent,
+            asset_no: AbiType::U64 => u64, market_no: AbiType::U32 => u32,
+            kind: AbiType::U32 => u32, flags: AbiType::U32 => u32,
+            stream_epoch: AbiType::U64 => u64,
+            first_update_sequence: AbiType::U64 => u64,
+            last_update_sequence: AbiType::U64 => u64,
+            exch_ts: AbiType::I64 => i64, local_ts: AbiType::I64 => i64,
+            items_ptr: AbiType::Pointer => *const DepthItemEvent,
+            num_items: AbiType::Usize => usize,
+        ),
+        abi_struct!(PositionEvent,
+            asset_no: AbiType::U64 => u64, local_account_no: AbiType::U32 => u32,
+            margin_currency_id: AbiType::U32 => u32,
+            account_epoch: AbiType::U64 => u64, sequence: AbiType::U64 => u64,
+            quantity: AbiType::F64 => f64, entry_price: AbiType::F64 => f64,
+            liquidation_price: AbiType::F64 => f64, realized_pnl: AbiType::F64 => f64,
+            unrealized_pnl: AbiType::F64 => f64, position_side: AbiType::U8 => u8,
+            margin_type: AbiType::U8 => u8,
+            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 6 } => [u8; 6],
+        ),
+        abi_struct!(BalanceEvent,
+            local_account_no: AbiType::U32 => u32, currency_id: AbiType::U32 => u32,
+            account_epoch: AbiType::U64 => u64, sequence: AbiType::U64 => u64,
+            wallet: AbiType::F64 => f64, available: AbiType::F64 => f64,
+            margin: AbiType::F64 => f64, unrealized_pnl: AbiType::F64 => f64,
+        ),
+        abi_struct!(CommandResultEvent,
+            local_account_no: AbiType::U32 => u32, reason: AbiType::U32 => u32,
+            order_id: AbiType::U64 => u64, command_id_hi: AbiType::U64 => u64,
+            command_id_lo: AbiType::U64 => u64, account_epoch: AbiType::U64 => u64,
+            sequence: AbiType::U64 => u64, outcome: AbiType::U8 => u8,
+            final_result: AbiType::U8 => u8,
+            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 6 } => [u8; 6],
+        ),
+        abi_struct!(AccountStateEvent,
+            local_account_no: AbiType::U32 => u32, reason: AbiType::U32 => u32,
+            account_epoch: AbiType::U64 => u64, sequence: AbiType::U64 => u64,
+            terminal_version: AbiType::U64 => u64, kind: AbiType::U32 => u32,
+            flags: AbiType::U32 => u32, state: AbiType::U8 => u8,
+            success: AbiType::U8 => u8, scope: AbiType::U8 => u8,
+            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 5 } => [u8; 5],
         ),
         abi_struct!(MarketState,
             best_bid: AbiType::F64 => f64, best_ask: AbiType::F64 => f64,
@@ -718,6 +924,10 @@ impl RuntimeAbiDescriptor {
                 event_slot("timer", StrategyEventKind::Timer),
                 event_slot("error", StrategyEventKind::Error),
                 event_slot("stop", StrategyEventKind::Stop),
+                event_slot("balance", StrategyEventKind::Balance),
+                event_slot("command_result", StrategyEventKind::CommandResult),
+                event_slot("account_state", StrategyEventKind::AccountState),
+                event_slot("depth", StrategyEventKind::Depth),
             ],
             structs,
             fingerprint: String::new(),
@@ -873,9 +1083,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_v9_exposes_dual_fill_quantity_and_account_routing() {
+    fn abi_v10_exposes_account_routing_and_typed_live_views() {
         let descriptor = runtime_abi_descriptor();
-        assert_eq!(descriptor.abi_version, 9);
+        assert_eq!(descriptor.abi_version, 10);
         let fill = descriptor
             .structs
             .iter()
@@ -885,6 +1095,17 @@ mod tests {
             fill.fields
                 .iter()
                 .any(|field| field.name == "last_fill_qty")
+        );
+        assert!(
+            fill.fields
+                .iter()
+                .any(|field| field.name == "local_account_no")
+        );
+        assert!(
+            descriptor
+                .structs
+                .iter()
+                .any(|value| value.name == "DepthBatchEvent")
         );
         assert!(
             fill.fields

@@ -7,11 +7,17 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-use titan_account_plugin::{FillV2, OrderChangedV1};
+use titan_account_plugin::{
+    BalanceChangedV1, CommandResultV1, FillV2, OrderChangedV1, PositionChangedV1,
+    ReconcileCompletedV1, ReconcileStartedV1, StreamInvalidatedV1, StreamStateChangedV1,
+};
 use titan_event_engine::{EngineError, LaneProgress, PrimaryAsyncLaneHandle, SubscriberState};
 use titan_plugin_engine::{EventHandler, EventView, PluginError, ResourceScopeHandle};
 use titan_runtime::{CallbackRegistry, StrategyEventKind, StrategyRuntimeContext};
-use titan_runtime_abi::{BarItem, Event, FillEvent, OrderEvent, TickItem};
+use titan_runtime_abi::{
+    AccountStateEvent, BalanceEvent, BarItem, CommandResultEvent, DepthBatchEvent, DepthItemEvent,
+    Event, FillEvent, OrderEvent, PositionEvent, TickItem,
+};
 
 use crate::*;
 
@@ -103,6 +109,12 @@ pub trait StrategyRuntimeFactory: Send + Sync {
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
+    fn seed_account_state(
+        &self,
+        positions: Arc<[PositionEvent]>,
+        balances: Arc<[BalanceEvent]>,
+    ) -> LocalResult<()>;
+    fn fire_timer(&self, timer_id: u64) -> LocalResult<()>;
     fn prepare(&self) -> LocalResult<StrategyOperationId>;
     fn start(&self) -> LocalResult<StrategyOperationId>;
     fn pause(&self, reason: PauseReason) -> LocalResult<StrategyOperationId>;
@@ -173,14 +185,22 @@ pub trait StrategyEventAdapter: Send + Sync {
 /// Mechanical canonical-event to ABI adapter. It neither deduplicates nor infers fills.
 pub struct CanonicalStrategyEventAdapter {
     local_assets: BTreeMap<u32, u64>,
+    local_markets: BTreeMap<(u32, u32), (u32, u64)>,
+    local_accounts: BTreeMap<u32, (u32, BTreeMap<u32, u64>)>,
+    gateway: Option<Arc<dyn StrategyCommandGateway>>,
     market_scratch: Mutex<Vec<TickItem>>,
+    depth_scratch: Mutex<Vec<DepthItemEvent>>,
 }
 
 impl Default for CanonicalStrategyEventAdapter {
     fn default() -> Self {
         Self {
             local_assets: BTreeMap::new(),
+            local_markets: BTreeMap::new(),
+            local_accounts: BTreeMap::new(),
+            gateway: None,
             market_scratch: Mutex::new(Vec::with_capacity(1_024)),
+            depth_scratch: Mutex::new(Vec::with_capacity(1_024)),
         }
     }
 }
@@ -192,8 +212,86 @@ impl CanonicalStrategyEventAdapter {
                 .iter()
                 .map(|binding| (binding.asset_id, u64::from(binding.local_asset_no)))
                 .collect(),
+            local_markets: markets
+                .iter()
+                .map(|binding| {
+                    let stream_id = binding
+                        .source
+                        .market_stream_id()
+                        .expect("resolved market source must have an allocated stream id");
+                    (
+                        (stream_id.0, binding.asset_id),
+                        (binding.local_market_no, u64::from(binding.local_asset_no)),
+                    )
+                })
+                .collect(),
+            local_accounts: BTreeMap::new(),
+            gateway: None,
             market_scratch: Mutex::new(Vec::with_capacity(1_024)),
+            depth_scratch: Mutex::new(Vec::with_capacity(1_024)),
         }
+    }
+
+    pub fn with_accounts(
+        markets: &[ResolvedMarketBinding],
+        accounts: &[ResolvedAccountBinding],
+        gateway: Arc<dyn StrategyCommandGateway>,
+    ) -> Self {
+        let mut adapter = Self::new(markets);
+        adapter.local_accounts = accounts
+            .iter()
+            .map(|binding| {
+                (
+                    binding.account.account_id.0,
+                    (
+                        binding.local_account_no,
+                        binding
+                            .tradable_assets
+                            .iter()
+                            .map(|asset| (asset.asset_id, u64::from(asset.local_asset_no)))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect();
+        adapter.gateway = Some(gateway);
+        adapter
+    }
+
+    fn market_binding(&self, source_id: u32, asset_id: u32) -> LocalResult<(u32, u64)> {
+        self.local_markets
+            .get(&(source_id, asset_id))
+            .copied()
+            .or_else(|| {
+                if source_id == 0 {
+                    self.local_assets
+                        .get(&asset_id)
+                        .copied()
+                        .map(|asset| (0, asset))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| adapter_error("market_asset_not_bound"))
+    }
+
+    fn account_binding(&self, account_id: u32, asset_id: u32) -> LocalResult<(u32, u64)> {
+        let (account, assets) = self
+            .local_accounts
+            .get(&account_id)
+            .ok_or_else(|| adapter_error("account_not_bound"))?;
+        let asset = assets
+            .get(&asset_id)
+            .copied()
+            .ok_or_else(|| adapter_error("account_asset_not_bound"))?;
+        Ok((*account, asset))
+    }
+
+    fn strategy_order_id(&self, client_order_id: titan_account_plugin::Id128) -> u64 {
+        self.gateway
+            .as_ref()
+            .and_then(|gateway| gateway.strategy_order_id(client_order_id))
+            .unwrap_or(0)
     }
 }
 
@@ -206,21 +304,81 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
     ) -> LocalResult<StrategyEventKind> {
         let kind = match (event.event_type, event.schema_version) {
             (
-                titan_market_plugin::DEPTH_BATCH_EVENT
-                | titan_market_plugin::TRADE_BATCH_EVENT
-                | titan_market_plugin::BBO_EVENT,
-                1,
+                titan_market_plugin::DEPTH_BATCH_EVENT,
+                titan_market_plugin::MARKET_EVENT_SCHEMA_VERSION,
             ) => {
+                if event.payload.len() < titan_market_plugin::MarketBatchHeaderV1::ENCODED_LEN {
+                    return Err(adapter_error("market_batch_header"));
+                }
+                let asset_id = u32::from_le_bytes(event.payload[0..4].try_into().unwrap());
+                let kind = u16::from_le_bytes(event.payload[4..6].try_into().unwrap());
+                let flags = u16::from_le_bytes(event.payload[6..8].try_into().unwrap());
+                let item_count =
+                    usize::from(u16::from_le_bytes(event.payload[8..10].try_into().unwrap()));
+                let (market_no, asset_no) =
+                    self.market_binding(event.metadata.source_id, asset_id)?;
+                let expected = titan_market_plugin::MarketBatchHeaderV1::ENCODED_LEN
+                    .checked_add(
+                        item_count
+                            .checked_mul(titan_market_plugin::DepthItemV1::ENCODED_LEN)
+                            .ok_or_else(|| adapter_error("market_batch_overflow"))?,
+                    )
+                    .ok_or_else(|| adapter_error("market_batch_overflow"))?;
+                if event.payload.len() != expected {
+                    return Err(adapter_error("market_batch_length"));
+                }
+                let mut scratch = self.depth_scratch.lock().unwrap_or_else(|p| p.into_inner());
+                if item_count > scratch.capacity() {
+                    return Err(adapter_error("market_batch_capacity"));
+                }
+                scratch.clear();
+                for index in 0..item_count {
+                    let offset = titan_market_plugin::MarketBatchHeaderV1::ENCODED_LEN
+                        + index * titan_market_plugin::DepthItemV1::ENCODED_LEN;
+                    scratch.push(DepthItemEvent {
+                        price: i64::from_le_bytes(
+                            event.payload[offset..offset + 8].try_into().unwrap(),
+                        ) as f64,
+                        qty: i64::from_le_bytes(
+                            event.payload[offset + 8..offset + 16].try_into().unwrap(),
+                        ) as f64,
+                        side: event.payload[offset + 16],
+                        action: event.payload[offset + 17],
+                        _reserved: [0; 6],
+                    });
+                }
+                let view = DepthBatchEvent {
+                    asset_no,
+                    market_no,
+                    kind: u32::from(kind),
+                    flags: u32::from(flags),
+                    stream_epoch: u64::from_le_bytes(event.payload[12..20].try_into().unwrap()),
+                    first_update_sequence: u64::from_le_bytes(
+                        event.payload[20..28].try_into().unwrap(),
+                    ),
+                    last_update_sequence: u64::from_le_bytes(
+                        event.payload[28..36].try_into().unwrap(),
+                    ),
+                    exch_ts: i64::from_le_bytes(event.payload[36..44].try_into().unwrap()),
+                    local_ts: i64::from_le_bytes(event.payload[44..52].try_into().unwrap()),
+                    items_ptr: scratch.as_ptr(),
+                    num_items: scratch.len(),
+                };
+                context.payload_ptr = (&view as *const DepthBatchEvent).cast();
+                context.payload_len = 1;
+                callbacks
+                    .invoke(StrategyEventKind::Depth, context)
+                    .map_err(|_| adapter_error("depth_callback"))?;
+                StrategyEventKind::Depth
+            }
+            (titan_market_plugin::TRADE_BATCH_EVENT | titan_market_plugin::BBO_EVENT, 1) => {
                 if event.payload.len() < titan_market_plugin::MarketBatchHeaderV1::ENCODED_LEN {
                     return Err(adapter_error("market_batch_header"));
                 }
                 let asset_id = u32::from_le_bytes(event.payload[0..4].try_into().unwrap());
                 let item_count =
                     usize::from(u16::from_le_bytes(event.payload[8..10].try_into().unwrap()));
-                let local_asset = *self
-                    .local_assets
-                    .get(&asset_id)
-                    .ok_or_else(|| adapter_error("market_asset_not_bound"))?;
+                let (_, local_asset) = self.market_binding(event.metadata.source_id, asset_id)?;
                 let expected = titan_market_plugin::MarketBatchHeaderV1::ENCODED_LEN
                     .checked_add(
                         item_count
@@ -235,10 +393,8 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
                 let receive_ts = i64::from_le_bytes(event.payload[44..52].try_into().unwrap());
                 let event_code = if event.event_type == titan_market_plugin::TRADE_BATCH_EVENT {
                     3
-                } else if event.event_type == titan_market_plugin::BBO_EVENT {
-                    4
                 } else {
-                    2
+                    4
                 };
                 let mut scratch = self
                     .market_scratch
@@ -310,14 +466,13 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
             }
             (titan_account_plugin::FILL_EVENT, titan_account_plugin::FILL_EVENT_SCHEMA_VERSION) => {
                 let fill = FillV2::decode(event.payload).map_err(|_| adapter_error("fill_v2"))?;
-                let asset_no = self
-                    .local_assets
-                    .get(&fill.asset_id)
-                    .copied()
-                    .ok_or_else(|| adapter_error("fill_asset_not_bound"))?;
+                let (local_account_no, asset_no) =
+                    self.account_binding(fill.header.account_id, fill.asset_id)?;
                 let view = FillEvent {
                     asset_no,
-                    order_id: u64::from_le_bytes(fill.client_order_id.0[..8].try_into().unwrap()),
+                    local_account_no,
+                    _account_reserved: 0,
+                    order_id: self.strategy_order_id(fill.client_order_id),
                     venue_order_id: u64::from_le_bytes(
                         fill.venue_order_id.0[..8].try_into().unwrap(),
                     ),
@@ -344,14 +499,17 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
             (titan_account_plugin::ORDER_CHANGED_EVENT, 1) => {
                 let order =
                     OrderChangedV1::decode(event.payload).map_err(|_| adapter_error("order_v1"))?;
-                let asset_no = self
-                    .local_assets
-                    .get(&order.asset_id)
-                    .copied()
-                    .ok_or_else(|| adapter_error("order_asset_not_bound"))?;
+                let (local_account_no, asset_no) =
+                    self.account_binding(order.header.account_id, order.asset_id)?;
+                let strategy_order_id = self.strategy_order_id(order.client_order_id);
+                if let Some(gateway) = &self.gateway {
+                    gateway.observe_order(order.client_order_id, order.status);
+                }
                 let view = OrderEvent {
                     asset_no,
-                    order_id: u64::from_le_bytes(order.client_order_id.0[..8].try_into().unwrap()),
+                    local_account_no,
+                    _account_reserved: 0,
+                    order_id: strategy_order_id,
                     venue_order_id: u64::from_le_bytes(
                         order.venue_order_id.0[..8].try_into().unwrap(),
                     ),
@@ -377,6 +535,157 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
                     .invoke(StrategyEventKind::Order, context)
                     .map_err(|_| adapter_error("order_callback"))?;
                 StrategyEventKind::Order
+            }
+            (titan_account_plugin::POSITION_CHANGED_EVENT, 1) => {
+                let position = PositionChangedV1::decode(event.payload)
+                    .map_err(|_| adapter_error("position_v1"))?;
+                let (local_account_no, asset_no) =
+                    self.account_binding(position.header.account_id, position.asset_id)?;
+                let view = PositionEvent {
+                    asset_no,
+                    local_account_no,
+                    margin_currency_id: position.margin_currency_id,
+                    account_epoch: position.header.account_epoch,
+                    sequence: position.header.account_version,
+                    quantity: position.quantity_lots as f64,
+                    entry_price: position.entry_price_ticks as f64,
+                    liquidation_price: position.liquidation_price_ticks as f64,
+                    realized_pnl: position.realized_pnl_units as f64,
+                    unrealized_pnl: position.unrealized_pnl_units as f64,
+                    position_side: position.position_side,
+                    margin_type: position.margin_type,
+                    _reserved: [0; 6],
+                };
+                context.payload_ptr = (&view as *const PositionEvent).cast();
+                context.payload_len = 1;
+                callbacks
+                    .invoke(StrategyEventKind::Position, context)
+                    .map_err(|_| adapter_error("position_callback"))?;
+                StrategyEventKind::Position
+            }
+            (titan_account_plugin::BALANCE_CHANGED_EVENT, 1) => {
+                let balance = BalanceChangedV1::decode(event.payload)
+                    .map_err(|_| adapter_error("balance_v1"))?;
+                let (local_account_no, _) = self
+                    .local_accounts
+                    .get(&balance.header.account_id)
+                    .ok_or_else(|| adapter_error("account_not_bound"))?;
+                let view = BalanceEvent {
+                    local_account_no: *local_account_no,
+                    currency_id: balance.currency_id,
+                    account_epoch: balance.header.account_epoch,
+                    sequence: balance.header.account_version,
+                    wallet: balance.wallet_units as f64,
+                    available: balance.available_units as f64,
+                    margin: balance.margin_units as f64,
+                    unrealized_pnl: balance.unrealized_pnl_units as f64,
+                };
+                context.payload_ptr = (&view as *const BalanceEvent).cast();
+                context.payload_len = 1;
+                callbacks
+                    .invoke(StrategyEventKind::Balance, context)
+                    .map_err(|_| adapter_error("balance_callback"))?;
+                StrategyEventKind::Balance
+            }
+            (titan_account_plugin::COMMAND_RESULT_EVENT, 1) => {
+                let result = CommandResultV1::decode(event.payload)
+                    .map_err(|_| adapter_error("command_result_v1"))?;
+                let (local_account_no, _) = self
+                    .local_accounts
+                    .get(&result.header.account_id)
+                    .ok_or_else(|| adapter_error("account_not_bound"))?;
+                let strategy_order_id = self.strategy_order_id(result.client_order_id);
+                if let Some(gateway) = &self.gateway {
+                    gateway.observe_command_result(
+                        result.command_id,
+                        result.client_order_id,
+                        result.final_result != 0,
+                        result.outcome == 1,
+                    );
+                }
+                let command_id_lo =
+                    u64::from_le_bytes(result.command_id.0[0..8].try_into().unwrap());
+                let command_id_hi =
+                    u64::from_le_bytes(result.command_id.0[8..16].try_into().unwrap());
+                let view = CommandResultEvent {
+                    local_account_no: *local_account_no,
+                    reason: result.reason_code,
+                    order_id: strategy_order_id,
+                    command_id_hi,
+                    command_id_lo,
+                    account_epoch: result.header.account_epoch,
+                    sequence: result.header.account_version,
+                    outcome: result.outcome,
+                    final_result: result.final_result,
+                    _reserved: [0; 6],
+                };
+                context.payload_ptr = (&view as *const CommandResultEvent).cast();
+                context.payload_len = 1;
+                callbacks
+                    .invoke(StrategyEventKind::CommandResult, context)
+                    .map_err(|_| adapter_error("command_result_callback"))?;
+                StrategyEventKind::CommandResult
+            }
+            (
+                titan_account_plugin::RECONCILE_STARTED_EVENT
+                | titan_account_plugin::RECONCILE_COMPLETED_EVENT
+                | titan_account_plugin::STREAM_STATE_CHANGED_EVENT
+                | titan_account_plugin::STREAM_INVALIDATED_EVENT,
+                1,
+            ) => {
+                let header = titan_account_plugin::decode_account_event_header(event.payload)
+                    .map_err(|_| adapter_error("account_control_header"))?;
+                let (local_account_no, _) = self
+                    .local_accounts
+                    .get(&header.account_id)
+                    .ok_or_else(|| adapter_error("account_not_bound"))?;
+                let mut view = AccountStateEvent {
+                    local_account_no: *local_account_no,
+                    reason: 0,
+                    account_epoch: header.account_epoch,
+                    sequence: header.account_version,
+                    terminal_version: 0,
+                    kind: u32::from(header.kind),
+                    flags: u32::from(header.flags),
+                    state: 0,
+                    success: 0,
+                    scope: 0,
+                    _reserved: [0; 5],
+                };
+                match event.event_type {
+                    titan_account_plugin::RECONCILE_STARTED_EVENT => {
+                        let value = ReconcileStartedV1::decode(event.payload)
+                            .map_err(|_| adapter_error("reconcile_started_v1"))?;
+                        view.terminal_version = value.0.terminal_version;
+                        view.scope = value.0.scope;
+                        view.success = value.0.success;
+                    }
+                    titan_account_plugin::RECONCILE_COMPLETED_EVENT => {
+                        let value = ReconcileCompletedV1::decode(event.payload)
+                            .map_err(|_| adapter_error("reconcile_completed_v1"))?;
+                        view.terminal_version = value.0.terminal_version;
+                        view.scope = value.0.scope;
+                        view.success = value.0.success;
+                    }
+                    titan_account_plugin::STREAM_STATE_CHANGED_EVENT => {
+                        let value = StreamStateChangedV1::decode(event.payload)
+                            .map_err(|_| adapter_error("stream_state_v1"))?;
+                        view.state = value.0.state;
+                        view.reason = value.0.reason_code;
+                    }
+                    _ => {
+                        let value = StreamInvalidatedV1::decode(event.payload)
+                            .map_err(|_| adapter_error("stream_invalidated_v1"))?;
+                        view.state = value.0.state;
+                        view.reason = value.0.reason_code;
+                    }
+                }
+                context.payload_ptr = (&view as *const AccountStateEvent).cast();
+                context.payload_len = 1;
+                callbacks
+                    .invoke(StrategyEventKind::AccountState, context)
+                    .map_err(|_| adapter_error("account_state_callback"))?;
+                StrategyEventKind::AccountState
             }
             _ => {
                 // Deliberate fail-fast boundary: canonical facts without a typed Strategy ABI
@@ -417,6 +726,9 @@ struct NativeRuntimeInner {
     consecutive_budget_violations: u32,
     last_error: Option<Arc<str>>,
     stop_called: bool,
+    initial_positions: Arc<[PositionEvent]>,
+    initial_balances: Arc<[BalanceEvent]>,
+    account_ready: BTreeMap<u32, bool>,
     flight_records: VecDeque<StrategyFlightRecord>,
     next_flight_sequence: u64,
 }
@@ -465,6 +777,11 @@ impl StrategyRuntimeFactory for NativeStrategyRuntimeFactory {
             .state
             .i64_values
             .resize(definition.runtime.state_i64_capacity, 0);
+        let account_ready = context
+            .accounts
+            .iter()
+            .map(|binding| (binding.local_account_no, true))
+            .collect();
         Ok(Arc::new(NativeStrategyRuntime {
             core: Arc::new(NativeRuntimeCore {
                 definition: definition.clone(),
@@ -482,6 +799,9 @@ impl StrategyRuntimeFactory for NativeStrategyRuntimeFactory {
                     consecutive_budget_violations: 0,
                     last_error: None,
                     stop_called: false,
+                    initial_positions: Arc::from([]),
+                    initial_balances: Arc::from([]),
+                    account_ready,
                     flight_records: VecDeque::with_capacity(128),
                     next_flight_sequence: 1,
                 }),
@@ -589,9 +909,51 @@ impl EventHandler for NativeStrategyRuntime {
             // the supervisor concurrently transitions this instance to Invalidated.
             return Ok(());
         }
-        if !self.core.context.activation.is_open() {
-            // Account/risk facts may still update framework state while paused. The current
-            // adapter is stateless, so it deliberately suppresses user callbacks here.
+        if event.event_type.starts_with("titan.account.")
+            && let Ok(header) = titan_account_plugin::decode_account_event_header(event.payload)
+            && let Some(binding) = self
+                .core
+                .context
+                .accounts
+                .iter()
+                .find(|binding| binding.account.account_id.0 == header.account_id)
+        {
+            let ready = match event.event_type {
+                titan_account_plugin::RECONCILE_STARTED_EVENT
+                | titan_account_plugin::STREAM_INVALIDATED_EVENT => Some(false),
+                titan_account_plugin::STREAM_STATE_CHANGED_EVENT => {
+                    StreamStateChangedV1::decode(event.payload)
+                        .ok()
+                        .map(|value| {
+                            value.0.state == titan_account_plugin::AccountLifecycle::Ready as u8
+                        })
+                }
+                titan_account_plugin::RECONCILE_COMPLETED_EVENT => {
+                    ReconcileCompletedV1::decode(event.payload)
+                        .ok()
+                        .and_then(|value| (value.0.success == 0).then_some(false))
+                }
+                _ => None,
+            };
+            if let Some(ready) = ready {
+                inner.account_ready.insert(binding.local_account_no, ready);
+                if !ready {
+                    self.core.context.command_gate.close();
+                    self.core.context.activation.close();
+                    if inner.lifecycle == StrategyLifecycle::Running {
+                        inner.lifecycle = StrategyLifecycle::Recovering;
+                    }
+                } else if inner.account_ready.values().all(|ready| *ready)
+                    && inner.lifecycle == StrategyLifecycle::Recovering
+                {
+                    self.core.context.activation.open();
+                    self.core.context.command_gate.open();
+                    inner.lifecycle = StrategyLifecycle::Running;
+                }
+            }
+        }
+        let active = self.core.context.activation.is_open();
+        if !active && !event.event_type.starts_with("titan.account.") {
             return Ok(());
         }
         let started = Instant::now();
@@ -605,6 +967,9 @@ impl EventHandler for NativeStrategyRuntime {
             last_error,
             lifecycle,
             stop_called,
+            initial_positions: _,
+            initial_balances: _,
+            account_ready: _,
             flight_records,
             next_flight_sequence,
         } = &mut *inner;
@@ -688,6 +1053,11 @@ impl EventHandler for NativeStrategyRuntime {
         if *lifecycle == StrategyLifecycle::Invalidated {
             return Ok(());
         }
+        if !active {
+            // Account callbacks are allowed to refresh strategy/framework state while command
+            // admission is closed, but any command they accidentally emit is discarded.
+            return Ok(());
+        }
         let count = context.num_commands;
         if count > commands.len() {
             self.core.context.command_gate.close();
@@ -754,11 +1124,102 @@ impl StrategyRuntime for NativeStrategyRuntime {
             .map_err(|_| runtime_error("lane_already_attached"))
     }
 
+    fn seed_account_state(
+        &self,
+        positions: Arc<[PositionEvent]>,
+        balances: Arc<[BalanceEvent]>,
+    ) -> LocalResult<()> {
+        let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if inner.lifecycle != StrategyLifecycle::Defined {
+            return Err(runtime_error("account_seed_after_prepare"));
+        }
+        inner.initial_positions = positions;
+        inner.initial_balances = balances;
+        Ok(())
+    }
+
+    fn fire_timer(&self, timer_id: u64) -> LocalResult<()> {
+        let lane = self
+            .core
+            .lane
+            .get()
+            .ok_or_else(|| runtime_error("lane_not_attached"))?;
+        let core = self.core.clone();
+        lane.submit_safe_point(move || {
+            let result: LocalResult<()> = (|| {
+                let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+                if inner.lifecycle != StrategyLifecycle::Running
+                    || !core.context.command_gate.is_open()
+                {
+                    return Ok(());
+                }
+                inner
+                    .commands
+                    .fill(titan_runtime_abi::OrderCommand::default());
+                let timer = titan_runtime_abi::RuntimeTimer {
+                    deadline_ts: core.context.clock.now_ns(),
+                    owner_id: u64::from(core.context.strategy.strategy_id.0),
+                    timer_id,
+                };
+                let mut context = callback_context(&core, &mut inner);
+                context.payload_ptr = (&timer as *const titan_runtime_abi::RuntimeTimer).cast();
+                context.payload_len = 1;
+                inner
+                    .artifact
+                    .callbacks
+                    .invoke(StrategyEventKind::Timer, &mut context)
+                    .map_err(|_| runtime_error("timer_callback"))?;
+                if context.num_commands > inner.commands.len() {
+                    core.context.command_gate.close();
+                    core.context.activation.close();
+                    inner.lifecycle = StrategyLifecycle::Invalidated;
+                    return Err(runtime_error("command_buffer_overflow"));
+                }
+                let command_count = context.num_commands;
+                for command in inner.commands[..command_count].iter().copied() {
+                    core.context.command_gateway.execute(
+                        core.context.strategy,
+                        command,
+                        titan_plugin_engine::TraceContext::default(),
+                    )?;
+                }
+                inner.command_count = inner.command_count.saturating_add(command_count as u64);
+                inner.callback_count = inner.callback_count.saturating_add(1);
+                Ok(())
+            })();
+            result.map_err(|_| EngineError::SafePointPanicked)
+        })
+        .map(|_| ())
+        .map_err(|_| runtime_error("timer_queue_full"))
+    }
+
     fn prepare(&self) -> LocalResult<StrategyOperationId> {
         self.schedule(|core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
             if inner.lifecycle != StrategyLifecycle::Defined {
                 return Err(runtime_error("invalid_prepare_state"));
+            }
+            let positions = inner.initial_positions.clone();
+            let balances = inner.initial_balances.clone();
+            for position in positions.iter() {
+                let mut context = callback_context(core, &mut inner);
+                context.payload_ptr = (position as *const PositionEvent).cast();
+                context.payload_len = 1;
+                inner
+                    .artifact
+                    .callbacks
+                    .invoke(StrategyEventKind::Position, &mut context)
+                    .map_err(|_| runtime_error("initial_position_callback"))?;
+            }
+            for balance in balances.iter() {
+                let mut context = callback_context(core, &mut inner);
+                context.payload_ptr = (balance as *const BalanceEvent).cast();
+                context.payload_len = 1;
+                inner
+                    .artifact
+                    .callbacks
+                    .invoke(StrategyEventKind::Balance, &mut context)
+                    .map_err(|_| runtime_error("initial_balance_callback"))?;
             }
             inner.lifecycle = StrategyLifecycle::Ready;
             Ok(())
@@ -770,6 +1231,9 @@ impl StrategyRuntime for NativeStrategyRuntime {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
             if inner.lifecycle != StrategyLifecycle::Ready {
                 return Err(runtime_error("invalid_start_state"));
+            }
+            if !inner.account_ready.values().all(|ready| *ready) {
+                return Err(runtime_error("account_not_reconciled"));
             }
             if core
                 .lane
@@ -1049,6 +1513,10 @@ fn event_kind_from_u32(value: u32) -> StrategyEventKind {
         6 => StrategyEventKind::Tick,
         7 => StrategyEventKind::Timer,
         9 => StrategyEventKind::Stop,
+        10 => StrategyEventKind::Balance,
+        11 => StrategyEventKind::CommandResult,
+        12 => StrategyEventKind::AccountState,
+        13 => StrategyEventKind::Depth,
         _ => StrategyEventKind::Error,
     }
 }

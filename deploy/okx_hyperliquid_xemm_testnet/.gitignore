@@ -1,0 +1,4 @@
+/plugins/
+/secrets/*
+/logs/
+!/secrets/.gitkeep

@@ -56,6 +56,50 @@ impl SecretProvider for TestSecrets {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_secret_provider_is_scoped_bounded_and_requires_private_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let nonce = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "titan-account-secrets-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let secret_path = root.join("okx.toml");
+    std::fs::write(&secret_path, b"api_key = \"redacted\"\n").unwrap();
+    std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let provider = DirectorySecretProvider::new(&root).unwrap();
+    assert_eq!(
+        provider
+            .resolve(&SecretRef::new("secret://file/okx.toml"))
+            .unwrap()
+            .expose(),
+        b"api_key = \"redacted\"\n"
+    );
+    assert_eq!(
+        provider
+            .resolve(&SecretRef::new("secret://file/../outside"))
+            .unwrap_err()
+            .kind,
+        AccountErrorKind::CredentialUnavailable
+    );
+    std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        provider
+            .resolve(&SecretRef::new("secret://file/okx.toml"))
+            .unwrap_err()
+            .kind,
+        AccountErrorKind::CredentialUnavailable
+    );
+    std::fs::remove_file(secret_path).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
 struct FakeConnector {
     context: AccountConnectorContext,
     running: AtomicBool,

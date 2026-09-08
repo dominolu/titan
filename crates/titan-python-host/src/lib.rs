@@ -234,7 +234,7 @@ class State:
 class Compiled:
     strategy_id = "fake"
     strategy_version = "1.0.0"
-    abi_version = 9
+    abi_version = 10
     callback_addresses = tuple(range(32))
     capabilities = ("bar",)
     state_f64 = State("float64", 4096, 4)

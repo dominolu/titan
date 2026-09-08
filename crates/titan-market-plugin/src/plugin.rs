@@ -22,7 +22,7 @@ use crate::{
     MarketEndpoint, MarketError, MarketErrorKind, MarketEventPublisher, MarketOperationSnapshot,
     MarketService, MarketSourceDefinition, MarketSourceHandle, MarketSourceId,
     MarketSourceSnapshot, MarketSubscribeRequest, MarketSubscription, OperationId, OperationState,
-    SourceStreamId, connector_error,
+    connector_error,
 };
 
 pub const MARKET_PLUGIN_TYPE: &str = "titan.market";
@@ -218,18 +218,18 @@ impl MarketPluginCore {
             source_id,
             generation,
         };
-        let market_stream = SourceStreamId(source_id.0.checked_mul(2).ok_or_else(|| {
+        let market_stream = handle.market_stream_id().ok_or_else(|| {
             MarketError::new(
                 MarketErrorKind::CapacityExceeded,
                 "source stream id overflow",
             )
-        })?);
-        let control_stream = SourceStreamId(market_stream.0.checked_add(1).ok_or_else(|| {
+        })?;
+        let control_stream = handle.control_stream_id().ok_or_else(|| {
             MarketError::new(
                 MarketErrorKind::CapacityExceeded,
                 "source stream id overflow",
             )
-        })?);
+        })?;
         let resources = ResourceScope::new(runtime.identity.clone());
         let context = MarketConnectorContext {
             source: handle,

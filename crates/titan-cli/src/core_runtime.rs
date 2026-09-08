@@ -7,8 +7,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use titan_account_plugin::{
-    ACCOUNT_EVENT_SCHEMA_VERSION, ACCOUNT_EVENT_TYPES, AccountAdminApi, AccountAdminRequest,
-    AccountAdminResponse, AccountDefinition, FILL_EVENT, FILL_EVENT_SCHEMA_VERSION,
+    ACCOUNT_EVENT_SCHEMA_VERSION, ACCOUNT_EVENT_TYPES, ACCOUNT_PLUGIN_TYPE, AccountAdminApi,
+    AccountAdminRequest, AccountAdminResponse, AccountDefinition, DirectorySecretProvider,
+    FILL_EVENT, FILL_EVENT_SCHEMA_VERSION,
 };
 use titan_connector_loader::{
     LoadedConnectorPlugin, account_plugin_factory, load_connector_plugins, market_plugin_factory,
@@ -124,6 +125,7 @@ pub struct AdaptedConfiguration {
     pub market_sources: Vec<MarketSourceDefinition>,
     pub accounts: Vec<AccountDefinition>,
     pub strategies: Vec<StrategyDefinition>,
+    account_secret_root: Option<PathBuf>,
     strategy_bootstrap: Option<StrategyBootstrap>,
 }
 
@@ -134,6 +136,12 @@ struct StrategyPluginBootstrapConfig {
     allowed_artifact_roots: Vec<PathBuf>,
     #[serde(default)]
     python_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AccountPluginBootstrapConfig {
+    #[serde(default)]
+    secret_root: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -161,6 +169,11 @@ pub enum ConfigurationError {
     Invalid(String),
     #[error("cannot resolve plugin package {path}: {source}")]
     PackagePath {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("cannot resolve account secret root {path}: {source}")]
+    SecretRoot {
         path: PathBuf,
         source: std::io::Error,
     },
@@ -222,6 +235,8 @@ impl ConfigurationAdapter {
         let mut instance_ids = HashSet::new();
         let mut plugin_specs = Vec::with_capacity(config.plugins.len());
         let mut strategy_bootstrap_config = None;
+        let mut account_secret_root = None;
+        let mut account_plugin_seen = false;
         for plugin in config.plugins {
             if plugin.instance_id.trim().is_empty() || plugin.plugin_type.trim().is_empty() {
                 return Err(ConfigurationError::Invalid(
@@ -255,6 +270,40 @@ impl ConfigurationAdapter {
                         })?,
                 );
             }
+            if plugin.plugin_type == ACCOUNT_PLUGIN_TYPE && plugin.enabled {
+                if account_plugin_seen {
+                    return Err(ConfigurationError::Invalid(
+                        "only one enabled titan.account plugin instance is supported".into(),
+                    ));
+                }
+                account_plugin_seen = true;
+                let bootstrap =
+                    serde_json::from_value::<AccountPluginBootstrapConfig>(plugin.config.clone())
+                        .map_err(|error| {
+                        ConfigurationError::Invalid(format!(
+                            "invalid titan.account plugin config: {error}"
+                        ))
+                    })?;
+                if let Some(root) = bootstrap.secret_root {
+                    let root = if root.is_absolute() {
+                        root
+                    } else {
+                        config_directory.join(root)
+                    };
+                    let root = std::fs::canonicalize(&root).map_err(|source| {
+                        ConfigurationError::SecretRoot {
+                            path: root.clone(),
+                            source,
+                        }
+                    })?;
+                    if !root.is_dir() {
+                        return Err(ConfigurationError::Invalid(
+                            "account secret_root must be a directory".into(),
+                        ));
+                    }
+                    account_secret_root = Some(root);
+                }
+            }
             plugin_specs.push(PluginSpec {
                 instance_id: Arc::from(plugin.instance_id),
                 plugin_type: Arc::from(plugin.plugin_type),
@@ -284,6 +333,11 @@ impl ConfigurationAdapter {
         }
 
         validate_runtime_definitions(&config.market_sources, &config.accounts)?;
+        if !config.accounts.is_empty() && account_secret_root.is_none() {
+            return Err(ConfigurationError::Invalid(
+                "account definitions require titan.account config.secret_root".into(),
+            ));
+        }
         let strategy_bootstrap = adapt_strategies(
             &mut config.strategies,
             config_directory,
@@ -305,6 +359,7 @@ impl ConfigurationAdapter {
             market_sources: config.market_sources,
             accounts: config.accounts,
             strategies: config.strategies,
+            account_secret_root,
             strategy_bootstrap,
         })
     }
@@ -345,6 +400,7 @@ impl ConfiguredCoreRuntime {
             market_sources,
             accounts,
             strategies,
+            account_secret_root,
             strategy_bootstrap,
         } = config;
         let connector_plugins = load_connector_plugins(&connector_plugin_packages)?;
@@ -355,8 +411,14 @@ impl ConfiguredCoreRuntime {
             semver::Version::new(1, 0, 0),
             "builtin:titan-market-plugin",
         )?;
+        let mut account_factory = account_plugin_factory(&connector_plugins);
+        if let Some(root) = account_secret_root {
+            let provider = DirectorySecretProvider::new(root)
+                .map_err(|error| ApplicationRuntimeError::Account(error.to_string()))?;
+            account_factory = account_factory.with_secret_provider(Arc::new(provider));
+        }
         core.plugins_mut().register(
-            Arc::new(account_plugin_factory(&connector_plugins)),
+            Arc::new(account_factory),
             semver::Version::new(1, 0, 0),
             "builtin:titan-account-plugin",
         )?;
@@ -990,6 +1052,60 @@ mod tests {
             ConfigurationAdapter::adapt(config, Path::new(".")),
             Err(ConfigurationError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn account_secret_root_is_resolved_relative_to_the_runtime_config() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("titan-secret-root-{}-{nonce}", std::process::id()));
+        let secrets = directory.join("secrets");
+        std::fs::create_dir_all(&secrets).unwrap();
+        let mut account = plugin("account", ACCOUNT_PLUGIN_TYPE);
+        account.config = serde_json::json!({"secret_root": "secrets"});
+        let adapted = ConfigurationAdapter::adapt(
+            ApplicationConfig {
+                schema_version: APPLICATION_CONFIG_SCHEMA_VERSION,
+                event_engine: EventEngineConfig::default(),
+                connector_plugin_packages: vec![],
+                plugins: vec![account],
+                market_sources: vec![],
+                accounts: vec![],
+                strategies: vec![],
+            },
+            &directory,
+        )
+        .unwrap();
+        assert_eq!(
+            adapted.account_secret_root,
+            Some(std::fs::canonicalize(&secrets).unwrap())
+        );
+        std::fs::remove_dir(secrets).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn xemm_testnet_runtime_template_deserializes_human_readable_byte_fields() {
+        let config: ApplicationConfig = toml::from_str(include_str!(
+            "../../../deploy/okx_hyperliquid_xemm_testnet/runtime.toml"
+        ))
+        .unwrap();
+        assert_eq!(config.market_sources.len(), 2);
+        assert!(
+            std::str::from_utf8(&config.market_sources[0].connector_config)
+                .unwrap()
+                .contains("simulated = true")
+        );
+        assert_eq!(config.accounts.len(), 2);
+        assert_eq!(config.strategies.len(), 1);
+        assert!(
+            std::str::from_utf8(&config.strategies[0].parameters)
+                .unwrap()
+                .contains("\"min_profitability_bps\":10000.0")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "strategy_type": "numba-event-counter",
   "package_version": "1.0.0",
-  "runtime_abi": { "major": 9, "minor": 0 },
+  "runtime_abi": { "major": 10, "minor": 0 },
   "parameter_schema": { "type": "object" },
   "parameter_schema_version": 1,
   "state_schema_version": 1,

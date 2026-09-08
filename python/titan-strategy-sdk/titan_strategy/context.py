@@ -50,7 +50,8 @@ bar_history_view_dtype = np.dtype(
      ("capacity", "u8"), ("len", "u8"), ("next", "u8")], align=True,
 )
 fill_dtype = np.dtype(
-    [("asset_no", "u8"), ("order_id", "u8"), ("venue_order_id", "u8"),
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("_account_reserved", "u4"), ("order_id", "u8"), ("venue_order_id", "u8"),
      ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
      ("price", "f8"), ("last_fill_qty", "f8"),
      ("cumulative_filled_qty", "f8"), ("venue_no", "u4"),
@@ -58,12 +59,51 @@ fill_dtype = np.dtype(
      ("maker", "u1"), ("_reserved", "u1", (2,))], align=True,
 )
 order_event_dtype = np.dtype(
-    [("asset_no", "u8"), ("order_id", "u8"), ("venue_order_id", "u8"),
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("_account_reserved", "u4"), ("order_id", "u8"), ("venue_order_id", "u8"),
      ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
      ("price", "f8"), ("qty", "f8"), ("exec_price", "f8"),
      ("exec_qty", "f8"), ("venue_no", "u4"), ("instrument_id", "u4"),
      ("reason", "u4"), ("side", "i1"), ("status", "u1"),
      ("request", "u1"), ("maker", "u1"), ("_reserved", "u1", (4,))], align=True,
+)
+depth_item_dtype = np.dtype(
+    [("price", "f8"), ("qty", "f8"), ("side", "u1"), ("action", "u1"),
+     ("_reserved", "u1", (6,))], align=True,
+)
+depth_batch_dtype = np.dtype(
+    [("asset_no", "u8"), ("market_no", "u4"), ("kind", "u4"),
+     ("flags", "u4"), ("stream_epoch", "u8"),
+     ("first_update_sequence", "u8"), ("last_update_sequence", "u8"),
+     ("exch_ts", "i8"), ("local_ts", "i8"), ("items_ptr", "u8"),
+     ("num_items", "u8")], align=True,
+)
+position_event_dtype = np.dtype(
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("margin_currency_id", "u4"), ("account_epoch", "u8"),
+     ("sequence", "u8"), ("quantity", "f8"), ("entry_price", "f8"),
+     ("liquidation_price", "f8"), ("realized_pnl", "f8"),
+     ("unrealized_pnl", "f8"), ("position_side", "u1"),
+     ("margin_type", "u1"), ("_reserved", "u1", (6,))], align=True,
+)
+balance_event_dtype = np.dtype(
+    [("local_account_no", "u4"), ("currency_id", "u4"),
+     ("account_epoch", "u8"), ("sequence", "u8"), ("wallet", "f8"),
+     ("available", "f8"), ("margin", "f8"), ("unrealized_pnl", "f8")],
+    align=True,
+)
+command_result_dtype = np.dtype(
+    [("local_account_no", "u4"), ("reason", "u4"), ("order_id", "u8"),
+     ("command_id_hi", "u8"), ("command_id_lo", "u8"),
+     ("account_epoch", "u8"), ("sequence", "u8"), ("outcome", "u1"),
+     ("final_result", "u1"), ("_reserved", "u1", (6,))], align=True,
+)
+account_state_dtype = np.dtype(
+    [("local_account_no", "u4"), ("reason", "u4"),
+     ("account_epoch", "u8"), ("sequence", "u8"),
+     ("terminal_version", "u8"), ("kind", "u4"), ("flags", "u4"),
+     ("state", "u1"), ("success", "u1"), ("scope", "u1"),
+     ("_reserved", "u1", (5,))], align=True,
 )
 market_state_dtype = np.dtype(
     [("best_bid", "f8"), ("best_ask", "f8"), ("best_bid_qty", "f8"),
@@ -99,6 +139,12 @@ _ABI_DTYPES = {
     "Event": event_dtype,
     "FillEvent": fill_dtype,
     "OrderEvent": order_event_dtype,
+    "DepthItemEvent": depth_item_dtype,
+    "DepthBatchEvent": depth_batch_dtype,
+    "PositionEvent": position_event_dtype,
+    "BalanceEvent": balance_event_dtype,
+    "CommandResultEvent": command_result_dtype,
+    "AccountStateEvent": account_state_dtype,
     "MarketState": market_state_dtype,
     "BarItem": bar_item_dtype,
     "TimedBarItem": timed_bar_item_dtype,
@@ -284,6 +330,25 @@ class Strategy:
     def orders(self):
         return carray(address_as_void_pointer(self.ctx_arr[0]["orders_ptr"]),
                       self.ctx_arr[0]["num_orders"], order_event_dtype)
+    def depth(self):
+        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
+                      1, depth_batch_dtype)[0]
+    def depth_items(self):
+        batch = self.depth()
+        return carray(address_as_void_pointer(batch["items_ptr"]),
+                      batch["num_items"], depth_item_dtype)
+    def position_event(self):
+        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
+                      1, position_event_dtype)[0]
+    def balance_event(self):
+        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
+                      1, balance_event_dtype)[0]
+    def command_result(self):
+        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
+                      1, command_result_dtype)[0]
+    def account_state(self):
+        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
+                      1, account_state_dtype)[0]
     def payload(self):
         return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
                       self.ctx_arr[0]["payload_len"], numba.uint8)

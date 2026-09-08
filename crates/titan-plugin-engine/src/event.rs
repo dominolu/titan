@@ -46,6 +46,9 @@ pub struct EventView<'a> {
     pub event_type: &'a str,
     pub schema_version: u32,
     pub payload: &'a [u8],
+    /// Canonical publication metadata. Keeping this attached to the borrowed view prevents
+    /// downstream adapters from losing source identity, sequencing and snapshot flags.
+    pub metadata: EventPublishMetadata,
     pub trace: TraceContext,
 }
 
@@ -1000,6 +1003,7 @@ mod execution_tests {
                 event_type: "fixture.event",
                 schema_version: 1,
                 payload: &[],
+                metadata: EventPublishMetadata::default(),
                 trace: TraceContext::default(),
             })?;
             Ok(DispatchOutcome::Delivered)
