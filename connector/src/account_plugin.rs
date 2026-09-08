@@ -2843,7 +2843,7 @@ safety_timeout_ms = 5000
             currencies: Arc::from([account::AccountCurrencyBinding {
                 native_currency: Arc::from("USDC"),
                 currency_id: account::CurrencyId(1),
-                amount_unit: "0.000001".parse().unwrap(),
+                amount_unit: "0.00000001".parse().unwrap(),
             }]),
             ..context
         };
