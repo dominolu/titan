@@ -10,7 +10,7 @@ import numpy as np
 
 from .context import callback_bridge, validate_handler, validate_runtime_descriptor
 
-ABI_VERSION = 9
+ABI_VERSION = 10
 EVENT_SLOT_COUNT = 32
 
 EVENTS = (
@@ -24,6 +24,10 @@ EVENTS = (
     (7, "on_timer", "timer"),
     (8, "on_error", "error"),
     (9, "on_stop", "stop"),
+    (10, "on_balance", "balance"),
+    (11, "on_command_result", "command_result"),
+    (12, "on_account_state", "account_state"),
+    (13, "on_depth", "depth"),
 )
 
 

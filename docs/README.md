@@ -33,4 +33,5 @@
 
 - [Strategy ABI v7](strategy_abi_v7_migration.md)
 - [Strategy ABI v8](strategy_abi_v8_migration.md)
-- [Strategy ABI v9（当前）](strategy_abi_v9_migration.md)
+- [Strategy ABI v10（当前）](strategy_abi_v10_migration.md)
+- [Strategy ABI v9（历史）](strategy_abi_v9_migration.md)

@@ -1,5 +1,8 @@
 # Strategy ABI v9 migration
 
+> 历史迁移文档：当前 Rust Runtime 与 Python Host 使用 Strategy ABI v10。新代码请参阅
+> [Strategy ABI v10 migration](strategy_abi_v10_migration.md)。
+
 状态：当前版本
 
 Strategy ABI v9 在 v8 Funding 语义之上补齐账户 Fill 的双数量语义和多账户命令路由。Rust

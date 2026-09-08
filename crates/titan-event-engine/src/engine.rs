@@ -273,6 +273,15 @@ impl AsyncFastLane {
                         event_type: event.descriptor.event_type.as_ref(),
                         schema_version: event.descriptor.schema_version,
                         payload: event.payload.payload(),
+                        metadata: titan_plugin_engine::EventPublishMetadata {
+                            source_id: event.header.source_id,
+                            source_sequence: event.header.source_sequence,
+                            exchange_ts: event.header.exchange_ts,
+                            receive_ts: event.header.receive_ts,
+                            publish_ts: event.header.publish_ts,
+                            routing_key: event.header.routing_key,
+                            flags: event.header.flags,
+                        },
                         trace: event.header.trace,
                     })
                 }));
@@ -404,6 +413,15 @@ impl EngineShared {
                             event_type: descriptor.event_type.as_ref(),
                             schema_version: descriptor.schema_version,
                             payload: payload.payload(),
+                            metadata: titan_plugin_engine::EventPublishMetadata {
+                                source_id: header.source_id,
+                                source_sequence: header.source_sequence,
+                                exchange_ts: header.exchange_ts,
+                                receive_ts: header.receive_ts,
+                                publish_ts: header.publish_ts,
+                                routing_key: header.routing_key,
+                                flags: header.flags,
+                            },
                             trace: header.trace,
                         })
                     }));

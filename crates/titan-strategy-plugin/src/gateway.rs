@@ -1,8 +1,9 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
+use sha2::{Digest, Sha256};
 use titan_account_plugin::{
     AccountCommandReceipt, AccountExecutionService, AccountHandle, AssetId, CancelOrderCommand,
     Id128, SubmitOrderCommand,
@@ -26,6 +27,16 @@ pub trait StrategyCommandGateway: Send + Sync {
         metadata: &StrategyCommandMetadata,
     ) -> LocalResult<()>;
     fn cancel_owned_orders(&self, strategy: StrategyHandle) -> LocalResult<()>;
+    fn strategy_order_id(&self, client_order_id: Id128) -> Option<u64>;
+    fn observe_order(&self, client_order_id: Id128, status: u8);
+    fn observe_command_result(
+        &self,
+        command_id: Id128,
+        client_order_id: Id128,
+        final_result: bool,
+        succeeded: bool,
+    );
+    fn owned_order_count(&self) -> usize;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -37,6 +48,7 @@ pub struct StrategyCommandMetadata {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StrategyOwnedOrder {
     pub client_order_id: Id128,
+    pub strategy_order_id: u64,
     pub local_account_no: u32,
     pub local_asset_no: u64,
     pub account: AccountHandle,
@@ -51,6 +63,8 @@ pub struct StandardStrategyCommandGateway {
     execution: Arc<dyn AccountExecutionService>,
     owned_orders: Mutex<Vec<StrategyOwnedOrder>>,
     pending_commands: Mutex<Vec<Id128>>,
+    client_order_ids: Mutex<HashMap<Id128, u64>>,
+    command_kinds: Mutex<HashMap<Id128, u8>>,
 }
 
 impl StandardStrategyCommandGateway {
@@ -85,6 +99,8 @@ impl StandardStrategyCommandGateway {
             execution,
             owned_orders: Mutex::new(Vec::new()),
             pending_commands: Mutex::new(Vec::new()),
+            client_order_ids: Mutex::new(HashMap::new()),
+            command_kinds: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -143,6 +159,10 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
                         "invalid_time_in_force",
                     ));
                 }
+                // Validate the exact integer ABI units before recording command ownership.
+                // Otherwise a conversion failure below would leave a phantom pending command.
+                exact_i64(command.price, "price")?;
+                exact_i64(command.qty, "quantity")?;
                 StrategyCapabilities::SUBMIT_ORDER
             }
             ORDER_COMMAND_CANCEL => {
@@ -169,6 +189,14 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
         }
         let command_id = owner_id(strategy, command.order_id, command.kind);
         let client_order_id = owner_id(strategy, command.order_id, 0);
+        self.client_order_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(client_order_id, command.order_id);
+        self.command_kinds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(command_id, command.kind);
         {
             let mut pending = self
                 .pending_commands
@@ -215,10 +243,16 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
                 .map_err(account_error),
             _ => unreachable!(),
         };
-        self.pending_commands
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|id| *id != command_id);
+        if result.is_err() {
+            self.pending_commands
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|id| *id != command_id);
+            self.command_kinds
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&command_id);
+        }
         if result.is_ok() && command.kind == ORDER_COMMAND_SUBMIT {
             let mut owned = self.owned_orders.lock().unwrap_or_else(|p| p.into_inner());
             if !owned
@@ -227,6 +261,7 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
             {
                 owned.push(StrategyOwnedOrder {
                     client_order_id,
+                    strategy_order_id: command.order_id,
                     local_account_no: command.local_account_no,
                     local_asset_no: command.asset_no,
                     account: *account,
@@ -292,6 +327,14 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
         }
         *self.owned_orders.lock().unwrap_or_else(|p| p.into_inner()) =
             metadata.owned_orders.to_vec();
+        *self
+            .client_order_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = metadata
+            .owned_orders
+            .iter()
+            .map(|order| (order.client_order_id, order.strategy_order_id))
+            .collect();
         Ok(())
     }
 
@@ -331,15 +374,78 @@ impl StrategyCommandGateway for StandardStrategyCommandGateway {
         }
         Ok(())
     }
+
+    fn strategy_order_id(&self, client_order_id: Id128) -> Option<u64> {
+        self.client_order_ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&client_order_id)
+            .copied()
+    }
+
+    fn observe_order(&self, client_order_id: Id128, status: u8) {
+        // Canonical terminal values: expired=2, filled=3, canceled=4, rejected=6.
+        if matches!(status, 2 | 3 | 4 | 6) {
+            self.owned_orders
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|order| order.client_order_id != client_order_id);
+            self.client_order_ids
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&client_order_id);
+        }
+    }
+
+    fn observe_command_result(
+        &self,
+        command_id: Id128,
+        client_order_id: Id128,
+        final_result: bool,
+        succeeded: bool,
+    ) {
+        if !final_result {
+            return;
+        }
+        self.pending_commands
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|id| *id != command_id);
+        let command_kind = self
+            .command_kinds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&command_id);
+        if !succeeded && command_kind == Some(ORDER_COMMAND_SUBMIT) {
+            self.owned_orders
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|order| order.client_order_id != client_order_id);
+            self.client_order_ids
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&client_order_id);
+        }
+    }
+
+    fn owned_order_count(&self) -> usize {
+        self.owned_orders
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
+    }
 }
 
 fn owner_id(strategy: StrategyHandle, order_id: u64, discriminator: u8) -> Id128 {
+    let mut digest = Sha256::new();
+    digest.update(b"titan.strategy.order.v1");
+    digest.update(strategy.strategy_id.0.to_le_bytes());
+    digest.update(strategy.generation.to_le_bytes());
+    digest.update(order_id.to_le_bytes());
+    digest.update([discriminator]);
+    let digest = digest.finalize();
     let mut value = [0_u8; 16];
-    value[..4].copy_from_slice(&strategy.strategy_id.0.to_le_bytes());
-    value[4..12].copy_from_slice(&strategy.generation.to_le_bytes());
-    let folded = (order_id as u32) ^ ((order_id >> 32) as u32);
-    value[12..].copy_from_slice(&folded.to_le_bytes());
-    value[15] ^= discriminator;
+    value.copy_from_slice(&digest[..16]);
     Id128(value)
 }
 

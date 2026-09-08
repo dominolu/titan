@@ -266,6 +266,15 @@ impl EventReceiver for SubscriberChannel {
                 event_type: lease.event_type(),
                 schema_version: lease.schema_version(),
                 payload: lease.payload(),
+                metadata: titan_plugin_engine::EventPublishMetadata {
+                    source_id: lease.header().source_id,
+                    source_sequence: lease.header().source_sequence,
+                    exchange_ts: lease.header().exchange_ts,
+                    receive_ts: lease.header().receive_ts,
+                    publish_ts: lease.header().publish_ts,
+                    routing_key: lease.header().routing_key,
+                    flags: lease.header().flags,
+                },
                 trace: lease.header().trace,
             })
         }));

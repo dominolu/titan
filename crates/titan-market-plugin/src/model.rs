@@ -39,6 +39,7 @@ pub struct MarketInstrumentBinding {
 pub struct MarketSourceDefinition {
     pub source_key: Arc<str>,
     pub connector_type: Arc<str>,
+    #[serde(deserialize_with = "titan_runtime_abi::deserialize_arc_bytes")]
     pub connector_config: Arc<[u8]>,
     pub instruments: Arc<[MarketInstrumentBinding]>,
     pub enabled: bool,
@@ -48,6 +49,21 @@ pub struct MarketSourceDefinition {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct SourceStreamId(pub u32);
+
+impl MarketSourceHandle {
+    /// Event-engine stream carrying market facts for this logical source.
+    pub fn market_stream_id(self) -> Option<SourceStreamId> {
+        self.source_id.0.checked_mul(2).map(SourceStreamId)
+    }
+
+    /// Event-engine stream carrying control facts for this logical source.
+    pub fn control_stream_id(self) -> Option<SourceStreamId> {
+        self.market_stream_id()?
+            .0
+            .checked_add(1)
+            .map(SourceStreamId)
+    }
+}
 
 #[derive(Clone)]
 struct CoreMarketEventPublisher {

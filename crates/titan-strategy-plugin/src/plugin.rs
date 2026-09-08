@@ -10,7 +10,11 @@ use std::{
 
 use titan_account_plugin::{
     ACCOUNT_EVENT_SCHEMA_VERSION, AccountExecutionService, AccountLifecycle, AccountService,
-    FILL_EVENT, FILL_EVENT_SCHEMA_VERSION, ORDER_CHANGED_EVENT,
+    AccountSnapshotState, BALANCE_CHANGED_EVENT, COMMAND_RESULT_EVENT, FILL_EVENT,
+    FILL_EVENT_SCHEMA_VERSION, ORDER_CHANGED_EVENT, OrderFilter, POSITION_CHANGED_EVENT,
+    PositionFilter, RECONCILE_COMPLETED_EVENT, RECONCILE_STARTED_EVENT,
+    STREAM_INVALIDATED_EVENT as ACCOUNT_STREAM_INVALIDATED_EVENT,
+    STREAM_STATE_CHANGED_EVENT as ACCOUNT_STREAM_STATE_CHANGED_EVENT,
 };
 use titan_event_engine::{
     EventEngineHandle, PrimaryAsyncLaneConfig, PrimaryAsyncLaneHandle, PrimarySubscriptionSpec,
@@ -18,7 +22,7 @@ use titan_event_engine::{
 };
 use titan_market_plugin::{
     BAR_BATCH_EVENT, BBO_EVENT, ConnectorHealth, DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION,
-    MarketService, TRADE_BATCH_EVENT,
+    MarketDataKind, MarketService, MarketSubscribeRequest, TRADE_BATCH_EVENT,
 };
 use titan_plugin_engine::{ClosureResource, ResourceScope, ServiceId, ServiceKey, ServiceScope};
 use tracing::warn;
@@ -358,12 +362,16 @@ impl StrategyPluginCore {
             format!("{}-{}", definition.strategy_id.0, generation),
         ));
         let event_adapter: Arc<dyn StrategyEventAdapter> =
-            Arc::new(CanonicalStrategyEventAdapter::new(&resolved_markets));
+            Arc::new(CanonicalStrategyEventAdapter::with_accounts(
+                &resolved_markets,
+                &resolved_accounts,
+                gateway.clone(),
+            ));
         let context = StrategyRuntimeBuildContext {
             strategy: handle,
             artifact_id: artifact.id,
-            markets: resolved_markets.into(),
-            accounts: resolved_accounts.into(),
+            markets: resolved_markets.clone().into(),
+            accounts: resolved_accounts.clone().into(),
             event_adapter,
             command_gateway: gateway.clone(),
             state_snapshot_sink: Arc::new(DisabledSnapshotSink),
@@ -375,7 +383,7 @@ impl StrategyPluginCore {
         };
         let factory = self.runtimes.get(&manifest.strategy_type)?;
         let runtime = factory.create(&definition, artifact, context)?;
-        let subscriptions = definition
+        let mut subscriptions = definition
             .subscriptions
             .iter()
             .map(|spec| PrimarySubscriptionSpec {
@@ -385,6 +393,53 @@ impl StrategyPluginCore {
                 routing_keys: spec.routing_keys.clone(),
             })
             .collect::<Vec<_>>();
+        if definition
+            .subscriptions
+            .iter()
+            .any(|spec| spec.event_type.starts_with("titan.account."))
+        {
+            let account_keys: Arc<[u64]> = resolved_accounts
+                .iter()
+                .map(|binding| u64::from(binding.account.account_id.0))
+                .collect::<Vec<_>>()
+                .into();
+            for event_type in [
+                ORDER_CHANGED_EVENT,
+                FILL_EVENT,
+                POSITION_CHANGED_EVENT,
+                BALANCE_CHANGED_EVENT,
+                COMMAND_RESULT_EVENT,
+                RECONCILE_STARTED_EVENT,
+                RECONCILE_COMPLETED_EVENT,
+                ACCOUNT_STREAM_STATE_CHANGED_EVENT,
+                ACCOUNT_STREAM_INVALIDATED_EVENT,
+            ] {
+                if let Some(spec) = subscriptions
+                    .iter_mut()
+                    .find(|spec| spec.event_type.as_ref() == event_type)
+                {
+                    let mut keys = spec.routing_keys.to_vec();
+                    for key in account_keys.iter().copied() {
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                    keys.sort_unstable();
+                    spec.routing_keys = keys.into();
+                    continue;
+                }
+                subscriptions.push(PrimarySubscriptionSpec {
+                    event_type: Arc::from(event_type),
+                    schema_version: if event_type == FILL_EVENT {
+                        FILL_EVENT_SCHEMA_VERSION
+                    } else {
+                        ACCOUNT_EVENT_SCHEMA_VERSION
+                    },
+                    qos: titan_plugin_engine::EventQos::ReliableOrdered,
+                    routing_keys: account_keys.clone(),
+                });
+            }
+        }
         let lane = self
             .dependencies
             .events
@@ -448,6 +503,210 @@ impl StrategyPluginCore {
                 )
             })?;
         runtime.attach_lane(lane.clone())?;
+        let mut initial_positions = Vec::new();
+        let mut initial_balances = Vec::new();
+        for binding in resolved_accounts.iter() {
+            let orders = self
+                .dependencies
+                .accounts
+                .orders(
+                    binding.account,
+                    OrderFilter {
+                        asset_id: None,
+                        include_final: false,
+                    },
+                )
+                .map_err(|_| dependency_error("account_orders_snapshot_failed"))?;
+            let positions = self
+                .dependencies
+                .accounts
+                .positions(binding.account, PositionFilter::default())
+                .map_err(|_| dependency_error("account_positions_snapshot_failed"))?;
+            let balances = self
+                .dependencies
+                .accounts
+                .balances(binding.account)
+                .map_err(|_| dependency_error("account_balances_snapshot_failed"))?;
+            if orders.state != AccountSnapshotState::Ready
+                || positions.state != AccountSnapshotState::Ready
+                || balances.state != AccountSnapshotState::Ready
+            {
+                return Err(dependency_error("account_snapshot_not_ready"));
+            }
+            let epoch = positions
+                .committed_epoch
+                .ok_or_else(|| dependency_error("account_snapshot_epoch_missing"))?;
+            let version = positions
+                .committed_version
+                .ok_or_else(|| dependency_error("account_snapshot_version_missing"))?;
+            for asset in binding.tradable_assets.iter() {
+                let mut found = false;
+                for position in positions
+                    .items
+                    .iter()
+                    .filter(|position| position.asset_id.0 == asset.asset_id)
+                {
+                    found = true;
+                    initial_positions.push(titan_runtime_abi::PositionEvent {
+                        asset_no: u64::from(asset.local_asset_no),
+                        local_account_no: binding.local_account_no,
+                        margin_currency_id: position.margin_currency_id.0,
+                        account_epoch: epoch,
+                        sequence: version,
+                        quantity: position.quantity_lots as f64,
+                        entry_price: position.entry_price_ticks as f64,
+                        liquidation_price: position.liquidation_price_ticks as f64,
+                        realized_pnl: position.realized_pnl_units as f64,
+                        unrealized_pnl: position.unrealized_pnl_units as f64,
+                        position_side: position.position_side,
+                        margin_type: position.margin_type,
+                        _reserved: [0; 6],
+                    });
+                }
+                if !found {
+                    initial_positions.push(titan_runtime_abi::PositionEvent {
+                        asset_no: u64::from(asset.local_asset_no),
+                        local_account_no: binding.local_account_no,
+                        margin_currency_id: 0,
+                        account_epoch: epoch,
+                        sequence: version,
+                        quantity: 0.0,
+                        entry_price: 0.0,
+                        liquidation_price: 0.0,
+                        realized_pnl: 0.0,
+                        unrealized_pnl: 0.0,
+                        position_side: 0,
+                        margin_type: 0,
+                        _reserved: [0; 6],
+                    });
+                }
+            }
+            let balance_epoch = balances
+                .committed_epoch
+                .ok_or_else(|| dependency_error("balance_snapshot_epoch_missing"))?;
+            let balance_version = balances
+                .committed_version
+                .ok_or_else(|| dependency_error("balance_snapshot_version_missing"))?;
+            initial_balances.extend(balances.items.iter().map(|balance| {
+                titan_runtime_abi::BalanceEvent {
+                    local_account_no: binding.local_account_no,
+                    currency_id: balance.currency_id.0,
+                    account_epoch: balance_epoch,
+                    sequence: balance_version,
+                    wallet: balance.wallet_units as f64,
+                    available: balance.available_units as f64,
+                    margin: balance.margin_units as f64,
+                    unrealized_pnl: balance.unrealized_pnl_units as f64,
+                }
+            }));
+        }
+        runtime.seed_account_state(initial_positions.into(), initial_balances.into())?;
+        // Event routing must exist before an upstream subscription can emit its initial image.
+        // Each token is owned by the strategy resource scope, so replace/remove cannot leak a
+        // venue subscription.
+        for binding in resolved_markets.iter() {
+            let mut kinds = Vec::new();
+            for subscription in definition.subscriptions.iter() {
+                if !subscription.routing_keys.is_empty()
+                    && !subscription
+                        .routing_keys
+                        .contains(&u64::from(binding.asset_id))
+                {
+                    continue;
+                }
+                let kind = match subscription.event_type.as_ref() {
+                    DEPTH_BATCH_EVENT => Some(MarketDataKind::Depth),
+                    TRADE_BATCH_EVENT => Some(MarketDataKind::Trades),
+                    BBO_EVENT => Some(MarketDataKind::Bbo),
+                    _ => None,
+                };
+                if let Some(kind) = kind
+                    && !kinds.contains(&kind)
+                {
+                    kinds.push(kind);
+                }
+            }
+            if kinds.is_empty() {
+                continue;
+            }
+            let market_subscription = self
+                .dependencies
+                .markets
+                .subscribe(
+                    binding.source,
+                    MarketSubscribeRequest {
+                        asset_id: titan_market_plugin::AssetId(binding.asset_id),
+                        kinds: kinds.clone().into(),
+                    },
+                )
+                .map_err(|_| dependency_error("market_subscribe_failed"))?;
+            let markets = self.dependencies.markets.clone();
+            let source = binding.source;
+            resources
+                .handle()
+                .register(
+                    format!(
+                        "market_subscription_{}_{}",
+                        binding.local_market_no, binding.local_asset_no
+                    ),
+                    ClosureResource(Some(move || {
+                        markets
+                            .unsubscribe(source, market_subscription)
+                            .map(|_| ())
+                            .map_err(|error| {
+                                titan_plugin_engine::PluginError::new(
+                                    titan_plugin_engine::ErrorKind::ResourceReleaseFailed,
+                                    titan_plugin_engine::PluginIdentity::new(
+                                        "titan.strategy.runtime",
+                                        "market-subscription",
+                                    ),
+                                    titan_plugin_engine::LifecycleState::Stopping,
+                                    "market_unsubscribe",
+                                    error.to_string(),
+                                )
+                            })
+                    })),
+                )
+                .map_err(|_| {
+                    StrategyError::new(
+                        StrategyErrorKind::Internal,
+                        "create",
+                        "market_subscription_resource_failed",
+                        "market subscription cleanup could not be registered",
+                    )
+                })?;
+            if kinds.contains(&MarketDataKind::Depth) {
+                let operation = self
+                    .dependencies
+                    .markets
+                    .request_snapshot(
+                        binding.source,
+                        titan_market_plugin::AssetId(binding.asset_id),
+                    )
+                    .map_err(|_| dependency_error("market_snapshot_failed"))?;
+                loop {
+                    let snapshot = self
+                        .dependencies
+                        .markets
+                        .operation(binding.source, operation)
+                        .map_err(|_| dependency_error("market_snapshot_status_failed"))?;
+                    match snapshot.state {
+                        titan_market_plugin::OperationState::Succeeded => break,
+                        titan_market_plugin::OperationState::Failed => {
+                            return Err(dependency_error("market_snapshot_rejected"));
+                        }
+                        titan_market_plugin::OperationState::Pending
+                            if Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        titan_market_plugin::OperationState::Pending => {
+                            return Err(dependency_error("market_snapshot_timeout"));
+                        }
+                    }
+                }
+            }
+        }
         let supervisor_active = Arc::new(AtomicBool::new(true));
         let supervisor_flag = supervisor_active.clone();
         let supervisor_lane = lane.clone();
@@ -516,6 +775,49 @@ impl StrategyPluginCore {
                     "strategy supervisor cleanup could not be registered",
                 )
             })?;
+        if let Some(interval) = definition.runtime.timer_interval {
+            let timer_active = Arc::new(AtomicBool::new(true));
+            let timer_flag = timer_active.clone();
+            let timer_runtime = runtime.clone();
+            let timer_thread = std::thread::Builder::new()
+                .name(format!(
+                    "strategy-timer-{}-{}",
+                    handle.strategy_id.0, handle.generation
+                ))
+                .spawn(move || {
+                    while timer_flag.load(Ordering::Acquire) {
+                        std::thread::park_timeout(interval);
+                        if timer_flag.load(Ordering::Acquire) {
+                            let _ = timer_runtime.fire_timer(1);
+                        }
+                    }
+                })
+                .map_err(|_| {
+                    StrategyError::new(
+                        StrategyErrorKind::Internal,
+                        "create",
+                        "timer_start_failed",
+                        "strategy timer worker could not be started",
+                    )
+                })?;
+            resources
+                .handle()
+                .register(
+                    "strategy_timer",
+                    StrategyTimerResource {
+                        active: timer_active,
+                        join: Some(timer_thread),
+                    },
+                )
+                .map_err(|_| {
+                    StrategyError::new(
+                        StrategyErrorKind::Internal,
+                        "create",
+                        "timer_registration_failed",
+                        "strategy timer cleanup could not be registered",
+                    )
+                })?;
+        }
         Ok(Arc::new(StrategyEntry {
             handle,
             definition,
@@ -827,10 +1129,24 @@ impl StrategyAdminService for StrategyPluginCore {
         deadline: Instant,
     ) -> LocalResult<StrategyOperationId> {
         let entry = self.entry(strategy)?;
-        let local = entry.runtime.stop(deadline)?;
+        // Stop new risk first, but keep the account lane alive until owned orders converge.
+        entry.command_gate.close();
+        entry.activation.close();
         if entry.definition.shutdown == StrategyShutdownPolicy::CancelOwnedOrders {
             entry.gateway.cancel_owned_orders(strategy)?;
+            while entry.gateway.owned_order_count() != 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if entry.gateway.owned_order_count() != 0 {
+                return Err(StrategyError::new(
+                    StrategyErrorKind::StopTimeout,
+                    "stop",
+                    "owned_orders_not_terminal",
+                    "owned orders did not reach a terminal state before the stop deadline",
+                ));
+            }
         }
+        let local = entry.runtime.stop(deadline)?;
         Ok(self.register_runtime_operation(entry, local, true))
     }
 
@@ -1076,6 +1392,9 @@ pub(crate) fn validate_definition(
         || runtime.command_capacity == 0
         || runtime.command_capacity > config.max_command_capacity
         || runtime.timer_capacity == 0
+        || runtime
+            .timer_interval
+            .is_some_and(|interval| interval.is_zero())
         || runtime.callback_budget.soft_budget.is_zero()
         || runtime.callback_budget.stall_threshold < runtime.callback_budget.soft_budget
         || runtime.callback_budget.max_consecutive_violations == 0
@@ -1364,6 +1683,22 @@ struct StrategySupervisorResource {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
+struct StrategyTimerResource {
+    active: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl titan_plugin_engine::Resource for StrategyTimerResource {
+    fn close(&mut self) -> Result<(), titan_plugin_engine::PluginError> {
+        self.active.store(false, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            join.thread().unpark();
+            let _ = join.join();
+        }
+        Ok(())
+    }
+}
+
 impl titan_plugin_engine::Resource for StrategySupervisorResource {
     fn close(&mut self) -> Result<(), titan_plugin_engine::PluginError> {
         self.active.store(false, Ordering::Release);
@@ -1396,6 +1731,19 @@ pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) ->
         ) | (BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION)
             | (ORDER_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
             | (FILL_EVENT, FILL_EVENT_SCHEMA_VERSION)
+            | (POSITION_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (BALANCE_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (COMMAND_RESULT_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (RECONCILE_STARTED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (RECONCILE_COMPLETED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+            | (
+                ACCOUNT_STREAM_STATE_CHANGED_EVENT,
+                ACCOUNT_EVENT_SCHEMA_VERSION
+            )
+            | (
+                ACCOUNT_STREAM_INVALIDATED_EVENT,
+                ACCOUNT_EVENT_SCHEMA_VERSION
+            )
     )
 }
 

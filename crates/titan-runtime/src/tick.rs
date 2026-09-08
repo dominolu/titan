@@ -806,6 +806,8 @@ where
 
     fn synthesize_order(&mut self, command: OrderCommand, now: i64, status: Status, reason: u32) {
         self.synthetic_order_events.push_back(OrderEvent {
+            local_account_no: 0,
+            _account_reserved: 0,
             asset_no: command.asset_no,
             order_id: command.order_id,
             venue_order_id: 0,

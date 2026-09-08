@@ -11,9 +11,9 @@ use titan_event_engine::*;
 use titan_market_plugin::{self as market, *};
 use titan_plugin_engine::{ApiVersion, EventQos, EventView, TraceContext};
 use titan_runtime::{CallbackRegistry, StrategyEventKind, StrategyRuntimeContext};
-use titan_runtime_abi::{
-    BAR_COMPLETE, Bar, ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand,
-};
+#[cfg(feature = "numba-loader")]
+use titan_runtime_abi::{BAR_COMPLETE, Bar};
+use titan_runtime_abi::{ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand};
 
 use super::*;
 
@@ -21,6 +21,23 @@ static STARTS: AtomicUsize = AtomicUsize::new(0);
 static TICKS: AtomicUsize = AtomicUsize::new(0);
 static STOPS: AtomicUsize = AtomicUsize::new(0);
 static FAIL_START: AtomicBool = AtomicBool::new(false);
+static DEPTH_EPOCH: AtomicU64 = AtomicU64::new(0);
+static DEPTH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static DEPTH_ACTION: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn observe_depth(context: *mut StrategyRuntimeContext) -> i32 {
+    let context = unsafe { &mut *context };
+    let batch = unsafe {
+        &*(context
+            .payload_ptr
+            .cast::<titan_runtime_abi::DepthBatchEvent>())
+    };
+    let item = unsafe { &*batch.items_ptr };
+    DEPTH_EPOCH.store(batch.stream_epoch, Ordering::SeqCst);
+    DEPTH_SEQUENCE.store(batch.last_update_sequence, Ordering::SeqCst);
+    DEPTH_ACTION.store(usize::from(item.action), Ordering::SeqCst);
+    0
+}
 
 unsafe extern "C" fn on_start(_: *mut StrategyRuntimeContext) -> i32 {
     STARTS.fetch_add(1, Ordering::SeqCst);
@@ -87,6 +104,7 @@ impl StrategyPackageLoader for FakeLoader {
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Start, on_start);
         callbacks.set(StrategyEventKind::Tick, on_tick);
+        callbacks.set(StrategyEventKind::Depth, on_tick);
         callbacks.set(StrategyEventKind::Stop, on_stop);
         Ok(StrategyArtifact {
             id: StrategyArtifactId {
@@ -113,21 +131,21 @@ impl MarketService for FakeMarket {
         _: MarketSourceHandle,
         _: MarketSubscribeRequest,
     ) -> market::LocalResult<MarketSubscription> {
-        unimplemented!()
+        Ok(MarketSubscription { id: 1 })
     }
     fn unsubscribe(
         &self,
         _: MarketSourceHandle,
         _: MarketSubscription,
     ) -> market::LocalResult<market::OperationId> {
-        unimplemented!()
+        Ok(market::OperationId(1))
     }
     fn request_snapshot(
         &self,
         _: MarketSourceHandle,
         _: market::AssetId,
     ) -> market::LocalResult<market::OperationId> {
-        unimplemented!()
+        Ok(market::OperationId(2))
     }
     fn instruments(&self, _: MarketSourceHandle) -> market::LocalResult<Arc<[InstrumentSnapshot]>> {
         Ok(Arc::from([]))
@@ -144,7 +162,11 @@ impl MarketService for FakeMarket {
         _: MarketSourceHandle,
         _: market::OperationId,
     ) -> market::LocalResult<ConnectorOperationSnapshot> {
-        unimplemented!()
+        Ok(ConnectorOperationSnapshot {
+            id: market::OperationId(2),
+            state: market::OperationState::Succeeded,
+            detail: Arc::from("succeeded"),
+        })
     }
 }
 
@@ -161,20 +183,50 @@ impl AccountService for FakeAccount {
         _: AccountHandle,
         _: OrderFilter,
     ) -> titan_account_plugin::LocalResult<AccountStateSnapshot<OrderSnapshot>> {
-        unimplemented!()
+        Ok(AccountStateSnapshot {
+            account: AccountHandle {
+                account_id: AccountId(7),
+                generation: 1,
+            },
+            state: AccountSnapshotState::Ready,
+            committed_epoch: Some(1),
+            committed_version: Some(1),
+            captured_at: 1,
+            items: Arc::from([]),
+        })
     }
     fn positions(
         &self,
         _: AccountHandle,
         _: PositionFilter,
     ) -> titan_account_plugin::LocalResult<AccountStateSnapshot<PositionSnapshot>> {
-        unimplemented!()
+        Ok(AccountStateSnapshot {
+            account: AccountHandle {
+                account_id: AccountId(7),
+                generation: 1,
+            },
+            state: AccountSnapshotState::Ready,
+            committed_epoch: Some(1),
+            committed_version: Some(1),
+            captured_at: 1,
+            items: Arc::from([]),
+        })
     }
     fn balances(
         &self,
         _: AccountHandle,
     ) -> titan_account_plugin::LocalResult<AccountStateSnapshot<BalanceSnapshot>> {
-        unimplemented!()
+        Ok(AccountStateSnapshot {
+            account: AccountHandle {
+                account_id: AccountId(7),
+                generation: 1,
+            },
+            state: AccountSnapshotState::Ready,
+            committed_epoch: Some(1),
+            committed_version: Some(1),
+            captured_at: 1,
+            items: Arc::from([]),
+        })
     }
     fn health(
         &self,
@@ -360,7 +412,7 @@ fn lifecycle_gateway_replace_and_stale_handle_contract() {
     let manifest = StrategyPackageManifest {
         strategy_type: Arc::from("native-test"),
         package_version: semver::Version::new(1, 0, 0),
-        runtime_abi: ApiVersion::new(9, 0),
+        runtime_abi: ApiVersion::new(10, 0),
         parameter_schema: Arc::new(serde_json::json!({"type":"object","required":["size"]})),
         parameter_schema_version: 1,
         state_schema_version: 1,
@@ -516,19 +568,12 @@ fn definition_rejects_non_contiguous_bindings_before_loading() {
 }
 
 #[test]
-fn definition_rejects_unimplemented_canonical_subscriptions() {
+fn definition_rejects_remaining_unimplemented_canonical_subscriptions() {
     let config = StrategyPluginConfig::default();
     let unsupported: &[(&str, u32)] = &[
-        (POSITION_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
-        (BALANCE_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
-        (COMMAND_RESULT_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
         (FUNDING_RATE_EVENT, MARKET_EVENT_SCHEMA_VERSION),
         (MARK_PRICE_EVENT, MARKET_EVENT_SCHEMA_VERSION),
         (TICKER_EVENT, MARKET_EVENT_SCHEMA_VERSION),
-        (
-            "titan.account.StreamStateChanged",
-            ACCOUNT_EVENT_SCHEMA_VERSION,
-        ),
     ];
     for (event_type, schema_version) in unsupported {
         let mut value = definition(1);
@@ -558,7 +603,7 @@ fn manifest_rejects_unimplemented_command_capabilities() {
         let manifest = StrategyPackageManifest {
             strategy_type: Arc::from("command-test"),
             package_version: semver::Version::new(1, 0, 0),
-            runtime_abi: ApiVersion::new(9, 0),
+            runtime_abi: ApiVersion::new(10, 0),
             parameter_schema: Arc::new(serde_json::json!({"type":"object"})),
             parameter_schema_version: 1,
             state_schema_version: 1,
@@ -576,24 +621,12 @@ fn manifest_rejects_unimplemented_command_capabilities() {
 #[test]
 fn adapter_fails_fast_on_unimplemented_canonical_facts() {
     let adapter = CanonicalStrategyEventAdapter::new(&[]);
-    let mut payload = vec![0_u8; BalanceChangedV1::ENCODED_LEN];
-    BalanceChangedV1 {
-        header: AccountEventHeaderV1 {
-            account_id: 7,
-            ..AccountEventHeaderV1::default()
-        },
-        currency_id: 1,
-        wallet_units: 1_000,
-        available_units: 900,
-        margin_units: 100,
-        unrealized_pnl_units: 5,
-    }
-    .encode_into(&mut payload)
-    .unwrap();
+    let payload = [];
     let event = EventView {
-        event_type: BALANCE_CHANGED_EVENT,
-        schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
+        event_type: FUNDING_RATE_EVENT,
+        schema_version: MARKET_EVENT_SCHEMA_VERSION,
         payload: &payload,
+        metadata: titan_plugin_engine::EventPublishMetadata::default(),
         trace: TraceContext::default(),
     };
     let error = adapter
@@ -604,6 +637,59 @@ fn adapter_fails_fast_on_unimplemented_canonical_facts() {
         )
         .unwrap_err();
     assert_eq!(error.reason_code.as_ref(), "unsupported_canonical_event");
+}
+
+#[test]
+fn adapter_preserves_depth_source_epoch_sequence_flags_and_actions() {
+    let adapter = CanonicalStrategyEventAdapter::new(&[ResolvedMarketBinding {
+        local_market_no: 2,
+        local_asset_no: 3,
+        source: MarketSourceHandle {
+            source_id: MarketSourceId(9),
+            generation: 1,
+        },
+        asset_id: 77,
+        data_mode: StrategyDataMode::Tick,
+    }]);
+    let payload = encode_depth_batch(
+        MarketBatchHeaderV1 {
+            asset_id: 77,
+            kind: 1,
+            flags: 1,
+            stream_epoch: 5,
+            first_update_sequence: 100,
+            last_update_sequence: 101,
+            exchange_ts: 10,
+            receive_ts: 11,
+            ..MarketBatchHeaderV1::default()
+        },
+        &[DepthItemV1 {
+            price_ticks: 123,
+            quantity_lots: 45,
+            side: 1,
+            action: 2,
+            ..DepthItemV1::default()
+        }],
+    )
+    .unwrap();
+    let event = EventView {
+        event_type: DEPTH_BATCH_EVENT,
+        schema_version: MARKET_EVENT_SCHEMA_VERSION,
+        payload: &payload,
+        metadata: titan_plugin_engine::EventPublishMetadata {
+            source_id: 18,
+            ..titan_plugin_engine::EventPublishMetadata::default()
+        },
+        trace: TraceContext::default(),
+    };
+    let mut callbacks = CallbackRegistry::default();
+    callbacks.set(StrategyEventKind::Depth, observe_depth);
+    let mut context = StrategyRuntimeContext::default();
+    let kind = adapter.invoke(event, &callbacks, &mut context).unwrap();
+    assert_eq!(kind, StrategyEventKind::Depth);
+    assert_eq!(DEPTH_EPOCH.load(Ordering::SeqCst), 5);
+    assert_eq!(DEPTH_SEQUENCE.load(Ordering::SeqCst), 101);
+    assert_eq!(DEPTH_ACTION.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -651,6 +737,76 @@ fn cancel_accepts_zero_quantity_and_ignores_submit_only_numeric_fields() {
         )
         .unwrap();
     assert_eq!(execution_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_cancel_result_keeps_order_owned_until_terminal_order_fact() {
+    let strategy = StrategyHandle {
+        strategy_id: StrategyId(13),
+        generation: 2,
+    };
+    let gate = Arc::new(StrategyCommandGate::new(strategy));
+    gate.open();
+    let gateway = StandardStrategyCommandGateway::new(
+        strategy,
+        StrategyCapabilities(
+            StrategyCapabilities::SUBMIT_ORDER.0 | StrategyCapabilities::CANCEL_ORDER.0,
+        ),
+        gate,
+        &[ResolvedAccountBinding {
+            local_account_no: 0,
+            account: AccountHandle {
+                account_id: AccountId(7),
+                generation: 1,
+            },
+            tradable_assets: Arc::from([StrategyTradableAsset {
+                local_asset_no: 0,
+                asset_id: 1,
+            }]),
+        }],
+        Arc::new(FakeExecution {
+            calls: Arc::new(AtomicUsize::new(0)),
+            last_trace_id: Arc::new(AtomicU64::new(0)),
+        }),
+    );
+    let submit = gateway
+        .execute(
+            strategy,
+            OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: 1,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 42,
+                price: 10.0,
+                qty: 1.0,
+                ..OrderCommand::default()
+            },
+            TraceContext::default(),
+        )
+        .unwrap();
+    let client_order_id = submit.client_order_id.unwrap();
+    gateway.observe_command_result(submit.command_id, client_order_id, true, true);
+    assert_eq!(gateway.owned_order_count(), 1);
+
+    let cancel = gateway
+        .execute(
+            strategy,
+            OrderCommand {
+                kind: ORDER_COMMAND_CANCEL,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 42,
+                ..OrderCommand::default()
+            },
+            TraceContext::default(),
+        )
+        .unwrap();
+    gateway.observe_command_result(cancel.command_id, client_order_id, true, false);
+    assert_eq!(gateway.owned_order_count(), 1);
+
+    gateway.observe_order(client_order_id, 4);
+    assert_eq!(gateway.owned_order_count(), 0);
 }
 
 #[test]
@@ -728,6 +884,21 @@ fn gateway_rejects_invalid_submit_enum_fields_before_execution() {
                 ..OrderCommand::default()
             },
         ),
+        (
+            "price",
+            OrderCommand {
+                kind: ORDER_COMMAND_SUBMIT,
+                side: 1,
+                time_in_force: 0,
+                order_type: 0,
+                local_account_no: 0,
+                asset_no: 0,
+                order_id: 10,
+                price: 10.5,
+                qty: 1.0,
+                ..OrderCommand::default()
+            },
+        ),
     ];
     for (reason, command) in cases {
         let error = gateway
@@ -736,6 +907,8 @@ fn gateway_rejects_invalid_submit_enum_fields_before_execution() {
         assert_eq!(error.reason_code.as_ref(), reason);
     }
     assert_eq!(execution_calls.load(Ordering::SeqCst), 0);
+    assert!(gateway.metadata(strategy).pending_command_ids.is_empty());
+    assert_eq!(gateway.owned_order_count(), 0);
 }
 
 struct ChainSecrets;
@@ -801,6 +974,7 @@ impl StrategyPackageLoader for ChainLoader {
         let mut callbacks = CallbackRegistry::default();
         callbacks.set(StrategyEventKind::Start, chain_noop);
         callbacks.set(StrategyEventKind::Tick, chain_on_tick);
+        callbacks.set(StrategyEventKind::Depth, chain_on_tick);
         callbacks.set(StrategyEventKind::Order, chain_on_order);
         callbacks.set(StrategyEventKind::Filled, chain_on_filled);
         callbacks.set(StrategyEventKind::Stop, chain_noop);
@@ -1184,7 +1358,7 @@ fn strategy_command_reaches_account_connector_and_account_facts_return_to_strate
     let manifest = StrategyPackageManifest {
         strategy_type: Arc::from("account-chain"),
         package_version: Version::new(1, 0, 0),
-        runtime_abi: ApiVersion::new(9, 0),
+        runtime_abi: ApiVersion::new(10, 0),
         parameter_schema: Arc::new(serde_json::json!({"type":"object"})),
         parameter_schema_version: 1,
         state_schema_version: 1,
@@ -1534,7 +1708,7 @@ fn fake_market_connector_reaches_numba_over_primary_lane_without_python_hot_path
         serde_json::to_vec(&serde_json::json!({
             "strategy_type": "numba-e2e",
             "package_version": "1.0.0",
-            "runtime_abi": {"major": 9, "minor": 0},
+            "runtime_abi": {"major": 10, "minor": 0},
             "parameter_schema": {"type": "object"},
             "parameter_schema_version": 1,
             "state_schema_version": 1,
