@@ -60,6 +60,78 @@ fn f(s: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
 
+fn account_info_from_states(
+    abstraction: &str,
+    perp: &m::ClearinghouseStateDetail,
+    spot: Option<&m::SpotClearinghouseState>,
+    now_ms: i64,
+) -> AccountInfo {
+    let unrealized_pnl = perp
+        .asset_positions
+        .iter()
+        .map(|p| f(&p.position.unrealized_pnl))
+        .sum::<f64>();
+
+    if matches!(abstraction, "unifiedAccount" | "portfolioMargin") {
+        let spot = spot.expect("spot state is required for unified account modes");
+        let available_after_maintenance: HashMap<u64, f64> = spot
+            .token_to_available_after_maintenance
+            .iter()
+            .map(|(token, available)| (*token, f(available)))
+            .collect();
+        let balances = spot
+            .balances
+            .iter()
+            .map(|balance| {
+                let total = f(&balance.total);
+                let available = available_after_maintenance
+                    .get(&balance.token)
+                    .copied()
+                    .unwrap_or_else(|| (total - f(&balance.hold)).max(0.0));
+                Balance {
+                    asset: balance.coin.clone(),
+                    wallet_balance: total,
+                    available_balance: available,
+                    unrealized_pnl: if balance.coin == "USDC" {
+                        unrealized_pnl
+                    } else {
+                        0.0
+                    },
+                    margin_balance: total,
+                }
+            })
+            .collect::<Vec<_>>();
+        let usdc = balances.iter().find(|balance| balance.asset == "USDC");
+        let total = usdc.map(|balance| balance.wallet_balance).unwrap_or(0.0);
+        let available = usdc.map(|balance| balance.available_balance).unwrap_or(0.0);
+        return AccountInfo {
+            total_wallet_balance: total,
+            total_margin_balance: total,
+            total_unrealized_pnl: unrealized_pnl,
+            available_balance: available,
+            balances,
+            timestamp: now_ms,
+        };
+    }
+
+    let summary = &perp.margin_summary;
+    let account_value = f(&summary.account_value);
+    AccountInfo {
+        total_wallet_balance: account_value,
+        total_margin_balance: f(&summary.total_margin_used) + account_value,
+        total_unrealized_pnl: unrealized_pnl,
+        available_balance: f(&perp.withdrawable),
+        balances: vec![Balance {
+            asset: "USDC".to_string(),
+            wallet_balance: account_value,
+            available_balance: f(&perp.withdrawable),
+            unrealized_pnl,
+            margin_balance: account_value,
+        }],
+        timestamp: perp.time as i64,
+    }
+}
+
 /// HL 方向：A = ask 侧（卖出），B = bid 侧（买入）。
 fn side_from_hl(s: &str) -> ApiSide {
     match s {
@@ -569,8 +641,13 @@ impl HyperliquidClient {
     pub async fn get_spot_clearinghouse_state(
         &self,
         user: &str,
-    ) -> Result<serde_json::Value, HyperliquidError> {
+    ) -> Result<m::SpotClearinghouseState, HyperliquidError> {
         self.parse_info(serde_json::json!({"type": "spotClearinghouseState", "user": user}))
+            .await
+    }
+
+    pub async fn get_user_abstraction(&self, user: &str) -> Result<String, HyperliquidError> {
+        self.parse_info(serde_json::json!({"type": "userAbstraction", "user": user}))
             .await
     }
 
@@ -1363,23 +1440,21 @@ impl BrokerApi for HyperliquidClient {
 
     async fn get_account(&self) -> Result<AccountInfo, ApiError> {
         let user = self.require_user()?;
-        let state = self.get_clearinghouse_state_detail(user).await?;
-        let summary = state.margin_summary;
-        let account_value = f(&summary.account_value);
-        Ok(AccountInfo {
-            total_wallet_balance: account_value,
-            total_margin_balance: f(&summary.total_margin_used) + account_value,
-            total_unrealized_pnl: f(&summary.total_ntl_pos),
-            available_balance: f(&state.withdrawable),
-            balances: vec![Balance {
-                asset: "USDC".to_string(),
-                wallet_balance: account_value,
-                available_balance: f(&state.withdrawable),
-                unrealized_pnl: f(&summary.total_ntl_pos),
-                margin_balance: account_value,
-            }],
-            timestamp: state.time as i64,
-        })
+        let (state, abstraction) = tokio::try_join!(
+            self.get_clearinghouse_state_detail(user),
+            self.get_user_abstraction(user),
+        )?;
+        let spot_state = if matches!(abstraction.as_str(), "unifiedAccount" | "portfolioMargin") {
+            Some(self.get_spot_clearinghouse_state(user).await?)
+        } else {
+            None
+        };
+        Ok(account_info_from_states(
+            &abstraction,
+            &state,
+            spot_state.as_ref(),
+            chrono::Utc::now().timestamp_millis(),
+        ))
     }
 
     async fn get_positions(&self, symbol: Option<&str>) -> Result<Vec<PositionInfo>, ApiError> {
@@ -2001,6 +2076,58 @@ mod tests {
         assert_eq!(p.szi, "1.5");
         assert_eq!(p.entry_px, "50000.0");
         assert_eq!(p.leverage.as_ref().unwrap().value, Some(10));
+    }
+
+    #[test]
+    fn test_unified_account_uses_spot_balance_and_maintenance_available() {
+        let perp: m::ClearinghouseStateDetail = serde_json::from_str(
+            r#"{
+                "marginSummary":{"accountValue":"0.0"},
+                "withdrawable":"0.0",
+                "assetPositions":[],
+                "time":1700000000000
+            }"#,
+        )
+        .unwrap();
+        let spot: m::SpotClearinghouseState = serde_json::from_str(
+            r#"{
+                "balances":[
+                    {"coin":"USDC","token":0,"total":"100.83187933","hold":"4.0","entryNtl":"0.0"},
+                    {"coin":"HYPE","token":150,"total":"2.0","hold":"0.5","entryNtl":"20.0"}
+                ],
+                "tokenToAvailableAfterMaintenance":[[0,"91.25"]]
+            }"#,
+        )
+        .unwrap();
+
+        let account = account_info_from_states("unifiedAccount", &perp, Some(&spot), 1700000000123);
+
+        assert_eq!(account.total_wallet_balance, 100.83187933);
+        assert_eq!(account.available_balance, 91.25);
+        assert_eq!(account.timestamp, 1700000000123);
+        assert_eq!(account.balances.len(), 2);
+        assert_eq!(account.balances[1].available_balance, 1.5);
+    }
+
+    #[test]
+    fn test_standard_account_keeps_perp_balance_source() {
+        let perp: m::ClearinghouseStateDetail = serde_json::from_str(
+            r#"{
+                "marginSummary":{"accountValue":"50.0","totalMarginUsed":"10.0"},
+                "withdrawable":"35.0",
+                "assetPositions":[{"position":{"coin":"ETH","unrealizedPnl":"2.5"}}],
+                "time":1700000000000
+            }"#,
+        )
+        .unwrap();
+
+        let account = account_info_from_states("disabled", &perp, None, 1700000000123);
+
+        assert_eq!(account.total_wallet_balance, 50.0);
+        assert_eq!(account.total_margin_balance, 60.0);
+        assert_eq!(account.total_unrealized_pnl, 2.5);
+        assert_eq!(account.available_balance, 35.0);
+        assert_eq!(account.timestamp, 1700000000000);
     }
 
     #[test]

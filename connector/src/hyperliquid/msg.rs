@@ -394,6 +394,30 @@ pub struct ClearinghouseStateDetail {
     pub time: u64,
 }
 
+#[derive(Default, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotClearinghouseState {
+    #[serde(default)]
+    pub balances: Vec<SpotBalance>,
+    #[serde(default)]
+    pub token_to_available_after_maintenance: Vec<(u64, String)>,
+}
+
+#[derive(Default, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotBalance {
+    #[serde(default)]
+    pub coin: String,
+    #[serde(default)]
+    pub token: u64,
+    #[serde(default)]
+    pub total: String,
+    #[serde(default)]
+    pub hold: String,
+    #[serde(default)]
+    pub entry_ntl: String,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetPositionDetail {
