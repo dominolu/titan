@@ -417,44 +417,42 @@ impl PublicStream {
                         .unwrap_or_else(|| bbo.inst_id.clone());
                     let exch_ts = bbo.ts.parse::<i64>().unwrap_or(0) * 1_000_000;
                     let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
+                    let mut events = Vec::with_capacity(2);
                     if let Some((bid_px, bid_sz)) = bbo.best_bid()
                         && let Ok(bid_px) = bid_px.parse::<f64>()
                         && bid_px > 0.0
                     {
-                        self.ev_tx
-                            .send(PublishEvent::FeedBatch {
-                                symbol: symbol.clone(),
-                                events: vec![Event {
-                                    ev: LOCAL_BID_DEPTH_BBO_EVENT,
-                                    exch_ts,
-                                    local_ts,
-                                    order_id: 0,
-                                    px: bid_px,
-                                    qty: bid_sz.parse().unwrap_or(0.0),
-                                    ival: 0,
-                                    fval: 0.0,
-                                }],
-                                stream: None,
-                            })
-                            .unwrap();
+                        events.push(Event {
+                            ev: LOCAL_BID_DEPTH_BBO_EVENT,
+                            exch_ts,
+                            local_ts,
+                            order_id: 0,
+                            px: bid_px,
+                            qty: bid_sz.parse().unwrap_or(0.0),
+                            ival: 0,
+                            fval: 0.0,
+                        });
                     }
                     if let Some((ask_px, ask_sz)) = bbo.best_ask()
                         && let Ok(ask_px) = ask_px.parse::<f64>()
                         && ask_px > 0.0
                     {
+                        events.push(Event {
+                            ev: LOCAL_ASK_DEPTH_BBO_EVENT,
+                            exch_ts,
+                            local_ts,
+                            order_id: 0,
+                            px: ask_px,
+                            qty: ask_sz.parse().unwrap_or(0.0),
+                            ival: 0,
+                            fval: 0.0,
+                        });
+                    }
+                    if !events.is_empty() {
                         self.ev_tx
                             .send(PublishEvent::FeedBatch {
-                                symbol: symbol.clone(),
-                                events: vec![Event {
-                                    ev: LOCAL_ASK_DEPTH_BBO_EVENT,
-                                    exch_ts,
-                                    local_ts,
-                                    order_id: 0,
-                                    px: ask_px,
-                                    qty: ask_sz.parse().unwrap_or(0.0),
-                                    ival: 0,
-                                    fval: 0.0,
-                                }],
+                                symbol,
+                                events,
                                 stream: None,
                             })
                             .unwrap();
@@ -680,12 +678,14 @@ mod tests {
         })
         .to_string();
         stream.handle_public_stream(&message).await.unwrap();
-        for _ in 0..2 {
-            assert!(matches!(
-                receiver.recv().await,
-                Some(PublishEvent::FeedBatch { symbol, .. })
-                    if symbol == "BTC-USDT-SWAP"
-            ));
+        match receiver.recv().await {
+            Some(PublishEvent::FeedBatch { symbol, events, .. }) => {
+                assert_eq!(symbol, "BTC-USDT-SWAP");
+                assert_eq!(events.len(), 2);
+                assert!(events[0].is(hftbacktest::types::BUY_EVENT));
+                assert!(events[1].is(hftbacktest::types::SELL_EVENT));
+            }
+            _ => panic!("expected one atomic BBO batch"),
         }
     }
 }
