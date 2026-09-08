@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=%h/titan-xemm-current
 Environment="VIRTUAL_ENV=%h/titan-xemm-venv"
 Environment="PATH=%h/titan-xemm-venv/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="RUST_LOG=warn"
 ExecStart=%h/titan-xemm-current/target/release/titan core-run --config %h/titan-xemm-current/deploy/okx_hyperliquid_xemm_testnet/runtime.toml --json
 Restart=no
 TimeoutStopSec=30

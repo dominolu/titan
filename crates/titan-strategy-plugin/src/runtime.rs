@@ -18,6 +18,7 @@ use titan_runtime_abi::{
     AccountStateEvent, BalanceEvent, BarItem, CommandResultEvent, DepthBatchEvent, DepthItemEvent,
     Event, FillEvent, OrderEvent, PositionEvent, TickItem,
 };
+use tracing::warn;
 
 use crate::*;
 
@@ -938,6 +939,14 @@ impl EventHandler for NativeStrategyRuntime {
             if let Some(ready) = ready {
                 inner.account_ready.insert(binding.local_account_no, ready);
                 if !ready {
+                    warn!(
+                        strategy_id = self.core.context.strategy.strategy_id.0,
+                        generation = self.core.context.strategy.generation,
+                        account_id = header.account_id,
+                        local_account_no = binding.local_account_no,
+                        event_type = event.event_type,
+                        "account readiness event paused the strategy runtime",
+                    );
                     self.core.context.command_gate.close();
                     self.core.context.activation.close();
                     if inner.lifecycle == StrategyLifecycle::Running {
@@ -1018,6 +1027,30 @@ impl EventHandler for NativeStrategyRuntime {
                     .callback_budget
                     .max_consecutive_violations
         {
+            warn!(
+                strategy_id = self.core.context.strategy.strategy_id.0,
+                generation = self.core.context.strategy.generation,
+                event_type = event.event_type,
+                elapsed_ns = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
+                soft_budget_ns = self
+                    .core
+                    .definition
+                    .runtime
+                    .callback_budget
+                    .soft_budget
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+                stall_threshold_ns = self
+                    .core
+                    .definition
+                    .runtime
+                    .callback_budget
+                    .stall_threshold
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+                consecutive_budget_violations = *consecutive_budget_violations,
+                "strategy callback budget invalidated the runtime",
+            );
             self.core.context.command_gate.close();
             self.core.context.activation.close();
             *last_error = Some(Arc::from("callback_stall"));
@@ -1030,6 +1063,13 @@ impl EventHandler for NativeStrategyRuntime {
             *lifecycle = StrategyLifecycle::Invalidated;
         }
         if let Err(error) = result {
+            warn!(
+                strategy_id = self.core.context.strategy.strategy_id.0,
+                generation = self.core.context.strategy.generation,
+                event_type = event.event_type,
+                reason_code = error.reason_code.as_ref(),
+                "strategy callback failed and invalidated the runtime",
+            );
             self.core.context.command_gate.close();
             self.core.context.activation.close();
             context.last_error = -1;

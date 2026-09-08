@@ -100,9 +100,9 @@ definition_version = 1
 [[strategies]]
 strategy_key = "okx_hyperliquid_xemm"
 strategy_id = 9001
-package = { loader_type = "numba-python", uri = "file://../../strategies/okx_hyperliquid_xemm", expected_digest = [30, 254, 173, 70, 232, 79, 251, 134, 57, 198, 228, 106, 35, 66, 160, 0, 38, 127, 203, 83, 168, 233, 87, 95, 36, 218, 237, 95, 11, 214, 168, 25] }
+package = { loader_type = "numba-python", uri = "file://../../strategies/okx_hyperliquid_xemm", expected_digest = [101, 204, 141, 69, 67, 184, 132, 9, 84, 88, 122, 82, 38, 18, 52, 237, 23, 45, 26, 164, 254, 216, 98, 11, 95, 226, 139, 9, 127, 42, 77, 15] }
 entrypoint = "okx_hyperliquid_xemm.strategy:build"
-parameters = '''{"order_amount_base":0.0001,"min_profitability_bps":10.0,"cancel_profitability_bps":5.0,"maker_fee_bps":5.0,"taker_fee_bps":10.0,"hedge_slippage_bps":50.0,"taker_volume_factor":0.1,"quote_conversion_rate":1.0,"maker_price_tick":0.1,"maker_quantity_lot":0.01,"maker_contract_base_multiplier":0.01,"hedge_price_tick":0.1,"hedge_quantity_lot":0.00001,"hedge_contract_base_multiplier":1.0,"max_order_notional":10.0,"max_abs_position_base":0.0003,"max_unhedged_base":0.0002,"max_unhedged_notional":20.0,"market_stale_ms":3000,"conversion_expiry_ns":1893456000000000000,"requote_threshold_ticks":2,"anti_hysteresis_ms":5000,"price_sample_interval_ms":1000,"price_sample_window":12,"hedge_retry_limit":5,"hedge_retry_backoff_ms":250,"adjust_order_enabled":true}'''
+parameters = '''{"order_amount_base":0.0001,"min_profitability_bps":10.0,"cancel_profitability_bps":5.0,"maker_fee_bps":5.0,"taker_fee_bps":10.0,"hedge_slippage_bps":50.0,"taker_volume_factor":0.1,"quote_conversion_rate":1.0,"maker_price_tick":0.1,"maker_quantity_lot":0.01,"maker_contract_base_multiplier":0.01,"hedge_price_tick":0.1,"hedge_quantity_lot":0.00001,"hedge_contract_base_multiplier":1.0,"max_order_notional":10.0,"max_abs_position_base":0.0003,"max_unhedged_base":0.0002,"max_unhedged_notional":20.0,"market_stale_ms":12000,"conversion_expiry_ns":1893456000000000000,"requote_threshold_ticks":2,"anti_hysteresis_ms":5000,"price_sample_interval_ms":1000,"price_sample_window":12,"hedge_retry_limit":5,"hedge_retry_backoff_ms":250,"adjust_order_enabled":true}'''
 parameter_schema_version = 1
 markets = [
   { local_market_no = 0, local_asset_no = 0, source_key = "okx-btc-mainnet", asset_id = 1001, data_mode = "tick" },
@@ -118,7 +118,7 @@ subscriptions = [
   { event_type = "titan.account.Fill", schema_version = 2, routing_keys = [2001, 2002], qos = "ReliableOrdered" },
 ]
 risk_scope = "okx-hyperliquid-mainnet-shadow"
-runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", command_capacity = 64, timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, state_f64_capacity = 1024, state_i64_capacity = 1024, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
+runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", command_capacity = 64, timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, state_f64_capacity = 1024, state_i64_capacity = 1024, callback_budget = { soft_budget = { secs = 0, nanos = 2000000 }, stall_threshold = { secs = 0, nanos = 100000000 }, max_consecutive_violations = 10 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
 recovery = "fresh"
 shutdown = "cancel_owned_orders"
 enabled = true

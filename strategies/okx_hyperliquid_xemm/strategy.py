@@ -110,7 +110,6 @@ I_HEDGE_DEPTH_SEQUENCE = 32
 I_MAKER_POSITION_SEQUENCE = 33
 I_HEDGE_POSITION_SEQUENCE = 34
 I_DEPTH_INVALID_COUNT = 35
-I_LAST_DIAGNOSTIC_TS = 36
 
 MAX_FILL_DEDUPE = 128
 I_DEDUPE_KEYS = 48
@@ -696,7 +695,10 @@ def build(parameters):
         sequence = batch["last_update_sequence"]
         previous_epoch = s.state_i64[I_HEDGE_DEPTH_EPOCH]
         previous_sequence = s.state_i64[I_HEDGE_DEPTH_SEQUENCE]
-        if epoch < previous_epoch or (epoch == previous_epoch and sequence <= previous_sequence):
+        # Hyperliquid l2Book messages are complete, idempotent images and do not expose a native
+        # update sequence. Dynamic connector boundaries may therefore repeat the synthesized
+        # (epoch, sequence) coordinates; only a true regression is unsafe.
+        if epoch < previous_epoch or (epoch == previous_epoch and sequence < previous_sequence):
             return
         if batch["first_update_sequence"] > sequence:
             s.state_i64[I_DEPTH_INVALID_COUNT] += 1
@@ -889,21 +891,6 @@ def build(parameters):
     def on_timer(s):
         maybe_submit_hedge(s)
         reconcile_quotes(s)
-        if s.now - s.state_i64[I_LAST_DIAGNOSTIC_TS] >= 5_000_000_000:
-            s.state_i64[I_LAST_DIAGNOSTIC_TS] = s.now
-            print(
-                "XEMM_DIAG",
-                s.state_i64[I_MODE],
-                s.state_i64[I_ACCOUNT_READY_MASK],
-                s.state_i64[I_MAKER_POSITION_READY],
-                s.state_i64[I_HEDGE_POSITION_READY],
-                s.state_i64[I_LAST_MAKER_TS],
-                s.state_i64[I_LAST_HEDGE_TS],
-                s.state[F_TARGET_BID_LOTS],
-                s.state[F_TARGET_ASK_LOTS],
-                s.state_i64[I_REJECT_COUNT],
-                s.state_i64[I_DEPTH_INVALID_COUNT],
-            )
 
     @njit
     def on_error(s):

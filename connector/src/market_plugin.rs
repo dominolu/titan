@@ -22,6 +22,7 @@ use titan_market_plugin::{
 };
 use titan_plugin_engine::ClosureResource;
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
 use crate::{
     connector::{
@@ -211,6 +212,11 @@ impl MarketConnector for MarketConnectorRuntime {
                 ),
             };
             if let Err(error) = result {
+                warn!(
+                    symbol = symbol.unwrap_or(""),
+                    error = %error,
+                    "market publication failed; scheduling stream recovery",
+                );
                 if let Some(symbol) = symbol {
                     publish_overflow
                         .lock()
