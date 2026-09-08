@@ -184,11 +184,15 @@ pub struct Balance {
     #[serde(default)]
     pub ccy: String,
     #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub eq: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
     pub total_eq: f64,
     #[serde(default, deserialize_with = "from_str_to_f64")]
     pub adj_eq: f64,
     #[serde(default, deserialize_with = "from_str_to_f64")]
     pub avail_eq: f64,
+    #[serde(default, deserialize_with = "from_str_to_f64")]
+    pub avail_bal: f64,
     #[serde(default, deserialize_with = "from_str_to_f64")]
     pub cash_bal: f64,
     #[serde(default, deserialize_with = "from_str_to_f64")]

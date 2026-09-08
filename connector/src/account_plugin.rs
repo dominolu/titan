@@ -1785,10 +1785,10 @@ fn balance_snapshot(
 ) -> Result<account::BalanceSnapshot, account::AccountConnectorError> {
     Ok(account::BalanceSnapshot {
         currency_id: b.currency_id,
-        wallet_units: to_units(v.wallet_balance, b.amount_unit)?,
-        available_units: to_units(v.available_balance, b.amount_unit)?,
-        margin_units: to_units(v.margin_balance, b.amount_unit)?,
-        unrealized_pnl_units: to_units(v.unrealized_pnl, b.amount_unit)?,
+        wallet_units: to_balance_units(v.wallet_balance, b.amount_unit)?,
+        available_units: to_balance_units(v.available_balance, b.amount_unit)?,
+        margin_units: to_balance_units(v.margin_balance, b.amount_unit)?,
+        unrealized_pnl_units: to_balance_units(v.unrealized_pnl, b.amount_unit)?,
     })
 }
 fn balance_event(
@@ -1815,6 +1815,20 @@ fn to_units(value: f64, unit: account::DecimalUnit) -> Result<i64, account::Acco
         return Err(rejected(
             "venue decimal is not exactly representable in configured units",
         ));
+    }
+    Ok(rounded as i64)
+}
+fn to_balance_units(
+    value: f64,
+    unit: account::DecimalUnit,
+) -> Result<i64, account::AccountConnectorError> {
+    if !value.is_finite() {
+        return Err(rejected("non-finite venue balance"));
+    }
+    let scaled = value * 10_f64.powi(i32::from(unit.scale())) / unit.coefficient() as f64;
+    let rounded = scaled.round();
+    if rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
+        return Err(rejected("venue balance exceeds configured integer range"));
     }
     Ok(rounded as i64)
 }
@@ -2334,6 +2348,16 @@ mod tests {
         assert_eq!(from_units(1234, unit), 1.234);
         assert!(to_units(1.2345, unit).is_err());
         assert!(to_units(f64::NAN, unit).is_err());
+    }
+
+    #[test]
+    fn balance_conversion_rounds_venue_valuation_tail_to_configured_unit() {
+        let unit: account::DecimalUnit = "0.00000001".parse().unwrap();
+        assert_eq!(
+            to_balance_units(47.266699775888085, unit).unwrap(),
+            4_726_669_978
+        );
+        assert!(to_balance_units(f64::NAN, unit).is_err());
     }
 
     #[test]

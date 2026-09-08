@@ -144,10 +144,10 @@ fn account_from(a: &m::AccountBalance) -> AccountInfo {
             .iter()
             .map(|d| Balance {
                 asset: d.ccy.clone(),
-                wallet_balance: d.total_eq,
-                available_balance: d.avail_eq,
+                wallet_balance: d.eq,
+                available_balance: d.avail_bal,
                 unrealized_pnl: d.u_pnl,
-                margin_balance: d.iso_eq,
+                margin_balance: d.eq,
             })
             .collect(),
         timestamp: i(&a.ts),
@@ -1477,8 +1477,9 @@ mod tests {
                 "ts": "1700000000000",
                 "details": [{
                     "ccy": "USDT",
-                    "totalEq": "10000.0",
+                    "eq": "10000.0",
                     "availEq": "9900.0",
+                    "availBal": "9800.0",
                     "cashBal": "10000.0",
                     "uPnl": "100.0",
                     "isoEq": "100.0",
@@ -1493,6 +1494,9 @@ mod tests {
         assert_eq!(info.total_unrealized_pnl, 100.0);
         assert_eq!(info.balances.len(), 1);
         assert_eq!(info.balances[0].asset, "USDT");
+        assert_eq!(info.balances[0].wallet_balance, 10000.0);
+        assert_eq!(info.balances[0].available_balance, 9800.0);
+        assert_eq!(info.balances[0].margin_balance, 10000.0);
     }
 
     #[test]
@@ -1769,6 +1773,28 @@ mod tests {
 
         let funding = api.get_funding_rate("BTC-USDT-SWAP").await.unwrap();
         println!("funding={funding:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires explicit OKX mainnet credentials"]
+    async fn live_private_account_smoke() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let client = OkxClient::new(
+            "https://www.okx.com",
+            &std::env::var("OKX_API_KEY").expect("OKX_API_KEY is required"),
+            &std::env::var("OKX_SECRET_KEY").expect("OKX_SECRET_KEY is required"),
+            &std::env::var("OKX_PASSPHRASE").expect("OKX_PASSPHRASE is required"),
+        );
+        let account = BrokerApi::get_account(&client).await.expect("get_account");
+        let usdt = account
+            .balances
+            .iter()
+            .find(|balance| balance.asset == "USDT")
+            .expect("USDT balance");
+        println!("USDT balance={usdt:?}");
+        assert!(usdt.wallet_balance > 0.0);
+        assert!(usdt.available_balance > 0.0);
+        assert!(usdt.margin_balance > 0.0);
     }
 }
 
