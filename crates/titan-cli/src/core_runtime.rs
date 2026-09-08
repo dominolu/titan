@@ -1134,7 +1134,7 @@ mod tests {
         assert!(
             std::str::from_utf8(&config.strategies[0].parameters)
                 .unwrap()
-                .contains("\"min_profitability_bps\":10000.0")
+            .contains("\"min_profitability_bps\":10.0")
         );
     }
 
