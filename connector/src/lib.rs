@@ -21,6 +21,16 @@ mod market_event;
 pub mod market_plugin;
 mod utils;
 
+/// Installs the connector crate's process-wide TLS crypto provider before any
+/// reqwest or websocket client is constructed. Dynamic connector plugins each
+/// carry their own rustls instance, so this must run inside the connector
+/// library rather than only in the Titan executable.
+pub(crate) fn ensure_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+}
+
 #[cfg(feature = "binancefutures")]
 pub mod binancefutures;
 #[cfg(feature = "hyperliquid")]

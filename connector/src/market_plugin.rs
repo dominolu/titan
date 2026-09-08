@@ -129,6 +129,7 @@ impl MarketConnectorRuntime {
 
 impl MarketConnector for MarketConnectorRuntime {
     fn start(&self) -> Result<(), ConnectorError> {
+        crate::ensure_rustls_crypto_provider();
         if self.running.swap(true, Ordering::AcqRel) {
             return Err(ConnectorError::new("connector already running"));
         }
@@ -719,6 +720,7 @@ where
     C: Connector + ConnectorBuilder + 'static,
     C::Error: std::fmt::Debug,
 {
+    crate::ensure_rustls_crypto_provider();
     let config = std::str::from_utf8(&definition.connector_config)
         .map_err(|_| ConnectorError::new("connector_config must be UTF-8 TOML"))?;
     let venue = C::build_from(config)
@@ -772,6 +774,7 @@ impl MarketConnectorFactory for HyperliquidMarketFactory {
         definition: &MarketSourceDefinition,
         context: MarketConnectorContext,
     ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        crate::ensure_rustls_crypto_provider();
         let config = std::str::from_utf8(&definition.connector_config)
             .map_err(|_| ConnectorError::new("connector_config must be UTF-8 TOML"))?;
         let venue = crate::hyperliquid::Hyperliquid::build_market_from(config)

@@ -422,6 +422,7 @@ fn close_weak(weak: &Weak<AccountRuntime>) -> Result<(), titan_plugin_engine::Pl
 
 impl account::AccountConnector for AccountRuntime {
     fn start(&self) -> Result<(), account::AccountConnectorError> {
+        crate::ensure_rustls_crypto_provider();
         if self.active.swap(true, Ordering::AcqRel) {
             return Err(rejected("account connector already running"));
         }
@@ -1944,6 +1945,7 @@ impl account::AccountConnectorFactory for VenueAccountConnectorFactory {
         definition: &account::AccountDefinition,
         context: account::AccountConnectorContext,
     ) -> Result<Arc<dyn account::AccountConnector>, account::AccountConnectorError> {
+        crate::ensure_rustls_crypto_provider();
         let secret = context.secrets.resolve(&definition.credential_ref)?;
         let config = merged_toml(&definition.connector_config, &secret)?;
         let connector = (self.build)(&config).map_err(rejected)?;

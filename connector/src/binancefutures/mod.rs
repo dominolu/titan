@@ -277,6 +277,7 @@ impl ConnectorBuilder for BinanceFutures {
     type Error = BinanceFuturesError;
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
+        crate::ensure_rustls_crypto_provider();
         let config: Config = toml::from_str(config)?;
 
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
