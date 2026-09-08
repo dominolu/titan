@@ -264,8 +264,10 @@ def build(parameters):
 
     @njit
     def effective_maker_top(s):
-        bid = s.state[F_MAKER_BID]
-        ask = s.state[F_MAKER_ASK]
+        current_bid = s.state[F_MAKER_BID]
+        current_ask = s.state[F_MAKER_ASK]
+        bid = current_bid
+        ask = current_ask
         count = s.state_i64[I_SAMPLE_COUNT]
         for index in range(count):
             sampled_bid = s.state[F_BID_SAMPLES + index]
@@ -274,6 +276,8 @@ def build(parameters):
                 bid = sampled_bid
             if sampled_ask > 0.0 and (ask <= 0.0 or sampled_ask < ask):
                 ask = sampled_ask
+        if ask <= bid:
+            return current_bid, current_ask
         return bid, ask
 
     @njit
