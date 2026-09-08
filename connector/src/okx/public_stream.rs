@@ -409,6 +409,12 @@ impl PublicStream {
             "bbo-tbt" => {
                 for value in &data.data {
                     let bbo: BboTbt = serde_json::from_value(value.clone())?;
+                    let symbol = data
+                        .arg
+                        .inst_id
+                        .clone()
+                        .filter(|symbol| !symbol.is_empty())
+                        .unwrap_or_else(|| bbo.inst_id.clone());
                     let exch_ts = bbo.ts.parse::<i64>().unwrap_or(0) * 1_000_000;
                     let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
                     if let Some((bid_px, bid_sz)) = bbo.best_bid()
@@ -417,7 +423,7 @@ impl PublicStream {
                     {
                         self.ev_tx
                             .send(PublishEvent::FeedBatch {
-                                symbol: bbo.inst_id.clone(),
+                                symbol: symbol.clone(),
                                 events: vec![Event {
                                     ev: LOCAL_BID_DEPTH_BBO_EVENT,
                                     exch_ts,
@@ -438,7 +444,7 @@ impl PublicStream {
                     {
                         self.ev_tx
                             .send(PublishEvent::FeedBatch {
-                                symbol: bbo.inst_id.clone(),
+                                symbol: symbol.clone(),
                                 events: vec![Event {
                                     ev: LOCAL_ASK_DEPTH_BBO_EVENT,
                                     exch_ts,
@@ -659,5 +665,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_stream(&mut receiver).await.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn bbo_uses_the_outer_subscription_symbol_when_rows_omit_inst_id() {
+        let (stream, mut receiver) = stream();
+        let message = serde_json::json!({
+            "arg": {"channel": "bbo-tbt", "instId": "BTC-USDT-SWAP"},
+            "data": [{
+                "asks": [["101", "2", "0", "1"]],
+                "bids": [["100", "1", "0", "1"]],
+                "ts": "1"
+            }]
+        })
+        .to_string();
+        stream.handle_public_stream(&message).await.unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                receiver.recv().await,
+                Some(PublishEvent::FeedBatch { symbol, .. })
+                    if symbol == "BTC-USDT-SWAP"
+            ));
+        }
     }
 }

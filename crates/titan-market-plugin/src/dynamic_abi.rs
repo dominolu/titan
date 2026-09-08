@@ -196,6 +196,7 @@ impl MarketConnectorFactory for DynamicMarketConnectorFactory {
         .map_err(dynamic_error)?;
         let mut host_context = Box::new(MarketHostContext {
             publisher: context.event_publisher,
+            last_publish_error: Mutex::new(None),
         });
         let host = Box::new(TitanMarketHostApiV1 {
             struct_size: std::mem::size_of::<TitanMarketHostApiV1>() as u32,
@@ -264,6 +265,7 @@ impl MarketConnectorFactory for DynamicMarketConnectorFactory {
 
 struct MarketHostContext {
     publisher: MarketEventPublisher,
+    last_publish_error: Mutex<Option<Arc<str>>>,
 }
 
 struct DynamicMarketConnector {
@@ -348,14 +350,28 @@ impl MarketConnector for DynamicMarketConnector {
     }
 
     fn health(&self) -> ConnectorHealthSnapshot {
-        self.output("health", |output| unsafe {
-            self.api.health.unwrap()(self.handle, output)
-        })
-        .unwrap_or_else(|error| ConnectorHealthSnapshot {
-            state: ConnectorHealth::Failed,
-            message: Arc::from(error.to_string()),
-            observed_at: SystemTime::now(),
-        })
+        let mut health = self
+            .output("health", |output| unsafe {
+                self.api.health.unwrap()(self.handle, output)
+            })
+            .unwrap_or_else(|error| ConnectorHealthSnapshot {
+                state: ConnectorHealth::Failed,
+                message: Arc::from(error.to_string()),
+                observed_at: SystemTime::now(),
+            });
+        if let Some(error) = self
+            .host_context
+            .last_publish_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            health.message = Arc::from(format!(
+                "{}; host market event publication failed: {error}",
+                health.message
+            ));
+        }
+        health
     }
 
     fn diagnostics(&self) -> ConnectorDiagnosticSnapshot {
@@ -419,7 +435,13 @@ unsafe extern "C" fn host_publish_market(
                     causation_id,
                 },
             )
-            .map_err(|_| ())
+            .map_err(|error| {
+                *context
+                    .last_publish_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(Arc::from(format!("{event_type}: {error}")));
+            })
     })
 }
 
@@ -434,17 +456,24 @@ unsafe extern "C" fn host_publish_control(
 ) -> TitanStatus {
     callback_status(|| {
         let context = unsafe { (context as *const MarketHostContext).as_ref() }.ok_or(())?;
+        let event_type = unsafe { foreign_str(event_type, event_type_len) }?;
         context
             .publisher
             .publish_control(
-                unsafe { foreign_str(event_type, event_type_len) }?,
+                event_type,
                 unsafe { foreign_bytes(payload, payload_len) }?,
                 TraceContext {
                     trace_id,
                     causation_id,
                 },
             )
-            .map_err(|_| ())
+            .map_err(|error| {
+                *context
+                    .last_publish_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(Arc::from(format!("{event_type}: {error}")));
+            })
     })
 }
 

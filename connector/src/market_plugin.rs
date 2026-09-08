@@ -275,9 +275,14 @@ impl MarketConnector for MarketConnectorRuntime {
                             if !symbols.is_empty() {
                                 let symbols = symbols.into_iter().collect();
                                 connector.recover_market_data(symbols);
-                                *health.lock().unwrap_or_else(|p| p.into_inner()) = (
+                                let mut health =
+                                    health.lock().unwrap_or_else(|p| p.into_inner());
+                                let publication_error = health.1.clone();
+                                *health = (
                                     ConnectorHealth::Degraded,
-                                    Arc::from("direct market publication failed; streams invalidated and snapshots requested"),
+                                    Arc::from(format!(
+                                        "direct market publication failed; streams invalidated and snapshots requested; last error: {publication_error}"
+                                    )),
                                 );
                             }
                         }

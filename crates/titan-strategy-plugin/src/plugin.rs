@@ -503,6 +503,71 @@ impl StrategyPluginCore {
                 )
             })?;
         runtime.attach_lane(lane.clone())?;
+        let readiness_deadline = Instant::now()
+            .checked_add(definition.runtime.startup_timeout)
+            .unwrap_or_else(Instant::now);
+        loop {
+            let mut all_ready = true;
+            for binding in resolved_accounts.iter() {
+                let orders = self
+                    .dependencies
+                    .accounts
+                    .orders(
+                        binding.account,
+                        OrderFilter {
+                            asset_id: None,
+                            include_final: false,
+                        },
+                    )
+                    .map_err(|_| dependency_error("account_orders_snapshot_failed"))?;
+                let positions = self
+                    .dependencies
+                    .accounts
+                    .positions(binding.account, PositionFilter::default())
+                    .map_err(|_| dependency_error("account_positions_snapshot_failed"))?;
+                let balances = self
+                    .dependencies
+                    .accounts
+                    .balances(binding.account)
+                    .map_err(|_| dependency_error("account_balances_snapshot_failed"))?;
+                all_ready &= orders.state == AccountSnapshotState::Ready
+                    && positions.state == AccountSnapshotState::Ready
+                    && balances.state == AccountSnapshotState::Ready;
+            }
+            if all_ready {
+                break;
+            }
+            if Instant::now() >= readiness_deadline {
+                let pending = resolved_accounts
+                    .iter()
+                    .map(|binding| {
+                        self.dependencies
+                            .accounts
+                            .health(binding.account)
+                            .map(|health| {
+                                format!(
+                                    "account_id={} state={:?} message={}",
+                                    binding.account.account_id.0, health.state, health.message
+                                )
+                            })
+                            .unwrap_or_else(|error| {
+                                format!(
+                                    "account_id={} health_error={}",
+                                    binding.account.account_id.0, error
+                                )
+                            })
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(StrategyError::new(
+                    StrategyErrorKind::DependencyUnavailable,
+                    "readiness",
+                    "account_snapshot_not_ready",
+                    format!("account snapshots did not become ready: {pending}"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         let mut initial_positions = Vec::new();
         let mut initial_balances = Vec::new();
         for binding in resolved_accounts.iter() {
@@ -706,6 +771,44 @@ impl StrategyPluginCore {
                     }
                 }
             }
+        }
+        loop {
+            let health = resolved_markets
+                .iter()
+                .map(|binding| {
+                    self.dependencies
+                        .markets
+                        .health(binding.source)
+                        .map(|health| (binding, health))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| dependency_error("market_health_unavailable"))?;
+            if health
+                .iter()
+                .all(|(_, health)| health.state == ConnectorHealth::Running)
+            {
+                break;
+            }
+            if Instant::now() >= readiness_deadline {
+                let pending = health
+                    .iter()
+                    .filter(|(_, health)| health.state != ConnectorHealth::Running)
+                    .map(|(binding, health)| {
+                        format!(
+                            "source_id={} state={:?} message={}",
+                            binding.source.source_id.0, health.state, health.message
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(StrategyError::new(
+                    StrategyErrorKind::DependencyUnavailable,
+                    "readiness",
+                    "market_not_ready",
+                    format!("market sources did not become ready: {pending}"),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(2));
         }
         let supervisor_active = Arc::new(AtomicBool::new(true));
         let supervisor_flag = supervisor_active.clone();

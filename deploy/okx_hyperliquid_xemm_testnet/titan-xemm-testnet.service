@@ -1,5 +1,5 @@
 [Unit]
-Description=Titan OKX-Hyperliquid XEMM testnet canary
+Description=Titan OKX-Hyperliquid XEMM mainnet canary
 After=network-online.target
 Wants=network-online.target
 
