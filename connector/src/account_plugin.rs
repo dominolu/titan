@@ -1113,6 +1113,7 @@ async fn reconcile<A: ReconcileApi + ?Sized>(
         account::ReconcileScope::Full | account::ReconcileScope::Positions
     ) {
         let mut next_positions = Vec::new();
+        let mut seen_assets = Vec::with_capacity(context.instruments.len());
         for value in api.positions().await.map_err(api_error)? {
             if let Some(binding) = context
                 .instruments
@@ -1120,6 +1121,7 @@ async fn reconcile<A: ReconcileApi + ?Sized>(
                 .find(|b| b.native_symbol.eq_ignore_ascii_case(&value.symbol))
             {
                 let snapshot = position_snapshot(&value, binding, context)?;
+                seen_assets.push(binding.asset_id);
                 let event = position_event(
                     header(
                         context,
@@ -1139,6 +1141,47 @@ async fn reconcile<A: ReconcileApi + ?Sized>(
                 }
                 next_positions.push(snapshot);
             }
+        }
+        let margin_currency_id = context
+            .currencies
+            .first()
+            .ok_or_else(|| rejected("position margin currency binding missing"))?
+            .currency_id;
+        for binding in context.instruments.iter() {
+            if seen_assets.contains(&binding.asset_id) {
+                continue;
+            }
+            let snapshot = account::PositionSnapshot {
+                asset_id: binding.asset_id,
+                position_side: 0,
+                margin_type: 2,
+                quantity_lots: 0,
+                entry_price_ticks: 0,
+                liquidation_price_ticks: 0,
+                realized_pnl_units: 0,
+                unrealized_pnl_units: 0,
+                margin_currency_id,
+            };
+            if publish {
+                context
+                    .event_publisher
+                    .publish_encoded(
+                        &position_event(
+                            header(
+                                context,
+                                epoch,
+                                version,
+                                account::event_kind::POSITION_CHANGED,
+                                account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
+                                now_ns(),
+                            ),
+                            &snapshot,
+                        ),
+                        TraceContext::default(),
+                    )
+                    .map_err(|e| rejected(e.to_string()))?;
+            }
+            next_positions.push(snapshot);
         }
         *positions.lock().unwrap_or_else(|p| p.into_inner()) = next_positions.into();
     }
@@ -2659,6 +2702,8 @@ safety_timeout_ms = 5000
         assert!(ready.load(Ordering::Acquire));
         assert!(!reconciling.load(Ordering::Acquire));
         assert_eq!(orders.lock().unwrap().len(), 1);
+        assert_eq!(positions.lock().unwrap().len(), 1);
+        assert_eq!(positions.lock().unwrap()[0].quantity_lots, 0);
         assert_eq!(balances.lock().unwrap().len(), 1);
         assert_eq!(external.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -2666,6 +2711,7 @@ safety_timeout_ms = 5000
             &[
                 account::RECONCILE_STARTED_EVENT,
                 account::ORDER_CHANGED_EVENT,
+                account::POSITION_CHANGED_EVENT,
                 account::BALANCE_CHANGED_EVENT,
                 account::RECONCILE_COMPLETED_EVENT,
                 account::STREAM_STATE_CHANGED_EVENT,
@@ -2760,7 +2806,7 @@ safety_timeout_ms = 5000
                 assert!(!reconciling.load(Ordering::Acquire));
             }
             assert!(orders.lock().unwrap().len() <= 1);
-            assert!(positions.lock().unwrap().is_empty());
+            assert!(positions.lock().unwrap().len() <= 1);
             assert!(balances.lock().unwrap().len() <= 1);
         }
 
