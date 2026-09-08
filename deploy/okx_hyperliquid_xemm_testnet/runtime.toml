@@ -115,7 +115,7 @@ subscriptions = [
   { event_type = "titan.account.Fill", schema_version = 2, routing_keys = [2001, 2002], qos = "ReliableOrdered" },
 ]
 risk_scope = "testnet-canary"
-runtime = { async_lane_capacity = 16384, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", command_capacity = 64, timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, state_f64_capacity = 1024, state_i64_capacity = 1024, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
+runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", command_capacity = 64, timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, state_f64_capacity = 1024, state_i64_capacity = 1024, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
 recovery = "fresh"
 shutdown = "cancel_owned_orders"
 enabled = true

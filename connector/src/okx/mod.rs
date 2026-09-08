@@ -265,6 +265,7 @@ impl ConnectorBuilder for Okx {
     type Error = OkxError;
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
+        crate::ensure_rustls_crypto_provider();
         let config: Config = toml::from_str(config)?;
         if config.order_prefix.len() > 16 {
             return Err(OkxError::InvalidArg(

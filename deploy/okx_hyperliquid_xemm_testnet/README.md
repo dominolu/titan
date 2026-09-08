@@ -21,3 +21,16 @@ connector 停机时会清理其注册品种上的挂单。
 
 服务文件按 user systemd 部署；首次运行保持 shadow，确认账户 READY、无现存挂单/仓位并观察稳定行情后再
 进入 canary。
+
+服务器需要一个原生 Linux Python 虚拟环境，且当前发布目录由稳定软链接指向：
+
+```bash
+python3 -m venv "$HOME/titan-xemm-venv"
+"$HOME/.local/bin/uv" pip install \
+  --python "$HOME/titan-xemm-venv/bin/python" \
+  ./python/titan-strategy-sdk
+ln -sfn "$PWD" "$HOME/titan-xemm-current"
+```
+
+将 `titan-xemm-testnet.service` 安装到 `~/.config/systemd/user/` 后，先保持未启用状态完成
+Shadow 验证；只有两个测试网账户均 READY 后才启用服务。

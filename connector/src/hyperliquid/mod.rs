@@ -267,6 +267,7 @@ impl ConnectorBuilder for Hyperliquid {
     type Error = HyperliquidError;
 
     fn build_from(config: &str) -> Result<Self, Self::Error> {
+        crate::ensure_rustls_crypto_provider();
         let config: Config = toml::from_str(config)?;
         validate_safety_timeout_ms(config.safety_timeout_ms)?;
         let private_key_hex = config.private_key.trim_start_matches("0x");
@@ -318,6 +319,7 @@ impl Hyperliquid {
     /// Builds the public market-data connector without constructing or retaining a signer.
     /// Account construction continues to use `ConnectorBuilder` and requires a valid private key.
     pub(crate) fn build_market_from(config: &str) -> Result<Self, HyperliquidError> {
+        crate::ensure_rustls_crypto_provider();
         let mut config: Config = toml::from_str(config)?;
         validate_safety_timeout_ms(config.safety_timeout_ms)?;
         config.private_key.clear();
