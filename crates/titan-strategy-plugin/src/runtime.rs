@@ -939,12 +939,21 @@ impl EventHandler for NativeStrategyRuntime {
             if let Some(ready) = ready {
                 inner.account_ready.insert(binding.local_account_no, ready);
                 if !ready {
+                    let reason_code = if event.event_type
+                        == titan_account_plugin::STREAM_INVALIDATED_EVENT
+                    {
+                        StreamInvalidatedV1::decode(event.payload)
+                            .map_or(0, |value| value.0.reason_code)
+                    } else {
+                        0
+                    };
                     warn!(
                         strategy_id = self.core.context.strategy.strategy_id.0,
                         generation = self.core.context.strategy.generation,
                         account_id = header.account_id,
                         local_account_no = binding.local_account_no,
                         event_type = event.event_type,
+                        reason_code,
                         "account readiness event paused the strategy runtime",
                     );
                     self.core.context.command_gate.close();
