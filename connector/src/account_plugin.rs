@@ -591,7 +591,9 @@ impl account::AccountConnector for AccountRuntime {
                                     )
                                     .await;
                                     if encoder.replay().is_err() {
-                                        encoder.invalidate(2);
+                                        // Distinguish a staged private-fact replay failure from a
+                                        // direct publication failure (reason 2).
+                                        encoder.invalidate(5);
                                         schedule_reconcile(recovery_tx.clone());
                                     }
                                 }
@@ -1346,7 +1348,7 @@ async fn handle_command(
                     ?error,
                     "Account reconciliation failed."
                 );
-                publish_invalidated(context, epoch, version, 2);
+                publish_invalidated(context, epoch, version, 6);
                 schedule_reconcile(recovery_tx.clone());
             }
             if id.0 != 0 {
@@ -1390,7 +1392,7 @@ async fn handle_command(
                     ?error,
                     "Initial account reconciliation failed."
                 );
-                publish_invalidated(context, epoch, version, 2);
+                publish_invalidated(context, epoch, version, 7);
                 schedule_reconcile(recovery_tx.clone());
             }
             return;
