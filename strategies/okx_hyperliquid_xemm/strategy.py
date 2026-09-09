@@ -358,7 +358,10 @@ def build(parameters):
 
     @njit
     def cancel_bid(s):
-        if s.state_i64[I_BID_STATE] == LEG_EMPTY:
+        if (
+            s.state_i64[I_BID_STATE] == LEG_EMPTY
+            or s.state_i64[I_BID_STATE] == LEG_CANCELING
+        ):
             return
         order_id = s.state_i64[I_BID_ORDER_ID]
         if order_id > 0 and s.cancel(maker_asset_no, order_id, False, maker_account_no) == 0:
@@ -367,7 +370,10 @@ def build(parameters):
 
     @njit
     def cancel_ask(s):
-        if s.state_i64[I_ASK_STATE] == LEG_EMPTY:
+        if (
+            s.state_i64[I_ASK_STATE] == LEG_EMPTY
+            or s.state_i64[I_ASK_STATE] == LEG_CANCELING
+        ):
             return
         order_id = s.state_i64[I_ASK_ORDER_ID]
         if order_id > 0 and s.cancel(maker_asset_no, order_id, False, maker_account_no) == 0:
@@ -934,7 +940,7 @@ def build(parameters):
 
     return SimpleNamespace(
         strategy_id="okx_hyperliquid_xemm",
-        strategy_version="0.2.5",
+        strategy_version="0.2.6",
         on_start=on_start,
         on_tick=on_tick,
         on_depth=on_depth,
