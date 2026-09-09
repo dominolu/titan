@@ -504,7 +504,12 @@ impl account::AccountConnector for AccountRuntime {
                             DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
                                 let _ = event_recovery.try_send(Command::PrivateStreamReady);
                             }
-                            DirectPublication::Account(AccountPublication::Error(_)) => {
+                            DirectPublication::Account(AccountPublication::Error(error)) => {
+                                tracing::warn!(
+                                    account_id = context.account.account_id.0,
+                                    ?error,
+                                    "Account private stream reported an error."
+                                );
                                 account_events.invalidate(1);
                                 let _ = event_recovery.try_send(Command::Reconcile(
                                     account::ReconcileScope::Full,
