@@ -125,13 +125,14 @@ impl OrderManager {
             let original_qty = state.orig_sz.parse().unwrap_or(order_ext.order.qty);
             let leaves_qty = state.sz.parse().unwrap_or(original_qty);
             let derived_filled = (original_qty - leaves_qty).max(0.0);
+            let previous_filled = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
+            let cumulative_filled = state.filled.parse().unwrap_or(derived_filled);
             order_ext.order.price_tick = (state.limit_px.parse::<f64>().unwrap_or(0.0)
                 / order_ext.order.tick_size)
                 .round() as i64;
             order_ext.order.qty = original_qty;
-            order_ext.order.exec_qty = state.filled.parse().unwrap_or(derived_filled);
-            order_ext.order.status = if next_status == Status::New && order_ext.order.exec_qty > 0.0
-            {
+            order_ext.order.exec_qty = (cumulative_filled - previous_filled).max(0.0);
+            order_ext.order.status = if next_status == Status::New && cumulative_filled > 0.0 {
                 Status::PartiallyFilled
             } else {
                 next_status
@@ -388,6 +389,34 @@ mod tests {
         assert_eq!(updated.status, Status::PartiallyFilled);
         assert_eq!(updated.exec_qty, 0.25);
         assert_eq!(updated.leaves_qty, 0.75);
+    }
+
+    #[test]
+    fn cumulative_partial_fills_publish_only_the_new_delta() {
+        let mut manager = OrderManager::new();
+        let cloid = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let mut order = test_order(1);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC", cloid, order));
+
+        let mut first = order_state(Some(cloid.into()), 100);
+        first.filled = "0.25".to_string();
+        first.sz = "0.75".to_string();
+        let first = manager
+            .update_from_ws(&first, "open", 1_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.exec_qty, 0.25);
+
+        let mut second = order_state(Some(cloid.into()), 100);
+        second.filled = "0.6".to_string();
+        second.sz = "0.4".to_string();
+        let second = manager
+            .update_from_ws(&second, "open", 2_000)
+            .unwrap()
+            .unwrap();
+        assert!((second.exec_qty - 0.35).abs() < 1e-12);
+        assert_eq!(second.leaves_qty, 0.4);
     }
 
     #[test]
