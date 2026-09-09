@@ -1136,6 +1136,17 @@ impl EventHandler for NativeStrategyRuntime {
                 *command,
                 event_trace,
             ) {
+                warn!(
+                    strategy_id = self.core.context.strategy.strategy_id.0,
+                    generation = self.core.context.strategy.generation,
+                    event_type = event.event_type,
+                    command_kind = command.kind,
+                    local_account_no = command.local_account_no,
+                    asset_no = command.asset_no,
+                    order_id = command.order_id,
+                    reason_code = error.reason_code.as_ref(),
+                    "Strategy command was rejected by the account gateway."
+                );
                 self.core.context.command_gate.close();
                 self.core.context.activation.close();
                 context.last_error = -1;
