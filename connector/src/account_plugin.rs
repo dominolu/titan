@@ -1564,6 +1564,13 @@ async fn handle_command(
             outcome_unknown = initially_unknown,
             "Account command failed."
         );
+        eprintln!(
+            "account {} command {command_type} failed: exchange={} code={} message={} outcome_unknown={initially_unknown}",
+            context.account.account_id.0,
+            error.exchange,
+            error.code,
+            error.message
+        );
     }
     if initially_unknown
         && let Some((symbol, order_id, client_order_id)) =
