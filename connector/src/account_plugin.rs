@@ -1825,10 +1825,14 @@ fn position_snapshot(
             2
         },
         quantity_lots: to_units(v.qty, b.quantity_lot)?,
-        entry_price_ticks: to_units(v.entry_price, b.price_tick)?,
-        liquidation_price_ticks: to_units(v.liquidation_price, b.price_tick)?,
-        realized_pnl_units: to_units(v.realized_pnl, currency.amount_unit)?,
-        unrealized_pnl_units: to_units(v.unrealized_pnl, currency.amount_unit)?,
+        // Entry/liquidation prices are derived account valuations, not executable prices, and can
+        // legitimately fall between instrument ticks. PnL has the same property relative to the
+        // configured currency display unit. Preserve them at the nearest canonical unit while
+        // keeping the traded position quantity on the strict lot grid.
+        entry_price_ticks: to_observation_units(v.entry_price, b.price_tick)?,
+        liquidation_price_ticks: to_observation_units(v.liquidation_price, b.price_tick)?,
+        realized_pnl_units: to_observation_units(v.realized_pnl, currency.amount_unit)?,
+        unrealized_pnl_units: to_observation_units(v.unrealized_pnl, currency.amount_unit)?,
         margin_currency_id: currency.currency_id,
     })
 }
@@ -1892,13 +1896,21 @@ fn to_balance_units(
     value: f64,
     unit: account::DecimalUnit,
 ) -> Result<i64, account::AccountConnectorError> {
+    to_observation_units(value, unit)
+}
+fn to_observation_units(
+    value: f64,
+    unit: account::DecimalUnit,
+) -> Result<i64, account::AccountConnectorError> {
     if !value.is_finite() {
-        return Err(rejected("non-finite venue balance"));
+        return Err(rejected("non-finite venue observation"));
     }
     let scaled = value * 10_f64.powi(i32::from(unit.scale())) / unit.coefficient() as f64;
     let rounded = scaled.round();
     if rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
-        return Err(rejected("venue balance exceeds configured integer range"));
+        return Err(rejected(
+            "venue observation exceeds configured integer range",
+        ));
     }
     Ok(rounded as i64)
 }
@@ -2428,6 +2440,16 @@ mod tests {
             4_726_669_978
         );
         assert!(to_balance_units(f64::NAN, unit).is_err());
+    }
+
+    #[test]
+    fn observation_conversion_rounds_derived_prices_between_ticks() {
+        let tick: account::DecimalUnit = "0.1".parse().unwrap();
+        assert_eq!(
+            to_observation_units(576_072.286_419_753_1, tick).unwrap(),
+            5_760_723
+        );
+        assert!(to_observation_units(f64::INFINITY, tick).is_err());
     }
 
     #[test]
