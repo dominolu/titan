@@ -15,7 +15,7 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Bytes, Message, client::IntoClientRequest},
 };
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::{
     connector::{AccountPublication, PublishEvent},
@@ -162,6 +162,14 @@ impl PrivateStream {
             "orders" => {
                 for value in &data.data {
                     let order_update: OrderUpdate = serde_json::from_value(value.clone())?;
+                    info!(
+                        instrument = %order_update.inst_id,
+                        client_order_id = %order_update.cl_ord_id,
+                        venue_order_id = %order_update.ord_id,
+                        state = %order_update.state,
+                        cumulative_fill_quantity = %order_update.acc_fill_sz,
+                        "OKX private order update received."
+                    );
                     let mut order_manager = self.order_manager.lock().unwrap();
                     match order_manager.update_from_ws(&order_update) {
                         Ok(Some(order)) => {

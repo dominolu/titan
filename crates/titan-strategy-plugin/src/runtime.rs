@@ -18,7 +18,7 @@ use titan_runtime_abi::{
     AccountStateEvent, BalanceEvent, BarItem, CommandResultEvent, DepthBatchEvent, DepthItemEvent,
     Event, FillEvent, OrderEvent, PositionEvent, TickItem,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::*;
 
@@ -999,6 +999,14 @@ impl EventHandler for NativeStrategyRuntime {
                 .context
                 .event_adapter
                 .invoke(event, &artifact.callbacks, &mut context);
+        if event.event_type == titan_account_plugin::FILL_EVENT {
+            info!(
+                strategy_id = self.core.context.strategy.strategy_id.0,
+                generation = self.core.context.strategy.generation,
+                emitted_commands = context.num_commands,
+                "Strategy fill callback completed."
+            );
+        }
         context.clear_views();
         *callback_count += 1;
         let elapsed = started.elapsed();
