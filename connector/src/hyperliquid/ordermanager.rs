@@ -420,6 +420,36 @@ mod tests {
     }
 
     #[test]
+    fn repeated_filled_qty_replays_do_not_emit_delta() {
+        let mut manager = OrderManager::new();
+        let cloid = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let mut order = test_order(1);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC", cloid, order));
+
+        let mut first = order_state(Some(cloid.into()), 100);
+        first.filled = "0.25".to_string();
+        first.sz = "0.75".to_string();
+        let first = manager
+            .update_from_ws(&first, "open", 1_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.exec_qty, 0.25);
+        assert_eq!(first.leaves_qty, 0.75);
+
+        let mut repeated = order_state(Some(cloid.into()), 100);
+        repeated.filled = "0.25".to_string();
+        repeated.sz = "0.75".to_string();
+        repeated.timestamp = 2_000;
+        let repeated = manager
+            .update_from_ws(&repeated, "open", 1_500)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.exec_qty, 0.0);
+        assert_eq!(repeated.leaves_qty, 0.75);
+    }
+
+    #[test]
     fn test_orders_filters_active_and_symbol() {
         let mut manager = OrderManager::new();
         let mut btc_active = test_order(1);

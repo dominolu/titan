@@ -56,17 +56,21 @@ impl OrderManager {
             .ok_or(BinanceFuturesError::OrderNotFound)?;
 
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
+        let previous_filled = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
         if resp.transaction_time * 1_000_000 >= order_ext.order.exch_timestamp {
+            let cumulative_filled = resp
+                .order
+                .order_filled_accumulated_qty
+                .max(previous_filled);
             order_ext.order.qty = resp.order.original_qty;
-            order_ext.order.leaves_qty =
-                resp.order.original_qty - resp.order.order_filled_accumulated_qty;
+            order_ext.order.leaves_qty = (resp.order.original_qty - cumulative_filled).max(0.0);
             order_ext.order.side = resp.order.side;
             order_ext.order.time_in_force = resp.order.time_in_force;
             order_ext.order.exch_timestamp = resp.transaction_time * 1_000_000;
             order_ext.order.status = resp.order.order_status;
             order_ext.order.exec_price_tick =
                 (resp.order.last_filled_price / order_ext.order.tick_size).round() as i64;
-            order_ext.order.exec_qty = resp.order.order_last_filled_qty;
+            order_ext.order.exec_qty = (cumulative_filled - previous_filled).max(0.0);
             order_ext.order.order_type = resp.order.order_type;
         }
 
@@ -168,6 +172,16 @@ mod tests {
     use hftbacktest::types::{OrdType, Side, TimeInForce};
 
     fn ws_update(client_order_id: &str, transaction_time: i64, status: &str) -> OrderTradeUpdate {
+        ws_update_with_quantities(client_order_id, transaction_time, status, 0.5, 0.5)
+    }
+
+    fn ws_update_with_quantities(
+        client_order_id: &str,
+        transaction_time: i64,
+        status: &str,
+        last_filled_qty: f64,
+        cumulative_qty: f64,
+    ) -> OrderTradeUpdate {
         serde_json::from_str(
             &serde_json::json!({
                 "E": transaction_time,
@@ -181,12 +195,12 @@ mod tests {
                     "q": "1",
                     "p": "100",
                     "ap": "100",
-                    "sp": "0",
-                    "x": "TRADE",
-                    "X": status,
-                    "i": 7,
-                    "l": "0.5",
-                    "z": "0.5",
+                "sp": "0",
+                "x": "TRADE",
+                "X": status,
+                "i": 7,
+                "l": last_filled_qty.to_string(),
+                "z": cumulative_qty.to_string(),
                     "L": "100",
                     "T": transaction_time,
                     "t": 11
@@ -194,7 +208,36 @@ mod tests {
             })
             .to_string(),
         )
-        .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn duplicated_ws_update_with_same_cumulative_fill_does_not_repeat_delta() {
+        let mut manager = OrderManager::new("t-");
+        let client_order_id = "0123456789abcdef0123456789abcdef";
+        let mut order = Order::new(
+            9,
+            100,
+            1.0,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTCUSDT", client_order_id, order));
+
+        let first = manager
+            .update_from_ws(&ws_update_with_quantities(client_order_id, 20, "PARTIALLY_FILLED", 0.25, 0.25))
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.exec_qty, 0.25);
+
+        let duplicated = manager
+            .update_from_ws(&ws_update_with_quantities(client_order_id, 20, "PARTIALLY_FILLED", 0.25, 0.25))
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicated.exec_qty, 0.0);
     }
 
     #[test]

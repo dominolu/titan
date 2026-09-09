@@ -30,7 +30,7 @@ use crate::{
     hyperliquid::{
         HyperliquidError, SharedAssets, SharedMarketSubscriptions, SharedSymbolSet,
         client::HyperliquidClient,
-        msg::{BboData, Fill, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg, WsSubscribe},
+        msg::{BboData, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg, WsSubscribe},
         ordermanager::SharedOrderManager,
     },
 };
@@ -76,16 +76,6 @@ fn apply_fill(position: &mut f64, side: &str, sz: f64) {
     } else {
         *position -= sz;
     }
-}
-
-fn position_after_fill(current: f64, fill: &Fill) -> f64 {
-    // Hyperliquid supplies the absolute position immediately before every fill. Deriving from
-    // startPosition makes replay after reconnect idempotent; accumulating onto the local cache
-    // would apply a replayed fill twice and can reverse a freshly closed hedge.
-    let start = fill.start_position.parse::<f64>().unwrap_or(current);
-    let mut position = start;
-    apply_fill(&mut position, &fill.side, fill.sz.parse().unwrap_or(0.0));
-    position
 }
 
 fn market_channels(kinds: &[MarketDataKind]) -> Vec<&'static str> {
@@ -589,9 +579,17 @@ impl HyperliquidWs {
             if let Some(fills) = event.fills {
                 for fill in fills {
                     let mut positions = self.positions.lock().unwrap();
-                    let position = positions.entry(fill.coin.clone()).or_insert(0.0);
-                    *position = position_after_fill(*position, &fill);
-                    let qty = *position;
+                    let fill_qty = fill.sz.parse().unwrap_or(0.0);
+                    let qty = if let Ok(start_position) = fill.start_position.parse::<f64>() {
+                        let mut position = start_position;
+                        apply_fill(&mut position, &fill.side, fill_qty);
+                        positions.insert(fill.coin.clone(), position);
+                        position
+                    } else {
+                        let mut position = positions.entry(fill.coin.clone()).or_insert(0.0);
+                        apply_fill(&mut position, &fill.side, fill_qty);
+                        *position
+                    };
                     drop(positions);
                     self.ev_tx
                         .send_account(AccountPublication::Position {
@@ -606,14 +604,15 @@ impl HyperliquidWs {
         Ok(())
     }
 
-    /// Seeds the local position map from the REST clearinghouse state before the private
-    /// `userEvents` stream starts, so fill events are accumulated on top of the real positions.
+    /// Seeds the local position map from the REST clearinghouse state before private-events replay,
+    /// then every user fill is applied as an incremental delta.
     async fn seed_positions(&self) -> Result<(), HyperliquidError> {
         let state = self
             .client
             .get_clearinghouse_state(&self.account_address)
             .await?;
         let mut positions = self.positions.lock().unwrap();
+        positions.clear();
         for asset_position in state.asset_positions {
             let qty: f64 = asset_position.position.szi.parse().unwrap_or(0.0);
             positions.insert(asset_position.position.coin, qty);
@@ -1247,20 +1246,74 @@ mod tests {
         assert!((position - 0.25).abs() < 1e-9);
     }
 
-    #[test]
-    fn replayed_user_fill_keeps_the_same_absolute_position() {
-        let fill = Fill {
-            coin: "BTC".to_string(),
-            px: "79000".to_string(),
-            sz: "0.0002".to_string(),
-            side: "B".to_string(),
-            time: 1,
-            start_position: "-0.0002".to_string(),
-        };
-        let first = position_after_fill(-0.0002, &fill);
-        let replay = position_after_fill(first, &fill);
-        assert_eq!(first, 0.0);
-        assert_eq!(replay, 0.0);
+    #[tokio::test]
+    async fn user_events_update_position_from_start_position_baseline() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (events, _receiver) = crate::connector::test_publish_channel();
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Default::default(),
+            true,
+            Arc::new(AtomicU8::new(0)),
+        );
+        let event = serde_json::json!([{
+            "fills": [{
+                "coin": "BTC",
+                "px": "50000.0",
+                "sz": "0.100",
+                "side": "B",
+                "time": 1_700_000_000_001u64,
+                "startPosition": "0.500"
+            }]
+        }]);
+        ws.handle_user_events(&event).await.unwrap();
+        assert_eq!(
+            *ws.positions.lock().unwrap().get("BTC").expect("position must be cached"),
+            0.6
+        );
+        let duplicated = serde_json::json!([{
+            "fills": [{
+                "coin": "BTC",
+                "px": "50000.0",
+                "sz": "0.100",
+                "side": "B",
+                "time": 1_700_000_000_001u64,
+                "startPosition": "0.500"
+            }]
+        }]);
+        ws.handle_user_events(&duplicated).await.unwrap();
+        assert_eq!(
+            *ws.positions.lock().unwrap().get("BTC").expect("position must be cached"),
+            0.6
+        );
+        let next = serde_json::json!([{
+            "fills": [{
+                "coin": "BTC",
+                "px": "50000.0",
+                "sz": "0.050",
+                "side": "A",
+                "time": 1_700_000_000_002u64,
+                "startPosition": "0.600"
+            }]
+        }]);
+        ws.handle_user_events(&next).await.unwrap();
+        assert!(
+            (*ws.positions
+                .lock()
+                .unwrap()
+                .get("BTC")
+                .expect("position must be cached")
+                - 0.55)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]

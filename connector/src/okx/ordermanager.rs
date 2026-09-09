@@ -277,6 +277,28 @@ mod tests {
     }
 
     #[test]
+    fn repeated_cumulative_fill_replays_do_not_emit_delta() {
+        let mut manager = OrderManager::new("");
+        let client_order_id = "0123456789abcdef0123456789abcdef";
+        let mut order = test_order(3);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC-USDT-SWAP", client_order_id, order));
+
+        let mut first = order_update(client_order_id, "partially_filled");
+        first.acc_fill_sz = "0.4".to_string();
+        let first = manager.update_from_ws(&first).unwrap().unwrap();
+        assert_eq!(first.exec_qty, 0.4);
+        assert_eq!(first.leaves_qty, 0.6);
+
+        let mut repeated = order_update(client_order_id, "partially_filled");
+        repeated.acc_fill_sz = "0.4".to_string();
+        repeated.u_time = "1500".to_string();
+        let repeated = manager.update_from_ws(&repeated).unwrap().unwrap();
+        assert_eq!(repeated.exec_qty, 0.0);
+        assert_eq!(repeated.leaves_qty, 0.6);
+    }
+
+    #[test]
     fn test_cancel_all_respects_pos_side() {
         let mut manager = OrderManager::new("");
         let mut buy = test_order(1);
