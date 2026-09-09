@@ -742,10 +742,8 @@ def build(parameters):
                 base = fill["last_fill_qty"] * maker_lot_base
                 if fill["side"] == BUY_SIDE:
                     s.state[F_UNHEDGED_BASE] += base
-                    s.state[F_MAKER_POSITION_ESTIMATE] += base
                 elif fill["side"] == SELL_SIDE:
                     s.state[F_UNHEDGED_BASE] -= base
-                    s.state[F_MAKER_POSITION_ESTIMATE] -= base
                 else:
                     continue
                 s.state[F_TOTAL_MAKER_FILL_BASE] += base
@@ -756,10 +754,8 @@ def build(parameters):
                 base = fill["last_fill_qty"] * hedge_lot_base
                 if fill["side"] == BUY_SIDE:
                     s.state[F_UNHEDGED_BASE] += base
-                    s.state[F_HEDGE_POSITION_ESTIMATE] += base
                 elif fill["side"] == SELL_SIDE:
                     s.state[F_UNHEDGED_BASE] -= base
-                    s.state[F_HEDGE_POSITION_ESTIMATE] -= base
                 else:
                     continue
                 if abs(s.state[F_UNHEDGED_BASE]) < hedge_lot_base * 0.5:
@@ -855,17 +851,9 @@ def build(parameters):
                 s.state[F_HEDGE_POSITION_ESTIMATE] = quantity * hedge_lot_base
                 s.state_i64[I_HEDGE_POSITION_READY] = 1
                 s.state_i64[I_ACCOUNT_READY_MASK] |= 2
-        if (
-            s.state_i64[I_MAKER_POSITION_READY] != 0
-            and s.state_i64[I_HEDGE_POSITION_READY] != 0
-            and (
-                s.state_i64[I_MODE] == MODE_WARMING_UP
-                or s.state_i64[I_MODE] == MODE_PAUSED
-            )
-        ):
-            # Position snapshots establish the baseline during startup/recovery. While active,
-            # incremental Fill facts own exposure so an absolute Position for the same execution
-            # cannot double count it. Hyperliquid fill replay is idempotent in the connector.
+        if s.state_i64[I_MAKER_POSITION_READY] != 0 and s.state_i64[I_HEDGE_POSITION_READY] != 0:
+            # Position facts are authoritative absolute state for each account and are
+            # continuously tracked in all running modes.
             s.state[F_UNHEDGED_BASE] = (
                 s.state[F_MAKER_POSITION_ESTIMATE]
                 + s.state[F_HEDGE_POSITION_ESTIMATE]

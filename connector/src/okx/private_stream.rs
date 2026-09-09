@@ -122,12 +122,14 @@ impl PrivateStream {
                         write.send(Message::Text(s.into())).await?;
                         self.reset_private_subscriptions();
 
-                        // Replays every registered symbol after (re)connect so their cancel-all and
-                        // position initialization run again on the fresh connection.
+                        // Snapshot-first recovery after (re)connect: restore each symbol state from
+                        // REST before accepting live trading decisions.
                         let symbols: Vec<String> =
                             self.symbols.lock().unwrap().iter().cloned().collect();
                         for symbol in symbols {
-                            self.init_symbol(symbol).await;
+                            if let Err(error) = self.init_symbol(symbol.clone()).await {
+                                error!(?error, %symbol, "Couldn't initialize symbol state.");
+                            }
                         }
                     } else {
                         return Err(OkxError::AuthError {
@@ -221,32 +223,26 @@ impl PrivateStream {
         Ok(())
     }
 
-    async fn init_symbol(&self, symbol: String) {
+    async fn init_symbol(&self, symbol: String) -> Result<(), OkxError> {
         let client = self.client.clone();
         let td_mode = self.td_mode.clone();
         let pos_side = self.pos_side.clone();
         let order_manager = self.order_manager.clone();
         let ev_tx = self.ev_tx.clone();
 
-        tokio::spawn(async move {
-            // Cancel all orders in order to start with a clean state.
-            if let Err(error) = cancel_all(
-                client.clone(),
-                td_mode.clone(),
-                pos_side.clone(),
-                symbol.clone(),
-                order_manager.clone(),
-                ev_tx.clone(),
-            )
-            .await
-            {
-                error!(?error, %symbol, "Couldn't cancel all orders.");
-            }
-            // Fetches the initial position.
-            if let Err(error) = get_position(client, symbol.clone(), ev_tx).await {
-                error!(?error, %symbol, "Couldn't get the position information.");
-            }
-        });
+        // Cancel all orders in order to start with a clean state.
+        cancel_all(
+            client.clone(),
+            td_mode,
+            pos_side,
+            symbol.clone(),
+            order_manager,
+            ev_tx.clone(),
+        )
+        .await?;
+
+        // Fetches the initial position.
+        get_position(client, symbol, ev_tx).await
     }
 
     pub async fn connect(&mut self, url: &str) -> Result<(), OkxError> {
@@ -286,7 +282,9 @@ impl PrivateStream {
                 }
                 msg = self.symbol_rx.recv() => match msg {
                     Ok(symbol) => {
-                        self.init_symbol(symbol).await;
+                        if let Err(error) = self.init_symbol(symbol.clone()).await {
+                            error!(?error, %symbol, "Couldn't initialize symbol state.");
+                        }
                     }
                     Err(RecvError::Closed) => {
                         return Ok(());

@@ -134,9 +134,6 @@ impl UserDataStream {
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, mut read) = ws_stream.split();
         info!("binance user data websocket connected");
-        self.ev_tx
-            .send(PublishEvent::PrivateStreamReady)
-            .map_err(|_| BinanceFuturesError::ConnectionInterrupted)?;
         let mut interval = time::interval(Duration::from_secs(60 * 30));
         let mut ping_checker = time::interval(Duration::from_secs(10));
 
@@ -145,16 +142,15 @@ impl UserDataStream {
         let ev_tx = self.ev_tx.clone();
         let mut last_ping = Instant::now();
 
-        tokio::spawn(async move {
-            // AccountPlugin performs the authoritative orders/positions/balances reconcile after
-            // PrivateStreamReady. This compatibility snapshot is restricted to registered symbols
-            // and must never cancel venue orders merely because the private stream connected.
-            if let Err(error) =
-                get_position_information(client.clone(), symbols, ev_tx.clone()).await
-            {
-                error!(?error, "Couldn't get position information.");
-            }
-        });
+        if let Err(error) =
+            get_position_information(client.clone(), symbols, ev_tx.clone()).await
+        {
+            error!(?error, "Couldn't get initial position information.");
+        }
+
+        self.ev_tx
+            .send(PublishEvent::PrivateStreamReady)
+            .map_err(|_| BinanceFuturesError::ConnectionInterrupted)?;
 
         loop {
             select! {
@@ -180,18 +176,13 @@ impl UserDataStream {
                 msg = self.symbol_rx.recv() => {
                     match msg {
                         Ok(symbol) => {
-                            let client = self.client.clone();
-                            let ev_tx = self.ev_tx.clone();
-
-                            tokio::spawn(async move {
-                                if let Err(error) = get_position_information(
-                                    client,
-                                    HashSet::from([symbol.clone()]),
-                                    ev_tx,
-                                ).await {
-                                    error!(?error, %symbol, "Couldn't refresh position information.");
-                                }
-                            });
+                            if let Err(error) = get_position_information(
+                                self.client.clone(),
+                                HashSet::from([symbol.clone()]),
+                                self.ev_tx.clone(),
+                            ).await {
+                                error!(?error, %symbol, "Couldn't refresh position information.");
+                            }
                         }
                         Err(RecvError::Closed) => {
                             return Ok(());

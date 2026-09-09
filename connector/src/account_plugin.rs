@@ -491,6 +491,7 @@ impl account::AccountConnector for AccountRuntime {
                         ready: ready.clone(),
                         reconciling: reconciling.clone(),
                         ids: ids.clone(),
+                        fill_cumulative: Mutex::new(HashMap::new()),
                         pending: Mutex::new(VecDeque::with_capacity(
                             context.command_queue_capacity,
                         )),
@@ -872,6 +873,7 @@ struct AccountEventEncoder {
     ready: Arc<AtomicBool>,
     reconciling: Arc<AtomicBool>,
     ids: Arc<Mutex<IdInterner>>,
+    fill_cumulative: Mutex<HashMap<account::Id128, i64>>,
     pending: Mutex<VecDeque<AccountPublication>>,
     pending_capacity: usize,
 }
@@ -915,21 +917,59 @@ impl AccountEventEncoder {
                     .iter()
                     .find(|b| b.native_symbol.eq_ignore_ascii_case(symbol))
                     .ok_or_else(|| rejected("unbound private order symbol"))?;
+                let cumulative_filled_quantity_lots =
+                    to_units(order.qty - order.leaves_qty, binding.quantity_lot)?;
                 let venue_text = match venue_order_id {
                     Some(text) => text.clone(),
                     None => order.order_id.to_string(),
                 };
-                let id = self
-                    .ids
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .intern(&venue_text);
-                let client_order_id = client_order_id.as_deref().map(|text| {
-                    self.ids
+                let mut ids = self.ids.lock().unwrap_or_else(|p| p.into_inner());
+                let id = ids.intern(&venue_text);
+                let client_order_id = client_order_id.as_deref().map(|text| ids.intern(text));
+                drop(ids);
+
+                if order.exec_qty > 0.0 {
+                    let mut fills = self
+                        .fill_cumulative
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .intern(text)
-                });
+                        .unwrap_or_else(|p| p.into_inner());
+                    if fills
+                        .get(&id)
+                        .is_some_and(|quantity| cumulative_filled_quantity_lots <= *quantity)
+                    {
+                        // Duplicate or stale partial update for the same order.
+                        let changed = account::OrderChangedV1 {
+                            header: self.header(
+                                account::event_kind::ORDER_CHANGED,
+                                if order.active() {
+                                    account::event_flags::UPSERT
+                                } else {
+                                    account::event_flags::FINAL
+                                },
+                                order.exch_timestamp,
+                            ),
+                            asset_id: binding.asset_id.0,
+                            side: side(order.side),
+                            order_type: order_type(order.order_type),
+                            time_in_force: tif(order.time_in_force),
+                            status: status(order.status),
+                            price_ticks: order.price_tick,
+                            quantity_lots: to_units(order.qty, binding.quantity_lot)?,
+                            filled_quantity_lots: cumulative_filled_quantity_lots,
+                            average_price_ticks: order.exec_price_tick,
+                            venue_order_id: id,
+                            client_order_id: client_order_id.unwrap_or_default(),
+                            ..Default::default()
+                        };
+                        return self
+                            .context
+                            .event_publisher
+                            .publish_encoded(&changed, TraceContext::default())
+                            .map_err(|e| rejected(e.to_string()));
+                    }
+                    fills.insert(id, cumulative_filled_quantity_lots);
+                }
+
                 let changed = account::OrderChangedV1 {
                     header: self.header(
                         account::event_kind::ORDER_CHANGED,
@@ -947,10 +987,7 @@ impl AccountEventEncoder {
                     status: status(order.status),
                     price_ticks: order.price_tick,
                     quantity_lots: to_units(order.qty, binding.quantity_lot)?,
-                    filled_quantity_lots: to_units(
-                        order.qty - order.leaves_qty,
-                        binding.quantity_lot,
-                    )?,
+                    filled_quantity_lots: cumulative_filled_quantity_lots,
                     average_price_ticks: order.exec_price_tick,
                     venue_order_id: id,
                     client_order_id: client_order_id.unwrap_or_default(),
@@ -972,10 +1009,7 @@ impl AccountEventEncoder {
                         liquidity: u8::from(order.maker),
                         price_ticks: order.exec_price_tick,
                         last_fill_quantity_lots: to_units(order.exec_qty, binding.quantity_lot)?,
-                        cumulative_filled_quantity_lots: to_units(
-                            order.qty - order.leaves_qty,
-                            binding.quantity_lot,
-                        )?,
+                        cumulative_filled_quantity_lots,
                         venue_order_id: id,
                         client_order_id: client_order_id.unwrap_or_default(),
                         ..Default::default()
@@ -992,6 +1026,12 @@ impl AccountEventEncoder {
                         cumulative_filled_quantity_lots = fill.cumulative_filled_quantity_lots,
                         "Account fill event published."
                     );
+                }
+                if order.status != Status::New && order.status != Status::PartiallyFilled {
+                    self.fill_cumulative
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&id);
                 }
                 Ok(())
             }
@@ -2968,6 +3008,7 @@ safety_timeout_ms = 5000
             ready: Arc::new(AtomicBool::new(false)),
             reconciling: Arc::new(AtomicBool::new(true)),
             ids: Arc::new(Mutex::new(IdInterner::default())),
+            fill_cumulative: Mutex::new(HashMap::new()),
             pending: Mutex::new(VecDeque::with_capacity(1)),
             pending_capacity: 1,
         };
@@ -2980,6 +3021,98 @@ safety_timeout_ms = 5000
         let error = encoder.publish(&fact).unwrap_err();
         assert_eq!(error.kind, account::AccountErrorKind::QueueFull);
         assert_eq!(encoder.pending.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn account_encoder_deduplicates_fill_when_cumulative_qty_does_not_increase() {
+        let account_handle = account::AccountHandle {
+            account_id: account::AccountId(7),
+            generation: 1,
+        };
+        let sink = Arc::new(RecordingAccountSink(Mutex::new(Vec::new())));
+        let scope = titan_plugin_engine::ResourceScope::new(
+            titan_plugin_engine::PluginIdentity::new("test", "account-encoder-dedup"),
+        );
+        let context = account::AccountConnectorContext {
+            account: account_handle,
+            instruments: Arc::from([account::AccountInstrumentBinding {
+                native_symbol: Arc::from("BTCUSDT"),
+                asset_id: account::AssetId(11),
+                price_tick: "1.0".parse().unwrap(),
+                quantity_lot: "0.01".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+            }]),
+            currencies: Arc::from([]),
+            ownership: account::OrderOwnershipPolicy::ObserveAll,
+            account_stream: account::SourceStreamId(1),
+            control_stream: account::SourceStreamId(2),
+            event_publisher: account::AccountEventPublisher::from_sink(
+                account_handle,
+                sink.clone(),
+            ),
+            resources: scope.handle(),
+            secrets: account::ScopedSecretResolver::scoped(
+                account::SecretRef::new("secret://test/account"),
+                Arc::new(account::UnavailableSecretProvider),
+            ),
+            command_queue_capacity: 1,
+        };
+        let encoder = AccountEventEncoder {
+            context,
+            epoch: Arc::new(AtomicU64::new(1)),
+            version: Arc::new(AtomicU64::new(0)),
+            ready: Arc::new(AtomicBool::new(true)),
+            reconciling: Arc::new(AtomicBool::new(false)),
+            ids: Arc::new(Mutex::new(IdInterner::default())),
+            fill_cumulative: Mutex::new(HashMap::new()),
+            pending: Mutex::new(VecDeque::new()),
+            pending_capacity: 8,
+        };
+
+        let mut order = hftbacktest::types::Order::new(
+            3,
+            100,
+            1.0,
+            1.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.status = Status::PartiallyFilled;
+        order.exch_timestamp = 10;
+        order.exec_qty = 0.25;
+
+        let first = AccountPublication::Order {
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: Some("c-1".to_string()),
+            venue_order_id: Some("v-1".to_string()),
+            order: {
+                let mut order = order.clone();
+                order.leaves_qty = 0.75;
+                order.exec_qty = 0.25;
+                order
+            },
+        };
+        encoder.publish(&first).unwrap();
+
+        let repeated = AccountPublication::Order {
+            order: {
+                let mut order = order;
+                order.leaves_qty = 0.75;
+                order.exec_qty = 0.25;
+                order
+            },
+            symbol: "BTCUSDT".to_string(),
+            client_order_id: Some("c-1".to_string()),
+            venue_order_id: Some("v-1".to_string()),
+        };
+        encoder.publish(&repeated).unwrap();
+
+        assert_eq!(sink.0.lock().unwrap().as_slice(), &[
+            account::ORDER_CHANGED_EVENT,
+            account::FILL_EVENT,
+            account::ORDER_CHANGED_EVENT,
+        ]);
     }
 
     #[cfg(feature = "hyperliquid")]
