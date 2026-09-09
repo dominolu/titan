@@ -964,6 +964,14 @@ impl AccountEventEncoder {
                         .event_publisher
                         .publish_encoded(&fill, TraceContext::default())
                         .map_err(|e| rejected(e.to_string()))?;
+                    tracing::info!(
+                        account_id = fill.header.account_id,
+                        asset_id = fill.asset_id,
+                        side = fill.side,
+                        last_fill_quantity_lots = fill.last_fill_quantity_lots,
+                        cumulative_filled_quantity_lots = fill.cumulative_filled_quantity_lots,
+                        "Account fill event published."
+                    );
                 }
                 Ok(())
             }
