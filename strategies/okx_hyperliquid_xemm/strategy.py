@@ -243,7 +243,7 @@ def build(parameters):
     @njit
     def fill_seen(s, fill):
         # account_version is reliable and ordered per account.
-        side_bit = 1 if fill["side"] > 0 else 0
+        side_bit = 1 if fill["side"] == BUY_SIDE else 0
         key = (
             fill["sequence"] * 16
             + fill["local_account_no"] * 4
@@ -734,24 +734,28 @@ def build(parameters):
             base = 0.0
             if fill["asset_no"] == maker_asset_no:
                 base = fill["last_fill_qty"] * maker_lot_base
-                if fill["side"] > 0:
+                if fill["side"] == BUY_SIDE:
                     s.state[F_UNHEDGED_BASE] += base
                     s.state[F_MAKER_POSITION_ESTIMATE] += base
-                else:
+                elif fill["side"] == SELL_SIDE:
                     s.state[F_UNHEDGED_BASE] -= base
                     s.state[F_MAKER_POSITION_ESTIMATE] -= base
+                else:
+                    continue
                 s.state[F_TOTAL_MAKER_FILL_BASE] += base
                 s.state_i64[I_MAKER_FILL_COUNT] += 1
                 if s.state_i64[I_UNHEDGED_SINCE_TS] == 0:
                     s.state_i64[I_UNHEDGED_SINCE_TS] = s.now
             elif fill["asset_no"] == hedge_asset_no:
                 base = fill["last_fill_qty"] * hedge_lot_base
-                if fill["side"] > 0:
+                if fill["side"] == BUY_SIDE:
                     s.state[F_UNHEDGED_BASE] += base
                     s.state[F_HEDGE_POSITION_ESTIMATE] += base
-                else:
+                elif fill["side"] == SELL_SIDE:
                     s.state[F_UNHEDGED_BASE] -= base
                     s.state[F_HEDGE_POSITION_ESTIMATE] -= base
+                else:
+                    continue
                 if abs(s.state[F_UNHEDGED_BASE]) < hedge_lot_base * 0.5:
                     s.state[F_UNHEDGED_BASE] = 0.0
                     s.state_i64[I_UNHEDGED_SINCE_TS] = 0
@@ -776,7 +780,7 @@ def build(parameters):
                 or status == ORDER_REJECTED
             )
             if order["asset_no"] == maker_asset_no:
-                if order["side"] > 0:
+                if order["side"] == BUY_SIDE:
                     if order_id != s.state_i64[I_BID_ORDER_ID]:
                         continue
                     if terminal:
@@ -786,7 +790,7 @@ def build(parameters):
                         s.state[F_ACTIVE_BID_LOTS] = 0.0
                     elif status == ORDER_NEW or status == ORDER_PARTIALLY_FILLED:
                         s.state_i64[I_BID_STATE] = LEG_OPEN
-                else:
+                elif order["side"] == SELL_SIDE:
                     if order_id != s.state_i64[I_ASK_ORDER_ID]:
                         continue
                     if terminal:
@@ -916,7 +920,7 @@ def build(parameters):
 
     return SimpleNamespace(
         strategy_id="okx_hyperliquid_xemm",
-        strategy_version="0.2.1",
+        strategy_version="0.2.2",
         on_start=on_start,
         on_tick=on_tick,
         on_depth=on_depth,

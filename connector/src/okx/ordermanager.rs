@@ -91,10 +91,11 @@ impl OrderManager {
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
         let exch_ts = data.u_time.parse::<i64>().unwrap_or(0) * 1_000_000;
         if exch_ts >= order_ext.order.exch_timestamp {
+            let previous_filled = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
+            let cumulative_filled = data.acc_fill_sz.parse().unwrap_or(previous_filled);
             order_ext.order.status = from_str_to_status(&data.state);
-            order_ext.order.exec_qty = data.acc_fill_sz.parse().unwrap_or(0.0);
-            order_ext.order.leaves_qty =
-                data.sz.parse::<f64>().unwrap_or(0.0) - order_ext.order.exec_qty;
+            order_ext.order.exec_qty = (cumulative_filled - previous_filled).max(0.0);
+            order_ext.order.leaves_qty = data.sz.parse::<f64>().unwrap_or(0.0) - cumulative_filled;
             order_ext.order.exec_price_tick = (data.avg_px.parse::<f64>().unwrap_or(0.0)
                 / order_ext.order.tick_size)
                 .round() as i64;
@@ -251,6 +252,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, Status::Filled);
+    }
+
+    #[test]
+    fn cumulative_partial_fills_publish_only_the_new_delta() {
+        let mut manager = OrderManager::new("");
+        let client_order_id = "0123456789abcdef0123456789abcdef";
+        let mut order = test_order(3);
+        order.status = Status::New;
+        assert!(manager.track_managed_order("BTC-USDT-SWAP", client_order_id, order));
+
+        let mut first = order_update(client_order_id, "partially_filled");
+        first.acc_fill_sz = "0.4".to_string();
+        let first = manager.update_from_ws(&first).unwrap().unwrap();
+        assert_eq!(first.exec_qty, 0.4);
+        assert_eq!(first.leaves_qty, 0.6);
+
+        let mut second = order_update(client_order_id, "partially_filled");
+        second.acc_fill_sz = "0.75".to_string();
+        second.u_time = "2000".to_string();
+        let second = manager.update_from_ws(&second).unwrap().unwrap();
+        assert!((second.exec_qty - 0.35).abs() < 1e-12);
+        assert_eq!(second.leaves_qty, 0.25);
     }
 
     #[test]
