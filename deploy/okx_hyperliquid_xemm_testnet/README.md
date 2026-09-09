@@ -1,12 +1,13 @@
 # OKX mainnet + Hyperliquid mainnet 联调部署
 
-`runtime.toml` 当前是已经完成 shadow 验证的最小规模主网 canary：`min_profitability_bps = 10`、
-`order_amount_base = 0.0001 BTC`、`max_order_notional = 10 USDT`。切换账户或品种前必须重新从两个
+`runtime.toml` 当前是已经完成 shadow 验证的小规模主网 canary：`min_profitability_bps = 10`、
+`order_amount_base = 0.0002 BTC`、`max_order_notional = 25 USDT`。该数量高于 Hyperliquid 的
+`10 USDC` 最小订单金额，同时仍将单次名义风险限制在约 `16 USDT`。切换账户或品种前必须重新从两个
 交易所的实时 instrument metadata 校验 `price_tick`、`quantity_lot` 与 OKX `ctVal`，并先恢复高盈利
 门槛完成 shadow 验证。
 
 该配置的 OKX 与 Hyperliquid 都是真实主网。默认 Shadow 门禁不得在账户资金、净仓位、API 权限和
-最小下单量验证完成前降低；canary 阶段仍应限制为交易所允许的最小订单。
+最小下单量验证完成前降低；canary 阶段仍应使用能够在两边同时成交的最小可对冲订单。
 
 Hyperliquid `l2Book` 是完整、幂等但非固定频率的快照流；主网探针观测到约 5.5 秒的正常包间隔，因此
 canary 使用 `market_stale_ms = 12000`。修改此值前应重新运行 ignored 公共流探针并保留至少两倍的
