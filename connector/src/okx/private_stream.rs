@@ -253,7 +253,10 @@ impl PrivateStream {
         let request = url.into_client_request()?;
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, mut read) = ws_stream.split();
-        let mut interval = time::interval(Duration::from_secs(20));
+        let mut interval = time::interval_at(
+            time::Instant::now() + Duration::from_secs(20),
+            Duration::from_secs(20),
+        );
         let mut gc_interval = time::interval(Duration::from_secs(20));
 
         // OKX WebSocket login expects a Unix-epoch timestamp in SECONDS (unlike REST, which uses
@@ -275,12 +278,8 @@ impl PrivateStream {
         loop {
             select! {
                 _ = interval.tick() => {
-                    let op = WsRequest {
-                        op: "ping".to_string(),
-                        args: vec![],
-                    };
-                    let s = serde_json::to_string(&op).unwrap();
-                    write.send(Message::Text(s.into())).await?;
+                    // OKX uses an application-level text heartbeat, not a JSON operation.
+                    write.send(Message::Text("ping".into())).await?;
                 }
                 _ = gc_interval.tick() => {
                     self.order_manager.lock().unwrap().gc();
@@ -299,7 +298,9 @@ impl PrivateStream {
                 message = read.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
-                            self.handle_private_stream(&text, &mut write).await?;
+                            if text.as_str() != "pong" {
+                                self.handle_private_stream(&text, &mut write).await?;
+                            }
                         }
                         Some(Ok(Message::Ping(_))) => {
                             write.send(Message::Pong(Bytes::default())).await?;
