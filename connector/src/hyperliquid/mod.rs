@@ -480,7 +480,10 @@ impl Connector for Hyperliquid {
             // accounts are not eligible for scheduleCancel until they reach the venue's volume
             // threshold. That must not prevent the stronger shutdown action below from
             // explicitly cancelling every order on each registered symbol.
-            tracing::warn!(?error, "failed to clear scheduled cancellation during shutdown");
+            tracing::warn!(
+                ?error,
+                "failed to clear scheduled cancellation during shutdown"
+            );
         }
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         let mut errors = Vec::new();
@@ -1033,7 +1036,7 @@ mod live_ws_tests {
     use crate::connector::{
         AccountPublication, DirectPublication, PublishEvent, direct_publish_sender,
     };
-    use hftbacktest::types::{DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, TRADE_EVENT};
+    use hftbacktest::types::{DEPTH_BBO_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, TRADE_EVENT};
     use std::time::Duration;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -1121,7 +1124,7 @@ mod live_ws_tests {
         )
     }
 
-    /// 公共流：订阅 BTC Depth+Trades，20s 内应收到持续深度流与至少一批成交。
+    /// 公共流：订阅 BTC Depth+BBO+Trades，20s 内应收到持续深度、快速 BBO 与成交。
     #[tokio::test]
     #[ignore]
     async fn live_ws_public_streams_probe() {
@@ -1130,15 +1133,19 @@ mod live_ws_tests {
         let mut connector = Hyperliquid::build_market_from(MAINNET_CFG).unwrap();
         connector.subscribe_market_data(
             "BTC".to_owned(),
-            vec![MarketDataKind::Depth, MarketDataKind::Trades],
+            vec![
+                MarketDataKind::Depth,
+                MarketDataKind::Bbo,
+                MarketDataKind::Trades,
+            ],
         );
         let (events, mut receiver) = crate::connector::test_publish_channel();
         connector.run_market_data(events);
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         let started = tokio::time::Instant::now();
-        let (mut depth_batches, mut saw_trade) = (0_u32, false);
-        while !(depth_batches >= 3 && saw_trade) {
+        let (mut depth_batches, mut bbo_batches, mut saw_trade) = (0_u32, 0_u32, false);
+        while !(depth_batches >= 3 && bbo_batches >= 10 && saw_trade) {
             let ev = tokio::time::timeout_at(deadline, receiver.recv())
                 .await
                 .expect("timeout waiting for public streams")
@@ -1150,12 +1157,12 @@ mod live_ws_tests {
                         .any(|event| event.is(DEPTH_EVENT) || event.is(DEPTH_SNAPSHOT_EVENT))
                     {
                         depth_batches += 1;
-                        println!(
-                            "depth batch {depth_batches} after {:?}",
-                            started.elapsed()
-                        );
+                        println!("depth batch {depth_batches} after {:?}", started.elapsed());
                     }
                     for e in &events {
+                        if e.is(DEPTH_BBO_EVENT) {
+                            bbo_batches += 1;
+                        }
                         if e.is(TRADE_EVENT) {
                             saw_trade = true;
                         }
@@ -1165,7 +1172,9 @@ mod live_ws_tests {
                 _ => {}
             }
         }
-        println!("public streams OK: depth_batches={depth_batches} trades={saw_trade}");
+        println!(
+            "public streams OK: depth_batches={depth_batches} bbo_events={bbo_batches} trades={saw_trade}"
+        );
     }
 
     /// 私有流：连接 orderUpdates/userEvents，经 REST 下深价单/改单/撤单，
