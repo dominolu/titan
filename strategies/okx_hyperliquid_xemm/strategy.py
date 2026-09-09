@@ -768,6 +768,7 @@ def build(parameters):
         orders = s.orders()
         for order in orders:
             status = order["status"]
+            order_id = order["order_id"]
             terminal = (
                 status == ORDER_EXPIRED
                 or status == ORDER_FILLED
@@ -776,6 +777,8 @@ def build(parameters):
             )
             if order["asset_no"] == maker_asset_no:
                 if order["side"] > 0:
+                    if order_id != s.state_i64[I_BID_ORDER_ID]:
+                        continue
                     if terminal:
                         s.state_i64[I_BID_STATE] = LEG_EMPTY
                         s.state_i64[I_BID_ORDER_ID] = 0
@@ -784,6 +787,8 @@ def build(parameters):
                     elif status == ORDER_NEW or status == ORDER_PARTIALLY_FILLED:
                         s.state_i64[I_BID_STATE] = LEG_OPEN
                 else:
+                    if order_id != s.state_i64[I_ASK_ORDER_ID]:
+                        continue
                     if terminal:
                         s.state_i64[I_ASK_STATE] = LEG_EMPTY
                         s.state_i64[I_ASK_ORDER_ID] = 0
@@ -792,6 +797,8 @@ def build(parameters):
                     elif status == ORDER_NEW or status == ORDER_PARTIALLY_FILLED:
                         s.state_i64[I_ASK_STATE] = LEG_OPEN
             elif order["asset_no"] == hedge_asset_no:
+                if order_id != s.state_i64[I_HEDGE_ORDER_ID]:
+                    continue
                 if status == ORDER_NEW or status == ORDER_PARTIALLY_FILLED:
                     s.state_i64[I_HEDGE_STATE] = LEG_OPEN
                 elif terminal:
@@ -864,11 +871,17 @@ def build(parameters):
         order_id = result["order_id"]
         s.state_i64[I_REJECT_COUNT] += 1
         if order_id == s.state_i64[I_BID_ORDER_ID]:
-            s.state_i64[I_BID_STATE] = LEG_EMPTY
-            s.state_i64[I_BID_ORDER_ID] = 0
+            if s.state_i64[I_BID_STATE] == LEG_CANCELING:
+                s.state_i64[I_BID_STATE] = LEG_OPEN
+            else:
+                s.state_i64[I_BID_STATE] = LEG_EMPTY
+                s.state_i64[I_BID_ORDER_ID] = 0
         elif order_id == s.state_i64[I_ASK_ORDER_ID]:
-            s.state_i64[I_ASK_STATE] = LEG_EMPTY
-            s.state_i64[I_ASK_ORDER_ID] = 0
+            if s.state_i64[I_ASK_STATE] == LEG_CANCELING:
+                s.state_i64[I_ASK_STATE] = LEG_OPEN
+            else:
+                s.state_i64[I_ASK_STATE] = LEG_EMPTY
+                s.state_i64[I_ASK_ORDER_ID] = 0
         elif order_id == s.state_i64[I_HEDGE_ORDER_ID]:
             s.state_i64[I_HEDGE_STATE] = LEG_EMPTY
             s.state_i64[I_HEDGE_ORDER_ID] = 0
@@ -903,7 +916,7 @@ def build(parameters):
 
     return SimpleNamespace(
         strategy_id="okx_hyperliquid_xemm",
-        strategy_version="0.2.0",
+        strategy_version="0.2.1",
         on_start=on_start,
         on_tick=on_tick,
         on_depth=on_depth,
