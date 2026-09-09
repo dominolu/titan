@@ -852,7 +852,15 @@ def build(parameters):
         if (
             s.state_i64[I_MAKER_POSITION_READY] != 0
             and s.state_i64[I_HEDGE_POSITION_READY] != 0
+            and (
+                s.state_i64[I_MODE] == MODE_WARMING_UP
+                or s.state_i64[I_MODE] == MODE_PAUSED
+            )
         ):
+            # Position snapshots establish the authoritative baseline during startup/recovery.
+            # While running, venue position and fill facts for the same execution may arrive in
+            # either order; recomputing here would count the execution twice when Position wins
+            # that race. Incremental Fill facts own F_UNHEDGED_BASE until the next recovery gate.
             s.state[F_UNHEDGED_BASE] = (
                 s.state[F_MAKER_POSITION_ESTIMATE]
                 + s.state[F_HEDGE_POSITION_ESTIMATE]
@@ -920,7 +928,7 @@ def build(parameters):
 
     return SimpleNamespace(
         strategy_id="okx_hyperliquid_xemm",
-        strategy_version="0.2.2",
+        strategy_version="0.2.3",
         on_start=on_start,
         on_tick=on_tick,
         on_depth=on_depth,
