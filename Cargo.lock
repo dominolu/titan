@@ -4077,6 +4077,7 @@ dependencies = [
  "titan-runtime-abi",
  "titan-strategy-plugin",
  "toml",
+ "tracing-subscriber",
 ]
 
 [[package]]

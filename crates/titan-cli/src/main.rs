@@ -2842,6 +2842,14 @@ fn load_core_configuration(
 }
 
 fn main() -> ExitCode {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
     let arguments = std::env::args_os().collect::<Vec<_>>();
     let json_argument = arguments.iter().any(|argument| argument == "--json");
     let cli = match Cli::try_parse_from(arguments) {

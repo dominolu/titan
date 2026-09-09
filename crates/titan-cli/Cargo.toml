@@ -30,3 +30,4 @@ titan-account-plugin = { path = "../titan-account-plugin" }
 titan-strategy-plugin = { path = "../titan-strategy-plugin", features = ["numba-loader"] }
 titan-connector-loader = { path = "../titan-connector-loader" }
 semver = "1"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
