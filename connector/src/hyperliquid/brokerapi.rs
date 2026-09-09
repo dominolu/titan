@@ -2192,10 +2192,10 @@ mod tests {
         assert_eq!(side_from_hl(&trade.side), ApiSide::Buy);
 
         let bbo: m::BboData = serde_json::from_str(
-            r#"{"coin":"BTC","bbo":{"bids":[{"px":"50000.0","sz":"1.5"}],"asks":[{"px":"50001.0","sz":"2.0"}]},"time":1700000000000}"#,
+            r#"{"coin":"BTC","bbo":[{"px":"50000.0","sz":"1.5","n":2},{"px":"50001.0","sz":"2.0","n":3}],"time":1700000000000}"#,
         )
         .unwrap();
-        assert_eq!(bbo.bbo.as_ref().unwrap().bids[0].px, "50000.0");
+        assert_eq!(bbo.bbo[0].as_ref().unwrap().px, "50000.0");
     }
 
     #[test]

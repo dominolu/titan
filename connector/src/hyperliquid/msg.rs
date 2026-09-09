@@ -599,18 +599,9 @@ pub struct BboData {
     #[serde(default)]
     pub coin: String,
     #[serde(default)]
-    pub bbo: Option<BboLevels>,
+    pub bbo: Vec<Option<BboLevel>>,
     #[serde(default)]
     pub time: u64,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BboLevels {
-    #[serde(default)]
-    pub bids: Vec<BboLevel>,
-    #[serde(default)]
-    pub asks: Vec<BboLevel>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

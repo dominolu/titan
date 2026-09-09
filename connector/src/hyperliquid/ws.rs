@@ -39,6 +39,7 @@ use crate::{
 #[derive(Debug, PartialEq, Eq)]
 enum MarketChannel {
     L2Book,
+    Bbo,
     Trades,
     OrderUpdates,
     User,
@@ -48,6 +49,8 @@ enum MarketChannel {
 fn classify_channel(channel: &str) -> MarketChannel {
     if channel.starts_with("l2Book") {
         MarketChannel::L2Book
+    } else if channel == "bbo" {
+        MarketChannel::Bbo
     } else if channel.starts_with("trades") {
         MarketChannel::Trades
     } else if channel == "orderUpdates" {
@@ -71,6 +74,22 @@ fn apply_fill(position: &mut f64, side: &str, sz: f64) {
     } else {
         *position -= sz;
     }
+}
+
+fn market_channels(kinds: &[MarketDataKind]) -> Vec<&'static str> {
+    let mut channels = Vec::new();
+    for kind in kinds {
+        let channel = match kind {
+            MarketDataKind::Depth => "l2Book",
+            MarketDataKind::Bbo => "bbo",
+            MarketDataKind::Trades => "trades",
+            _ => continue,
+        };
+        if !channels.contains(&channel) {
+            channels.push(channel);
+        }
+    }
+    channels
 }
 
 pub struct HyperliquidWs {
@@ -175,6 +194,7 @@ impl HyperliquidWs {
         };
         match classify_channel(&channel) {
             MarketChannel::L2Book => self.handle_l2_book(data).await?,
+            MarketChannel::Bbo => self.handle_bbo(data).await?,
             MarketChannel::Trades => self.handle_trades(data).await?,
             MarketChannel::OrderUpdates => self.handle_order_updates(data).await?,
             MarketChannel::User => self.handle_user_events(data).await?,
@@ -185,57 +205,55 @@ impl HyperliquidWs {
         Ok(())
     }
 
-    /// 处理非引擎核心频道（allMids/bbo/candle/userFills/userFundings/activeAssetCtx/
+    async fn handle_bbo(&self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
+        let bbo: BboData = serde_json::from_value(data.clone())?;
+        let exch_ts = (bbo.time * 1_000_000) as i64;
+        let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
+        let mut events = Vec::with_capacity(2);
+        if let Some(Some(level)) = bbo.bbo.first() {
+            events.push(Event {
+                ev: LOCAL_BID_DEPTH_BBO_EVENT,
+                exch_ts,
+                local_ts,
+                order_id: 0,
+                px: level.px.parse().unwrap_or(0.0),
+                qty: level.sz.parse().unwrap_or(0.0),
+                ival: 0,
+                fval: 0.0,
+            });
+        }
+        if let Some(Some(level)) = bbo.bbo.get(1) {
+            events.push(Event {
+                ev: LOCAL_ASK_DEPTH_BBO_EVENT,
+                exch_ts,
+                local_ts,
+                order_id: 0,
+                px: level.px.parse().unwrap_or(0.0),
+                qty: level.sz.parse().unwrap_or(0.0),
+                ival: 0,
+                fval: 0.0,
+            });
+        }
+        if !events.is_empty() {
+            self.ev_tx
+                .send(PublishEvent::FeedBatch {
+                    symbol: bbo.coin,
+                    events,
+                    stream: None,
+                })
+                .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
+        }
+        Ok(())
+    }
+
+    /// 处理非引擎核心频道（allMids/candle/userFills/userFundings/activeAssetCtx/
     /// clearinghouseState/openOrders/notification/spotState/twapStates 等）。
     async fn handle_extra(
         &self,
         channel: &str,
-        data: &serde_json::Value,
+        _data: &serde_json::Value,
     ) -> Result<(), HyperliquidError> {
         match channel {
-            "bbo" => {
-                let bbo: BboData = serde_json::from_value(data.clone())?;
-                let exch_ts = (bbo.time * 1_000_000) as i64;
-                let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
-                if let Some(levels) = &bbo.bbo {
-                    for lvl in &levels.bids {
-                        self.ev_tx
-                            .send(PublishEvent::FeedBatch {
-                                symbol: bbo.coin.clone(),
-                                events: vec![Event {
-                                    ev: LOCAL_BID_DEPTH_BBO_EVENT,
-                                    exch_ts,
-                                    local_ts,
-                                    order_id: 0,
-                                    px: lvl.px.parse().unwrap_or(0.0),
-                                    qty: lvl.sz.parse().unwrap_or(0.0),
-                                    ival: 0,
-                                    fval: 0.0,
-                                }],
-                                stream: None,
-                            })
-                            .unwrap();
-                    }
-                    for lvl in &levels.asks {
-                        self.ev_tx
-                            .send(PublishEvent::FeedBatch {
-                                symbol: bbo.coin.clone(),
-                                events: vec![Event {
-                                    ev: LOCAL_ASK_DEPTH_BBO_EVENT,
-                                    exch_ts,
-                                    local_ts,
-                                    order_id: 0,
-                                    px: lvl.px.parse().unwrap_or(0.0),
-                                    qty: lvl.sz.parse().unwrap_or(0.0),
-                                    ival: 0,
-                                    fval: 0.0,
-                                }],
-                                stream: None,
-                            })
-                            .unwrap();
-                    }
-                }
-            }
             "allMids"
             | "activeAssetCtx"
             | "candle"
@@ -464,18 +482,7 @@ impl HyperliquidWs {
         symbol: String,
         kinds: &[MarketDataKind],
     ) -> Result<(), HyperliquidError> {
-        let mut channels = Vec::new();
-        for kind in kinds {
-            let channel = match kind {
-                MarketDataKind::Depth | MarketDataKind::Bbo => "l2Book",
-                MarketDataKind::Trades => "trades",
-                _ => continue,
-            };
-            if !channels.contains(&channel) {
-                channels.push(channel);
-            }
-        }
-        for channel in channels {
+        for channel in market_channels(kinds) {
             let request = WsSubscribe {
                 method: method.to_string(),
                 subscription: serde_json::json!({ "type": channel, "coin": symbol }),
@@ -651,6 +658,21 @@ mod tests {
     use super::*;
     use crate::hyperliquid::msg::WsUserFundings;
 
+    #[test]
+    fn market_kinds_use_distinct_hyperliquid_channels() {
+        assert_eq!(market_channels(&[MarketDataKind::Depth]), vec!["l2Book"]);
+        assert_eq!(market_channels(&[MarketDataKind::Bbo]), vec!["bbo"]);
+        assert_eq!(
+            market_channels(&[
+                MarketDataKind::Depth,
+                MarketDataKind::Bbo,
+                MarketDataKind::Trades,
+                MarketDataKind::Bbo,
+            ]),
+            vec!["l2Book", "bbo", "trades"]
+        );
+    }
+
     #[tokio::test]
     async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
         let (events, mut receiver) = crate::connector::test_publish_channel();
@@ -695,6 +717,54 @@ mod tests {
                 }
                 _ => panic!("expected Hyperliquid depth snapshot"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn bbo_array_is_published_as_one_atomic_two_sided_batch() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (events, mut receiver) = crate::connector::test_publish_channel();
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut ws = HyperliquidWs::new(
+            events,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            Default::default(),
+            false,
+            Arc::new(AtomicU8::new(0)),
+        );
+        let message = serde_json::json!({
+            "channel": "bbo",
+            "data": {
+                "coin": "BTC",
+                "time": 1_700_000_000_000_u64,
+                "bbo": [
+                    {"px": "50000.0", "sz": "1.5", "n": 2},
+                    {"px": "50001.0", "sz": "2.0", "n": 3}
+                ]
+            }
+        });
+
+        ws.handle_msg(&message.to_string()).await.unwrap();
+        match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                symbol,
+                events,
+                stream,
+            } => {
+                assert_eq!(symbol, "BTC");
+                assert!(stream.is_none());
+                assert_eq!(events.len(), 2);
+                assert!(events[0].is(LOCAL_BID_DEPTH_BBO_EVENT));
+                assert!(events[1].is(LOCAL_ASK_DEPTH_BBO_EVENT));
+                assert_eq!(events[0].px, 50_000.0);
+                assert_eq!(events[1].px, 50_001.0);
+            }
+            _ => panic!("expected atomic Hyperliquid BBO batch"),
         }
     }
 
@@ -801,6 +871,7 @@ mod tests {
     fn test_classify_channel() {
         assert_eq!(classify_channel("l2Book"), MarketChannel::L2Book);
         assert_eq!(classify_channel("l2Book:btc"), MarketChannel::L2Book);
+        assert_eq!(classify_channel("bbo"), MarketChannel::Bbo);
         assert_eq!(classify_channel("trades"), MarketChannel::Trades);
         assert_eq!(classify_channel("trades:btc"), MarketChannel::Trades);
         assert_eq!(
