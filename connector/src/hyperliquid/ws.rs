@@ -35,6 +35,8 @@ use crate::{
     },
 };
 
+const COMPOSITE_L2_MAX_AGE_MS: u64 = 10_000;
+
 /// Classifies an incoming WebSocket channel for message dispatch.
 #[derive(Debug, PartialEq, Eq)]
 enum MarketChannel {
@@ -79,17 +81,148 @@ fn apply_fill(position: &mut f64, side: &str, sz: f64) {
 fn market_channels(kinds: &[MarketDataKind]) -> Vec<&'static str> {
     let mut channels = Vec::new();
     for kind in kinds {
-        let channel = match kind {
-            MarketDataKind::Depth => "l2Book",
-            MarketDataKind::Bbo => "bbo",
-            MarketDataKind::Trades => "trades",
-            _ => continue,
+        let required = match kind {
+            MarketDataKind::Depth => &["l2Book", "bbo"][..],
+            MarketDataKind::Bbo => &["bbo"][..],
+            MarketDataKind::Trades => &["trades"][..],
+            _ => &[],
         };
-        if !channels.contains(&channel) {
-            channels.push(channel);
+        for channel in required {
+            if !channels.contains(channel) {
+                channels.push(*channel);
+            }
         }
     }
     channels
+}
+
+fn unsubscribe_channels(
+    removed: &[MarketDataKind],
+    remaining: &HashSet<MarketDataKind>,
+) -> Vec<&'static str> {
+    market_channels(removed)
+        .into_iter()
+        .filter(|channel| {
+            !market_channels(&remaining.iter().copied().collect::<Vec<_>>()).contains(channel)
+        })
+        .collect()
+}
+
+fn valid_level(px: &str, sz: &str) -> Option<(f64, f64)> {
+    let px = px.parse::<f64>().ok()?;
+    let qty = sz.parse::<f64>().ok()?;
+    (px.is_finite() && qty.is_finite() && px > 0.0 && qty > 0.0).then_some((px, qty))
+}
+
+fn depth_event(ev: u64, exch_ts: i64, local_ts: i64, px: f64, qty: f64) -> Event {
+    Event {
+        ev,
+        exch_ts,
+        local_ts,
+        order_id: 0,
+        px,
+        qty,
+        ival: 0,
+        fval: 0.0,
+    }
+}
+
+/// Builds a full replacement image. A fresh BBO replaces the first level and trims any L2
+/// levels that would conflict with it. Old L2 tails are discarded rather than advertised as
+/// executable liquidity.
+fn composite_depth_events(
+    l2: Option<&L2BookData>,
+    bbo: Option<&BboData>,
+    local_ts: i64,
+) -> Vec<Event> {
+    let bbo_pair = bbo.and_then(|book| {
+        let bid = book
+            .bbo
+            .first()?
+            .as_ref()
+            .and_then(|level| valid_level(&level.px, &level.sz))?;
+        let ask = book
+            .bbo
+            .get(1)?
+            .as_ref()
+            .and_then(|level| valid_level(&level.px, &level.sz))?;
+        (bid.0 < ask.0).then_some((book.time, bid, ask))
+    });
+
+    if let Some((bbo_time, bid, ask)) = bbo_pair
+        && l2.is_none_or(|book| bbo_time >= book.time)
+    {
+        let exch_ts = (bbo_time * 1_000_000) as i64;
+        let mut events = vec![depth_event(
+            LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
+            exch_ts,
+            local_ts,
+            bid.0,
+            bid.1,
+        )];
+        if let Some(book) = l2
+            && bbo_time.saturating_sub(book.time) <= COMPOSITE_L2_MAX_AGE_MS
+        {
+            if let Some(bids) = book.levels.first() {
+                events.extend(bids.iter().filter_map(|level| {
+                    let (px, qty) = valid_level(&level.px, &level.sz)?;
+                    (px < bid.0).then(|| {
+                        depth_event(LOCAL_BID_DEPTH_SNAPSHOT_EVENT, exch_ts, local_ts, px, qty)
+                    })
+                }));
+            }
+        }
+        events.push(depth_event(
+            LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
+            exch_ts,
+            local_ts,
+            ask.0,
+            ask.1,
+        ));
+        if let Some(book) = l2
+            && bbo_time.saturating_sub(book.time) <= COMPOSITE_L2_MAX_AGE_MS
+            && let Some(asks) = book.levels.get(1)
+        {
+            events.extend(asks.iter().filter_map(|level| {
+                let (px, qty) = valid_level(&level.px, &level.sz)?;
+                (px > ask.0).then(|| {
+                    depth_event(LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, exch_ts, local_ts, px, qty)
+                })
+            }));
+        }
+        return events;
+    }
+
+    let Some(book) = l2 else {
+        return Vec::new();
+    };
+    let exch_ts = (book.time * 1_000_000) as i64;
+    let mut events = Vec::new();
+    if let Some(bids) = book.levels.first() {
+        events.extend(bids.iter().filter_map(|level| {
+            let (px, qty) = valid_level(&level.px, &level.sz)?;
+            Some(depth_event(
+                LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
+                exch_ts,
+                local_ts,
+                px,
+                qty,
+            ))
+        }));
+    }
+    if let Some(asks) = book.levels.get(1) {
+        events.extend(asks.iter().filter_map(|level| {
+            let (px, qty) = valid_level(&level.px, &level.sz)?;
+            Some(depth_event(
+                LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
+                exch_ts,
+                local_ts,
+                px,
+                qty,
+            ))
+        }));
+    }
+    events
 }
 
 pub struct HyperliquidWs {
@@ -99,6 +232,9 @@ pub struct HyperliquidWs {
     symbols: SharedSymbolSet,
     positions: Arc<Mutex<HashMap<String, f64>>>,
     stream_epochs: HashMap<String, u64>,
+    l2_books: HashMap<String, L2BookData>,
+    bbo_books: HashMap<String, BboData>,
+    wire_channels: HashMap<String, HashSet<&'static str>>,
     account_address: String,
     client: HyperliquidClient,
     command_rx: Receiver<MarketDataCommand>,
@@ -129,6 +265,9 @@ impl HyperliquidWs {
             symbols,
             positions: Default::default(),
             stream_epochs: Default::default(),
+            l2_books: Default::default(),
+            bbo_books: Default::default(),
+            wire_channels: Default::default(),
             account_address,
             client,
             command_rx,
@@ -205,7 +344,71 @@ impl HyperliquidWs {
         Ok(())
     }
 
-    async fn handle_bbo(&self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
+    fn depth_subscribed(&self, symbol: &str) -> bool {
+        self.market_subscriptions
+            .lock()
+            .unwrap()
+            .get(symbol)
+            .is_some_and(|kinds| kinds.contains(&MarketDataKind::Depth))
+    }
+
+    fn bbo_subscribed(&self, symbol: &str) -> bool {
+        self.market_subscriptions
+            .lock()
+            .unwrap()
+            .get(symbol)
+            .is_some_and(|kinds| kinds.contains(&MarketDataKind::Bbo))
+    }
+
+    fn clear_inactive_caches(&mut self, symbol: &str) {
+        let active = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .get(symbol)
+            .cloned()
+            .unwrap_or_default();
+        if !active.contains(&MarketDataKind::Depth) {
+            self.l2_books.remove(symbol);
+        }
+        if !active.contains(&MarketDataKind::Depth) && !active.contains(&MarketDataKind::Bbo) {
+            self.bbo_books.remove(symbol);
+        }
+    }
+
+    fn publish_composite_depth(&mut self, symbol: &str) -> Result<(), HyperliquidError> {
+        if !self.depth_subscribed(symbol) {
+            return Ok(());
+        }
+        let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
+        let events = composite_depth_events(
+            self.l2_books.get(symbol),
+            self.bbo_books.get(symbol),
+            local_ts,
+        );
+        if events.is_empty() {
+            return Ok(());
+        }
+        let epoch = {
+            let value = self.stream_epochs.entry(symbol.to_owned()).or_insert(0);
+            *value = value.saturating_add(1);
+            *value
+        };
+        self.ev_tx
+            .send(PublishEvent::FeedBatch {
+                symbol: symbol.to_owned(),
+                events,
+                stream: Some(MarketStreamMetadata {
+                    epoch,
+                    first_update_sequence: 1,
+                    last_update_sequence: 1,
+                    snapshot: true,
+                }),
+            })
+            .map_err(|_| HyperliquidError::ConnectionInterrupted)
+    }
+
+    async fn handle_bbo(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
         let bbo: BboData = serde_json::from_value(data.clone())?;
         let exch_ts = (bbo.time * 1_000_000) as i64;
         let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
@@ -234,16 +437,18 @@ impl HyperliquidWs {
                 fval: 0.0,
             });
         }
-        if !events.is_empty() {
+        if self.bbo_subscribed(&bbo.coin) && !events.is_empty() {
             self.ev_tx
                 .send(PublishEvent::FeedBatch {
-                    symbol: bbo.coin,
+                    symbol: bbo.coin.clone(),
                     events,
                     stream: None,
                 })
                 .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
         }
-        Ok(())
+        let symbol = bbo.coin.clone();
+        self.bbo_books.insert(symbol.clone(), bbo);
+        self.publish_composite_depth(&symbol)
     }
 
     /// 处理非引擎核心频道（allMids/candle/userFills/userFundings/activeAssetCtx/
@@ -281,57 +486,9 @@ impl HyperliquidWs {
 
     async fn handle_l2_book(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
         let book: L2BookData = serde_json::from_value(data.clone())?;
-        let epoch = {
-            let value = self.stream_epochs.entry(book.coin.clone()).or_insert(0);
-            *value = value.saturating_add(1);
-            *value
-        };
-        let exch_ts = (book.time * 1_000_000) as i64;
-        let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
-
-        let mut events = Vec::new();
-        // Hyperliquid l2Book pushes are complete book images; preserve the replacement boundary.
-        if let Some(bids) = book.levels.first() {
-            for level in bids {
-                events.push(Event {
-                    ev: LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
-                    exch_ts,
-                    local_ts,
-                    order_id: 0,
-                    px: level.px.parse().unwrap_or(0.0),
-                    qty: level.sz.parse().unwrap_or(0.0),
-                    ival: 0,
-                    fval: 0.0,
-                });
-            }
-        }
-        if let Some(asks) = book.levels.get(1) {
-            for level in asks {
-                events.push(Event {
-                    ev: LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
-                    exch_ts,
-                    local_ts,
-                    order_id: 0,
-                    px: level.px.parse().unwrap_or(0.0),
-                    qty: level.sz.parse().unwrap_or(0.0),
-                    ival: 0,
-                    fval: 0.0,
-                });
-            }
-        }
-        self.ev_tx
-            .send(PublishEvent::FeedBatch {
-                symbol: book.coin,
-                events,
-                stream: Some(MarketStreamMetadata {
-                    epoch,
-                    first_update_sequence: 1,
-                    last_update_sequence: 1,
-                    snapshot: true,
-                }),
-            })
-            .unwrap();
-        Ok(())
+        let symbol = book.coin.clone();
+        self.l2_books.insert(symbol.clone(), book);
+        self.publish_composite_depth(&symbol)
     }
 
     async fn handle_trades(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
@@ -456,33 +613,68 @@ impl HyperliquidWs {
     }
 
     async fn subscribe_symbol(
-        &self,
+        &mut self,
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         symbol: String,
         kinds: &[MarketDataKind],
     ) -> Result<(), HyperliquidError> {
-        self.send_market_command(write, "subscribe", symbol, kinds)
-            .await
+        let channels: Vec<_> = market_channels(kinds)
+            .into_iter()
+            .filter(|channel| {
+                !self
+                    .wire_channels
+                    .get(&symbol)
+                    .is_some_and(|active| active.contains(channel))
+            })
+            .collect();
+        Self::send_channels(write, "subscribe", symbol.clone(), channels.clone()).await?;
+        self.wire_channels
+            .entry(symbol)
+            .or_default()
+            .extend(channels);
+        Ok(())
     }
 
     async fn unsubscribe_symbol(
-        &self,
+        &mut self,
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         symbol: String,
         kinds: &[MarketDataKind],
     ) -> Result<(), HyperliquidError> {
-        self.send_market_command(write, "unsubscribe", symbol, kinds)
-            .await
+        let remaining = self
+            .market_subscriptions
+            .lock()
+            .unwrap()
+            .get(&symbol)
+            .cloned()
+            .unwrap_or_default();
+        let channels: Vec<_> = unsubscribe_channels(kinds, &remaining)
+            .into_iter()
+            .filter(|channel| {
+                self.wire_channels
+                    .get(&symbol)
+                    .is_some_and(|active| active.contains(channel))
+            })
+            .collect();
+        Self::send_channels(write, "unsubscribe", symbol.clone(), channels.clone()).await?;
+        if let Some(active) = self.wire_channels.get_mut(&symbol) {
+            for channel in channels {
+                active.remove(channel);
+            }
+            if active.is_empty() {
+                self.wire_channels.remove(&symbol);
+            }
+        }
+        Ok(())
     }
 
-    async fn send_market_command(
-        &self,
+    async fn send_channels(
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         method: &str,
         symbol: String,
-        kinds: &[MarketDataKind],
+        channels: Vec<&str>,
     ) -> Result<(), HyperliquidError> {
-        for channel in market_channels(kinds) {
+        for channel in channels {
             let request = WsSubscribe {
                 method: method.to_string(),
                 subscription: serde_json::json!({ "type": channel, "coin": symbol }),
@@ -495,13 +687,12 @@ impl HyperliquidWs {
     }
 
     async fn resubscribe_book(
-        &self,
+        &mut self,
         write: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         symbol: String,
     ) -> Result<(), HyperliquidError> {
         for method in ["unsubscribe", "subscribe"] {
-            self.send_market_command(write, method, symbol.clone(), &[MarketDataKind::Depth])
-                .await?;
+            Self::send_channels(write, method, symbol.clone(), vec!["l2Book", "bbo"]).await?;
         }
         Ok(())
     }
@@ -529,6 +720,9 @@ impl HyperliquidWs {
         let (mut write, mut read) = ws_stream.split();
         let mut interval = time::interval(Duration::from_secs(30));
         let mut gc_interval = time::interval(Duration::from_secs(20));
+        self.wire_channels.clear();
+        self.l2_books.clear();
+        self.bbo_books.clear();
 
         // Seed the local positions before any fill event can arrive.
         if self.private_channels {
@@ -580,12 +774,16 @@ impl HyperliquidWs {
                 }
                 msg = self.command_rx.recv() => match msg {
                     Ok(MarketDataCommand::Subscribe { symbol, kinds }) => self.subscribe_symbol(&mut write, symbol, &kinds).await?,
-                    Ok(MarketDataCommand::Unsubscribe { symbol, kinds }) => self.unsubscribe_symbol(&mut write, symbol, &kinds).await?,
+                    Ok(MarketDataCommand::Unsubscribe { symbol, kinds }) => {
+                        self.unsubscribe_symbol(&mut write, symbol.clone(), &kinds).await?;
+                        self.clear_inactive_caches(&symbol);
+                    }
                     Ok(MarketDataCommand::Snapshot { symbol }) => {
                         let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                             symbol: symbol.clone(),
                         });
+                        self.l2_books.remove(&symbol);
                         self.resubscribe_book(&mut write, symbol).await?;
                     }
                     Ok(MarketDataCommand::InitializeTrading { symbol }) if self.private_channels => self.init_symbol(symbol).await,
@@ -660,7 +858,10 @@ mod tests {
 
     #[test]
     fn market_kinds_use_distinct_hyperliquid_channels() {
-        assert_eq!(market_channels(&[MarketDataKind::Depth]), vec!["l2Book"]);
+        assert_eq!(
+            market_channels(&[MarketDataKind::Depth]),
+            vec!["l2Book", "bbo"]
+        );
         assert_eq!(market_channels(&[MarketDataKind::Bbo]), vec!["bbo"]);
         assert_eq!(
             market_channels(&[
@@ -670,6 +871,21 @@ mod tests {
                 MarketDataKind::Bbo,
             ]),
             vec!["l2Book", "bbo", "trades"]
+        );
+    }
+
+    #[test]
+    fn unsubscribe_preserves_channels_shared_by_remaining_kinds() {
+        assert_eq!(
+            unsubscribe_channels(
+                &[MarketDataKind::Depth],
+                &HashSet::from([MarketDataKind::Bbo]),
+            ),
+            vec!["l2Book"]
+        );
+        assert_eq!(
+            unsubscribe_channels(&[MarketDataKind::Depth], &HashSet::new()),
+            vec!["l2Book", "bbo"]
         );
     }
 
@@ -687,7 +903,10 @@ mod tests {
             String::new(),
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::from([(
+                "BTC".to_owned(),
+                HashSet::from([MarketDataKind::Depth]),
+            )]))),
             false,
             Arc::new(AtomicU8::new(0)),
         );
@@ -733,7 +952,10 @@ mod tests {
             String::new(),
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Default::default(),
+            Arc::new(Mutex::new(HashMap::from([(
+                "BTC".to_owned(),
+                HashSet::from([MarketDataKind::Bbo]),
+            )]))),
             false,
             Arc::new(AtomicU8::new(0)),
         );
@@ -766,6 +988,117 @@ mod tests {
             }
             _ => panic!("expected atomic Hyperliquid BBO batch"),
         }
+    }
+
+    #[tokio::test]
+    async fn depth_subscription_merges_fast_bbo_with_fresh_l2_tails() {
+        let (events, mut receiver) = crate::connector::test_publish_channel();
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let subscriptions = Arc::new(Mutex::new(HashMap::from([(
+            "BTC".to_owned(),
+            HashSet::from([MarketDataKind::Depth]),
+        )])));
+        let mut ws = HyperliquidWs::new(
+            events,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            String::new(),
+            HyperliquidClient::new("http://localhost", "http://localhost"),
+            command_rx,
+            subscriptions,
+            false,
+            Arc::new(AtomicU8::new(0)),
+        );
+        let l2 = serde_json::json!({
+            "coin": "BTC",
+            "time": 1_700_000_000_000_u64,
+            "levels": [
+                [
+                    {"px": "100", "sz": "2", "n": 1},
+                    {"px": "99", "sz": "3", "n": 1}
+                ],
+                [
+                    {"px": "101", "sz": "4", "n": 1},
+                    {"px": "102", "sz": "5", "n": 1}
+                ]
+            ]
+        });
+        ws.handle_l2_book(&l2).await.unwrap();
+        let _initial_l2 = receiver.recv().await.unwrap();
+
+        let bbo = serde_json::json!({
+            "channel": "bbo",
+            "data": {
+                "coin": "BTC",
+                "time": 1_700_000_000_001_u64,
+                "bbo": [
+                    {"px": "100.5", "sz": "1.5", "n": 1},
+                    {"px": "100.8", "sz": "2.5", "n": 1}
+                ]
+            }
+        });
+        ws.handle_msg(&bbo.to_string()).await.unwrap();
+
+        match receiver.recv().await.unwrap() {
+            PublishEvent::FeedBatch {
+                symbol,
+                events,
+                stream: Some(stream),
+            } => {
+                assert_eq!(symbol, "BTC");
+                assert!(stream.snapshot);
+                assert_eq!(stream.epoch, 2);
+                assert_eq!(
+                    events.iter().map(|event| event.px).collect::<Vec<_>>(),
+                    vec![100.5, 100.0, 99.0, 100.8, 101.0, 102.0]
+                );
+                assert!(
+                    events[..3]
+                        .iter()
+                        .all(|event| event.is(LOCAL_BID_DEPTH_SNAPSHOT_EVENT))
+                );
+                assert!(
+                    events[3..]
+                        .iter()
+                        .all(|event| event.is(LOCAL_ASK_DEPTH_SNAPSHOT_EVENT))
+                );
+            }
+            _ => panic!("expected merged Hyperliquid depth snapshot"),
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), receiver.recv())
+                .await
+                .is_err(),
+            "an internal BBO subscription must not leak a separate BBO batch"
+        );
+    }
+
+    #[test]
+    fn stale_l2_tails_are_not_merged_into_a_newer_bbo() {
+        let l2: L2BookData = serde_json::from_value(serde_json::json!({
+            "coin": "BTC",
+            "time": 1_u64,
+            "levels": [
+                [{"px": "100", "sz": "2", "n": 1}],
+                [{"px": "101", "sz": "3", "n": 1}]
+            ]
+        }))
+        .unwrap();
+        let bbo: BboData = serde_json::from_value(serde_json::json!({
+            "coin": "BTC",
+            "time": 1_u64 + COMPOSITE_L2_MAX_AGE_MS + 1,
+            "bbo": [
+                {"px": "100.5", "sz": "1", "n": 1},
+                {"px": "100.8", "sz": "1", "n": 1}
+            ]
+        }))
+        .unwrap();
+
+        let events = composite_depth_events(Some(&l2), Some(&bbo), 123);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].px, 100.5);
+        assert_eq!(events[1].px, 100.8);
     }
 
     #[tokio::test]
