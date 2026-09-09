@@ -1,6 +1,6 @@
 {
   "strategy_type": "numba-okx-hyperliquid-xemm",
-  "package_version": "0.2.4",
+  "package_version": "0.2.5",
   "runtime_abi": {"major": 10, "minor": 0},
   "parameter_schema": {
     "type": "object",
@@ -60,6 +60,6 @@
   "state_schema_version": 2,
   "callbacks": 16335,
   "capabilities": 109,
-  "artifact_digest": "d28c7a179ba5bc0e17d19475e4a68f195d016cd2c0c9abc138c7341b6400ee2b",
+  "artifact_digest": "4d0e646d515c5213616bf8fd9283b42f95b9053de7ad9b696537f69c714a94a4",
   "content_files": ["__init__.py", "strategy.py"]
 }

@@ -1339,7 +1339,13 @@ async fn handle_command(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 result.as_ref().err().map(ToString::to_string);
-            if result.is_err() {
+            if let Err(error) = &result {
+                tracing::warn!(
+                    account_id = context.account.account_id.0,
+                    ?scope,
+                    ?error,
+                    "Account reconciliation failed."
+                );
                 publish_invalidated(context, epoch, version, 2);
                 schedule_reconcile(recovery_tx.clone());
             }
@@ -1378,7 +1384,12 @@ async fn handle_command(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 result.as_ref().err().map(ToString::to_string);
-            if result.is_err() {
+            if let Err(error) = &result {
+                tracing::warn!(
+                    account_id = context.account.account_id.0,
+                    ?error,
+                    "Initial account reconciliation failed."
+                );
                 publish_invalidated(context, epoch, version, 2);
                 schedule_reconcile(recovery_tx.clone());
             }
