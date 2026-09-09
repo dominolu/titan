@@ -17,8 +17,8 @@ use titan_plugin_engine::{
 use zeroize::Zeroize;
 
 use crate::{
-    ACCOUNT_EVENT_SCHEMA_VERSION, ACCOUNT_EVENT_TYPES, AccountConnectorError, AccountErrorKind,
-    AccountEventHeaderV1, decode_account_event_header,
+    ACCOUNT_EVENT_TYPES, AccountConnectorError, AccountErrorKind, AccountEventHeaderV1,
+    decode_account_event_header,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -335,7 +335,18 @@ impl AccountEventPublisher {
         let header =
             decode_account_event_header(payload).map_err(|message| publisher_error(message))?;
         self.validate_header(header)?;
-        let (expected_kind, expected_len) = crate::account_event_layout(event_type)
+        // The v1 dynamic connector callback predates an explicit schema-version argument.
+        // Account payload layouts are fixed and authorized, so retain ABI compatibility by
+        // identifying the only versioned event (Fill) from its unambiguous encoded length.
+        let schema_version = if event_type == crate::FILL_EVENT
+            && payload.len() == <crate::FillV2 as crate::AccountEventPayload>::ENCODED_LEN
+        {
+            crate::FILL_EVENT_SCHEMA_VERSION
+        } else {
+            crate::ACCOUNT_EVENT_SCHEMA_VERSION
+        };
+        let (expected_kind, expected_len) =
+            crate::account_event_layout_version(event_type, schema_version)
             .ok_or_else(|| publisher_error("account event type is not authorized"))?;
         if header.kind != expected_kind || payload.len() != expected_len {
             return Err(publisher_error(
@@ -364,7 +375,7 @@ impl AccountEventPublisher {
             .expect("core account publisher is present")
             .publish_with_metadata(
                 event_type,
-                ACCOUNT_EVENT_SCHEMA_VERSION,
+                schema_version,
                 payload,
                 EventPublishMetadata {
                     source_id: stream.0,
