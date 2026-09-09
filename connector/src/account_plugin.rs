@@ -537,6 +537,10 @@ impl account::AccountConnector for AccountRuntime {
                                         ?error,
                                         "Account fact publication failed."
                                     );
+                                    eprintln!(
+                                        "account {} fact publication failed: {error}",
+                                        context.account.account_id.0
+                                    );
                                     account_events.invalidate(2);
                                     let _ = event_recovery.try_send(Command::Reconcile(
                                         account::ReconcileScope::Full,
@@ -590,7 +594,11 @@ impl account::AccountConnector for AccountRuntime {
                                         &recovery_tx,
                                     )
                                     .await;
-                                    if encoder.replay().is_err() {
+                                    if let Err(error) = encoder.replay() {
+                                        eprintln!(
+                                            "account {} staged fact replay failed: {error}",
+                                            context.account.account_id.0
+                                        );
                                         // Distinguish a staged private-fact replay failure from a
                                         // direct publication failure (reason 2).
                                         encoder.invalidate(5);
