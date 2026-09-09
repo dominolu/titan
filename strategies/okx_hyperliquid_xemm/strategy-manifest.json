@@ -60,6 +60,6 @@
   "state_schema_version": 2,
   "callbacks": 16335,
   "capabilities": 109,
-  "artifact_digest": "30f9226b73bfd9cf86635907906568a01ac31a2427d1070a5692d99312697a47",
+  "artifact_digest": "47ea7abf5d14e9d6f52fbbaf29a6656cbb74709ceab7a8da80b04c045f83c002",
   "content_files": ["__init__.py", "strategy.py"]
 }
