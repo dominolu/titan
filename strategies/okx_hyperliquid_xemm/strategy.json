@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "strategy_id": "okx_hyperliquid_xemm",
-  "strategy_version": "0.2.5",
+  "strategy_version": "0.2.6",
   "entrypoint": "okx_hyperliquid_xemm.strategy:build",
   "events": ["tick"],
   "environments": ["live"],
