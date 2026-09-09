@@ -554,7 +554,7 @@ mod reconnect_tests {
     #[tokio::test]
     async fn public_stream_reconnects_and_replays_desired_subscription() {
         let (url, mut subscriptions, server) =
-            crate::connector::reconnecting_websocket_server(2).await;
+            crate::connector::reconnecting_websocket_server(3).await;
         let config = format!(
             "info_url = \"http://127.0.0.1:9/info\"\nexchange_url = \"http://127.0.0.1:9/exchange\"\nws_url = {url:?}\nsafety_timeout_ms = 0\n"
         );
@@ -568,7 +568,7 @@ mod reconnect_tests {
 
         for _ in 0..2 {
             let mut frames = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..3 {
                 frames.push(
                     tokio::time::timeout(std::time::Duration::from_secs(3), subscriptions.recv())
                         .await
@@ -576,12 +576,16 @@ mod reconnect_tests {
                         .expect("websocket fixture ended before reconnect"),
                 );
             }
-            // Hyperliquid emits one command per channel. Both commands must be rebuilt from the
+            // Hyperliquid emits one command per channel. All commands must be rebuilt from the
             // shared desired state on each newly accepted socket.
             assert!(frames.iter().all(|frame| frame.contains("subscribe")));
             assert!(frames.iter().all(|frame| frame.contains("BTC")));
             assert!(frames.iter().any(|frame| frame.contains("l2Book")));
-            assert!(frames.iter().any(|frame| frame.contains("trades")));
+            assert!(frames.iter().any(|frame| frame.contains("bbo")));
+            assert!(
+                frames.iter().any(|frame| frame.contains("trades")),
+                "missing trades subscription: {frames:?}"
+            );
         }
         server.await.unwrap();
     }
