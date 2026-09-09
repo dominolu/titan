@@ -531,7 +531,12 @@ impl account::AccountConnector for AccountRuntime {
                                         .unwrap_or_else(|p| p.into_inner())
                                         .release_by_client(&client_order_id);
                                 }
-                                if account_events.publish(event).is_err() {
+                                if let Err(error) = account_events.publish(event) {
+                                    tracing::warn!(
+                                        account_id = context.account.account_id.0,
+                                        ?error,
+                                        "Account fact publication failed."
+                                    );
                                     account_events.invalidate(2);
                                     let _ = event_recovery.try_send(Command::Reconcile(
                                         account::ReconcileScope::Full,
@@ -1613,10 +1618,17 @@ async fn handle_command(
         final_result: u8::from(!unknown),
         reason_code: u32::from(result.is_err()),
     };
-    let mut publication_failed = context
-        .event_publisher
-        .publish_encoded(&event, trace)
-        .is_err();
+    let mut publication_failed =
+        if let Err(error) = context.event_publisher.publish_encoded(&event, trace) {
+            tracing::warn!(
+                account_id = context.account.account_id.0,
+                ?error,
+                "Account command result publication failed."
+            );
+            true
+        } else {
+            false
+        };
     if let Ok(Some(value)) = result {
         if let Some(binding) = context
             .instruments
@@ -1628,7 +1640,7 @@ async fn handle_command(
                 if let Some(client_order_id) = client {
                     snapshot.client_order_id = client_order_id;
                 }
-                publication_failed |= publish_order_snapshot(
+                if let Err(error) = publish_order_snapshot(
                     context,
                     epoch,
                     version,
@@ -1646,8 +1658,14 @@ async fn handle_command(
                         account::event_flags::UPSERT
                     },
                     trace,
-                )
-                .is_err();
+                ) {
+                    tracing::warn!(
+                        account_id = context.account.account_id.0,
+                        ?error,
+                        "Account command order publication failed."
+                    );
+                    publication_failed = true;
+                }
             }
         }
     }
