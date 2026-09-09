@@ -1507,6 +1507,25 @@ async fn handle_command(
         .as_ref()
         .err()
         .is_some_and(crate::api::ApiError::outcome_unknown);
+    if let Err(error) = &result {
+        let command_type = match &command {
+            Command::Submit(_) => "submit",
+            Command::Amend(_) => "amend",
+            Command::Cancel(_) => "cancel",
+            Command::CancelAll(_) => "cancel_all",
+            Command::CancelAllAfter(_) => "cancel_all_after",
+            Command::Reconcile(..) | Command::PrivateStreamReady => unreachable!(),
+        };
+        tracing::warn!(
+            account_id = context.account.account_id.0,
+            command_type,
+            exchange = error.exchange,
+            code = %error.code,
+            message = %error.message,
+            outcome_unknown = initially_unknown,
+            "Account command failed."
+        );
+    }
     if initially_unknown
         && let Some((symbol, order_id, client_order_id)) =
             command_query_target(&command, context, ids)
