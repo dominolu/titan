@@ -467,6 +467,11 @@ unsafe extern "C" fn host_publish_account(
                 Ok(())
             }
             Err(error) => {
+                tracing::warn!(
+                    event_type,
+                    ?error,
+                    "Dynamic account event publication was rejected by the host."
+                );
                 *context
                     .last_publish_error
                     .lock()
