@@ -30,7 +30,7 @@ use crate::{
     hyperliquid::{
         HyperliquidError, SharedAssets, SharedMarketSubscriptions, SharedSymbolSet,
         client::HyperliquidClient,
-        msg::{BboData, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg, WsSubscribe},
+        msg::{BboData, Fill, L2BookData, OrderUpdate, Trade, UserEvent, WsMsg, WsSubscribe},
         ordermanager::SharedOrderManager,
     },
 };
@@ -76,6 +76,16 @@ fn apply_fill(position: &mut f64, side: &str, sz: f64) {
     } else {
         *position -= sz;
     }
+}
+
+fn position_after_fill(current: f64, fill: &Fill) -> f64 {
+    // Hyperliquid supplies the absolute position immediately before every fill. Deriving from
+    // startPosition makes replay after reconnect idempotent; accumulating onto the local cache
+    // would apply a replayed fill twice and can reverse a freshly closed hedge.
+    let start = fill.start_position.parse::<f64>().unwrap_or(current);
+    let mut position = start;
+    apply_fill(&mut position, &fill.side, fill.sz.parse().unwrap_or(0.0));
+    position
 }
 
 fn market_channels(kinds: &[MarketDataKind]) -> Vec<&'static str> {
@@ -580,8 +590,7 @@ impl HyperliquidWs {
                 for fill in fills {
                     let mut positions = self.positions.lock().unwrap();
                     let position = positions.entry(fill.coin.clone()).or_insert(0.0);
-                    let sz: f64 = fill.sz.parse().unwrap_or(0.0);
-                    apply_fill(position, &fill.side, sz);
+                    *position = position_after_fill(*position, &fill);
                     let qty = *position;
                     drop(positions);
                     self.ev_tx
@@ -1236,6 +1245,22 @@ mod tests {
         // Unknown sides are treated as sells (conservative for closing positions).
         apply_fill(&mut position, "?", 0.1);
         assert!((position - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn replayed_user_fill_keeps_the_same_absolute_position() {
+        let fill = Fill {
+            coin: "BTC".to_string(),
+            px: "79000".to_string(),
+            sz: "0.0002".to_string(),
+            side: "B".to_string(),
+            time: 1,
+            start_position: "-0.0002".to_string(),
+        };
+        let first = position_after_fill(-0.0002, &fill);
+        let replay = position_after_fill(first, &fill);
+        assert_eq!(first, 0.0);
+        assert_eq!(replay, 0.0);
     }
 
     #[test]
