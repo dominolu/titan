@@ -485,7 +485,10 @@ impl PublicStream {
         let request = url.into_client_request()?;
         let (ws_stream, _) = connect_async(request).await?;
         let (mut write, mut read) = ws_stream.split();
-        let mut interval = time::interval(Duration::from_secs(20));
+        let mut interval = time::interval_at(
+            time::Instant::now() + Duration::from_secs(20),
+            Duration::from_secs(20),
+        );
         let subscriptions: Vec<_> = self
             .subscriptions
             .lock()
@@ -500,12 +503,8 @@ impl PublicStream {
         loop {
             select! {
                 _ = interval.tick() => {
-                    let op = WsRequest {
-                        op: "ping".to_string(),
-                        args: vec![],
-                    };
-                    let s = serde_json::to_string(&op).unwrap();
-                    write.send(Message::Text(s.into())).await?;
+                    // OKX uses an application-level text heartbeat, not a JSON operation.
+                    write.send(Message::Text("ping".into())).await?;
                 }
                 msg = self.command_rx.recv() => match msg {
                     Ok(MarketDataCommand::Subscribe { symbol, kinds }) => self.subscribe_symbol(&mut write, symbol, &kinds).await?,
@@ -529,6 +528,9 @@ impl PublicStream {
                 message = read.next() => {
                     match message {
                         Some(Ok(Message::Text(text))) => {
+                            if text.as_str() == "pong" {
+                                continue;
+                            }
                             if let Err(error) = self.handle_public_stream(&text).await {
                                 error!(?error, %text, "Couldn't handle PublicStreamMsg.");
                                 return Err(error);
