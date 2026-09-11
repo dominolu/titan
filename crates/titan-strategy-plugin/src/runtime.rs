@@ -473,6 +473,7 @@ impl StrategyEventAdapter for CanonicalStrategyEventAdapter {
                     asset_no,
                     local_account_no,
                     _account_reserved: 0,
+                    account_epoch: fill.header.account_epoch,
                     order_id: self.strategy_order_id(fill.client_order_id),
                     venue_order_id: u64::from_le_bytes(
                         fill.venue_order_id.0[..8].try_into().unwrap(),

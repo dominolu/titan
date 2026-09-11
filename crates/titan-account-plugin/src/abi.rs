@@ -24,6 +24,29 @@ pub mod event_kind {
     pub const STREAM_INVALIDATED: u16 = 9;
 }
 
+pub mod invalidation_reason {
+    pub const PRIVATE_STREAM: u32 = 1;
+    pub const DIRECT_FACT_PUBLICATION: u32 = 2;
+    pub const COMMAND_OUTCOME_UNKNOWN: u32 = 3;
+    pub const COMMAND_RESULT_PUBLICATION: u32 = 4;
+    pub const STAGED_REPLAY_PUBLICATION: u32 = 5;
+    pub const RECONCILE: u32 = 6;
+    pub const INITIAL_RECONCILE: u32 = 7;
+
+    pub const fn name(reason_code: u32) -> &'static str {
+        match reason_code {
+            PRIVATE_STREAM => "private_stream",
+            DIRECT_FACT_PUBLICATION => "direct_fact_publication",
+            COMMAND_OUTCOME_UNKNOWN => "command_outcome_unknown",
+            COMMAND_RESULT_PUBLICATION => "command_result_publication",
+            STAGED_REPLAY_PUBLICATION => "staged_replay_publication",
+            RECONCILE => "reconcile",
+            INITIAL_RECONCILE => "initial_reconcile",
+            _ => "unknown",
+        }
+    }
+}
+
 pub const ACCOUNT_EVENT_TYPES: [&str; 9] = [
     ORDER_CHANGED_EVENT,
     FILL_EVENT,

@@ -10,9 +10,10 @@ use std::{
 use semver::Version;
 use titan_event_engine::{EventClass, EventEngine, EventEngineConfig, PoolKind};
 use titan_plugin_engine::{
-    ApiVersion, DispatchOutcome, EventControl, EventHandler, EventQos, EventView, ExecutionModel,
-    ExecutionSpec, PluginEngine, PluginError, PluginIdentity, PluginSpec, ServiceKey, ServiceScope,
-    StopReason, SubscriptionLimits, SubscriptionSpec, TraceContext,
+    ApiVersion, DispatchOutcome, DynamicPluginLoader, DynamicPluginSession, EventControl,
+    EventHandler, EventQos, EventView, ExecutionModel, ExecutionSpec, PluginEngine, PluginError,
+    PluginIdentity, PluginSpec, ServiceKey, ServiceScope, StopReason, SubscriptionLimits,
+    SubscriptionSpec, TraceContext,
 };
 
 use crate::*;
@@ -571,6 +572,360 @@ fn engine_with_plugin(event_engine: &EventEngine) -> PluginEngine {
     .unwrap();
     p.apply(&[spec()]).unwrap();
     p
+}
+
+#[cfg(unix)]
+fn compile_dynamic_account_fixture(
+    fill_v1: &[u8],
+    fill_v2: &[u8],
+    schema_version: u32,
+) -> std::path::PathBuf {
+    fn c_bytes(value: &[u8]) -> String {
+        value
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    let unique = format!(
+        "titan-dynamic-account-fixture-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let directory = std::env::temp_dir().join(unique);
+    std::fs::create_dir(&directory).unwrap();
+    let source = directory.join("fixture.c");
+    let library = if cfg!(target_os = "macos") {
+        directory.join("libdynamic_account_fixture.dylib")
+    } else {
+        directory.join("libdynamic_account_fixture.so")
+    };
+    let source_text = r#"
+#include <stdint.h>
+#include <stddef.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include "titan_plugin_abi_v1.h"
+
+typedef struct TitanAccountHostApiV1 {
+  uint32_t struct_size;
+  void *context;
+  TitanStatus (*publish_account)(void *, const uint8_t *, size_t, const uint8_t *, size_t, uint64_t, uint64_t);
+  TitanStatus (*resolve_secret)(void *, const uint8_t *, size_t, TitanBuffer *);
+} TitanAccountHostApiV1;
+
+typedef TitanStatus (*TitanAccountJsonCall)(uint64_t, const uint8_t *, size_t, TitanBuffer *);
+typedef struct TitanAccountConnectorFactoryApiV1 {
+  uint64_t magic;
+  uint32_t struct_size;
+  uint16_t abi_major;
+  uint16_t abi_minor;
+  const uint8_t *(*connector_type)(TitanPluginHandle, size_t *);
+  TitanStatus (*create)(TitanPluginHandle, const uint8_t *, size_t, const TitanAccountHostApiV1 *, uint64_t *);
+  TitanStatus (*destroy)(uint64_t);
+  TitanStatus (*start)(uint64_t);
+  TitanStatus (*stop)(uint64_t, uint64_t);
+  TitanAccountJsonCall submit;
+  TitanAccountJsonCall amend;
+  TitanAccountJsonCall cancel;
+  TitanAccountJsonCall cancel_all;
+  TitanAccountJsonCall cancel_all_after;
+  TitanAccountJsonCall reconcile;
+  TitanAccountJsonCall orders;
+  TitanAccountJsonCall positions;
+  TitanAccountJsonCall balances;
+  TitanAccountJsonCall health;
+  TitanAccountJsonCall diagnostics;
+  TitanAccountJsonCall operation;
+  size_t (*last_error)(uint8_t *, size_t);
+} TitanAccountConnectorFactoryApiV1;
+
+static const uint8_t MANIFEST[] = "{\"plugin_type\":\"dynamic-account-fixture\",\"name\":\"Dynamic Account Fixture\",\"version\":\"1.0.0\",\"engine_api_version\":{\"major\":2,\"minor\":0},\"abi_version\":{\"major\":1,\"minor\":0},\"config_schema_version\":1,\"config_schema\":{},\"provides\":[],\"requires\":[],\"publishes\":[],\"subscribes\":[],\"supported_execution_models\":[\"Passive\"],\"reload_policy\":\"Never\"}";
+static const uint8_t CONNECTOR_TYPE[] = "dynamic-account-fixture";
+static const uint8_t FILL_EVENT[] = "titan.account.Fill";
+static const uint8_t FILL_V1[] = { __FILL_V1__ };
+static const uint8_t FILL_V2[] = { __FILL_V2__ };
+static const uint32_t TARGET_SCHEMA = __TARGET_SCHEMA__;
+static const TitanAccountHostApiV1 *ACCOUNT_HOST = NULL;
+static char LAST_ERROR[96] = "";
+
+static const uint8_t *manifest_json(size_t *length) { *length = sizeof(MANIFEST) - 1; return MANIFEST; }
+static TitanStatus root_create(const uint8_t *config, size_t length, TitanPluginHandle *out) {
+  if (!config || !length || !out) return TITAN_STATUS_INVALID_ARGUMENT; *out = 7; return TITAN_STATUS_OK;
+}
+static TitanStatus root_handle(TitanPluginHandle handle) { return handle == 7 ? TITAN_STATUS_OK : TITAN_STATUS_INVALID_ARGUMENT; }
+static TitanStatus root_start(TitanPluginHandle handle, const TitanHostApiV1 *host) { return handle == 7 && host ? TITAN_STATUS_OK : TITAN_STATUS_INVALID_ARGUMENT; }
+static TitanStatus root_quiesce(TitanPluginHandle handle, uint32_t reason) { (void)reason; return root_handle(handle); }
+static size_t last_error(uint8_t *output, size_t capacity) {
+  size_t length = strlen(LAST_ERROR); if (length > capacity) length = capacity;
+  if (output && length) memcpy(output, LAST_ERROR, length); return length;
+}
+static const uint8_t *connector_type(TitanPluginHandle handle, size_t *length) {
+  if (handle != 7 || !length) return NULL; *length = sizeof(CONNECTOR_TYPE) - 1; return CONNECTOR_TYPE;
+}
+static TitanStatus account_create(TitanPluginHandle root, const uint8_t *input, size_t length, const TitanAccountHostApiV1 *host, uint64_t *out) {
+  if (root != 7 || !input || !length || !host || !host->publish_account || !out) return TITAN_STATUS_INVALID_ARGUMENT;
+  ACCOUNT_HOST = host; *out = 11; return TITAN_STATUS_OK;
+}
+static TitanStatus account_destroy(uint64_t handle) { ACCOUNT_HOST = NULL; return handle == 11 ? TITAN_STATUS_OK : TITAN_STATUS_INVALID_ARGUMENT; }
+static void *publish_account_events(void *unused) {
+  (void)unused;
+  usleep(10000);
+  TitanStatus status = TARGET_SCHEMA == 1
+    ? ACCOUNT_HOST->publish_account(ACCOUNT_HOST->context, FILL_EVENT, sizeof(FILL_EVENT) - 1, FILL_V1, sizeof(FILL_V1), 101, 11)
+    : ACCOUNT_HOST->publish_account(ACCOUNT_HOST->context, FILL_EVENT, sizeof(FILL_EVENT) - 1, FILL_V2, TARGET_SCHEMA == 0 ? sizeof(FILL_V2) - 1 : sizeof(FILL_V2), 102, 12);
+  snprintf(LAST_ERROR, sizeof(LAST_ERROR), "publish status schema=%u status=%d", TARGET_SCHEMA, status);
+  return NULL;
+}
+static TitanStatus account_start(uint64_t handle) {
+  if (handle != 11 || !ACCOUNT_HOST) return TITAN_STATUS_INVALID_ARGUMENT;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, publish_account_events, NULL) != 0) return TITAN_STATUS_HOST_ERROR;
+  pthread_detach(thread);
+  return TITAN_STATUS_OK;
+}
+static TitanStatus account_stop(uint64_t handle, uint64_t timeout_ns) { (void)timeout_ns; return handle == 11 ? TITAN_STATUS_OK : TITAN_STATUS_INVALID_ARGUMENT; }
+static TitanStatus unused_json(uint64_t handle, const uint8_t *input, size_t length, TitanBuffer *output) {
+  (void)handle; (void)input; (void)length; (void)output; return TITAN_STATUS_INVALID_ARGUMENT;
+}
+static const TitanAccountConnectorFactoryApiV1 ACCOUNT_API = {
+  UINT64_C(0x544954414e414343), sizeof(TitanAccountConnectorFactoryApiV1), 1, 0,
+  connector_type, account_create, account_destroy, account_start, account_stop,
+  unused_json, unused_json, unused_json, unused_json, unused_json, unused_json,
+  unused_json, unused_json, unused_json, unused_json, unused_json, unused_json, last_error
+};
+static TitanStatus query_interface(TitanPluginHandle handle, const uint8_t *name, size_t length, uint16_t major, const void **out) {
+  static const uint8_t expected[] = "titan.account.connector-factory";
+  if (handle != 7 || major != 1 || !out || length != sizeof(expected) - 1 || memcmp(name, expected, length)) return TITAN_STATUS_INVALID_ARGUMENT;
+  *out = &ACCOUNT_API; return TITAN_STATUS_OK;
+}
+static const PluginApiV1 API = {
+  TITAN_PLUGIN_MAGIC, sizeof(PluginApiV1), TITAN_DYNAMIC_ABI_MAJOR, TITAN_DYNAMIC_ABI_MINOR,
+  TITAN_MANIFEST_SCHEMA_MAJOR, TITAN_MANIFEST_SCHEMA_MINOR, 0, 0,
+  manifest_json, root_create, root_handle, last_error, root_handle, root_start,
+  root_quiesce, root_handle, query_interface
+};
+TITAN_PLUGIN_EXPORT const PluginApiV1 *titan_plugin_entry_v1(void) { return &API; }
+"#
+    .replace("__FILL_V1__", &c_bytes(fill_v1))
+    .replace("__FILL_V2__", &c_bytes(fill_v2))
+    .replace("__TARGET_SCHEMA__", &schema_version.to_string());
+    std::fs::write(&source, source_text).unwrap();
+    let mut compiler = std::process::Command::new(
+        std::env::var_os("CC").unwrap_or_else(|| "cc".into()),
+    );
+    if cfg!(target_os = "macos") {
+        compiler.arg("-dynamiclib");
+    } else {
+        compiler.args(["-shared", "-fPIC"]);
+    }
+    let status = compiler
+        .arg("-I")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../titan-plugin-engine/include"))
+        .arg("-O2")
+        .arg(&source)
+        .arg("-o")
+        .arg(&library)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    library
+}
+
+#[cfg(unix)]
+fn dynamic_account_fill_crosses_host_abi(schema_version: u32) -> Option<Vec<u8>> {
+    let header = |kind, version| AccountEventHeaderV1 {
+        account_id: 2001,
+        kind,
+        account_generation: 1,
+        account_epoch: 1,
+        account_version: version,
+        exchange_ts: 10,
+        receive_ts: 11,
+        ..Default::default()
+    };
+    let fill_v1 = FillV1 {
+        header: header(event_kind::FILL, 1),
+        asset_id: 1001,
+        quantity_lots: 2,
+        ..Default::default()
+    };
+    let fill_v2 = FillV2 {
+        header: header(event_kind::FILL, 2),
+        asset_id: 1001,
+        last_fill_quantity_lots: 2,
+        cumulative_filled_quantity_lots: 5,
+        ..Default::default()
+    };
+    let mut encoded_v1 = vec![0; FillV1::ENCODED_LEN];
+    let mut encoded_v2 = vec![0; FillV2::ENCODED_LEN];
+    fill_v1.encode_into(&mut encoded_v1).unwrap();
+    fill_v2.encode_into(&mut encoded_v2).unwrap();
+    if schema_version == 3 {
+        encoded_v2[4..6].copy_from_slice(&event_kind::POSITION_CHANGED.to_le_bytes());
+    }
+    let library = compile_dynamic_account_fixture(&encoded_v1, &encoded_v2, schema_version);
+    let code = DynamicPluginLoader::default().load_library(&library).unwrap();
+    let session = DynamicPluginSession::start(code, &serde_json::json!({})).unwrap();
+    let factory = DynamicAccountConnectorFactory::from_session(session).unwrap();
+
+    let mut config = EventEngineConfig::default();
+    config.ingress.max_sources = 5_000;
+    config.subscribers.default_capacity = 16;
+    config.subscribers.critical_reserve = 2;
+    let event_engine = EventEngine::new(config).unwrap();
+    let events = event_engine.handle();
+    let registered_schema = if schema_version == 0 || schema_version == 3 {
+        FILL_EVENT_SCHEMA_VERSION
+    } else {
+        schema_version
+    };
+    events
+        .register_event(FILL_EVENT, registered_schema, EventClass::Critical, PoolKind::SmallEvent)
+        .unwrap();
+    events
+        .register_event(
+            STREAM_INVALIDATED_EVENT,
+            ACCOUNT_EVENT_SCHEMA_VERSION,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    event_engine.start().unwrap();
+    let mut plugins = PluginEngine::new(Arc::new(events.clone()), ApiVersion::new(1, 0)).unwrap();
+    plugins
+        .register(
+            Arc::new(
+                AccountPluginFactory::new()
+                    .with_factory(Arc::new(factory))
+                    .with_secret_provider(Arc::new(TestSecrets)),
+            ),
+            Version::new(1, 0, 0),
+            "dynamic-test",
+        )
+        .unwrap();
+    plugins.apply(&[spec()]).unwrap();
+    let mut account_definition = definition("dynamic", 2001);
+    account_definition.connector_type = Arc::from("dynamic-account-fixture");
+    let account = match admin(
+        &plugins,
+        AccountAdminRequest::Create(account_definition),
+    )
+    .unwrap()
+    {
+        AccountAdminResponse::Handle(handle) => handle,
+        _ => panic!("unexpected create response"),
+    };
+    let transaction = events.begin_route_update(events.current_route_version()).unwrap();
+    for (event_type, event_schema_version) in [
+        (FILL_EVENT, registered_schema),
+        (STREAM_INVALIDATED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION),
+    ] {
+        events
+            .stage_subscription(
+                transaction,
+                &PluginIdentity::new(
+                    "test",
+                    format!("dynamic-{event_type}-{event_schema_version}"),
+                ),
+                &SubscriptionSpec {
+                    event_type: Arc::from(event_type),
+                    schema_version: event_schema_version,
+                    qos: EventQos::ReliableOrdered,
+                    capacity: 8,
+                    routing_keys: Arc::from([2001]),
+                },
+            )
+            .unwrap();
+    }
+    let (_, subscriptions) = events.commit_at_safe_point(transaction).unwrap();
+    admin(&plugins, AccountAdminRequest::Start(account)).unwrap();
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let handler = RecordingHandler(sender);
+    let deadline = Instant::now()
+        + if schema_version == 0 || schema_version == 3 {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_secs(3)
+        };
+    let mut delivered = Vec::new();
+    while delivered.is_empty() && Instant::now() < deadline {
+        for subscription in &subscriptions {
+            let _ = subscription
+                .receiver
+                .dispatch_next(&handler, Duration::from_millis(10));
+        }
+        delivered.extend(receiver.try_iter());
+    }
+    if schema_version == 0 || schema_version == 3 {
+        assert!(delivered.is_empty());
+        let health = match query(&plugins, AccountRequest::Health(account)).unwrap() {
+            AccountResponse::Health(health) => health,
+            _ => panic!("unexpected health response"),
+        };
+        assert!(health.message.contains("payload length does not match"));
+        assert!(health.message.contains("account_id=2001"));
+        assert!(health.message.contains("event_type=titan.account.Fill"));
+        assert!(health.message.contains("schema_version="));
+        assert!(health.message.contains("payload_len="));
+    } else if delivered.len() != 1 {
+        let health = match query(&plugins, AccountRequest::Health(account)).unwrap() {
+            AccountResponse::Health(health) => health,
+            _ => panic!("unexpected health response"),
+        };
+        panic!(
+            "expected one dynamic Fill event, received {}; connector health: {}",
+            delivered.len(), health.message
+        );
+    }
+    assert!(delivered.iter().all(|(event_type, _)| event_type == FILL_EVENT));
+    let payload = delivered.pop().map(|(_, payload)| payload);
+    assert!(subscriptions.iter().all(|subscription| {
+        subscription
+            .receiver
+            .dispatch_next(&handler, Duration::from_millis(1))
+            .unwrap()
+            != DispatchOutcome::Delivered
+    }));
+
+    plugins.shutdown(StopReason::Shutdown).unwrap();
+    event_engine.stop().unwrap();
+    payload
+}
+
+#[cfg(unix)]
+#[test]
+fn dynamic_account_fill_v2_crosses_host_abi_with_schema_v2() {
+    let v2 = dynamic_account_fill_crosses_host_abi(FILL_EVENT_SCHEMA_VERSION).unwrap();
+    let v2 = FillV2::decode(&v2).unwrap();
+    assert_eq!(v2.last_fill_quantity_lots, 2);
+    assert_eq!(v2.cumulative_filled_quantity_lots, 5);
+}
+
+#[cfg(unix)]
+#[test]
+fn dynamic_account_fill_v1_remains_backward_compatible() {
+    let v1 = dynamic_account_fill_crosses_host_abi(ACCOUNT_EVENT_SCHEMA_VERSION).unwrap();
+    assert_eq!(FillV1::decode(&v1).unwrap().quantity_lots, 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn dynamic_account_rejects_unknown_fill_payload_layout() {
+    assert!(dynamic_account_fill_crosses_host_abi(0).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn dynamic_account_rejects_fill_payload_with_mismatched_event_kind() {
+    assert!(dynamic_account_fill_crosses_host_abi(3).is_none());
 }
 
 #[test]

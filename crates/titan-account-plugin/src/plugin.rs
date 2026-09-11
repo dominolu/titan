@@ -47,17 +47,24 @@ pub static ACCOUNT_PLUGIN_MANIFEST: LazyLock<PluginManifest> = LazyLock::new(|| 
         },
     ],
     requires: vec![],
-    publishes: ACCOUNT_EVENT_TYPES
-        .iter()
-        .map(|e| PublishedEvent {
-            event_type: Arc::from(*e),
-            schema_version: if *e == FILL_EVENT {
-                FILL_EVENT_SCHEMA_VERSION
-            } else {
-                ACCOUNT_EVENT_SCHEMA_VERSION
-            },
-        })
-        .collect(),
+    publishes: {
+        let mut events = ACCOUNT_EVENT_TYPES
+            .iter()
+            .map(|e| PublishedEvent {
+                event_type: Arc::from(*e),
+                schema_version: if *e == FILL_EVENT {
+                    FILL_EVENT_SCHEMA_VERSION
+                } else {
+                    ACCOUNT_EVENT_SCHEMA_VERSION
+                },
+            })
+            .collect::<Vec<_>>();
+        events.push(PublishedEvent {
+            event_type: Arc::from(FILL_EVENT),
+            schema_version: ACCOUNT_EVENT_SCHEMA_VERSION,
+        });
+        events
+    },
     subscribes: vec![],
     supported_execution_models: [ExecutionModel::Passive].into_iter().collect(),
     reload_policy: ReloadPolicy::WhenQuiescent,

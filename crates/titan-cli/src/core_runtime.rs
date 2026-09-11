@@ -29,7 +29,7 @@ use titan_strategy_plugin::{
     InProcessNumbaLoaderFactory, NativeStrategyRuntimeFactory, STRATEGY_PLUGIN_MANIFEST,
     STRATEGY_PLUGIN_TYPE, StrategyAdminApi, StrategyAdminRequest, StrategyAdminResponse,
     StrategyDataMode, StrategyDefinition, StrategyOperationState, StrategyPluginConfig,
-    StrategyPluginFactory, StrategyRecoveryPolicy,
+    StrategyPluginFactory, StrategyRecoveryPolicy, StrategyShutdownPolicy,
 };
 
 pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -882,6 +882,14 @@ fn validate_core_live_strategy_profile(
         if !definition.enabled {
             continue;
         }
+        if !definition.accounts.is_empty()
+            && definition.shutdown != StrategyShutdownPolicy::CancelOwnedOrders
+        {
+            return Err(ConfigurationError::Invalid(format!(
+                "strategy {} binds trading accounts and must use shutdown = cancel_owned_orders",
+                definition.strategy_key
+            )));
+        }
         for binding in definition.markets.iter() {
             if binding.data_mode != StrategyDataMode::Tick {
                 return Err(ConfigurationError::Invalid(format!(
@@ -1330,6 +1338,22 @@ config = {}
 
         let tick = live_strategy(titan_strategy_plugin::StrategyDataMode::Tick, false);
         assert!(validate_core_live_strategy_profile(&[tick]).is_ok());
+
+        let mut account_strategy = live_strategy(titan_strategy_plugin::StrategyDataMode::Tick, false);
+        account_strategy.accounts = Arc::from([titan_strategy_plugin::StrategyAccountBinding {
+            local_account_no: 0,
+            account_key: Arc::from("account"),
+            tradable_assets: Arc::from([titan_strategy_plugin::StrategyTradableAsset {
+                local_asset_no: 0,
+                asset_id: 1,
+            }]),
+        }]);
+        assert!(matches!(
+            validate_core_live_strategy_profile(&[account_strategy.clone()]),
+            Err(ConfigurationError::Invalid(_))
+        ));
+        account_strategy.shutdown = StrategyShutdownPolicy::CancelOwnedOrders;
+        assert!(validate_core_live_strategy_profile(&[account_strategy]).is_ok());
     }
 
     #[test]

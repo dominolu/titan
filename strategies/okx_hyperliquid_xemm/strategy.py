@@ -110,10 +110,16 @@ I_HEDGE_DEPTH_SEQUENCE = 32
 I_MAKER_POSITION_SEQUENCE = 33
 I_HEDGE_POSITION_SEQUENCE = 34
 I_DEPTH_INVALID_COUNT = 35
+I_MAKER_POSITION_EPOCH = 36
+I_HEDGE_POSITION_EPOCH = 37
 
 MAX_FILL_DEDUPE = 128
-I_DEDUPE_KEYS = 48
-I64_STATE_LEN = I_DEDUPE_KEYS + MAX_FILL_DEDUPE
+I_DEDUPE_SEQUENCES = 48
+I_DEDUPE_EPOCHS = I_DEDUPE_SEQUENCES + MAX_FILL_DEDUPE
+I_DEDUPE_ACCOUNTS = I_DEDUPE_EPOCHS + MAX_FILL_DEDUPE
+I_DEDUPE_ASSETS = I_DEDUPE_ACCOUNTS + MAX_FILL_DEDUPE
+I_DEDUPE_SIDES = I_DEDUPE_ASSETS + MAX_FILL_DEDUPE
+I64_STATE_LEN = I_DEDUPE_SIDES + MAX_FILL_DEDUPE
 
 
 def _number(parameters, name, default=None):
@@ -242,20 +248,27 @@ def build(parameters):
 
     @njit
     def fill_seen(s, fill):
-        # account_version is reliable and ordered per account.
-        side_bit = 1 if fill["side"] == BUY_SIDE else 0
-        key = (
-            fill["sequence"] * 16
-            + fill["local_account_no"] * 4
-            + fill["asset_no"] * 2
-            + side_bit
-        )
+        sequence = fill["sequence"]
+        epoch = fill["account_epoch"]
+        account_no = fill["local_account_no"]
+        asset_no = fill["asset_no"]
+        side = fill["side"]
         count = s.state_i64[I_DEDUPE_COUNT]
         for index in range(count):
-            if s.state_i64[I_DEDUPE_KEYS + index] == key:
+            if (
+                s.state_i64[I_DEDUPE_SEQUENCES + index] == sequence
+                and s.state_i64[I_DEDUPE_EPOCHS + index] == epoch
+                and s.state_i64[I_DEDUPE_ACCOUNTS + index] == account_no
+                and s.state_i64[I_DEDUPE_ASSETS + index] == asset_no
+                and s.state_i64[I_DEDUPE_SIDES + index] == side
+            ):
                 return True
         cursor = s.state_i64[I_DEDUPE_CURSOR]
-        s.state_i64[I_DEDUPE_KEYS + cursor] = key
+        s.state_i64[I_DEDUPE_SEQUENCES + cursor] = sequence
+        s.state_i64[I_DEDUPE_EPOCHS + cursor] = epoch
+        s.state_i64[I_DEDUPE_ACCOUNTS + cursor] = account_no
+        s.state_i64[I_DEDUPE_ASSETS + cursor] = asset_no
+        s.state_i64[I_DEDUPE_SIDES + cursor] = side
         s.state_i64[I_DEDUPE_CURSOR] = (cursor + 1) % MAX_FILL_DEDUPE
         if count < MAX_FILL_DEDUPE:
             s.state_i64[I_DEDUPE_COUNT] = count + 1
@@ -835,18 +848,29 @@ def build(parameters):
     def on_position(s):
         position = s.position_event()
         account_no = position["local_account_no"]
+        epoch = position["account_epoch"]
         sequence = position["sequence"]
         quantity = abs(position["quantity"])
         if position["position_side"] == 2:
             quantity = -quantity
         if account_no == maker_account_no and position["asset_no"] == maker_asset_no:
-            if sequence >= s.state_i64[I_MAKER_POSITION_SEQUENCE]:
+            previous_epoch = s.state_i64[I_MAKER_POSITION_EPOCH]
+            if epoch > previous_epoch or (
+                epoch == previous_epoch
+                and sequence >= s.state_i64[I_MAKER_POSITION_SEQUENCE]
+            ):
+                s.state_i64[I_MAKER_POSITION_EPOCH] = epoch
                 s.state_i64[I_MAKER_POSITION_SEQUENCE] = sequence
                 s.state[F_MAKER_POSITION_ESTIMATE] = quantity * maker_lot_base
                 s.state_i64[I_MAKER_POSITION_READY] = 1
                 s.state_i64[I_ACCOUNT_READY_MASK] |= 1
         elif account_no == hedge_account_no and position["asset_no"] == hedge_asset_no:
-            if sequence >= s.state_i64[I_HEDGE_POSITION_SEQUENCE]:
+            previous_epoch = s.state_i64[I_HEDGE_POSITION_EPOCH]
+            if epoch > previous_epoch or (
+                epoch == previous_epoch
+                and sequence >= s.state_i64[I_HEDGE_POSITION_SEQUENCE]
+            ):
+                s.state_i64[I_HEDGE_POSITION_EPOCH] = epoch
                 s.state_i64[I_HEDGE_POSITION_SEQUENCE] = sequence
                 s.state[F_HEDGE_POSITION_ESTIMATE] = quantity * hedge_lot_base
                 s.state_i64[I_HEDGE_POSITION_READY] = 1

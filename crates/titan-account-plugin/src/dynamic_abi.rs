@@ -15,13 +15,13 @@ use titan_plugin_engine::{
 use zeroize::Zeroize;
 
 use crate::{
-    AccountCommandReceipt, AccountConnector, AccountConnectorContext,
+    ACCOUNT_EVENT_SCHEMA_VERSION, AccountCommandReceipt, AccountConnector, AccountConnectorContext,
     AccountConnectorDiagnosticSnapshot, AccountConnectorError, AccountConnectorFactory,
     AccountConnectorHealthSnapshot, AccountConnectorOperationSnapshot, AccountDefinition,
-    AccountEventPublisher, AccountLifecycle, AccountStateSnapshot, AmendOrderCommand,
-    BalanceSnapshot, CancelAllAfterCommand, CancelAllCommand, CancelOrderCommand, OperationId,
-    OperationState, OrderFilter, OrderSnapshot, PositionFilter, PositionSnapshot, ReconcileScope,
-    SecretRef, SourceStreamId, SubmitOrderCommand,
+    AccountEventPublisher, AccountLifecycle, AccountStateSnapshot, AmendOrderCommand, BalanceSnapshot,
+    CancelAllAfterCommand, CancelAllCommand, CancelOrderCommand, FILL_EVENT_SCHEMA_VERSION,
+    OperationId, OperationState, OrderFilter, OrderSnapshot, PositionFilter, PositionSnapshot,
+    ReconcileScope, SecretRef, SourceStreamId, SubmitOrderCommand, account_event_layout_version,
 };
 
 pub const TITAN_ACCOUNT_FACTORY_INTERFACE: &str = "titan.account.connector-factory";
@@ -187,7 +187,9 @@ impl AccountConnectorFactory for DynamicAccountConnectorFactory {
             command_queue_capacity: context.command_queue_capacity,
         })
         .map_err(dynamic_error)?;
+        let account_id = context.account.account_id.0;
         let mut host_context = Box::new(AccountHostContext {
+            account_id,
             publisher: context.event_publisher,
             secrets: context.secrets,
             last_publish_error: Mutex::new(None),
@@ -257,6 +259,7 @@ impl AccountConnectorFactory for DynamicAccountConnectorFactory {
 }
 
 struct AccountHostContext {
+    account_id: u32,
     publisher: AccountEventPublisher,
     secrets: crate::ScopedSecretResolver,
     last_publish_error: Mutex<Option<Arc<str>>>,
@@ -300,11 +303,26 @@ impl DynamicAccountConnector {
 
 impl AccountConnector for DynamicAccountConnector {
     fn start(&self) -> Result<(), AccountConnectorError> {
-        status(
+        let result = status(
             &self.api,
             unsafe { self.api.start.unwrap()(self.handle) },
             "start",
-        )
+        );
+        if let Err(error) = result {
+            let host_error = self
+                .host_context
+                .last_publish_error
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            return Err(match host_error {
+                Some(host_error) => AccountConnectorError::rejected(format!(
+                    "{error}; host account event publication failed: {host_error}"
+                )),
+                None => error,
+            });
+        }
+        Ok(())
     }
 
     fn stop(&self, deadline: Instant) -> Result<(), AccountConnectorError> {
@@ -451,6 +469,13 @@ unsafe extern "C" fn host_publish_account(
         // SAFETY: plugin owns readable callback inputs for the duration of this invocation.
         let event_type = unsafe { foreign_str(event_type, event_type_len) }?;
         let payload = unsafe { foreign_bytes(payload, payload_len) }?;
+        let schema_version = [FILL_EVENT_SCHEMA_VERSION, ACCOUNT_EVENT_SCHEMA_VERSION]
+            .into_iter()
+            .find(|schema_version| {
+                account_event_layout_version(event_type, *schema_version)
+                    .is_some_and(|(_, expected_len)| expected_len == payload_len)
+            })
+            .unwrap_or(0);
         match context.publisher.publish(
             event_type,
             payload,
@@ -468,15 +493,23 @@ unsafe extern "C" fn host_publish_account(
             }
             Err(error) => {
                 tracing::warn!(
+                    account_id = context.account_id,
                     event_type,
-                    ?error,
+                    schema_version,
+                    payload_len,
+                    trace_id,
+                    causation_id,
+                    error = %error,
                     "Dynamic account event publication was rejected by the host."
                 );
                 *context
                     .last_publish_error
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(Arc::from(format!("{event_type}: {error}")));
+                    Some(Arc::from(format!(
+                        "account_id={} event_type={event_type} schema_version={schema_version} payload_len={payload_len}: {error}",
+                        context.account_id
+                    )));
                 Err(())
             }
         }
