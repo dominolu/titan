@@ -51,7 +51,8 @@ bar_history_view_dtype = np.dtype(
 )
 fill_dtype = np.dtype(
     [("asset_no", "u8"), ("local_account_no", "u4"),
-     ("_account_reserved", "u4"), ("order_id", "u8"), ("venue_order_id", "u8"),
+     ("_account_reserved", "u4"), ("account_epoch", "u8"),
+     ("order_id", "u8"), ("venue_order_id", "u8"),
      ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
      ("price", "f8"), ("last_fill_qty", "f8"),
      ("cumulative_filled_qty", "f8"), ("venue_no", "u4"),

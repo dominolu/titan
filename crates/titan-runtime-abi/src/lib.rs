@@ -207,6 +207,8 @@ pub struct FillEvent {
     pub asset_no: u64,
     pub local_account_no: u32,
     pub _account_reserved: u32,
+    /// Account stream epoch that scopes `sequence` and permits version restart after reconnect.
+    pub account_epoch: u64,
     pub order_id: u64,
     pub venue_order_id: u64,
     pub exch_ts: i64,

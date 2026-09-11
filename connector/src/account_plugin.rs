@@ -33,6 +33,11 @@ use crate::{
 };
 
 const OPERATION_HISTORY_LIMIT: usize = 1024;
+const ACCOUNT_SIDE_BUY: u8 = 1;
+const ACCOUNT_SIDE_SELL: u8 = 2;
+const ACCOUNT_POSITION_SIDE_NET: u8 = 0;
+const ACCOUNT_POSITION_SIDE_LONG: u8 = 1;
+const ACCOUNT_POSITION_SIDE_SHORT: u8 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
@@ -511,7 +516,7 @@ impl account::AccountConnector for AccountRuntime {
                                     ?error,
                                     "Account private stream reported an error."
                                 );
-                                account_events.invalidate(1);
+                                account_events.invalidate(account::invalidation_reason::PRIVATE_STREAM);
                                 let _ = event_recovery.try_send(Command::Reconcile(
                                     account::ReconcileScope::Full,
                                     account::OperationId(0),
@@ -542,7 +547,9 @@ impl account::AccountConnector for AccountRuntime {
                                         "account {} fact publication failed: {error}",
                                         context.account.account_id.0
                                     );
-                                    account_events.invalidate(2);
+                                    account_events.invalidate(
+                                        account::invalidation_reason::DIRECT_FACT_PUBLICATION,
+                                    );
                                     let _ = event_recovery.try_send(Command::Reconcile(
                                         account::ReconcileScope::Full,
                                         account::OperationId(0),
@@ -602,7 +609,9 @@ impl account::AccountConnector for AccountRuntime {
                                         );
                                         // Distinguish a staged private-fact replay failure from a
                                         // direct publication failure (reason 2).
-                                        encoder.invalidate(5);
+                                        encoder.invalidate(
+                                            account::invalidation_reason::STAGED_REPLAY_PUBLICATION,
+                                        );
                                         schedule_reconcile(recovery_tx.clone());
                                     }
                                 }
@@ -1053,7 +1062,13 @@ impl AccountEventEncoder {
                         *exch_ts,
                     ),
                     asset_id: b.asset_id.0,
-                    position_side: if *qty < 0.0 { 2 } else { 1 },
+                    position_side: if *qty > 0.0 {
+                        ACCOUNT_POSITION_SIDE_LONG
+                    } else if *qty < 0.0 {
+                        ACCOUNT_POSITION_SIDE_SHORT
+                    } else {
+                        ACCOUNT_POSITION_SIDE_NET
+                    },
                     quantity_lots: to_units(*qty, b.quantity_lot)?,
                     ..Default::default()
                 };
@@ -1063,7 +1078,7 @@ impl AccountEventEncoder {
                     .map_err(|e| rejected(e.to_string()))
             }
             AccountPublication::Error(_) => {
-                self.invalidate(1);
+                self.invalidate(account::invalidation_reason::PRIVATE_STREAM);
                 Ok(())
             }
         }
@@ -1396,7 +1411,12 @@ async fn handle_command(
                     ?error,
                     "Account reconciliation failed."
                 );
-                publish_invalidated(context, epoch, version, 6);
+                publish_invalidated(
+                    context,
+                    epoch,
+                    version,
+                    account::invalidation_reason::RECONCILE,
+                );
                 schedule_reconcile(recovery_tx.clone());
             }
             if id.0 != 0 {
@@ -1440,7 +1460,12 @@ async fn handle_command(
                     ?error,
                     "Initial account reconciliation failed."
                 );
-                publish_invalidated(context, epoch, version, 7);
+                publish_invalidated(
+                    context,
+                    epoch,
+                    version,
+                    account::invalidation_reason::INITIAL_RECONCILE,
+                );
                 schedule_reconcile(recovery_tx.clone());
             }
             return;
@@ -1595,18 +1620,27 @@ async fn handle_command(
             Command::CancelAllAfter(_) => "cancel_all_after",
             Command::Reconcile(..) | Command::PrivateStreamReady => unreachable!(),
         };
+        let outcome = if initially_unknown {
+            "outcome_unknown"
+        } else {
+            "confirmed_failed"
+        };
         tracing::warn!(
             account_id = context.account.account_id.0,
             command_type,
+            command_id = %id_text(id),
             exchange = error.exchange,
             code = %error.code,
             message = %error.message,
-            outcome_unknown = initially_unknown,
+            outcome,
+            trace_id = trace.trace_id,
+            causation_id = trace.causation_id,
             "Account command failed."
         );
         eprintln!(
-            "account {} command {command_type} failed: exchange={} code={} message={} outcome_unknown={initially_unknown}",
+            "account {} command {command_type} failed: command_id={} exchange={} code={} message={} outcome={outcome}",
             context.account.account_id.0,
+            id_text(id),
             error.exchange,
             error.code,
             error.message
@@ -1627,7 +1661,12 @@ async fn handle_command(
         .is_some_and(crate::api::ApiError::outcome_unknown);
     if unknown {
         ready.store(false, Ordering::Release);
-        publish_invalidated(context, epoch, version, 3);
+        publish_invalidated(
+            context,
+            epoch,
+            version,
+            account::invalidation_reason::COMMAND_OUTCOME_UNKNOWN,
+        );
         schedule_reconcile(recovery_tx.clone());
     }
     if !unknown {
@@ -1739,7 +1778,12 @@ async fn handle_command(
     }
     if publication_failed && !unknown {
         ready.store(false, Ordering::Release);
-        publish_invalidated(context, epoch, version, 4);
+        publish_invalidated(
+            context,
+            epoch,
+            version,
+            account::invalidation_reason::COMMAND_RESULT_PUBLICATION,
+        );
         schedule_reconcile(recovery_tx.clone());
     }
 }
@@ -1802,9 +1846,32 @@ fn publish_invalidated(
         state: account::AccountLifecycle::Invalidated as u8,
         reason_code,
     });
-    let _ = context
+    if let Err(error) = context
         .event_publisher
-        .publish_encoded(&event, TraceContext::default());
+        .publish_encoded(&event, TraceContext::default())
+    {
+        tracing::error!(
+            account_id = context.account.account_id.0,
+            reason_code,
+            reason = account::invalidation_reason::name(reason_code),
+            account_epoch = event.0.header.account_epoch,
+            account_version = event.0.header.account_version,
+            event_type = account::STREAM_INVALIDATED_EVENT,
+            schema_version = <account::StreamInvalidatedV1 as account::AccountEventPayload>::SCHEMA_VERSION,
+            payload_len = <account::StreamInvalidatedV1 as account::AccountEventPayload>::ENCODED_LEN,
+            error = %error,
+            "Account invalidation publication failed."
+        );
+        eprintln!(
+            "account {} invalidation publication failed: reason={} reason_code={} event_type={} schema_version={} payload_len={}: {error}",
+            context.account.account_id.0,
+            account::invalidation_reason::name(reason_code),
+            reason_code,
+            account::STREAM_INVALIDATED_EVENT,
+            <account::StreamInvalidatedV1 as account::AccountEventPayload>::SCHEMA_VERSION,
+            <account::StreamInvalidatedV1 as account::AccountEventPayload>::ENCODED_LEN,
+        );
+    }
 }
 
 fn header(
@@ -1872,7 +1939,11 @@ fn order_snapshot(
     let mut ids = ids.lock().unwrap_or_else(|p| p.into_inner());
     Ok(account::OrderSnapshot {
         asset_id: b.asset_id,
-        side: if v.side == ApiSide::Buy { 1 } else { 2 },
+        side: match v.side {
+            ApiSide::Buy => ACCOUNT_SIDE_BUY,
+            ApiSide::Sell => ACCOUNT_SIDE_SELL,
+            ApiSide::Unknown => return Err(rejected("unknown order side")),
+        },
         order_type: if v.order_type == ApiOrderType::Market {
             1
         } else {
@@ -1906,9 +1977,9 @@ fn position_snapshot(
     Ok(account::PositionSnapshot {
         asset_id: b.asset_id,
         position_side: match v.position_side {
-            ApiPositionSide::Long => 1,
-            ApiPositionSide::Short => 2,
-            _ => 0,
+            ApiPositionSide::Long => ACCOUNT_POSITION_SIDE_LONG,
+            ApiPositionSide::Short => ACCOUNT_POSITION_SIDE_SHORT,
+            ApiPositionSide::Net | ApiPositionSide::Unknown => ACCOUNT_POSITION_SIDE_NET,
         },
         margin_type: if v.margin_type == ApiMarginType::Isolated {
             1
@@ -2015,10 +2086,10 @@ fn managed_account_order(
     command: &account::SubmitOrderCommand,
     binding: &account::AccountInstrumentBinding,
 ) -> Result<Order, account::AccountConnectorError> {
-    let side = if command.side == 1 {
-        Side::Buy
-    } else {
-        Side::Sell
+    let side = match command.side {
+        ACCOUNT_SIDE_BUY => Side::Buy,
+        ACCOUNT_SIDE_SELL => Side::Sell,
+        _ => return Err(rejected("invalid submit side")),
     };
     let order_type = if command.order_type == 0 {
         OrdType::Limit
