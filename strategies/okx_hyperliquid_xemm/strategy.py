@@ -900,30 +900,6 @@ def build(parameters):
             cancel_quotes(s)
 
     @njit
-    def on_command_result(s):
-        result = s.command_result()
-        if result["final_result"] == 0 or result["outcome"] == 1:
-            return
-        order_id = result["order_id"]
-        s.state_i64[I_REJECT_COUNT] += 1
-        if order_id == s.state_i64[I_BID_ORDER_ID]:
-            if s.state_i64[I_BID_STATE] == LEG_CANCELING:
-                s.state_i64[I_BID_STATE] = LEG_OPEN
-            else:
-                s.state_i64[I_BID_STATE] = LEG_EMPTY
-                s.state_i64[I_BID_ORDER_ID] = 0
-        elif order_id == s.state_i64[I_ASK_ORDER_ID]:
-            if s.state_i64[I_ASK_STATE] == LEG_CANCELING:
-                s.state_i64[I_ASK_STATE] = LEG_OPEN
-            else:
-                s.state_i64[I_ASK_STATE] = LEG_EMPTY
-                s.state_i64[I_ASK_ORDER_ID] = 0
-        elif order_id == s.state_i64[I_HEDGE_ORDER_ID]:
-            s.state_i64[I_HEDGE_STATE] = LEG_EMPTY
-            s.state_i64[I_HEDGE_ORDER_ID] = 0
-            s.state_i64[I_NEXT_HEDGE_RETRY_TS] = s.now + hedge_retry_backoff_ns
-
-    @njit
     def on_account_state(s):
         event = s.account_state()
         account_no = event["local_account_no"]
@@ -960,7 +936,6 @@ def build(parameters):
         on_order=on_order,
         on_position=on_position,
         on_balance=on_balance,
-        on_command_result=on_command_result,
         on_account_state=on_account_state,
         on_timer=on_timer,
         on_error=on_error,
@@ -974,6 +949,6 @@ def build(parameters):
             "hedge_asset_no": hedge_asset_no,
             "production_ready": False,
             "requires_testnet_validation": True,
-            "required_runtime_abi": 10,
+            "required_runtime_abi": 12,
         },
     )

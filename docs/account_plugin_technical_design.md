@@ -1,5 +1,8 @@
 # Titan AccountPlugin 技术实现设计
 
+> 已归档：AccountPlugin 已迁移为 `titan-account-service`，旧命令 endpoint、journal 与 reconcile
+> 不再属于运行时。当前实现以[去插件化技术方案](strategy_command_deplugin_technical_plan.md)为准。
+
 版本：v0.1
 
 状态：主体实现已落地；Phase 5、旧路径退休与实盘验收待完成

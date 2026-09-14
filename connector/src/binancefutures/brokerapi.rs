@@ -271,6 +271,29 @@ fn account_from(a: &m::Account) -> AccountInfo {
     }
 }
 
+fn validate_account_modes(
+    dual_side_position: bool,
+    multi_assets_margin: bool,
+) -> Result<(), ApiError> {
+    if dual_side_position {
+        return Err(ApiError::new(
+            "binance",
+            "INCOMPATIBLE_POSITION_MODE",
+            "Binance USD-M account is in Hedge Mode; Titan account commands currently require One-way Mode",
+        ));
+    }
+    tracing::info!(
+        position_mode = "one_way",
+        margin_mode = if multi_assets_margin {
+            "multi_asset"
+        } else {
+            "single_asset"
+        },
+        "Validated Binance USD-M account configuration."
+    );
+    Ok(())
+}
+
 // ------------------------------------------------------------------
 // 原始端点（对照官方文档全量）
 // ------------------------------------------------------------------
@@ -1253,6 +1276,12 @@ impl BrokerApi for BinanceFuturesClient {
                 timestamp: t.time,
             })
             .collect())
+    }
+
+    async fn validate_account_configuration(&self) -> Result<(), ApiError> {
+        let (dual_side_position, multi_assets_margin) =
+            tokio::try_join!(self.get_position_mode(), self.get_multi_assets_mode(),)?;
+        validate_account_modes(dual_side_position, multi_assets_margin)
     }
 
     async fn get_account(&self) -> Result<AccountInfo, ApiError> {
@@ -2337,6 +2366,19 @@ mod tests {
         assert_eq!(info.available_balance, 5000.0);
         assert_eq!(info.balances.len(), 1);
         assert_eq!(info.balances[0].asset, "USDT");
+    }
+
+    #[test]
+    fn account_mode_validation_accepts_one_way_single_and_multi_asset() {
+        validate_account_modes(false, false).unwrap();
+        validate_account_modes(false, true).unwrap();
+    }
+
+    #[test]
+    fn account_mode_validation_rejects_hedge_mode() {
+        let error = validate_account_modes(true, false).unwrap_err();
+        assert_eq!(error.code, "INCOMPATIBLE_POSITION_MODE");
+        assert!(error.message.contains("One-way Mode"));
     }
 
     #[test]

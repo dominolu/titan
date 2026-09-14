@@ -7,7 +7,7 @@ use hftbacktest::prelude::{
     LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
     LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 use tokio::{
     net::TcpStream,
     select,

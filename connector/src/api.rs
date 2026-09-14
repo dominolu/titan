@@ -676,6 +676,15 @@ pub trait BrokerApi: Send + Sync {
     // 账户
     // ------------------------------------------------------------------
 
+    /// Validate exchange account modes before the initial account snapshot is committed.
+    ///
+    /// Venues whose order semantics depend on account-wide settings override this hook. The
+    /// AccountService keeps the account out of READY when validation fails, so an incompatible
+    /// position or margin mode cannot first surface after a strategy has already begun trading.
+    async fn validate_account_configuration(&self) -> Result<(), ApiError> {
+        Ok(())
+    }
+
     /// 账户信息（余额）。
     async fn get_account(&self) -> Result<AccountInfo, ApiError>;
 

@@ -12,7 +12,7 @@ use hftbacktest::prelude::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
     LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 use tokio::{
     net::TcpStream,
     select,
@@ -106,6 +106,14 @@ fn unsubscribe_channels(
             !market_channels(&remaining.iter().copied().collect::<Vec<_>>()).contains(channel)
         })
         .collect()
+}
+
+fn channel_subscription(channel: &str, symbol: &str, l2_fast: bool) -> serde_json::Value {
+    if channel == "l2Book" && l2_fast {
+        serde_json::json!({ "type": channel, "coin": symbol, "fast": true })
+    } else {
+        serde_json::json!({ "type": channel, "coin": symbol })
+    }
 }
 
 fn valid_level(px: &str, sz: &str) -> Option<(f64, f64)> {
@@ -239,6 +247,7 @@ pub struct HyperliquidWs {
     client: HyperliquidClient,
     command_rx: Receiver<MarketDataCommand>,
     market_subscriptions: SharedMarketSubscriptions,
+    l2_fast: bool,
     private_channels: bool,
     pending_private_subscriptions: HashSet<String>,
     #[cfg(test)]
@@ -255,6 +264,7 @@ impl HyperliquidWs {
         client: HyperliquidClient,
         command_rx: Receiver<MarketDataCommand>,
         market_subscriptions: SharedMarketSubscriptions,
+        l2_fast: bool,
         private_channels: bool,
         #[cfg(test)] reconnect_fault: Arc<AtomicU8>,
     ) -> Self {
@@ -272,6 +282,7 @@ impl HyperliquidWs {
             client,
             command_rx,
             market_subscriptions,
+            l2_fast,
             private_channels,
             pending_private_subscriptions: HashSet::new(),
             #[cfg(test)]
@@ -635,7 +646,14 @@ impl HyperliquidWs {
                     .is_some_and(|active| active.contains(channel))
             })
             .collect();
-        Self::send_channels(write, "subscribe", symbol.clone(), channels.clone()).await?;
+        Self::send_channels(
+            write,
+            "subscribe",
+            symbol.clone(),
+            channels.clone(),
+            self.l2_fast,
+        )
+        .await?;
         self.wire_channels
             .entry(symbol)
             .or_default()
@@ -664,7 +682,14 @@ impl HyperliquidWs {
                     .is_some_and(|active| active.contains(channel))
             })
             .collect();
-        Self::send_channels(write, "unsubscribe", symbol.clone(), channels.clone()).await?;
+        Self::send_channels(
+            write,
+            "unsubscribe",
+            symbol.clone(),
+            channels.clone(),
+            self.l2_fast,
+        )
+        .await?;
         if let Some(active) = self.wire_channels.get_mut(&symbol) {
             for channel in channels {
                 active.remove(channel);
@@ -681,11 +706,12 @@ impl HyperliquidWs {
         method: &str,
         symbol: String,
         channels: Vec<&str>,
+        l2_fast: bool,
     ) -> Result<(), HyperliquidError> {
         for channel in channels {
             let request = WsSubscribe {
                 method: method.to_string(),
-                subscription: serde_json::json!({ "type": channel, "coin": symbol }),
+                subscription: channel_subscription(channel, &symbol, l2_fast),
             };
             write
                 .send(Message::Text(serde_json::to_string(&request)?.into()))
@@ -700,7 +726,14 @@ impl HyperliquidWs {
         symbol: String,
     ) -> Result<(), HyperliquidError> {
         for method in ["unsubscribe", "subscribe"] {
-            Self::send_channels(write, method, symbol.clone(), vec!["l2Book", "bbo"]).await?;
+            Self::send_channels(
+                write,
+                method,
+                symbol.clone(),
+                vec!["l2Book", "bbo"],
+                self.l2_fast,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -897,6 +930,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fast_mode_only_changes_the_l2_subscription_identity() {
+        assert_eq!(
+            channel_subscription("l2Book", "BTC", true),
+            serde_json::json!({"type": "l2Book", "coin": "BTC", "fast": true})
+        );
+        assert_eq!(
+            channel_subscription("bbo", "BTC", true),
+            serde_json::json!({"type": "bbo", "coin": "BTC"})
+        );
+        assert_eq!(
+            channel_subscription("l2Book", "BTC", false),
+            serde_json::json!({"type": "l2Book", "coin": "BTC"})
+        );
+    }
+
     #[tokio::test]
     async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
         let (events, mut receiver) = crate::connector::test_publish_channel();
@@ -915,6 +964,7 @@ mod tests {
                 "BTC".to_owned(),
                 HashSet::from([MarketDataKind::Depth]),
             )]))),
+            false,
             false,
             Arc::new(AtomicU8::new(0)),
         );
@@ -964,6 +1014,7 @@ mod tests {
                 "BTC".to_owned(),
                 HashSet::from([MarketDataKind::Bbo]),
             )]))),
+            false,
             false,
             Arc::new(AtomicU8::new(0)),
         );
@@ -1015,6 +1066,7 @@ mod tests {
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             subscriptions,
+            false,
             false,
             Arc::new(AtomicU8::new(0)),
         );
@@ -1124,6 +1176,7 @@ mod tests {
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
+            false,
             true,
             Arc::new(AtomicU8::new(0)),
         );
@@ -1173,6 +1226,7 @@ mod tests {
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
+            false,
             true,
             Arc::new(AtomicU8::new(0)),
         );
@@ -1196,6 +1250,7 @@ mod tests {
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
+            false,
             true,
             Arc::new(AtomicU8::new(0)),
         );
@@ -1260,6 +1315,7 @@ mod tests {
             HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
             Default::default(),
+            false,
             true,
             Arc::new(AtomicU8::new(0)),
         );

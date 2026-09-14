@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use titan_plugin_engine::TraceContext;
+use titan_core_types::TraceContext;
 
 use crate::OwnedEvent;
 

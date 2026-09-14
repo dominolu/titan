@@ -1141,11 +1141,10 @@ dependencies = [
  "sha3",
  "smallvec",
  "thiserror",
- "titan-account-plugin",
- "titan-connector-loader",
+ "titan-account-service",
+ "titan-core-types",
  "titan-event-engine",
- "titan-market-plugin",
- "titan-plugin-engine",
+ "titan-market-service",
  "titan-runtime-abi",
  "tokio",
  "tokio-tungstenite",
@@ -4039,15 +4038,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "titan-account-plugin"
+name = "titan-account-service"
 version = "0.1.0"
 dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "titan-core-types",
  "titan-event-engine",
- "titan-plugin-engine",
  "titan-runtime-abi",
+ "tokio",
  "tracing",
  "zeroize",
 ]
@@ -4057,6 +4057,7 @@ name = "titan-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "connector",
  "hftbacktest",
  "libc",
  "rusqlite",
@@ -4067,56 +4068,26 @@ dependencies = [
  "signal-hook",
  "sysinfo",
  "thiserror",
- "titan-account-plugin",
- "titan-connector-loader",
+ "titan-account-service",
+ "titan-core-types",
  "titan-event-engine",
- "titan-market-plugin",
- "titan-plugin-engine",
+ "titan-market-service",
  "titan-python-host",
  "titan-runtime",
  "titan-runtime-abi",
- "titan-strategy-plugin",
+ "titan-strategy-runtime",
  "toml",
+ "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
-name = "titan-connector-binance-futures-plugin"
+name = "titan-core-types"
 version = "0.1.0"
 dependencies = [
- "connector",
- "serde_json",
- "titan-plugin-engine",
-]
-
-[[package]]
-name = "titan-connector-hyperliquid-plugin"
-version = "0.1.0"
-dependencies = [
- "connector",
- "serde_json",
- "titan-plugin-engine",
-]
-
-[[package]]
-name = "titan-connector-loader"
-version = "0.1.0"
-dependencies = [
- "semver",
- "serde_json",
- "sha2 0.10.9",
- "titan-account-plugin",
- "titan-market-plugin",
- "titan-plugin-engine",
-]
-
-[[package]]
-name = "titan-connector-okx-plugin"
-version = "0.1.0"
-dependencies = [
- "connector",
- "serde_json",
- "titan-plugin-engine",
+ "serde",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -4132,7 +4103,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
- "titan-plugin-engine",
+ "titan-core-types",
 ]
 
 [[package]]
@@ -4150,35 +4121,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "titan-market-plugin"
+name = "titan-market-service"
 version = "0.1.0"
 dependencies = [
  "semver",
  "serde",
  "serde_json",
  "thiserror",
+ "titan-core-types",
  "titan-event-engine",
- "titan-plugin-engine",
  "titan-runtime-abi",
  "tracing",
-]
-
-[[package]]
-name = "titan-plugin-engine"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "core_affinity",
- "crossbeam-channel",
- "jsonschema",
- "libloading",
- "loom",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -4211,7 +4164,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "titan-strategy-plugin"
+name = "titan-strategy-runtime"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
@@ -4221,10 +4174,10 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
- "titan-account-plugin",
+ "titan-account-service",
+ "titan-core-types",
  "titan-event-engine",
- "titan-market-plugin",
- "titan-plugin-engine",
+ "titan-market-service",
  "titan-python-host",
  "titan-runtime",
  "titan-runtime-abi",

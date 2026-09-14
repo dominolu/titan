@@ -58,7 +58,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the configured EventEngine/PluginEngine graph until SIGINT.
+    /// Run the configured static TradingRuntime until SIGINT.
     CoreRun {
         #[arg(short = 'c', long = "config", value_name = "RUNTIME.toml")]
         config: PathBuf,
@@ -2296,7 +2296,7 @@ fn core_live_worker(
 ) -> Result<(), CliError> {
     let adapted =
         load_core_configuration(&spec.config_path, Some((strategy_key, spec.event_mode)))?;
-    let mut runtime = titan_cli::ConfiguredCoreRuntime::start(adapted)
+    let mut runtime = titan_cli::TradingRuntime::start(adapted)
         .map_err(|error| CliError::Engine(error.to_string()))?;
     registry.transition(run_id, token, "READY")?;
     registry.transition(run_id, token, "RUNNING")?;
@@ -2305,7 +2305,7 @@ fn core_live_worker(
         thread::sleep(Duration::from_millis(50));
     }
     runtime
-        .shutdown(titan_plugin_engine::StopReason::Shutdown)
+        .shutdown()
         .map_err(|error| CliError::Engine(error.to_string()))?;
     let result = serde_json::json!({
         "schema_version": 1,
@@ -2748,7 +2748,7 @@ fn run_selected_core(
     json: bool,
 ) -> Result<(), CliError> {
     let adapted = load_core_configuration(config, selected)?;
-    let mut runtime = titan_cli::ConfiguredCoreRuntime::start(adapted)
+    let mut runtime = titan_cli::TradingRuntime::start(adapted)
         .map_err(|error| CliError::Engine(error.to_string()))?;
     let interrupt = Arc::new(AtomicBool::new(false));
     let terminate = Arc::new(AtomicBool::new(false));
@@ -2777,7 +2777,7 @@ fn run_selected_core(
         "SIGTERM"
     };
     runtime
-        .shutdown(titan_plugin_engine::StopReason::Shutdown)
+        .shutdown()
         .map_err(|error| CliError::Engine(error.to_string()))?;
     if json {
         println!(
@@ -2818,13 +2818,13 @@ fn load_core_configuration(
                 (mode, binding.data_mode),
                 (
                     EventMode::Tick,
-                    titan_strategy_plugin::StrategyDataMode::Tick
+                    titan_strategy_runtime::StrategyDataMode::Tick
                 ) | (
                     EventMode::Bar,
-                    titan_strategy_plugin::StrategyDataMode::Bar { .. }
+                    titan_strategy_runtime::StrategyDataMode::Bar { .. }
                 ) | (
                     EventMode::Hybrid,
-                    titan_strategy_plugin::StrategyDataMode::Hybrid { .. }
+                    titan_strategy_runtime::StrategyDataMode::Hybrid { .. }
                 )
             )
         });

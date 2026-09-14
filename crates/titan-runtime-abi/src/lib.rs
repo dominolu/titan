@@ -10,7 +10,7 @@ use std::{ffi::c_void, fmt, marker::PhantomData, str::FromStr, sync::Arc};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-pub const STRATEGY_ABI_VERSION: u32 = 10;
+pub const STRATEGY_ABI_VERSION: u32 = 12;
 pub const EVENT_SLOT_COUNT: usize = 32;
 
 pub const BAR_COMPLETE: u64 = 1 << 0;
@@ -315,21 +315,6 @@ pub struct BalanceEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
-pub struct CommandResultEvent {
-    pub local_account_no: u32,
-    pub reason: u32,
-    pub order_id: u64,
-    pub command_id_hi: u64,
-    pub command_id_lo: u64,
-    pub account_epoch: u64,
-    pub sequence: u64,
-    pub outcome: u8,
-    pub final_result: u8,
-    pub _reserved: [u8; 6],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
 pub struct AccountStateEvent {
     pub local_account_no: u32,
     pub reason: u32,
@@ -465,6 +450,50 @@ impl Default for OrderCommand {
     }
 }
 
+/// Fixed-layout request copied by the host before a direct submit task is spawned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(C)]
+pub struct AbiNewOrderRequest {
+    pub asset_no: u64,
+    pub order_id: u64,
+    pub price: f64,
+    pub qty: f64,
+    pub side: i8,
+    pub order_type: u8,
+    pub time_in_force: u8,
+    pub _reserved: [u8; 5],
+}
+
+impl Default for AbiNewOrderRequest {
+    fn default() -> Self {
+        Self {
+            asset_no: 0,
+            order_id: 0,
+            price: 0.0,
+            qty: 0.0,
+            side: 0,
+            order_type: 0,
+            time_in_force: 0,
+            _reserved: [0; 5],
+        }
+    }
+}
+
+/// Fixed-layout request copied by the host before a direct cancel task is spawned.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[repr(C)]
+pub struct AbiCancelOrderRequest {
+    pub asset_no: u64,
+    pub order_id: u64,
+}
+
+pub type AbiExecutionFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    account_no: u32,
+    request: *const c_void,
+    task_id_out: *mut u64,
+) -> i32;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
 pub struct RuntimeFunding {
@@ -516,6 +545,25 @@ impl Default for RuntimeFunding {
 }
 
 /// Context passed as the single strategy callback argument.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct BacktestCommandBuffer {
+    pub commands_ptr: *mut OrderCommand,
+    pub num_commands: usize,
+    pub command_capacity: usize,
+}
+
+impl Default for BacktestCommandBuffer {
+    fn default() -> Self {
+        Self {
+            commands_ptr: std::ptr::null_mut(),
+            num_commands: 0,
+            command_capacity: 0,
+        }
+    }
+}
+
+/// Context passed as the single strategy callback argument.
 #[derive(Debug)]
 #[repr(C)]
 pub struct StrategyRuntimeContext {
@@ -545,14 +593,18 @@ pub struct StrategyRuntimeContext {
     pub state_f64_len: usize,
     pub state_i64_ptr: *mut i64,
     pub state_i64_len: usize,
-    pub commands_ptr: *mut OrderCommand,
-    pub num_commands: usize,
-    pub command_capacity: usize,
+    /// Backtest-only command sink. Live runtimes leave this null and expose only the execution ABI.
+    pub backtest_commands: *mut BacktestCommandBuffer,
     pub positions_ptr: *const f64,
     pub num_positions: usize,
     pub markets_ptr: *const MarketState,
     pub num_markets: usize,
     pub last_error: i64,
+    pub execution_context: *mut c_void,
+    pub execution_submit: Option<AbiExecutionFn>,
+    pub execution_cancel: Option<AbiExecutionFn>,
+    pub execution_request_ptr: *mut c_void,
+    pub execution_task_id_ptr: *mut u64,
 }
 
 impl Default for StrategyRuntimeContext {
@@ -584,14 +636,17 @@ impl Default for StrategyRuntimeContext {
             state_f64_len: 0,
             state_i64_ptr: std::ptr::null_mut(),
             state_i64_len: 0,
-            commands_ptr: std::ptr::null_mut(),
-            num_commands: 0,
-            command_capacity: 0,
+            backtest_commands: std::ptr::null_mut(),
             positions_ptr: std::ptr::null(),
             num_positions: 0,
             markets_ptr: std::ptr::null(),
             num_markets: 0,
             last_error: 0,
+            execution_context: std::ptr::null_mut(),
+            execution_submit: None,
+            execution_cancel: None,
+            execution_request_ptr: std::ptr::null_mut(),
+            execution_task_id_ptr: std::ptr::null_mut(),
         }
     }
 }
@@ -634,7 +689,6 @@ pub enum StrategyEventKind {
     Error = 8,
     Stop = 9,
     Balance = 10,
-    CommandResult = 11,
     AccountState = 12,
     Depth = 13,
 }
@@ -688,7 +742,8 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
         ),
         abi_struct!(FillEvent,
             asset_no: AbiType::U64 => u64, local_account_no: AbiType::U32 => u32,
-            _account_reserved: AbiType::U32 => u32, order_id: AbiType::U64 => u64,
+            _account_reserved: AbiType::U32 => u32, account_epoch: AbiType::U64 => u64,
+            order_id: AbiType::U64 => u64,
             venue_order_id: AbiType::U64 => u64, exch_ts: AbiType::I64 => i64,
             local_ts: AbiType::I64 => i64, sequence: AbiType::U64 => u64,
             price: AbiType::F64 => f64,
@@ -743,14 +798,6 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             wallet: AbiType::F64 => f64, available: AbiType::F64 => f64,
             margin: AbiType::F64 => f64, unrealized_pnl: AbiType::F64 => f64,
         ),
-        abi_struct!(CommandResultEvent,
-            local_account_no: AbiType::U32 => u32, reason: AbiType::U32 => u32,
-            order_id: AbiType::U64 => u64, command_id_hi: AbiType::U64 => u64,
-            command_id_lo: AbiType::U64 => u64, account_epoch: AbiType::U64 => u64,
-            sequence: AbiType::U64 => u64, outcome: AbiType::U8 => u8,
-            final_result: AbiType::U8 => u8,
-            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 6 } => [u8; 6],
-        ),
         abi_struct!(AccountStateEvent,
             local_account_no: AbiType::U32 => u32, reason: AbiType::U32 => u32,
             account_epoch: AbiType::U64 => u64, sequence: AbiType::U64 => u64,
@@ -793,6 +840,21 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
             trigger_price: AbiType::F64 => f64, gtd_expiry_ts: AbiType::I64 => i64,
         ),
+        abi_struct!(BacktestCommandBuffer,
+            commands_ptr: AbiType::Pointer => *mut OrderCommand,
+            num_commands: AbiType::Usize => usize,
+            command_capacity: AbiType::Usize => usize,
+        ),
+        abi_struct!(AbiNewOrderRequest,
+            asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
+            price: AbiType::F64 => f64, qty: AbiType::F64 => f64,
+            side: AbiType::I8 => i8, order_type: AbiType::U8 => u8,
+            time_in_force: AbiType::U8 => u8,
+            _reserved: AbiType::Array { element: Box::new(AbiType::U8), len: 5 } => [u8; 5],
+        ),
+        abi_struct!(AbiCancelOrderRequest,
+            asset_no: AbiType::U64 => u64, order_id: AbiType::U64 => u64,
+        ),
         abi_struct!(RuntimeFunding,
             event_id: AbiType::U64 => u64, asset_no: AbiType::U32 => u32,
             venue_no: AbiType::U32 => u32, instrument_id: AbiType::U32 => u32,
@@ -819,11 +881,16 @@ pub fn runtime_abi_descriptor() -> RuntimeAbiDescriptor {
             num_histories: AbiType::Usize => usize, payload_ptr: AbiType::Pointer => *const c_void,
             payload_len: AbiType::Usize => usize, state_f64_ptr: AbiType::Pointer => *mut f64,
             state_f64_len: AbiType::Usize => usize, state_i64_ptr: AbiType::Pointer => *mut i64,
-            state_i64_len: AbiType::Usize => usize, commands_ptr: AbiType::Pointer => *mut OrderCommand,
-            num_commands: AbiType::Usize => usize, command_capacity: AbiType::Usize => usize,
+            state_i64_len: AbiType::Usize => usize,
+            backtest_commands: AbiType::Pointer => *mut BacktestCommandBuffer,
             positions_ptr: AbiType::Pointer => *const f64, num_positions: AbiType::Usize => usize,
             markets_ptr: AbiType::Pointer => *const MarketState, num_markets: AbiType::Usize => usize,
             last_error: AbiType::I64 => i64,
+            execution_context: AbiType::Pointer => *mut c_void,
+            execution_submit: AbiType::Pointer => Option<AbiExecutionFn>,
+            execution_cancel: AbiType::Pointer => Option<AbiExecutionFn>,
+            execution_request_ptr: AbiType::Pointer => *mut c_void,
+            execution_task_id_ptr: AbiType::Pointer => *mut u64,
         ),
     ])
 }
@@ -927,7 +994,6 @@ impl RuntimeAbiDescriptor {
                 event_slot("error", StrategyEventKind::Error),
                 event_slot("stop", StrategyEventKind::Stop),
                 event_slot("balance", StrategyEventKind::Balance),
-                event_slot("command_result", StrategyEventKind::CommandResult),
                 event_slot("account_state", StrategyEventKind::AccountState),
                 event_slot("depth", StrategyEventKind::Depth),
             ],
@@ -1085,9 +1151,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_v10_exposes_account_routing_and_typed_live_views() {
+    fn abi_v12_separates_backtest_commands_from_direct_live_execution() {
         let descriptor = runtime_abi_descriptor();
-        assert_eq!(descriptor.abi_version, 10);
+        assert_eq!(descriptor.abi_version, 12);
         let fill = descriptor
             .structs
             .iter()
@@ -1124,6 +1190,35 @@ mod tests {
                 .fields
                 .iter()
                 .any(|field| field.name == "local_account_no")
+        );
+        let context = descriptor
+            .structs
+            .iter()
+            .find(|value| value.name == "StrategyRuntimeContext")
+            .unwrap();
+        assert!(
+            context
+                .fields
+                .iter()
+                .any(|field| field.name == "backtest_commands")
+        );
+        assert!(
+            !context
+                .fields
+                .iter()
+                .any(|field| field.name == "commands_ptr")
+        );
+        assert!(
+            context
+                .fields
+                .iter()
+                .any(|field| field.name == "execution_submit")
+        );
+        assert!(
+            context
+                .fields
+                .iter()
+                .any(|field| field.name == "execution_cancel")
         );
     }
 }

@@ -8,11 +8,10 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use titan_plugin_engine::{
-    ActivationGate, ApiVersion, DispatchOutcome, ErrorKind, EventApiCapabilities, EventControl,
-    EventHandler, EventPublishMetadata, EventQos, EventReceiver, EventView, LifecycleState,
-    PluginBundle, PluginContext, PluginEngine, PluginError, PluginFactory, PluginIdentity,
-    PluginInit, PluginManifest, StopReason, SubscriptionSpec, TraceContext, ValidationContext,
+use titan_core_types::{
+    ActivationGate, ApiVersion, ComponentIdentity, ComponentState, CoreError, DispatchOutcome,
+    ErrorKind, EventApiCapabilities, EventControl, EventHandler, EventPublishMetadata, EventQos,
+    EventReceiver, EventView, SubscriptionSpec, TraceContext,
 };
 
 use crate::*;
@@ -70,7 +69,7 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 struct RecordingHandler(Sender<Vec<u8>>);
 
 impl EventHandler for RecordingHandler {
-    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+    fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         self.0
             .send(event.payload.to_vec())
             .expect("test receiver remains alive");
@@ -86,7 +85,7 @@ struct BlockingHandler {
 struct CountingHandler(Arc<AtomicUsize>);
 
 impl EventHandler for CountingHandler {
-    fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+    fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
         self.0.fetch_add(1, Ordering::Release);
         Ok(())
     }
@@ -95,7 +94,7 @@ impl EventHandler for CountingHandler {
 struct ThreadNameHandler(Sender<String>);
 
 impl EventHandler for ThreadNameHandler {
-    fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+    fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
         self.0
             .send(thread::current().name().unwrap_or("unnamed").to_string())
             .unwrap();
@@ -908,7 +907,7 @@ fn snapshot_barrier_registry_enforces_active_limit_and_deadline() {
 }
 
 impl EventHandler for BlockingHandler {
-    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
+    fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         self.entered
             .send(event.payload.to_vec())
             .expect("test receiver remains alive");
@@ -938,7 +937,7 @@ fn fast_lane_runs_inline_and_keeps_the_normal_route() {
     handle
         .stage_subscription(
             transaction,
-            &PluginIdentity::new("test", "mirror"),
+            &ComponentIdentity::new("test", "mirror"),
             &SubscriptionSpec {
                 event_type: Arc::from("fast"),
                 schema_version: 1,
@@ -1033,12 +1032,12 @@ fn async_fast_lane_is_ordered_bounded_and_does_not_block_publishers() {
 fn async_fast_lane_contains_handler_failure() {
     struct FailingFastHandler(Arc<AtomicUsize>);
     impl EventHandler for FailingFastHandler {
-        fn handle(&self, _event: EventView<'_>) -> Result<(), PluginError> {
+        fn handle(&self, _event: EventView<'_>) -> Result<(), CoreError> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            Err(PluginError::new(
-                ErrorKind::PluginFailed,
-                PluginIdentity::new("test", "async-fast-failed"),
-                LifecycleState::Running,
+            Err(CoreError::new(
+                ErrorKind::ComponentFailed,
+                ComponentIdentity::new("test", "async-fast-failed"),
+                ComponentState::Running,
                 "callback",
                 "expected async FastLane failure",
             ))
@@ -1142,7 +1141,7 @@ fn drive_receiver(
     handler: Arc<dyn EventHandler>,
 ) {
     thread::spawn(move || {
-        if gate.wait_until_active() != titan_plugin_engine::ActivationState::Active {
+        if gate.wait_until_active() != titan_core_types::ActivationState::Active {
             return;
         }
         while gate.is_active() {
@@ -1169,7 +1168,7 @@ fn subscribe(
     handle
         .stage_subscription(
             tx,
-            &PluginIdentity::new("test", "subscriber"),
+            &ComponentIdentity::new("test", "subscriber"),
             &SubscriptionSpec {
                 event_type: Arc::from(event_type),
                 schema_version,
@@ -1259,7 +1258,7 @@ fn parked_subscriber_is_actively_woken_by_publish() {
     handle
         .stage_subscription(
             transaction,
-            &PluginIdentity::new("test", "parked"),
+            &ComponentIdentity::new("test", "parked"),
             &SubscriptionSpec {
                 event_type: Arc::from("wake"),
                 schema_version: 1,
@@ -1302,7 +1301,7 @@ fn subscriptions_from_one_owner_share_a_mailbox_until_the_last_route_retires() {
     let transaction = handle
         .begin_route_update(handle.current_route_version())
         .unwrap();
-    let owner = PluginIdentity::new("test", "shared-mailbox");
+    let owner = ComponentIdentity::new("test", "shared-mailbox");
     for event_type in ["shared-a", "shared-b"] {
         handle
             .stage_subscription_in_mailbox(
@@ -1369,7 +1368,7 @@ fn subscriptions_from_one_owner_share_a_mailbox_until_the_last_route_retires() {
 }
 
 #[test]
-fn plugin_control_market_reservation_publishes_without_copy_api() {
+fn event_control_market_reservation_publishes_without_copy_api() {
     let engine = EventEngine::new(test_config()).unwrap();
     let handle = engine.handle();
     handle
@@ -1432,7 +1431,7 @@ fn arena_is_bounded_reuses_generation_and_reclaims_last_reference() {
 }
 
 #[test]
-fn plugin_event_control_routes_off_publisher_and_event_loop_threads() {
+fn event_control_routes_off_publisher_and_event_loop_threads() {
     let engine = EventEngine::new(test_config()).unwrap();
     let handle = engine.handle();
     handle
@@ -1472,7 +1471,7 @@ fn plugin_event_control_routes_off_publisher_and_event_loop_threads() {
         SubscriberState::Normal
     );
     handle
-        .retire_subscription(titan_plugin_engine::SubscriptionToken(token))
+        .retire_subscription(titan_core_types::SubscriptionToken(token))
         .unwrap();
     engine.stop().unwrap();
     assert_eq!(engine.arena().outstanding_blocks(), 0);
@@ -1648,7 +1647,7 @@ fn multiple_publishers_deliver_without_loss() {
     let count = Arc::new(AtomicUsize::new(0));
     struct CountingHandler(Arc<AtomicUsize>);
     impl EventHandler for CountingHandler {
-        fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+        fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -1905,7 +1904,7 @@ fn precompiled_routes_filter_keys_and_continue_large_fanout() {
         handle
             .stage_subscription(
                 transaction,
-                &PluginIdentity::new("test", format!("route-{index}")),
+                &ComponentIdentity::new("test", format!("route-{index}")),
                 &SubscriptionSpec {
                     event_type: Arc::from("quotes"),
                     schema_version: 1,
@@ -1963,7 +1962,7 @@ fn route_transactions_reject_stale_base_without_partial_commit() {
         handle
             .stage_subscription(
                 transaction,
-                &PluginIdentity::new("test", "route"),
+                &ComponentIdentity::new("test", "route"),
                 &SubscriptionSpec {
                     event_type: Arc::from("route"),
                     schema_version: 1,
@@ -2024,11 +2023,11 @@ fn pool_exhaustion_is_isolated_and_persisted_in_runtime_health() {
 fn callback_failure_is_contained_and_marks_only_that_subscriber_failed() {
     struct FailingHandler;
     impl EventHandler for FailingHandler {
-        fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
-            Err(PluginError::new(
-                ErrorKind::PluginFailed,
-                PluginIdentity::new("test", "failed"),
-                LifecycleState::Running,
+        fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
+            Err(CoreError::new(
+                ErrorKind::ComponentFailed,
+                ComponentIdentity::new("test", "failed"),
+                ComponentState::Running,
                 "callback",
                 "injected failure",
             ))
@@ -2068,12 +2067,12 @@ fn callback_failure_is_contained_and_marks_only_that_subscriber_failed() {
 fn failed_subscriber_records_and_releases_queued_and_pending_deliveries() {
     struct BlockingFailureHandler(crossbeam_channel::Receiver<()>);
     impl EventHandler for BlockingFailureHandler {
-        fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+        fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
             self.0.recv().expect("test releases the blocked callback");
-            Err(PluginError::new(
-                ErrorKind::PluginFailed,
-                PluginIdentity::new("test", "blocked-failure"),
-                LifecycleState::Running,
+            Err(CoreError::new(
+                ErrorKind::ComponentFailed,
+                ComponentIdentity::new("test", "blocked-failure"),
+                ComponentState::Running,
                 "callback",
                 "injected failure after queue saturation",
             ))
@@ -2135,7 +2134,7 @@ fn recovery_waits_for_the_old_handler_epoch_to_quiesce() {
         release: crossbeam_channel::Receiver<()>,
     }
     impl EventHandler for BlockingHandler {
-        fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+        fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
             let _ = self.started.try_send(());
             self.release.recv().unwrap();
             Ok(())
@@ -2212,7 +2211,7 @@ fn recovery_waits_for_the_old_handler_epoch_to_quiesce() {
 }
 
 #[test]
-fn plugin_publish_metadata_drives_routing_and_source_sequence() {
+fn event_publish_metadata_drives_routing_and_source_sequence() {
     let engine = EventEngine::new(test_config()).unwrap();
     let handle = engine.handle();
     handle
@@ -2227,7 +2226,7 @@ fn plugin_publish_metadata_drives_routing_and_source_sequence() {
     handle
         .stage_subscription(
             route,
-            &PluginIdentity::new("test", "metadata"),
+            &ComponentIdentity::new("test", "metadata"),
             &SubscriptionSpec {
                 event_type: Arc::from("metadata"),
                 schema_version: 1,
@@ -2461,7 +2460,7 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
     let (tx, rx) = bounded(8);
     let channel = SubscriberChannel::new(SubscriberChannelArgs {
         id: 1,
-        owner: PluginIdentity::new("test", "fifo"),
+        owner: ComponentIdentity::new("test", "fifo"),
         capacity: 4,
         critical_reserve: 1,
         high_ratio: 0.8,
@@ -2563,7 +2562,7 @@ fn retirement_stops_new_routing_and_drains_existing_critical_work() {
 
     let retiring_handle = handle.clone();
     let retirement = thread::spawn(move || {
-        retiring_handle.retire_subscription(titan_plugin_engine::SubscriptionToken(token))
+        retiring_handle.retire_subscription(titan_core_types::SubscriptionToken(token))
     });
     let mut received = Vec::new();
     loop {
@@ -2735,9 +2734,8 @@ fn critical_load_still_services_market_and_due_timers() {
 }
 
 #[test]
-fn core_runtime_enforces_event_before_plugin_lifecycle() {
-    let mut runtime =
-        TitanCoreRuntime::new(test_config(), titan_plugin_engine::ApiVersion::new(1, 0)).unwrap();
+fn core_runtime_owns_only_the_event_engine() {
+    let runtime = TitanCoreRuntime::new(test_config()).unwrap();
     runtime.start().unwrap();
     assert!(matches!(
         runtime
@@ -2745,22 +2743,15 @@ fn core_runtime_enforces_event_before_plugin_lifecycle() {
             .try_publish(PublishRequest::new("unknown", 1, b"x")),
         Err(PublishError::InvalidEvent)
     ));
-    runtime
-        .shutdown(titan_plugin_engine::StopReason::Shutdown)
-        .unwrap();
+    runtime.shutdown().unwrap();
 }
 
 #[test]
-fn v13_adapter_is_explicit_and_rejected_by_v2_plugin_engine() {
+fn v13_adapter_explicitly_advertises_legacy_capabilities() {
     let engine = EventEngine::new(test_config()).unwrap();
     let legacy = V13EventControlAdapter::new(engine.handle());
     assert_eq!(legacy.api_version(), ApiVersion::new(1, 0));
     assert_eq!(legacy.api_capabilities(), EventApiCapabilities::default());
-    let error = match PluginEngine::new(Arc::new(legacy), ApiVersion::new(1, 0)) {
-        Ok(_) => panic!("v2 PluginEngine accepted a v1 compatibility adapter"),
-        Err(error) => error,
-    };
-    assert_eq!(error.kind, ErrorKind::ApiVersionMismatch);
 }
 
 #[test]
@@ -2774,782 +2765,4 @@ fn latency_histogram_reports_required_percentiles_without_allocation_on_record()
     assert!(summary.p50_ns <= summary.p99_ns);
     assert!(summary.p99_ns <= summary.p999_ns);
     assert!(summary.p999_ns <= summary.max_ns);
-}
-
-struct IntegrationEndpoint;
-
-impl titan_plugin_engine::ServiceEndpoint for IntegrationEndpoint {
-    fn call(
-        &self,
-        request: titan_plugin_engine::BoxValue,
-        _: TraceContext,
-    ) -> Result<titan_plugin_engine::BoxValue, PluginError> {
-        Ok(Box::new(*request.downcast::<u64>().unwrap() + 1))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-struct IntegrationHandler {
-    received: Sender<(String, Vec<u8>)>,
-    count: Arc<AtomicUsize>,
-}
-
-impl EventHandler for IntegrationHandler {
-    fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
-        self.count.fetch_add(1, Ordering::Release);
-        self.received
-            .send((
-                thread::current().name().unwrap_or("unnamed").to_owned(),
-                event.payload.to_vec(),
-            ))
-            .unwrap();
-        Ok(())
-    }
-}
-
-struct IntegrationPlugin {
-    identity: PluginIdentity,
-    publisher: Arc<std::sync::Mutex<Option<titan_plugin_engine::EventPublisher>>>,
-    delivered: Arc<AtomicUsize>,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-}
-
-impl titan_plugin_engine::Plugin for IntegrationPlugin {
-    fn validate(&self, _: &titan_plugin_engine::ValidationContext) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("validate");
-        Ok(())
-    }
-
-    fn start(
-        &mut self,
-        context: &mut titan_plugin_engine::PluginContext,
-    ) -> Result<(), PluginError> {
-        *self.publisher.lock().unwrap() = Some(context.events.clone());
-        self.log.lock().unwrap().push("start");
-        Ok(())
-    }
-
-    fn quiesce(&mut self, _: titan_plugin_engine::StopReason) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("quiesce");
-        let before = self.delivered.load(Ordering::Acquire);
-        self.publisher.lock().unwrap().as_ref().unwrap().publish(
-            "integration.event",
-            1,
-            b"quiesce",
-            TraceContext::default(),
-        )?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while self.delivered.load(Ordering::Acquire) == before {
-            if Instant::now() >= deadline {
-                return Err(PluginError::new(
-                    ErrorKind::PluginFailed,
-                    self.identity.clone(),
-                    LifecycleState::Quiescing,
-                    "quiesce",
-                    "subscriber did not converge while activation gate was active",
-                ));
-            }
-            thread::yield_now();
-        }
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("stop");
-        Ok(())
-    }
-}
-
-struct IntegrationFactory {
-    manifest: &'static titan_plugin_engine::PluginManifest,
-    received: Sender<(String, Vec<u8>)>,
-    delivered: Arc<AtomicUsize>,
-    publisher: Arc<std::sync::Mutex<Option<titan_plugin_engine::EventPublisher>>>,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-}
-
-impl titan_plugin_engine::PluginFactory for IntegrationFactory {
-    fn manifest(&self) -> &'static titan_plugin_engine::PluginManifest {
-        self.manifest
-    }
-
-    fn create(
-        &self,
-        init: titan_plugin_engine::PluginInit,
-    ) -> Result<titan_plugin_engine::PluginBundle, PluginError> {
-        let service_key = titan_plugin_engine::ServiceKey {
-            id: titan_plugin_engine::ServiceId::new("integration", "counter"),
-            version: semver::Version::new(1, 0, 0),
-            scope: titan_plugin_engine::ServiceScope::Global,
-        };
-        Ok(titan_plugin_engine::PluginBundle {
-            lifecycle: Box::new(IntegrationPlugin {
-                identity: init.identity,
-                publisher: self.publisher.clone(),
-                delivered: self.delivered.clone(),
-                log: self.log.clone(),
-            }),
-            service_exports: vec![titan_plugin_engine::ServiceExport {
-                service_key,
-                endpoint: Arc::new(IntegrationEndpoint),
-            }],
-            subscription_bindings: vec![titan_plugin_engine::SubscriptionBinding {
-                spec: SubscriptionSpec {
-                    event_type: Arc::from("integration.event"),
-                    schema_version: 1,
-                    qos: EventQos::ReliableOrdered,
-                    capacity: 8,
-                    routing_keys: Arc::from([]),
-                },
-                handler: Arc::new(IntegrationHandler {
-                    received: self.received.clone(),
-                    count: self.delivered.clone(),
-                }),
-            }],
-        })
-    }
-}
-
-struct StartupOrderPlugin {
-    events: EventEngineHandle,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-    fail_start: bool,
-}
-
-impl titan_plugin_engine::Plugin for StartupOrderPlugin {
-    fn validate(&self, _: &ValidationContext) -> Result<(), PluginError> {
-        assert!(matches!(
-            self.events
-                .try_publish(PublishRequest::new("startup-order", 1, b"validate")),
-            Err(PublishError::Stopped)
-        ));
-        self.log.lock().unwrap().push("validate-before-events");
-        Ok(())
-    }
-
-    fn start(&mut self, _: &mut PluginContext) -> Result<(), PluginError> {
-        self.events
-            .try_publish(PublishRequest::new("startup-order", 1, b"start"))
-            .unwrap();
-        self.log.lock().unwrap().push("start-after-events");
-        if self.fail_start {
-            Err(PluginError::new(
-                ErrorKind::RuntimeStartFailed,
-                PluginIdentity::new("startup-order", "startup-order-1"),
-                LifecycleState::Starting,
-                "start",
-                "injected startup failure",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn quiesce(&mut self, _: StopReason) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("quiesce");
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("stop");
-        Ok(())
-    }
-}
-
-struct StartupOrderFactory {
-    manifest: &'static PluginManifest,
-    events: EventEngineHandle,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-    fail_start: bool,
-}
-
-impl PluginFactory for StartupOrderFactory {
-    fn manifest(&self) -> &'static PluginManifest {
-        self.manifest
-    }
-
-    fn create(&self, _: PluginInit) -> Result<PluginBundle, PluginError> {
-        Ok(PluginBundle {
-            lifecycle: Box::new(StartupOrderPlugin {
-                events: self.events.clone(),
-                log: self.log.clone(),
-                fail_start: self.fail_start,
-            }),
-            service_exports: vec![],
-            subscription_bindings: vec![],
-        })
-    }
-}
-
-fn startup_order_manifest() -> &'static PluginManifest {
-    Box::leak(Box::new(PluginManifest {
-        plugin_type: Arc::from("startup-order"),
-        name: Arc::from("startup-order"),
-        version: semver::Version::new(1, 0, 0),
-        engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
-        abi_version: ApiVersion::new(1, 0),
-        config_schema_version: 1,
-        config_schema: Arc::new(serde_json::json!({})),
-        provides: vec![],
-        requires: vec![],
-        publishes: vec![],
-        subscribes: vec![],
-        supported_execution_models: [titan_plugin_engine::ExecutionModel::Passive]
-            .into_iter()
-            .collect(),
-        reload_policy: titan_plugin_engine::ReloadPolicy::RestartRequired,
-    }))
-}
-
-#[test]
-fn core_runtime_prepares_before_event_start_then_commits_and_stops_in_reverse() {
-    use titan_plugin_engine::{
-        ConfigSnapshot, ExecutionModel, ExecutionSpec, PluginSpec, SubscriptionLimits,
-    };
-
-    let mut runtime = TitanCoreRuntime::new(test_config(), ApiVersion::new(1, 0)).unwrap();
-    runtime
-        .event_handle()
-        .register_event(
-            "startup-order",
-            1,
-            EventClass::Critical,
-            PoolKind::SmallEvent,
-        )
-        .unwrap();
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let event_handle = runtime.event_handle().as_ref().clone();
-    let manifest = startup_order_manifest();
-    runtime
-        .plugins_mut()
-        .register(
-            Arc::new(StartupOrderFactory {
-                manifest,
-                events: event_handle,
-                log: log.clone(),
-                fail_start: false,
-            }),
-            semver::Version::new(1, 0, 0),
-            "test",
-        )
-        .unwrap();
-    runtime
-        .start_with_plugins(&[PluginSpec {
-            instance_id: Arc::from("startup-order-1"),
-            plugin_type: Arc::from("startup-order"),
-            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
-            enabled: true,
-            execution: ExecutionSpec {
-                model: ExecutionModel::Passive,
-                cpu_affinity: None,
-                callback_budget: None,
-            },
-            subscription_limits: SubscriptionLimits {
-                max_capacity: 1,
-                allowed_qos: Default::default(),
-            },
-            service_scopes: vec![],
-            required_service_scopes: vec![],
-        }])
-        .unwrap();
-    assert_eq!(
-        &*log.lock().unwrap(),
-        &["validate-before-events", "start-after-events"]
-    );
-    runtime.shutdown(StopReason::Shutdown).unwrap();
-    assert_eq!(
-        &*log.lock().unwrap(),
-        &[
-            "validate-before-events",
-            "start-after-events",
-            "quiesce",
-            "stop"
-        ]
-    );
-    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
-}
-
-#[test]
-fn core_runtime_stops_event_engine_and_rolls_back_plugin_on_start_failure() {
-    use titan_plugin_engine::{
-        ConfigSnapshot, EngineState, ExecutionModel, ExecutionSpec, PluginSpec, SubscriptionLimits,
-    };
-
-    let mut runtime = TitanCoreRuntime::new(test_config(), ApiVersion::new(1, 0)).unwrap();
-    runtime
-        .event_handle()
-        .register_event(
-            "startup-order",
-            1,
-            EventClass::Critical,
-            PoolKind::SmallEvent,
-        )
-        .unwrap();
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let event_handle = runtime.event_handle().as_ref().clone();
-    runtime
-        .plugins_mut()
-        .register(
-            Arc::new(StartupOrderFactory {
-                manifest: startup_order_manifest(),
-                events: event_handle,
-                log: log.clone(),
-                fail_start: true,
-            }),
-            semver::Version::new(1, 0, 0),
-            "test",
-        )
-        .unwrap();
-    let error = runtime
-        .start_with_plugins(&[PluginSpec {
-            instance_id: Arc::from("startup-order-1"),
-            plugin_type: Arc::from("startup-order"),
-            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
-            enabled: true,
-            execution: ExecutionSpec {
-                model: ExecutionModel::Passive,
-                cpu_affinity: None,
-                callback_budget: None,
-            },
-            subscription_limits: SubscriptionLimits {
-                max_capacity: 1,
-                allowed_qos: Default::default(),
-            },
-            service_scopes: vec![],
-            required_service_scopes: vec![],
-        }])
-        .unwrap_err();
-    assert!(matches!(error, CoreRuntimeError::Plugin(_)));
-    assert_eq!(runtime.plugins().state(), EngineState::Failed);
-    assert!(matches!(
-        runtime.event_handle().try_publish(PublishRequest::new(
-            "startup-order",
-            1,
-            b"after-failure"
-        )),
-        Err(PublishError::Stopped)
-    ));
-    assert_eq!(
-        &*log.lock().unwrap(),
-        &["validate-before-events", "start-after-events", "stop"]
-    );
-    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
-}
-
-#[test]
-fn runtime_failure_emits_structured_failure_and_health_events_and_closes_gate() {
-    use titan_plugin_engine::{
-        ConfigSnapshot, ErrorKind, ExecutionModel, ExecutionSpec, HealthState,
-        PLUGIN_HEALTH_CHANGED_EVENT, PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
-        PLUGIN_RUNTIME_FAILED_EVENT, PluginError, PluginIdentity, PluginSpec, SubscriptionLimits,
-    };
-
-    struct Capture(std::sync::Mutex<Vec<(String, serde_json::Value, TraceContext)>>);
-    impl EventHandler for Capture {
-        fn handle(&self, event: EventView<'_>) -> Result<(), PluginError> {
-            self.0.lock().unwrap().push((
-                event.event_type.to_owned(),
-                serde_json::from_slice(event.payload).unwrap(),
-                event.trace,
-            ));
-            Ok(())
-        }
-    }
-
-    let mut config = test_config();
-    // Runtime diagnostics use the Snapshot pool because their bounded,
-    // structured payload is deliberately larger than a SmallEvent block.
-    config.arena.snapshot.block_bytes = 128 * 1024;
-    let mut runtime = TitanCoreRuntime::new(config, ApiVersion::new(1, 0)).unwrap();
-    runtime
-        .event_handle()
-        .register_event(
-            "startup-order",
-            1,
-            EventClass::Critical,
-            PoolKind::SmallEvent,
-        )
-        .unwrap();
-    for event_type in [PLUGIN_RUNTIME_FAILED_EVENT, PLUGIN_HEALTH_CHANGED_EVENT] {
-        runtime
-            .event_handle()
-            .register_event(
-                event_type,
-                PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
-                EventClass::Critical,
-                PoolKind::Snapshot,
-            )
-            .unwrap();
-    }
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let plugin_events = runtime.event_handle().as_ref().clone();
-    runtime
-        .plugins_mut()
-        .register(
-            Arc::new(StartupOrderFactory {
-                manifest: startup_order_manifest(),
-                events: plugin_events,
-                log,
-                fail_start: false,
-            }),
-            semver::Version::new(1, 0, 0),
-            "test",
-        )
-        .unwrap();
-    runtime
-        .start_with_plugins(&[PluginSpec {
-            instance_id: Arc::from("startup-order-1"),
-            plugin_type: Arc::from("startup-order"),
-            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
-            enabled: true,
-            execution: ExecutionSpec {
-                model: ExecutionModel::Passive,
-                cpu_affinity: None,
-                callback_budget: None,
-            },
-            subscription_limits: SubscriptionLimits {
-                max_capacity: 4,
-                allowed_qos: Default::default(),
-            },
-            service_scopes: vec![],
-            required_service_scopes: vec![],
-        }])
-        .unwrap();
-    let route = runtime
-        .event_handle()
-        .begin_route_update(runtime.event_handle().current_route_version())
-        .unwrap();
-    for event_type in [PLUGIN_RUNTIME_FAILED_EVENT, PLUGIN_HEALTH_CHANGED_EVENT] {
-        runtime
-            .event_handle()
-            .stage_subscription_in_mailbox(
-                route,
-                &PluginIdentity::new("observer", "health"),
-                "health",
-                &SubscriptionSpec {
-                    event_type: Arc::from(event_type),
-                    schema_version: PLUGIN_RUNTIME_EVENT_SCHEMA_VERSION,
-                    qos: EventQos::ReliableOrdered,
-                    capacity: 4,
-                    routing_keys: Arc::from([]),
-                },
-            )
-            .unwrap();
-    }
-    let (_, subscriptions) = runtime.event_handle().commit_at_safe_point(route).unwrap();
-    let receiver = subscriptions[0].receiver.clone();
-    let capture = Capture(std::sync::Mutex::new(Vec::new()));
-    let trace = TraceContext {
-        trace_id: 44,
-        causation_id: 43,
-    };
-    let mut failure = PluginError::new(
-        ErrorKind::PluginFailed,
-        PluginIdentity::new("startup-order", "startup-order-1"),
-        titan_plugin_engine::LifecycleState::Running,
-        "callback",
-        "injected failure",
-    );
-    failure.trace_context = Some(trace);
-    runtime
-        .plugins_mut()
-        .report_runtime_failure("startup-order-1", failure, false)
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while capture.0.lock().unwrap().len() < 2 && Instant::now() < deadline {
-        let outcome = receiver
-            .dispatch_next(&capture, Duration::from_millis(10))
-            .unwrap();
-        assert_ne!(outcome, DispatchOutcome::Closed);
-    }
-    let captured = capture.0.into_inner().unwrap();
-    assert_eq!(captured.len(), 2);
-    assert_eq!(captured[0].0, PLUGIN_RUNTIME_FAILED_EVENT);
-    assert_eq!(captured[1].0, PLUGIN_HEALTH_CHANGED_EVENT);
-    assert!(captured.iter().all(|(_, payload, observed_trace)| {
-        payload["instance_id"] == "startup-order-1"
-            && payload["health"] == "FAILED"
-            && *observed_trace == trace
-    }));
-    assert_eq!(
-        runtime.plugins().diagnostics()[0].health,
-        HealthState::Failed
-    );
-    runtime.shutdown(StopReason::Failure).unwrap();
-    assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
-}
-
-#[test]
-fn plugin_engine_uses_real_event_engine_and_direct_stop_is_safe() {
-    use titan_plugin_engine::{
-        ApiVersion, CallMode, ConfigSnapshot, ExecutionModel, ExecutionSpec, PluginEngine,
-        PluginManifest, PluginSpec, ProvidedService, PublishedEvent, ReloadPolicy, ScopeKind,
-        ServiceId, ServiceKey, ServiceScope, SubscribedEvent, SubscriptionLimits,
-    };
-
-    let events = Arc::new(EventEngine::new(test_config()).unwrap());
-    let event_handle = Arc::new(events.handle());
-    event_handle
-        .register_event(
-            "integration.event",
-            1,
-            EventClass::Critical,
-            PoolKind::SmallEvent,
-        )
-        .unwrap();
-    events.start().unwrap();
-
-    let (received_tx, received_rx) = bounded(8);
-    let delivered = Arc::new(AtomicUsize::new(0));
-    let publisher = Arc::new(std::sync::Mutex::new(None));
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let manifest = Box::leak(Box::new(PluginManifest {
-        plugin_type: Arc::from("integration"),
-        name: Arc::from("integration"),
-        version: semver::Version::new(1, 0, 0),
-        engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
-        abi_version: ApiVersion::new(1, 0),
-        config_schema_version: 1,
-        config_schema: Arc::new(serde_json::json!({})),
-        provides: vec![ProvidedService {
-            id: ServiceId::new("integration", "counter"),
-            version: semver::Version::new(1, 0, 0),
-            scope_kind: ScopeKind::Global,
-            call_mode: CallMode::Inline,
-        }],
-        requires: vec![],
-        publishes: vec![PublishedEvent {
-            event_type: Arc::from("integration.event"),
-            schema_version: 1,
-        }],
-        subscribes: vec![SubscribedEvent {
-            event_type: Arc::from("integration.event"),
-            schema_version: 1,
-            allowed_qos: std::collections::BTreeSet::from([EventQos::ReliableOrdered]),
-        }],
-        supported_execution_models: std::collections::BTreeSet::from([ExecutionModel::Background]),
-        reload_policy: ReloadPolicy::RestartRequired,
-    }));
-    let mut plugins = PluginEngine::new(event_handle.clone(), ApiVersion::new(1, 0)).unwrap();
-    plugins
-        .register(
-            Arc::new(IntegrationFactory {
-                manifest,
-                received: received_tx,
-                delivered: delivered.clone(),
-                publisher,
-                log: log.clone(),
-            }),
-            semver::Version::new(1, 0, 0),
-            "test",
-        )
-        .unwrap();
-    plugins
-        .apply(&[PluginSpec {
-            instance_id: Arc::from("integration-1"),
-            plugin_type: Arc::from("integration"),
-            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
-            enabled: true,
-            execution: ExecutionSpec {
-                model: ExecutionModel::Background,
-                cpu_affinity: None,
-                callback_budget: None,
-            },
-            subscription_limits: SubscriptionLimits {
-                max_capacity: 8,
-                allowed_qos: std::collections::BTreeSet::from([EventQos::ReliableOrdered]),
-            },
-            service_scopes: vec![],
-            required_service_scopes: vec![],
-        }])
-        .unwrap();
-
-    event_handle
-        .publish("integration.event", 1, b"running", TraceContext::default())
-        .unwrap();
-    let (thread_name, payload) = received_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    assert_eq!(payload, b"running");
-    assert!(thread_name.starts_with("titan-cold-async"));
-
-    let service_key = ServiceKey {
-        id: ServiceId::new("integration", "counter"),
-        version: semver::Version::new(1, 0, 0),
-        scope: ServiceScope::Global,
-    };
-    let service = plugins.services().bind(&service_key).unwrap();
-    assert_eq!(
-        *service
-            .call(Box::new(41_u64), TraceContext::default())
-            .unwrap()
-            .downcast::<u64>()
-            .unwrap(),
-        42
-    );
-
-    plugins.stop_all().unwrap();
-    assert_eq!(
-        service
-            .call(Box::new(1_u64), TraceContext::default())
-            .unwrap_err()
-            .kind,
-        ErrorKind::ServiceUnavailable
-    );
-    assert_eq!(
-        &*log.lock().unwrap(),
-        &["validate", "start", "quiesce", "stop"]
-    );
-    assert_eq!(
-        received_rx.recv_timeout(Duration::from_secs(2)).unwrap().1,
-        b"quiesce"
-    );
-    events.stop().unwrap();
-    assert_eq!(events.arena().outstanding_blocks(), 0);
-}
-
-struct CommitConflictPlugin {
-    events: Arc<EventEngineHandle>,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-}
-
-impl titan_plugin_engine::Plugin for CommitConflictPlugin {
-    fn validate(&self, _: &titan_plugin_engine::ValidationContext) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("validate");
-        Ok(())
-    }
-
-    fn start(&mut self, _: &mut titan_plugin_engine::PluginContext) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("start");
-        let transaction = self
-            .events
-            .begin_route_update(self.events.current_route_version())?;
-        self.events.commit_at_safe_point(transaction)?;
-        Ok(())
-    }
-
-    fn quiesce(&mut self, _: titan_plugin_engine::StopReason) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("quiesce");
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), PluginError> {
-        self.log.lock().unwrap().push("stop");
-        Ok(())
-    }
-}
-
-struct CommitConflictFactory {
-    manifest: &'static titan_plugin_engine::PluginManifest,
-    events: Arc<EventEngineHandle>,
-    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
-}
-
-impl titan_plugin_engine::PluginFactory for CommitConflictFactory {
-    fn manifest(&self) -> &'static titan_plugin_engine::PluginManifest {
-        self.manifest
-    }
-
-    fn create(
-        &self,
-        _init: titan_plugin_engine::PluginInit,
-    ) -> Result<titan_plugin_engine::PluginBundle, PluginError> {
-        Ok(titan_plugin_engine::PluginBundle {
-            lifecycle: Box::new(CommitConflictPlugin {
-                events: self.events.clone(),
-                log: self.log.clone(),
-            }),
-            service_exports: vec![titan_plugin_engine::ServiceExport {
-                service_key: titan_plugin_engine::ServiceKey {
-                    id: titan_plugin_engine::ServiceId::new("integration", "rollback"),
-                    version: semver::Version::new(1, 0, 0),
-                    scope: titan_plugin_engine::ServiceScope::Global,
-                },
-                endpoint: Arc::new(IntegrationEndpoint),
-            }],
-            subscription_bindings: vec![],
-        })
-    }
-}
-
-#[test]
-fn real_route_commit_failure_rolls_back_started_plugins_and_endpoints() {
-    use titan_plugin_engine::{
-        ApiVersion, CallMode, ConfigSnapshot, EngineState, ExecutionModel, ExecutionSpec,
-        PluginEngine, PluginManifest, PluginSpec, ProvidedService, ReloadPolicy, ScopeKind,
-        ServiceId, ServiceKey, ServiceScope, SubscriptionLimits,
-    };
-
-    let events = Arc::new(EventEngine::new(test_config()).unwrap());
-    let event_handle = Arc::new(events.handle());
-    events.start().unwrap();
-    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let manifest = Box::leak(Box::new(PluginManifest {
-        plugin_type: Arc::from("commit-conflict"),
-        name: Arc::from("commit-conflict"),
-        version: semver::Version::new(1, 0, 0),
-        engine_api_version: titan_plugin_engine::CORE_RUNTIME_API_VERSION,
-        abi_version: ApiVersion::new(1, 0),
-        config_schema_version: 1,
-        config_schema: Arc::new(serde_json::json!({})),
-        provides: vec![ProvidedService {
-            id: ServiceId::new("integration", "rollback"),
-            version: semver::Version::new(1, 0, 0),
-            scope_kind: ScopeKind::Global,
-            call_mode: CallMode::Inline,
-        }],
-        requires: vec![],
-        publishes: vec![],
-        subscribes: vec![],
-        supported_execution_models: std::collections::BTreeSet::from([ExecutionModel::Passive]),
-        reload_policy: ReloadPolicy::RestartRequired,
-    }));
-    let mut plugins = PluginEngine::new(event_handle.clone(), ApiVersion::new(1, 0)).unwrap();
-    plugins
-        .register(
-            Arc::new(CommitConflictFactory {
-                manifest,
-                events: event_handle,
-                log: log.clone(),
-            }),
-            semver::Version::new(1, 0, 0),
-            "test",
-        )
-        .unwrap();
-    let error = plugins
-        .apply(&[PluginSpec {
-            instance_id: Arc::from("conflict-1"),
-            plugin_type: Arc::from("commit-conflict"),
-            config: Arc::new(ConfigSnapshot::new(1, serde_json::json!({}))),
-            enabled: true,
-            execution: ExecutionSpec {
-                model: ExecutionModel::Passive,
-                cpu_affinity: None,
-                callback_budget: None,
-            },
-            subscription_limits: SubscriptionLimits {
-                max_capacity: 1,
-                allowed_qos: std::collections::BTreeSet::new(),
-            },
-            service_scopes: vec![],
-            required_service_scopes: vec![],
-        }])
-        .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::SubscriptionRejected);
-    assert_eq!(plugins.state(), EngineState::Failed);
-    assert_eq!(
-        &*log.lock().unwrap(),
-        &["validate", "start", "quiesce", "stop"]
-    );
-    let key = ServiceKey {
-        id: ServiceId::new("integration", "rollback"),
-        version: semver::Version::new(1, 0, 0),
-        scope: ServiceScope::Global,
-    };
-    // This service slot belonged exclusively to the failed transaction.
-    // Rollback removes it; only pre-existing slots survive replacement so
-    // previously bound handles can observe the next endpoint generation.
-    assert!(plugins.services().bind(&key).is_none());
-    events.stop().unwrap();
 }

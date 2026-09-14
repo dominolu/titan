@@ -19,10 +19,10 @@ use hftbacktest::{
 };
 
 use crate::{
-    BarHistoryView, FillEvent, MarketState, OrderCommand, OrderCommandExt, OrderEvent,
-    RuntimeEvent, RuntimeEventSource, RuntimeFunding, RuntimeFundingExt, RuntimePayload,
-    RuntimeTimer, StrategyEventKind, StrategyRuntimeContext, TickItem, TimedBarItem,
-    project_execution_report, project_order_response,
+    BacktestCommandBuffer, BarHistoryView, FillEvent, MarketState, OrderCommand, OrderCommandExt,
+    OrderEvent, RuntimeEvent, RuntimeEventSource, RuntimeFunding, RuntimeFundingExt,
+    RuntimePayload, RuntimeTimer, StrategyEventKind, StrategyRuntimeContext, TickItem,
+    TimedBarItem, project_execution_report, project_order_response,
 };
 
 pub fn validate_runtime_capabilities(
@@ -122,6 +122,7 @@ pub struct TickFrameSource<'a, B, MD> {
     position_pending: bool,
     tick_pending: bool,
     commands: Vec<OrderCommand>,
+    command_buffer: BacktestCommandBuffer,
     positions: Vec<f64>,
     report_projected_positions: Vec<bool>,
     markets: Vec<MarketState>,
@@ -332,6 +333,7 @@ where
             position_pending: false,
             tick_pending: false,
             commands: vec![OrderCommand::default(); 1024],
+            command_buffer: BacktestCommandBuffer::default(),
             positions: vec![0.0; num_assets],
             report_projected_positions: vec![false; num_assets],
             markets: vec![MarketState::default(); num_assets],
@@ -491,9 +493,10 @@ where
         self.platform_scratch = generated;
         self.platform_scratch.clear();
         if command_count != 0 {
+            self.command_buffer.num_commands = command_count;
             let mut context = StrategyRuntimeContext {
                 now,
-                num_commands: command_count,
+                backtest_commands: &mut self.command_buffer,
                 ..StrategyRuntimeContext::default()
             };
             self.process_commands(&mut context, true)?;
@@ -503,9 +506,10 @@ where
 
     pub fn configure_context(&mut self, ctx: &mut StrategyRuntimeContext) {
         self.refresh_markets();
-        ctx.commands_ptr = self.commands.as_mut_ptr();
-        ctx.command_capacity = self.commands.len();
-        ctx.num_commands = 0;
+        self.command_buffer.commands_ptr = self.commands.as_mut_ptr();
+        self.command_buffer.command_capacity = self.commands.len();
+        self.command_buffer.num_commands = 0;
+        ctx.backtest_commands = &mut self.command_buffer;
         ctx.positions_ptr = self.positions.as_ptr();
         ctx.num_positions = self.positions.len();
         ctx.markets_ptr = self.markets.as_ptr();
@@ -920,7 +924,7 @@ where
         ctx: &mut StrategyRuntimeContext,
         allow_submit: bool,
     ) -> Result<(), TickRuntimeError<B::Error>> {
-        let count = ctx.num_commands.min(self.commands.len());
+        let count = self.command_buffer.num_commands.min(self.commands.len());
         for index in 0..count {
             let command = self.commands[index];
             if command.asset_no as usize >= self.hbt.num_assets() {
@@ -1035,7 +1039,7 @@ where
             }
         }
         self.commands[..count].fill(OrderCommand::default());
-        ctx.num_commands = 0;
+        self.command_buffer.num_commands = 0;
         Ok(())
     }
 
@@ -1420,7 +1424,7 @@ where
         kind: u32,
         ctx: &mut StrategyRuntimeContext,
     ) -> Result<(), Self::Error> {
-        let had_commands = ctx.num_commands != 0;
+        let had_commands = self.command_buffer.num_commands != 0;
         self.process_commands(
             ctx,
             kind != StrategyEventKind::Error as u32 && kind != StrategyEventKind::Stop as u32,

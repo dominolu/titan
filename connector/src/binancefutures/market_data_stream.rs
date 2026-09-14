@@ -8,7 +8,7 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use hftbacktest::prelude::*;
 use serde_json::Value;
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 use tokio::{
     net::TcpStream,
     select,

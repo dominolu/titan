@@ -1,5 +1,8 @@
 # Titan PluginEngine 独立技术实现设计
 
+> 已归档：PluginEngine 已由静态 `TradingRuntime` 与 `titan-core-types` 取代。当前实现和验收以
+> [去插件化与最简策略执行技术方案](strategy_command_deplugin_technical_plan.md)为准。
+
 版本：v1.6
 
 状态：技术方案基线
@@ -491,16 +494,16 @@ PluginBundle只是创建阶段的普通返回对象，由PluginSlot持有，不�
 ```rust
 pub trait Plugin: Send {
     fn validate(&self, ctx: &ValidationContext)
-        -> Result<(), PluginError>;
+        -> Result<(), CoreError>;
 
     fn start(&mut self, ctx: &mut PluginContext)
-        -> Result<(), PluginError>;
+        -> Result<(), CoreError>;
 
     fn quiesce(&mut self, reason: StopReason)
-        -> Result<(), PluginError>;
+        -> Result<(), CoreError>;
 
     fn stop(&mut self)
-        -> Result<(), PluginError>;
+        -> Result<(), CoreError>;
 }
 ```
 
@@ -537,7 +540,7 @@ Plugin.validate()
 
 ```rust
 pub struct PluginContext {
-    identity: PluginIdentity,
+    identity: ComponentIdentity,
     config: ConfigView,
     services: BoundServices,
     events: EventPublisher,
@@ -1543,7 +1546,7 @@ MarketEvent(event_id=100, trace=100)
 ## 19. 错误模型
 
 ```text
-PluginError
+CoreError
     ManifestInvalid
     ConfigInvalid
     ApiVersionMismatch

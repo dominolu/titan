@@ -744,6 +744,7 @@ impl BarExecutionState {
             self.fills.push(FillEvent {
                 local_account_no: 0,
                 _account_reserved: 0,
+                account_epoch: 0,
                 asset_no: asset_no as u64,
                 order_id: report.order_id,
                 venue_order_id: report.venue_order_id,

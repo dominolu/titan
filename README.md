@@ -8,14 +8,14 @@ Titan 是面向加密货币永续合约的 Rust 高频交易框架，支持逐�
 titan CLI controller
 └── spawn titan run-worker
     ├── 加载并编译 Numba 策略
-    ├── TitanCoreRuntime
+    ├── TradingRuntime
     │   ├── EventEngine
     │   │   ├── Primary / Async lane（可靠账户事实）
     │   │   └── FastLane（低延迟行情）
-    │   └── PluginEngine
-    │       ├── StrategyPlugin
-    │       ├── MarketPlugin → 动态 ConnectorFactory
-    │       └── AccountPlugin → 动态 ConnectorFactory
+    │   ├── StrategyService
+    │   ├── MarketService → 静态 venue connector
+    │   ├── AccountService → 静态 venue connector
+    │   └── ExecutionRuntime → 直接异步 REST Future
     ├── 驱动 Bar / Tick / Hybrid / Live backend
     └── 原子写入 ResultBundle
 ```
@@ -36,25 +36,23 @@ titan CLI controller
 - 高频行情通过 zero-copy MarketBatch reservation 和 FastLane 投递；支持 inline handler 或有界异步 worker，
   保留事件顺序并统计 queue drop、最大队列深度和 P50/P99/P99.9/max 延迟。
 - 路由变更由 `EventControl` 在 EventLoop safe point 原子提交；启动、订阅退休、handler 退出和 Arena lease
-  释放纳入 `TitanCoreRuntime` 的统一生命周期。
+  释放纳入 `TradingRuntime` 的统一生命周期。
 - 目标机 release 基准已冻结：默认容量、100 万事件、30 万 events/s 连续三轮无 drop、resync 或 Arena
   exhaustion；dispatch/subscriber P99.9 门槛分别为 8.39 ms 和 16.78 ms。
 
 详细设计与运行方法见 [Titan EventEngine](crates/titan-event-engine/README.md)。
 
-### PluginEngine：交易所与策略的动态插件化
+### 静态核心服务与直接执行
 
-- Binance Futures、OKX、Hyperliquid 的 ConnectorFactory 已从 CLI/Core 静态注册迁移到独立动态插件包；
-  新增交易所无需修改 EventEngine、MarketPlugin、AccountPlugin 或 Titan main。
-- 插件加载会校验 package manifest、SHA-256、ABI、schema/config version、capability 和 Core Runtime API
-  兼容性，校验完成后才创建服务端点。
-- `PluginPlan`、预绑定 endpoint generation、ActivationGate 和事务化 route commit 保证插件整体激活；创建、
-  绑定或激活失败会按相反顺序回滚。
-- `ResourceScope`、endpoint/event lease 和动态库 code lease 防止仍有线程、服务句柄或事件引用时卸载代码；
-  配置替换支持 quiesce、stop 和 generation 隔离。
-- 热路径只持有预绑定的 `ServiceHandle`、`EventPublisher` 或路由句柄，不查询 PluginRegistry/ServiceRegistry。
+- Binance Futures、OKX、Hyperliquid connector 直接编译进主程序，由构造期静态 catalog 注入
+  `MarketService` 和 `AccountService`；运行时不加载 connector manifest、cdylib 或 JSON/C ABI。
+- `TradingRuntime` 直接持有并按顺序启动/停止 EventEngine、Market、Account、Strategy 和共享 execution runtime，
+  服务间不通过字符串 endpoint 或 ServiceRegistry 查找。
+- 策略下单由进程级有界 execution runtime 立即 spawn REST Future；回调不等待网络，REST completion 仅进入
+  日志/指标观察路径，订单事实仍以 private WS 为准。
+- 停机 admission gate 与进程级 active-task 硬上限防止停止期间继续下单或交易所变慢时任务无限增长。
 
-详细控制面契约见 [Titan PluginEngine](crates/titan-plugin-engine/README.md)。
+迁移边界与临时限制见 [去插件化技术方案](docs/strategy_command_deplugin_technical_plan.md)。
 
 ### Hyperliquid Connector：主网闭环完成
 
@@ -66,7 +64,7 @@ titan CLI controller
   REST、私有 WS、fills 对账一致，测试结束后均为零挂单、零仓位。
 - 实盘探针推动修复了 amend 新旧 oid 乱序、WS amend 字段刷新、价格/数量浮点 wire 格式、公共行情关闭
   错误要求签名，以及 rustls provider 初始化冲突。
-- Hyperliquid 主网 MarketPlugin → EventEngine 60 秒验证零 drop/resync；FastLane enqueue/handler P99.9
+- Hyperliquid 主网 MarketService → EventEngine 60 秒验证零 drop/resync；FastLane enqueue/handler P99.9
   分别为 8.19 µs 和 4.10 µs。该 connector 的外部实盘验收门禁已全部解除。
 
 完整记录与原始证据见 [Hyperliquid 主网验收报告](docs/validation/hyperliquid_2026-09-07/README.md)。
@@ -164,7 +162,7 @@ def on_bar(s):
 - 行情延迟、订单延迟、手续费和资金费建模
 - Bar、Tick、Hybrid 和 Live 统一事件生命周期
 - 多资产、多交易所回测
-- EventEngine/PluginEngine 驱动的动态交易所插件连接器
+- EventEngine 与静态核心服务驱动的交易所连接器
 - 带 SHA-256 manifest 的权威 ResultBundle
 - worker 状态、日志、停止和异常恢复
 

@@ -9,7 +9,7 @@ import numpy as np
 from numba import carray, cfunc, float64, int64, njit, types
 from numba.experimental import jitclass
 
-from .intrinsic import address_as_void_pointer
+from .intrinsic import address_as_void_pointer, call_execution_host
 
 EVENT_ERROR = 8
 EVENT_STOP = 9
@@ -93,12 +93,6 @@ balance_event_dtype = np.dtype(
      ("available", "f8"), ("margin", "f8"), ("unrealized_pnl", "f8")],
     align=True,
 )
-command_result_dtype = np.dtype(
-    [("local_account_no", "u4"), ("reason", "u4"), ("order_id", "u8"),
-     ("command_id_hi", "u8"), ("command_id_lo", "u8"),
-     ("account_epoch", "u8"), ("sequence", "u8"), ("outcome", "u1"),
-     ("final_result", "u1"), ("_reserved", "u1", (6,))], align=True,
-)
 account_state_dtype = np.dtype(
     [("local_account_no", "u4"), ("reason", "u4"),
      ("account_epoch", "u8"), ("sequence", "u8"),
@@ -118,6 +112,18 @@ order_command_dtype = np.dtype(
      ("order_id", "u8"), ("price", "f8"), ("qty", "f8"),
      ("trigger_price", "f8"), ("gtd_expiry_ts", "i8")], align=True,
 )
+backtest_command_buffer_dtype = np.dtype(
+    [("commands_ptr", "u8"), ("num_commands", "u8"),
+     ("command_capacity", "u8")], align=True,
+)
+new_order_request_dtype = np.dtype(
+    [("asset_no", "u8"), ("order_id", "u8"), ("price", "f8"),
+     ("qty", "f8"), ("side", "i1"), ("order_type", "u1"),
+     ("time_in_force", "u1"), ("_reserved", "u1", (5,))], align=True,
+)
+cancel_order_request_dtype = np.dtype(
+    [("asset_no", "u8"), ("order_id", "u8")], align=True,
+)
 
 _ctx_fields = [
     ("abi_version", "u4"), ("struct_size", "u4"), ("event_kind", "u4"),
@@ -128,10 +134,13 @@ _ctx_fields = [
     ("num_fills", "u8"), ("orders_ptr", "u8"), ("num_orders", "u8"),
     ("histories_ptr", "u8"), ("num_histories", "u8"), ("payload_ptr", "u8"),
     ("payload_len", "u8"), ("state_f64_ptr", "u8"), ("state_f64_len", "u8"),
-    ("state_i64_ptr", "u8"), ("state_i64_len", "u8"), ("commands_ptr", "u8"),
-    ("num_commands", "u8"), ("command_capacity", "u8"), ("positions_ptr", "u8"),
+    ("state_i64_ptr", "u8"), ("state_i64_len", "u8"),
+    ("backtest_commands", "u8"), ("positions_ptr", "u8"),
     ("num_positions", "u8"), ("markets_ptr", "u8"), ("num_markets", "u8"),
     ("last_error", "i8"),
+    ("execution_context", "u8"), ("execution_submit", "u8"),
+    ("execution_cancel", "u8"), ("execution_request_ptr", "u8"),
+    ("execution_task_id_ptr", "u8"),
 ]
 runtime_ctx_dtype = np.dtype(_ctx_fields, align=True)
 
@@ -144,7 +153,6 @@ _ABI_DTYPES = {
     "DepthBatchEvent": depth_batch_dtype,
     "PositionEvent": position_event_dtype,
     "BalanceEvent": balance_event_dtype,
-    "CommandResultEvent": command_result_dtype,
     "AccountStateEvent": account_state_dtype,
     "MarketState": market_state_dtype,
     "BarItem": bar_item_dtype,
@@ -153,6 +161,9 @@ _ABI_DTYPES = {
     "BarHistoryView": bar_history_view_dtype,
     "TickItem": tick_item_dtype,
     "OrderCommand": order_command_dtype,
+    "BacktestCommandBuffer": backtest_command_buffer_dtype,
+    "AbiNewOrderRequest": new_order_request_dtype,
+    "AbiCancelOrderRequest": cancel_order_request_dtype,
     "RuntimeFunding": funding_dtype,
     "StrategyRuntimeContext": runtime_ctx_dtype,
 }
@@ -344,9 +355,6 @@ class Strategy:
     def balance_event(self):
         return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
                       1, balance_event_dtype)[0]
-    def command_result(self):
-        return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
-                      1, command_result_dtype)[0]
     def account_state(self):
         return carray(address_as_void_pointer(self.ctx_arr[0]["payload_ptr"]),
                       1, account_state_dtype)[0]
@@ -371,10 +379,34 @@ class Strategy:
                 gtd_expiry_ts=0, local_account_no=0):
         if wait: return -2
         if self.event_kind == EVENT_ERROR or self.event_kind == EVENT_STOP: return -3
-        index = self.ctx_arr[0]["num_commands"]
-        capacity = self.ctx_arr[0]["command_capacity"]
+        if self.ctx_arr[0]["execution_submit"] != 0:
+            request = carray(
+                address_as_void_pointer(self.ctx_arr[0]["execution_request_ptr"]),
+                1, new_order_request_dtype,
+            )[0]
+            request["asset_no"] = asset_no
+            request["order_id"] = order_id
+            request["price"] = price
+            request["qty"] = qty
+            request["side"] = side
+            request["order_type"] = order_type
+            request["time_in_force"] = time_in_force
+            return call_execution_host(
+                self.ctx_arr[0]["execution_submit"],
+                self.ctx_arr[0]["execution_context"],
+                local_account_no,
+                self.ctx_arr[0]["execution_request_ptr"],
+                self.ctx_arr[0]["execution_task_id_ptr"],
+            )
+        if self.ctx_arr[0]["backtest_commands"] == 0: return -3
+        buffer = carray(
+            address_as_void_pointer(self.ctx_arr[0]["backtest_commands"]),
+            1, backtest_command_buffer_dtype,
+        )[0]
+        index = buffer["num_commands"]
+        capacity = buffer["command_capacity"]
         if index >= capacity: return -1
-        command = carray(address_as_void_pointer(self.ctx_arr[0]["commands_ptr"]),
+        command = carray(address_as_void_pointer(buffer["commands_ptr"]),
                          capacity, order_command_dtype)[index]
         command["kind"] = 1
         command["side"] = side
@@ -389,7 +421,7 @@ class Strategy:
         command["qty"] = qty
         command["trigger_price"] = trigger_price
         command["gtd_expiry_ts"] = gtd_expiry_ts
-        self.ctx_arr[0]["num_commands"] = index + 1
+        buffer["num_commands"] = index + 1
         return 0
 
     def submit_buy_order(self, asset_no, order_id, price, qty, time_in_force, order_type,
@@ -402,16 +434,35 @@ class Strategy:
                             wait, reduce_only, 0.0, 0, gtd_expiry_ts, local_account_no)
     def cancel(self, asset_no, order_id, wait, local_account_no=0):
         if wait: return -2
-        index = self.ctx_arr[0]["num_commands"]
-        capacity = self.ctx_arr[0]["command_capacity"]
+        if self.ctx_arr[0]["execution_cancel"] != 0:
+            request = carray(
+                address_as_void_pointer(self.ctx_arr[0]["execution_request_ptr"]),
+                1, cancel_order_request_dtype,
+            )[0]
+            request["asset_no"] = asset_no
+            request["order_id"] = order_id
+            return call_execution_host(
+                self.ctx_arr[0]["execution_cancel"],
+                self.ctx_arr[0]["execution_context"],
+                local_account_no,
+                self.ctx_arr[0]["execution_request_ptr"],
+                self.ctx_arr[0]["execution_task_id_ptr"],
+            )
+        if self.ctx_arr[0]["backtest_commands"] == 0: return -3
+        buffer = carray(
+            address_as_void_pointer(self.ctx_arr[0]["backtest_commands"]),
+            1, backtest_command_buffer_dtype,
+        )[0]
+        index = buffer["num_commands"]
+        capacity = buffer["command_capacity"]
         if index >= capacity: return -1
-        command = carray(address_as_void_pointer(self.ctx_arr[0]["commands_ptr"]),
+        command = carray(address_as_void_pointer(buffer["commands_ptr"]),
                          capacity, order_command_dtype)[index]
         command["kind"] = 2
         command["local_account_no"] = local_account_no
         command["asset_no"] = asset_no
         command["order_id"] = order_id
-        self.ctx_arr[0]["num_commands"] = index + 1
+        buffer["num_commands"] = index + 1
         return 0
     def stop(self): self.ctx_arr[0]["stop_requested"] = 1
 

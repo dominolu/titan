@@ -13,16 +13,15 @@
 //! let ticker = api.get_ticker("BTCUSDT").await?;
 //! ```
 
-pub mod account_plugin;
+pub mod account_runtime;
 pub mod api;
 pub mod connector;
-pub mod dynamic_plugin;
 mod market_event;
-pub mod market_plugin;
+pub mod market_runtime;
 mod utils;
 
 /// Installs the connector crate's process-wide TLS crypto provider before any
-/// reqwest or websocket client is constructed. Dynamic connector plugins each
+/// reqwest or websocket client is constructed. Static connector factories each
 /// carry their own rustls instance, so this must run inside the connector
 /// library rather than only in the Titan executable.
 pub(crate) fn ensure_rustls_crypto_provider() {

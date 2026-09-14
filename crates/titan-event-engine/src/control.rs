@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use crossbeam_channel::bounded;
-use titan_plugin_engine::{
-    ApiVersion, CommittedSubscription, ErrorKind, EventApiCapabilities, EventControl,
-    EventPayloadReservation, EventPublishMetadata, LifecycleState, PluginError, PluginIdentity,
+use titan_core_types::{
+    ApiVersion, CommittedSubscription, ComponentIdentity, ComponentState, CoreError, ErrorKind,
+    EventApiCapabilities, EventControl, EventPayloadReservation, EventPublishMetadata,
     RouteTransaction, RouteVersion, SubscriptionCandidate, SubscriptionSpec, SubscriptionToken,
     TraceContext,
 };
@@ -16,8 +16,8 @@ use crate::{
 /// Explicit compatibility surface for v1.3-era normal-route consumers.
 ///
 /// The adapter deliberately advertises Core Runtime API v1 and no v2 capabilities.  A v2
-/// PluginEngine therefore rejects it, while an older host can continue to use the normal route
-/// during a controlled migration.  PRIMARY lanes and snapshot barriers are intentionally absent.
+/// Older hosts can continue to use the normal route during a controlled migration. PRIMARY lanes
+/// and snapshot barriers are intentionally absent.
 #[derive(Clone)]
 pub struct V13EventControlAdapter {
     inner: EventEngineHandle,
@@ -31,40 +31,40 @@ impl V13EventControlAdapter {
 
 impl EventControl for V13EventControlAdapter {
     fn api_version(&self) -> ApiVersion {
-        titan_plugin_engine::CORE_RUNTIME_V1_COMPAT_VERSION
+        titan_core_types::CORE_RUNTIME_V1_COMPAT_VERSION
     }
 
     fn current_route_version(&self) -> RouteVersion {
         EventControl::current_route_version(&self.inner)
     }
 
-    fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, PluginError> {
+    fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, CoreError> {
         EventControl::begin_route_update(&self.inner, base)
     }
 
     fn stage_subscription(
         &self,
         transaction: RouteTransaction,
-        owner: &PluginIdentity,
+        owner: &ComponentIdentity,
         spec: &SubscriptionSpec,
-    ) -> Result<SubscriptionCandidate, PluginError> {
+    ) -> Result<SubscriptionCandidate, CoreError> {
         EventControl::stage_subscription(&self.inner, transaction, owner, spec)
     }
 
     fn stage_subscription_in_mailbox(
         &self,
         transaction: RouteTransaction,
-        owner: &PluginIdentity,
+        owner: &ComponentIdentity,
         mailbox: &str,
         spec: &SubscriptionSpec,
-    ) -> Result<SubscriptionCandidate, PluginError> {
+    ) -> Result<SubscriptionCandidate, CoreError> {
         EventControl::stage_subscription_in_mailbox(&self.inner, transaction, owner, mailbox, spec)
     }
 
     fn commit_at_safe_point(
         &self,
         transaction: RouteTransaction,
-    ) -> Result<(RouteVersion, Vec<CommittedSubscription>), PluginError> {
+    ) -> Result<(RouteVersion, Vec<CommittedSubscription>), CoreError> {
         EventControl::commit_at_safe_point(&self.inner, transaction)
     }
 
@@ -72,7 +72,7 @@ impl EventControl for V13EventControlAdapter {
         EventControl::abort(&self.inner, transaction);
     }
 
-    fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), PluginError> {
+    fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), CoreError> {
         EventControl::retire_subscription(&self.inner, token)
     }
 
@@ -82,7 +82,7 @@ impl EventControl for V13EventControlAdapter {
         schema_version: u32,
         payload: &[u8],
         trace: TraceContext,
-    ) -> Result<(), PluginError> {
+    ) -> Result<(), CoreError> {
         EventControl::publish(&self.inner, event_type, schema_version, payload, trace)
     }
 
@@ -93,7 +93,7 @@ impl EventControl for V13EventControlAdapter {
         payload: &[u8],
         metadata: EventPublishMetadata,
         trace: TraceContext,
-    ) -> Result<(), PluginError> {
+    ) -> Result<(), CoreError> {
         EventControl::publish_with_metadata(
             &self.inner,
             event_type,
@@ -107,7 +107,7 @@ impl EventControl for V13EventControlAdapter {
 
 impl EventControl for EventEngineHandle {
     fn api_version(&self) -> ApiVersion {
-        titan_plugin_engine::CORE_RUNTIME_API_VERSION
+        titan_core_types::CORE_RUNTIME_API_VERSION
     }
 
     fn api_capabilities(&self) -> EventApiCapabilities {
@@ -122,12 +122,12 @@ impl EventControl for EventEngineHandle {
         )
     }
 
-    fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, PluginError> {
+    fn begin_route_update(&self, base: RouteVersion) -> Result<RouteTransaction, CoreError> {
         // Route candidates are intentionally stageable before the event loop starts. Titan main
-        // validates the complete plugin graph first, starts EventEngine, and only then commits the
+        // validates the complete runtime graph first, starts EventEngine, and only then commits the
         // candidate at a safe point. Publication and commit still reject a stopped engine.
         if base != self.current_route_version() {
-            return Err(plugin_error(
+            return Err(control_error(
                 ErrorKind::SubscriptionRejected,
                 "begin_route_update",
                 "route base version is stale",
@@ -148,32 +148,32 @@ impl EventControl for EventEngineHandle {
     fn stage_subscription(
         &self,
         transaction: RouteTransaction,
-        owner: &PluginIdentity,
+        owner: &ComponentIdentity,
         spec: &SubscriptionSpec,
-    ) -> Result<SubscriptionCandidate, PluginError> {
+    ) -> Result<SubscriptionCandidate, CoreError> {
         stage_subscription(self, transaction, owner, None, spec)
     }
 
     fn stage_subscription_in_mailbox(
         &self,
         transaction: RouteTransaction,
-        owner: &PluginIdentity,
+        owner: &ComponentIdentity,
         mailbox: &str,
         spec: &SubscriptionSpec,
-    ) -> Result<SubscriptionCandidate, PluginError> {
+    ) -> Result<SubscriptionCandidate, CoreError> {
         stage_subscription(self, transaction, owner, Some(Arc::from(mailbox)), spec)
     }
 
     fn commit_at_safe_point(
         &self,
         transaction: RouteTransaction,
-    ) -> Result<(RouteVersion, Vec<CommittedSubscription>), PluginError> {
+    ) -> Result<(RouteVersion, Vec<CommittedSubscription>), CoreError> {
         if !self
             .shared
             .running
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            return Err(plugin_error(
+            return Err(control_error(
                 ErrorKind::RuntimeNotActive,
                 "commit_at_safe_point",
                 "event loop is not running",
@@ -186,7 +186,7 @@ impl EventControl for EventEngineHandle {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&transaction.0)
             .ok_or_else(|| {
-                plugin_error(
+                control_error(
                     ErrorKind::SubscriptionRejected,
                     "commit_at_safe_point",
                     "unknown route transaction",
@@ -202,7 +202,7 @@ impl EventControl for EventEngineHandle {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                plugin_error(
+                control_error(
                     ErrorKind::ControlQueueFull,
                     "commit_at_safe_point",
                     "event control queue is full",
@@ -212,14 +212,14 @@ impl EventControl for EventEngineHandle {
         let (version, tokens) = reply_rx
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| {
-                plugin_error(
+                control_error(
                     ErrorKind::ControlDeadlineExceeded,
                     "commit_at_safe_point",
                     "event loop did not reach a safe point before the deadline",
                     true,
                 )
             })?
-            .map_err(engine_plugin_error)?;
+            .map_err(engine_control_error)?;
         Ok((
             RouteVersion(version),
             tokens
@@ -240,7 +240,7 @@ impl EventControl for EventEngineHandle {
             .remove(&transaction.0);
     }
 
-    fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), PluginError> {
+    fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), CoreError> {
         let (reply_tx, reply_rx) = bounded(1);
         self.shared
             .control_tx
@@ -249,7 +249,7 @@ impl EventControl for EventEngineHandle {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                plugin_error(
+                control_error(
                     ErrorKind::ControlQueueFull,
                     "retire_subscription",
                     "event control queue is full",
@@ -259,14 +259,14 @@ impl EventControl for EventEngineHandle {
         let (channel, stop_channel) = reply_rx
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| {
-                plugin_error(
+                control_error(
                     ErrorKind::ControlDeadlineExceeded,
                     "retire_subscription",
                     "event loop did not retire the route before the deadline",
                     true,
                 )
             })?
-            .map_err(engine_plugin_error)?;
+            .map_err(engine_control_error)?;
         if stop_channel {
             channel.stop_and_drain();
         }
@@ -279,7 +279,7 @@ impl EventControl for EventEngineHandle {
         schema_version: u32,
         payload: &[u8],
         trace: TraceContext,
-    ) -> Result<(), PluginError> {
+    ) -> Result<(), CoreError> {
         publish(self, event_type, schema_version, payload, trace)
     }
 
@@ -290,7 +290,7 @@ impl EventControl for EventEngineHandle {
         payload: &[u8],
         metadata: EventPublishMetadata,
         trace: TraceContext,
-    ) -> Result<(), PluginError> {
+    ) -> Result<(), CoreError> {
         publish_with_metadata(self, event_type, schema_version, payload, metadata, trace)
     }
 
@@ -301,7 +301,7 @@ impl EventControl for EventEngineHandle {
         payload_length: usize,
         metadata: EventPublishMetadata,
         trace: TraceContext,
-    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+    ) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
         reserve_market_batch(
             self,
             event_type,
@@ -319,7 +319,7 @@ impl EventControl for EventEngineHandle {
         payload_length: usize,
         metadata: EventPublishMetadata,
         trace: TraceContext,
-    ) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+    ) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
         reserve_event_payload(
             self,
             event_type,
@@ -334,10 +334,10 @@ impl EventControl for EventEngineHandle {
 fn stage_subscription(
     handle: &EventEngineHandle,
     transaction: RouteTransaction,
-    owner: &PluginIdentity,
+    owner: &ComponentIdentity,
     mailbox: Option<Arc<str>>,
     spec: &SubscriptionSpec,
-) -> Result<SubscriptionCandidate, PluginError> {
+) -> Result<SubscriptionCandidate, CoreError> {
     if spec.capacity == 0
         || spec.capacity <= handle.shared.config.subscribers.critical_reserve
         || spec.capacity > handle.shared.config.subscribers.default_capacity
@@ -346,7 +346,7 @@ fn stage_subscription(
             .descriptor(&spec.event_type, spec.schema_version)
             .is_none()
     {
-        return Err(plugin_error(
+        return Err(control_error(
             ErrorKind::SubscriptionRejected,
             "stage_subscription",
             "event is not registered or subscription capacity is invalid",
@@ -358,7 +358,7 @@ fn stage_subscription(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (_, staged) = transactions.get_mut(&transaction.0).ok_or_else(|| {
-        plugin_error(
+        control_error(
             ErrorKind::SubscriptionRejected,
             "stage_subscription",
             "unknown route transaction",
@@ -383,10 +383,10 @@ fn publish(
     schema_version: u32,
     payload: &[u8],
     trace: TraceContext,
-) -> Result<(), PluginError> {
+) -> Result<(), CoreError> {
     let mut request = PublishRequest::new(event_type, schema_version, payload);
     request.trace = trace;
-    handle.try_publish(request).map_err(publish_plugin_error)
+    handle.try_publish(request).map_err(publish_control_error)
 }
 
 fn publish_with_metadata(
@@ -396,7 +396,7 @@ fn publish_with_metadata(
     payload: &[u8],
     metadata: EventPublishMetadata,
     trace: TraceContext,
-) -> Result<(), PluginError> {
+) -> Result<(), CoreError> {
     let mut request = PublishRequest::new(event_type, schema_version, payload);
     request.source_id = metadata.source_id;
     request.source_sequence = metadata.source_sequence;
@@ -406,7 +406,7 @@ fn publish_with_metadata(
     request.routing_key = metadata.routing_key;
     request.flags = metadata.flags;
     request.trace = trace;
-    handle.try_publish(request).map_err(publish_plugin_error)
+    handle.try_publish(request).map_err(publish_control_error)
 }
 
 fn reserve_market_batch(
@@ -416,7 +416,7 @@ fn reserve_market_batch(
     payload_length: usize,
     metadata: EventPublishMetadata,
     trace: TraceContext,
-) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
     let mut request = crate::ReserveRequest::new(event_type, schema_version, payload_length);
     request.source_id = metadata.source_id;
     request.source_sequence = metadata.source_sequence;
@@ -427,7 +427,7 @@ fn reserve_market_batch(
     request.flags = metadata.flags;
     request.trace = trace;
     let reservation =
-        EventEngineHandle::reserve_market_batch(handle, request).map_err(publish_plugin_error)?;
+        EventEngineHandle::reserve_market_batch(handle, request).map_err(publish_control_error)?;
     Ok(Box::new(PluginMarketBatchReservation(Some(reservation))))
 }
 
@@ -438,7 +438,7 @@ fn reserve_event_payload(
     payload_length: usize,
     metadata: EventPublishMetadata,
     trace: TraceContext,
-) -> Result<Box<dyn EventPayloadReservation>, PluginError> {
+) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
     let mut request = crate::ReserveRequest::new(event_type, schema_version, payload_length);
     request.source_id = metadata.source_id;
     request.source_sequence = metadata.source_sequence;
@@ -449,7 +449,7 @@ fn reserve_event_payload(
     request.flags = metadata.flags;
     request.trace = trace;
     let reservation =
-        EventEngineHandle::reserve_event_payload(handle, request).map_err(publish_plugin_error)?;
+        EventEngineHandle::reserve_event_payload(handle, request).map_err(publish_control_error)?;
     Ok(Box::new(PluginMarketBatchReservation(Some(reservation))))
 }
 
@@ -463,41 +463,41 @@ impl EventPayloadReservation for PluginMarketBatchReservation {
             .payload_mut()
     }
 
-    fn commit(mut self: Box<Self>) -> Result<(), PluginError> {
+    fn commit(mut self: Box<Self>) -> Result<(), CoreError> {
         self.0
             .take()
             .expect("reservation is committed once")
             .commit()
-            .map_err(publish_plugin_error)
+            .map_err(publish_control_error)
     }
 }
 
-fn plugin_error(
+fn control_error(
     kind: ErrorKind,
     operation: &'static str,
     message: impl Into<Arc<str>>,
     recoverable: bool,
-) -> PluginError {
-    PluginError::new(
+) -> CoreError {
+    CoreError::new(
         kind,
-        PluginIdentity::new("titan.core.event-engine", "event-engine"),
-        LifecycleState::Running,
+        ComponentIdentity::new("titan.core.event-engine", "event-engine"),
+        ComponentState::Running,
         operation,
         message,
     )
     .recoverable(recoverable)
 }
 
-fn engine_plugin_error(error: EngineError) -> PluginError {
+fn engine_control_error(error: EngineError) -> CoreError {
     let kind = match &error {
         EngineError::ControlQueueFull => ErrorKind::ControlQueueFull,
         EngineError::ControlTimeout => ErrorKind::ControlDeadlineExceeded,
         _ => ErrorKind::SubscriptionRejected,
     };
-    plugin_error(kind, "event_control", error.to_string(), true)
+    control_error(kind, "event_control", error.to_string(), true)
 }
 
-fn publish_plugin_error(error: PublishError) -> PluginError {
+fn publish_control_error(error: PublishError) -> CoreError {
     let kind = match error {
         PublishError::Stopped => ErrorKind::RuntimeNotActive,
         PublishError::InvalidEvent | PublishError::PayloadTooLarge { .. } => {
@@ -507,5 +507,5 @@ fn publish_plugin_error(error: PublishError) -> PluginError {
         | PublishError::CriticalIngressFull
         | PublishError::MarketIngressFull => ErrorKind::ControlQueueFull,
     };
-    plugin_error(kind, "publish_event", error.to_string(), true)
+    control_error(kind, "publish_event", error.to_string(), true)
 }

@@ -34,7 +34,7 @@ fn from_str_to_status(state: &str) -> Status {
     }
 }
 
-/// Tracks orders created by the AccountPlugin REST facade so the private `orders` channel can be
+/// Tracks orders created by the AccountService REST facade so the private `orders` channel can be
 /// correlated back to the deterministic owner client id. Terminal private-stream facts are kept for
 /// GC (rather than removed immediately) so no duplicate publication can follow a stale frame.
 #[derive(Default, Debug)]

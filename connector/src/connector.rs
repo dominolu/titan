@@ -5,11 +5,11 @@ use std::{
 
 use async_trait::async_trait;
 use hftbacktest::types::{Event, LiveError, Order};
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 #[allow(unused_imports)]
 use tokio::sync::mpsc::{self, error::TrySendError};
 
-/// Exchange-owned stream coordinates attached by the concrete market-data connector. The plugin
+/// Exchange-owned stream coordinates attached by the concrete market-data connector. The service
 /// adapter transports these values unchanged; it must not infer gaps or create epochs itself.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MarketStreamMetadata {
@@ -97,7 +97,7 @@ pub enum DirectPublication<'a> {
     Account(&'a AccountPublication),
 }
 
-/// Account-owned facts emitted by authenticated venue streams. The AccountPlugin direct path
+/// Account-owned facts emitted by authenticated venue streams. The AccountService direct path
 /// consumes this type synchronously and encodes the stable account ABI without wrapping the fact
 /// in the legacy bot-wide `LiveEvent` transport. Queued legacy runners are adapted at the sender
 /// boundary until that runner is retired.
@@ -106,11 +106,11 @@ pub enum AccountPublication {
     Order {
         symbol: String,
         /// Venue client order id when the private stream can associate one. REST-submitted
-        /// AccountPlugin orders carry the deterministic 32-hex owner id; legacy connector orders
+        /// AccountService orders carry the deterministic 32-hex owner id; legacy connector orders
         /// carry the venue prefix id. It must survive into the account ABI so Order/Fill facts can
         /// be correlated back to the strategy command that created them.
         client_order_id: Option<String>,
-        /// Exchange order id as reported by the private stream. AccountPlugin facts must surface
+        /// Exchange order id as reported by the private stream. AccountService facts must surface
         /// the exchange id (not the hftbacktest local order id) so a WS OrderChanged can be
         /// correlated and later amended/canceled by venue id. Falls back to `order.order_id` when
         /// the private stream cannot associate an exchange id (e.g. venue-wide cancel-all).
@@ -151,7 +151,7 @@ impl PublishSender {
         true
     }
 
-    /// Publishes an authenticated account fact directly into the AccountPlugin encoder. As with
+    /// Publishes an authenticated account fact directly into the AccountService encoder. As with
     /// [`Self::send`], errors are handled by the direct callback and the `Result` is parity-only.
     pub fn send_account(
         &self,
@@ -175,7 +175,7 @@ pub fn direct_publish_sender(
 #[derive(Clone)]
 pub enum PublishEvent {
     /// The authenticated private stream has connected and confirmed its account subscriptions.
-    /// AccountPlugin uses this as the barrier before running reconciliation and declaring READY.
+    /// AccountService uses this as the barrier before running reconciliation and declaring READY.
     PrivateStreamReady,
     /// A normalized market data connection/processing error.
     ConnectorError(LiveError),
@@ -289,7 +289,7 @@ pub trait Connector: Send + Sync {
     /// exchange; instead, it should indicate a connector internal error.
     fn run(&mut self, tx: PublishSender);
 
-    /// Starts only public market-data resources for MarketPlugin adapters.
+    /// Starts only public market-data resources for MarketService adapters.
     fn run_market_data(&mut self, tx: PublishSender) {
         self.run(tx);
     }
@@ -304,11 +304,11 @@ pub trait Connector: Send + Sync {
         None
     }
 
-    /// Registers a REST-submitted AccountPlugin order in the connector's private-stream identity
+    /// Registers a REST-submitted AccountService order in the connector's private-stream identity
     /// table before the exchange request is sent.
     ///
     /// `client_order_id` is the canonical identifier the REST facade will send (32 lowercase hex
-    /// for AccountPlugin orders). Venue implementations translate it to their own private-stream
+    /// for AccountService orders). Venue implementations translate it to their own private-stream
     /// key (e.g. Hyperliquid's `0x` cloid). Without registration, private-stream Order/Fill
     /// updates for orders submitted through `BrokerApi` cannot be correlated back to the order.
     fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {

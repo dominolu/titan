@@ -13,7 +13,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use crossbeam_queue::ArrayQueue;
-use titan_plugin_engine::{EventHandler, EventQos, EventView, PluginIdentity, SubscriptionSpec};
+use titan_core_types::{ComponentIdentity, EventHandler, EventQos, EventView, SubscriptionSpec};
 
 use crate::{
     EngineClock, EngineError, EngineMetrics, EventArena, EventClass, EventDescriptor, EventHeader,
@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub(crate) struct StagedSubscription {
-    pub owner: PluginIdentity,
+    pub owner: ComponentIdentity,
     pub mailbox: Option<Arc<str>>,
     pub spec: SubscriptionSpec,
 }
@@ -273,7 +273,7 @@ impl AsyncFastLane {
                         event_type: event.descriptor.event_type.as_ref(),
                         schema_version: event.descriptor.schema_version,
                         payload: event.payload.payload(),
-                        metadata: titan_plugin_engine::EventPublishMetadata {
+                        metadata: titan_core_types::EventPublishMetadata {
                             source_id: event.header.source_id,
                             source_sequence: event.header.source_sequence,
                             exchange_ts: event.header.exchange_ts,
@@ -413,7 +413,7 @@ impl EngineShared {
                             event_type: descriptor.event_type.as_ref(),
                             schema_version: descriptor.schema_version,
                             payload: payload.payload(),
-                            metadata: titan_plugin_engine::EventPublishMetadata {
+                            metadata: titan_core_types::EventPublishMetadata {
                                 source_id: header.source_id,
                                 source_sequence: header.source_sequence,
                                 exchange_ts: header.exchange_ts,
@@ -1631,7 +1631,7 @@ impl EventLoop {
         }
         #[derive(Clone, Hash, PartialEq, Eq)]
         enum MailboxKey {
-            Shared(PluginIdentity, Arc<str>),
+            Shared(ComponentIdentity, Arc<str>),
             Standalone(u64),
         }
 

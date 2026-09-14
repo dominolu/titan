@@ -9,9 +9,11 @@
 该配置的 OKX 与 Hyperliquid 都是真实主网。默认 Shadow 门禁不得在账户资金、净仓位、API 权限和
 最小下单量验证完成前降低；canary 阶段仍应使用能够在两边同时成交的最小可对冲订单。
 
-Hyperliquid `l2Book` 是完整、幂等但非固定频率的快照流；主网探针观测到约 5.5 秒的正常包间隔，因此
-canary 使用 `market_stale_ms = 12000`。修改此值前应重新运行 ignored 公共流探针并保留至少两倍的
-实测最大间隔；超时后策略会撤掉 OKX maker 报价。
+Hyperliquid `l2Book` 是完整、幂等但无原生序列号的快照流。canary 在官方
+`api.hyperliquid.xyz` 端点使用 `l2_fast = true`，获取每边 5 档、约 500 ms 一次的快照；
+同时保留按块变化推送的 `bbo`，用于更快刷新一档价格和数量。因此 canary 使用
+`market_stale_ms = 2000`；超时后策略会撤掉 OKX maker 报价。放大对冲数量前，必须确认
+Hyperliquid 前 5 档经 `taker_volume_factor` 折减后仍能覆盖最大单次对冲量。
 
 凭据只允许放在本目录的 `secrets/` 中，文件权限必须为 `0600`：
 
@@ -22,8 +24,8 @@ canary 使用 `market_stale_ms = 12000`。修改此值前应重新运行 ignored
 运行时通过 `secret://file/...` 引用凭据，配置和日志不会包含密钥。两个账户必须是专用联调账户；Account
 connector 停机时会清理其注册品种上的挂单。
 
-服务器执行以下命令会以单任务构建、生成带 SHA256 的 Connector packages，并完成不读取凭据的 live
-配置校验：
+服务器执行以下命令会以单任务构建静态链接了 OKX/Hyperliquid connector 的 Titan，并完成不读取凭据的
+live 配置校验：
 
 ```bash
 ./deploy/okx_hyperliquid_xemm_testnet/prepare_server.sh

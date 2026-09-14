@@ -8,6 +8,10 @@ info_url = "https://api.hyperliquid.xyz/info"
 exchange_url = "https://api.hyperliquid.xyz/exchange"
 ws_url = "wss://api.hyperliquid.xyz/ws"
 
+# false: 20 levels at the standard cadence; true: 5 levels at roughly 500 ms.
+# The connector keeps the change-driven BBO feed enabled for fresher top-of-book updates.
+l2_fast = false
+
 # Signing key (secp256k1, 32 bytes hex, optional 0x prefix).
 #
 # Two setups are supported:
