@@ -1,5 +1,8 @@
 # Titan Core Runtime交互契约
 
+> 已归档：本文记录旧 EventEngine/PluginEngine 契约。当前静态核心服务契约以
+> [去插件化技术方案](strategy_command_deplugin_technical_plan.md)为准。
+
 版本：v1.0
 
 状态：核心组件公共契约

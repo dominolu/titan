@@ -15,7 +15,7 @@ use std::{
 use hftbacktest::types::{ErrorKind, LiveError, Order, Value};
 use serde::Deserialize;
 use thiserror::Error;
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::error;
 

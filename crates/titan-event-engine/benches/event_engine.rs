@@ -7,16 +7,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use titan_event_engine::*;
-use titan_plugin_engine::{
-    ActivationGate, DispatchOutcome, EventControl, EventHandler, EventQos, EventView, PluginError,
-    PluginIdentity, SubscriptionSpec,
+use titan_core_types::{
+    ActivationGate, ComponentIdentity, CoreError, DispatchOutcome, EventControl, EventHandler,
+    EventQos, EventView, SubscriptionSpec,
 };
+use titan_event_engine::*;
 
 struct Counter(Arc<AtomicUsize>);
 
 impl EventHandler for Counter {
-    fn handle(&self, _: EventView<'_>) -> Result<(), PluginError> {
+    fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
         self.0.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -115,7 +115,7 @@ fn main() {
     handle
         .stage_subscription(
             transaction,
-            &PluginIdentity::new("bench", "counter"),
+            &ComponentIdentity::new("bench", "counter"),
             &SubscriptionSpec {
                 event_type: Arc::from("benchmark"),
                 schema_version: 1,
@@ -131,7 +131,7 @@ fn main() {
     let subscriber_gate = gate.clone();
     let counter = Arc::new(Counter(count.clone()));
     let subscriber = std::thread::spawn(move || {
-        if subscriber_gate.wait_until_active() != titan_plugin_engine::ActivationState::Active {
+        if subscriber_gate.wait_until_active() != titan_core_types::ActivationState::Active {
             return;
         }
         while subscriber_gate.is_active() {

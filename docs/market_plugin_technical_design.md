@@ -1,5 +1,8 @@
 # Titan MarketPlugin 技术实现设计
 
+> 已归档：MarketPlugin 已迁移为 `titan-market-service`，connector 由静态 catalog 注入。当前实现以
+> [去插件化技术方案](strategy_command_deplugin_technical_plan.md)为准。
+
 版本：v0.4
 
 状态：已实现并完成 Binance Futures、OKX、Hyperliquid 公共行情全路径实盘验证

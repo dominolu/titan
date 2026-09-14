@@ -1,7 +1,7 @@
 {
   "strategy_type": "numba-okx-hyperliquid-xemm",
   "package_version": "0.2.6",
-  "runtime_abi": {"major": 10, "minor": 0},
+  "runtime_abi": {"major": 12, "minor": 0},
   "parameter_schema": {
     "type": "object",
     "additionalProperties": false,

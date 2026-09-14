@@ -24,10 +24,11 @@ titan-python-host = { path = "../titan-python-host" }
 titan-runtime = { path = "../titan-runtime", default-features = false, features = ["backtest"] }
 titan-runtime-abi = { path = "../titan-runtime-abi" }
 titan-event-engine = { path = "../titan-event-engine" }
-titan-plugin-engine = { path = "../titan-plugin-engine" }
-titan-market-plugin = { path = "../titan-market-plugin" }
-titan-account-plugin = { path = "../titan-account-plugin" }
-titan-strategy-plugin = { path = "../titan-strategy-plugin", features = ["numba-loader"] }
-titan-connector-loader = { path = "../titan-connector-loader" }
+titan-core-types = { path = "../titan-core-types" }
+titan-market-service = { path = "../titan-market-service" }
+titan-account-service = { path = "../titan-account-service" }
+titan-strategy-runtime = { path = "../titan-strategy-runtime", features = ["numba-loader"] }
+connector = { path = "../../connector" }
 semver = "1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing = "0.1"

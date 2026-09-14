@@ -32,7 +32,7 @@ fn from_str_to_status(status: &str) -> Status {
     }
 }
 
-/// Tracks AccountPlugin REST orders so the `orderUpdates` channel can be correlated back to the
+/// Tracks AccountService REST orders so the `orderUpdates` channel can be correlated back to the
 /// deterministic owner cloid.
 #[derive(Default, Debug)]
 pub struct OrderManager {

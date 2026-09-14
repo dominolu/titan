@@ -10,9 +10,9 @@ use std::{
 };
 
 use crossbeam_queue::ArrayQueue;
-use titan_plugin_engine::{
-    DispatchOutcome, ErrorKind, EventHandler, EventQos, EventReceiver, EventReceiverDiagnostics,
-    EventView, LifecycleState, PluginError, PluginIdentity, SubscriptionSpec,
+use titan_core_types::{
+    ComponentIdentity, ComponentState, CoreError, DispatchOutcome, ErrorKind, EventHandler,
+    EventQos, EventReceiver, EventReceiverDiagnostics, EventView, SubscriptionSpec,
 };
 
 use crate::{
@@ -119,7 +119,7 @@ impl EventLease {
 
 pub(crate) struct SubscriberChannel {
     id: u64,
-    owner: PluginIdentity,
+    owner: ComponentIdentity,
     market_capacity: usize,
     high_watermark: usize,
     low_watermark: usize,
@@ -141,7 +141,7 @@ pub(crate) struct SubscriberChannel {
 
 pub(crate) struct SubscriberChannelArgs {
     pub id: u64,
-    pub owner: PluginIdentity,
+    pub owner: ComponentIdentity,
     pub capacity: usize,
     pub critical_reserve: usize,
     pub high_ratio: f64,
@@ -189,7 +189,7 @@ impl EventReceiver for SubscriberChannel {
         &self,
         handler: &dyn EventHandler,
         idle_wait: Duration,
-    ) -> Result<DispatchOutcome, PluginError> {
+    ) -> Result<DispatchOutcome, CoreError> {
         self.apply_affinity_once();
         if self.stop.load(Ordering::Acquire) || self.health.state() == SubscriberState::Failed {
             return Ok(DispatchOutcome::Closed);
@@ -266,7 +266,7 @@ impl EventReceiver for SubscriberChannel {
                 event_type: lease.event_type(),
                 schema_version: lease.schema_version(),
                 payload: lease.payload(),
-                metadata: titan_plugin_engine::EventPublishMetadata {
+                metadata: titan_core_types::EventPublishMetadata {
                     source_id: lease.header().source_id,
                     source_sequence: lease.header().source_sequence,
                     exchange_ts: lease.header().exchange_ts,
@@ -306,10 +306,10 @@ impl EventReceiver for SubscriberChannel {
                 }
                 self.clear_queued_as_gap();
                 self.stop.store(true, Ordering::Release);
-                Err(PluginError::new(
-                    ErrorKind::PluginFailed,
+                Err(CoreError::new(
+                    ErrorKind::ComponentFailed,
                     self.owner.clone(),
-                    LifecycleState::Running,
+                    ComponentState::Running,
                     "event_handler",
                     "subscriber handler failed or panicked",
                 ))

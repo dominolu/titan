@@ -1,0 +1,18 @@
+[package]
+name = "titan-account-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+semver = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+titan-core-types = { path = "../titan-core-types" }
+titan-runtime-abi = { path = "../titan-runtime-abi" }
+tracing = "0.1"
+zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+titan-event-engine = { path = "../titan-event-engine" }

@@ -154,6 +154,67 @@ fn account_from(a: &m::AccountBalance) -> AccountInfo {
     }
 }
 
+fn validate_account_mode(config: &m::AccountConfig, td_mode: &str) -> Result<(), ApiError> {
+    match td_mode {
+        "cash" => {
+            if !matches!(config.acct_lv.as_str(), "1" | "2") {
+                return Err(ApiError::new(
+                    "okx",
+                    "INCOMPATIBLE_ACCOUNT_MODE",
+                    format!(
+                        "OKX tdMode=cash requires Spot or Futures account mode; acctLv={} uses cross semantics for spot orders",
+                        config.acct_lv
+                    ),
+                ));
+            }
+        }
+        "cross" | "isolated" => {
+            if !matches!(config.acct_lv.as_str(), "2" | "3" | "4") {
+                return Err(ApiError::new(
+                    "okx",
+                    "INCOMPATIBLE_ACCOUNT_MODE",
+                    format!(
+                        "OKX derivatives trading requires Futures, Multi-currency margin, or Portfolio margin mode; acctLv={}",
+                        config.acct_lv
+                    ),
+                ));
+            }
+            if config.pos_mode != "net_mode" {
+                return Err(ApiError::new(
+                    "okx",
+                    "INCOMPATIBLE_POSITION_MODE",
+                    format!(
+                        "OKX account is in {}; Titan account commands currently require net_mode",
+                        config.pos_mode
+                    ),
+                ));
+            }
+        }
+        other => {
+            return Err(ApiError::new(
+                "okx",
+                "INCOMPATIBLE_MARGIN_MODE",
+                format!("unsupported OKX tdMode={other}"),
+            ));
+        }
+    }
+    if config.auto_loan {
+        tracing::warn!(
+            account_mode = %config.acct_lv,
+            td_mode,
+            "OKX automatic borrowing is enabled; strategy activity may create liabilities."
+        );
+    }
+    tracing::info!(
+        account_mode = %config.acct_lv,
+        position_mode = %config.pos_mode,
+        td_mode,
+        auto_loan = config.auto_loan,
+        "Validated OKX account configuration."
+    );
+    Ok(())
+}
+
 fn ticker_from(t: &m::Ticker, funding: Option<&m::FundingRate>) -> Ticker {
     Ticker {
         symbol: t.inst_id.clone(),
@@ -1156,6 +1217,11 @@ impl BrokerApi for OkxClient {
             .collect())
     }
 
+    async fn validate_account_configuration(&self) -> Result<(), ApiError> {
+        let config = self.get_account_config().await?;
+        validate_account_mode(&config, self.td_mode())
+    }
+
     async fn get_account(&self) -> Result<AccountInfo, ApiError> {
         let account = self.get_balance().await?;
         Ok(account_from(&account))
@@ -1497,6 +1563,44 @@ mod tests {
         assert_eq!(info.balances[0].wallet_balance, 10000.0);
         assert_eq!(info.balances[0].available_balance, 9800.0);
         assert_eq!(info.balances[0].margin_balance, 10000.0);
+    }
+
+    fn account_config(acct_lv: &str, pos_mode: &str, auto_loan: bool) -> m::AccountConfig {
+        m::AccountConfig {
+            uid: String::new(),
+            acct_lv: acct_lv.to_owned(),
+            pos_mode: pos_mode.to_owned(),
+            auto_loan,
+            mgn_iso_mode: String::new(),
+            level: String::new(),
+        }
+    }
+
+    #[test]
+    fn account_mode_validation_accepts_supported_derivatives_modes() {
+        for acct_lv in ["2", "3", "4"] {
+            validate_account_mode(&account_config(acct_lv, "net_mode", false), "cross").unwrap();
+        }
+        validate_account_mode(&account_config("2", "net_mode", false), "isolated").unwrap();
+    }
+
+    #[test]
+    fn account_mode_validation_rejects_spot_and_long_short_for_derivatives() {
+        let spot =
+            validate_account_mode(&account_config("1", "net_mode", false), "cross").unwrap_err();
+        assert_eq!(spot.code, "INCOMPATIBLE_ACCOUNT_MODE");
+
+        let hedge = validate_account_mode(&account_config("3", "long_short_mode", false), "cross")
+            .unwrap_err();
+        assert_eq!(hedge.code, "INCOMPATIBLE_POSITION_MODE");
+    }
+
+    #[test]
+    fn account_mode_validation_accepts_cash_only_in_spot_or_futures_mode() {
+        validate_account_mode(&account_config("1", "net_mode", false), "cash").unwrap();
+        validate_account_mode(&account_config("2", "net_mode", false), "cash").unwrap();
+        assert!(validate_account_mode(&account_config("3", "net_mode", false), "cash").is_err());
+        assert!(validate_account_mode(&account_config("3", "net_mode", false), "unknown").is_err());
     }
 
     #[test]

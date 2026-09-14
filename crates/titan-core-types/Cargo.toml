@@ -1,0 +1,10 @@
+[package]
+name = "titan-core-types"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }

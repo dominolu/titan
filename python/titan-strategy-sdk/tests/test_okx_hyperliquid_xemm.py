@@ -10,7 +10,9 @@ sys.path.append(str(PROJECT_ROOT / "python" / "titan-strategy-sdk"))
 
 from titan_strategy.context import (  # noqa: E402
     Strategy,
+    backtest_command_buffer_dtype,
     fill_dtype,
+    order_command_dtype,
     order_event_dtype,
     position_event_dtype,
     runtime_ctx_dtype,
@@ -61,8 +63,12 @@ class _Harness:
         self.runtime_ctx[0]["state_f64_len"] = self.s.state.size
         self.runtime_ctx[0]["state_i64_ptr"] = self.s.state_i64.ctypes.data
         self.runtime_ctx[0]["state_i64_len"] = self.s.state_i64.size
-        self.runtime_ctx[0]["num_commands"] = 0
-        self.runtime_ctx[0]["command_capacity"] = 16
+        self.commands = np.zeros(16, dtype=order_command_dtype)
+        self.command_buffer = np.zeros(1, dtype=backtest_command_buffer_dtype)
+        self.command_buffer[0]["commands_ptr"] = self.commands.ctypes.data
+        self.command_buffer[0]["num_commands"] = 0
+        self.command_buffer[0]["command_capacity"] = self.commands.size
+        self.runtime_ctx[0]["backtest_commands"] = self.command_buffer.ctypes.data
         self.runtime_ctx[0]["payload_ptr"] = 0
         self.runtime_ctx[0]["fills_ptr"] = 0
 

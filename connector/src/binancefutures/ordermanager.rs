@@ -21,7 +21,7 @@ pub type SharedOrderManager = Arc<Mutex<OrderManager>>;
 
 pub type ClientOrderId = String;
 
-/// Tracks orders created by the AccountPlugin REST facade so private-stream Order/Fill updates can
+/// Tracks orders created by the AccountService REST facade so private-stream Order/Fill updates can
 /// be correlated back to the deterministic owner client id. Deletions that are terminal in the
 /// private stream are kept for GC (rather than immediately removed) so the connector never emits a
 /// duplicate publication if a stale frame arrives from another channel.

@@ -3,7 +3,7 @@
 //! Publishers only reserve/copy payloads and enqueue handles. A single EventLoop assigns
 //! local sequence numbers, routes immutable blocks, retries bounded pending deliveries,
 //! and updates preallocated health state. Normal subscriber callbacks are driven through
-//! [`titan_plugin_engine::EventReceiver`] on caller-owned runtime threads. Explicit FastLane
+//! [`titan_core_types::EventReceiver`] on caller-owned runtime threads. Explicit FastLane
 //! routes can either run synchronously on the publisher or enqueue an arena lease to one bounded,
 //! ordered worker. In both modes the event continues through the normal EventLoop route as an
 //! audit/mirror copy.
@@ -32,7 +32,7 @@ pub use metrics::*;
 pub use model::*;
 pub use primary::*;
 
-pub use titan_plugin_engine::CORE_RUNTIME_API_VERSION;
+pub use titan_core_types::CORE_RUNTIME_API_VERSION;
 
 #[cfg(test)]
 mod tests;

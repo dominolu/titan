@@ -20,7 +20,7 @@ use hftbacktest::{
 };
 use serde::Deserialize;
 use thiserror::Error;
-use titan_market_plugin::MarketDataKind;
+use titan_market_service::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
 
@@ -85,6 +85,9 @@ pub struct Config {
     info_url: String,
     exchange_url: String,
     ws_url: String,
+    /// Requests Hyperliquid's five-level, roughly 500 ms L2 snapshot feed.
+    #[serde(default)]
+    l2_fast: bool,
     #[serde(default)]
     private_key: String,
     #[serde(default)]
@@ -186,6 +189,7 @@ impl Hyperliquid {
 
     fn connect_ws(&self, ev_tx: crate::connector::PublishSender, private_channels: bool) {
         let ws_url = self.config.ws_url.clone();
+        let l2_fast = self.config.l2_fast;
         let order_manager = self.order_manager.clone();
         let assets = self.assets.clone();
         let symbols = self.symbols.clone();
@@ -217,6 +221,7 @@ impl Hyperliquid {
                         client.clone(),
                         market_tx.subscribe(),
                         market_subscriptions.clone(),
+                        l2_fast,
                         private_channels,
                         #[cfg(test)]
                         reconnect_fault.clone(),
@@ -556,7 +561,7 @@ mod reconnect_tests {
         let (url, mut subscriptions, server) =
             crate::connector::reconnecting_websocket_server(3).await;
         let config = format!(
-            "info_url = \"http://127.0.0.1:9/info\"\nexchange_url = \"http://127.0.0.1:9/exchange\"\nws_url = {url:?}\nsafety_timeout_ms = 0\n"
+            "info_url = \"http://127.0.0.1:9/info\"\nexchange_url = \"http://127.0.0.1:9/exchange\"\nws_url = {url:?}\nl2_fast = true\nsafety_timeout_ms = 0\n"
         );
         let mut connector = Hyperliquid::build_market_from(&config).unwrap();
         connector.subscribe_market_data(
@@ -580,7 +585,12 @@ mod reconnect_tests {
             // shared desired state on each newly accepted socket.
             assert!(frames.iter().all(|frame| frame.contains("subscribe")));
             assert!(frames.iter().all(|frame| frame.contains("BTC")));
-            assert!(frames.iter().any(|frame| frame.contains("l2Book")));
+            let l2_frame = frames
+                .iter()
+                .find(|frame| frame.contains("l2Book"))
+                .expect("missing l2Book subscription");
+            let l2_request: serde_json::Value = serde_json::from_str(l2_frame).unwrap();
+            assert_eq!(l2_request["subscription"]["fast"], true);
             assert!(frames.iter().any(|frame| frame.contains("bbo")));
             assert!(
                 frames.iter().any(|frame| frame.contains("trades")),
@@ -1259,7 +1269,7 @@ mod live_ws_tests {
             stop_price: None,
         };
         // 私有流只发布 OrderManager 已跟踪的订单：把本次下单注册进去
-        // （真实路径中由 AccountPlugin 下单命令完成同样的动作）
+        // （真实路径中由 AccountService 下单命令完成同样的动作）
         let mut tracked = hftbacktest::types::Order::new(
             0,
             (deep_px / 0.1).round() as i64,

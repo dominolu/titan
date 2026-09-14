@@ -33,10 +33,10 @@ use hftbacktest::{
 };
 
 pub use titan_runtime_abi::{
-    BarHistoryView, BarItem, EVENT_SLOT_COUNT, FillEvent, MarketState, ORDER_COMMAND_CANCEL,
-    ORDER_COMMAND_SUBMIT, OrderCommand, OrderEvent, RuntimeFunding, RuntimeTimer,
-    STRATEGY_ABI_VERSION, StrategyEventKind, StrategyRuntimeContext, TickItem, TimedBarItem,
-    runtime_abi_descriptor,
+    BacktestCommandBuffer, BarHistoryView, BarItem, EVENT_SLOT_COUNT, FillEvent, MarketState,
+    ORDER_COMMAND_CANCEL, ORDER_COMMAND_SUBMIT, OrderCommand, OrderEvent, RuntimeFunding,
+    RuntimeTimer, STRATEGY_ABI_VERSION, StrategyEventKind, StrategyRuntimeContext, TickItem,
+    TimedBarItem, runtime_abi_descriptor,
 };
 
 pub use hftbacktest::backtest::execution::{
@@ -502,6 +502,7 @@ pub struct MaterializedBarSource {
     histories: Vec<HistorySlot>,
     views: Vec<BarHistoryView>,
     commands: Vec<OrderCommand>,
+    command_buffer: BacktestCommandBuffer,
     matcher: ConfiguredBarMatcher,
     execution: BarExecutionState,
     execution_cursor: usize,
@@ -608,6 +609,7 @@ impl MaterializedBarSource {
             histories,
             views,
             commands: vec![OrderCommand::default(); 1024],
+            command_buffer: BacktestCommandBuffer::default(),
             matcher: ConfiguredBarMatcher::NextOpen(NextOpenBarMatcher::new(
                 execution_timeframe_ns,
                 execution_assets,
@@ -761,9 +763,10 @@ impl MaterializedBarSource {
     pub fn configure_context(&mut self, ctx: &mut StrategyRuntimeContext) {
         ctx.histories_ptr = self.views.as_ptr();
         ctx.num_histories = self.views.len();
-        ctx.commands_ptr = self.commands.as_mut_ptr();
-        ctx.command_capacity = self.commands.len();
-        ctx.num_commands = 0;
+        self.command_buffer.commands_ptr = self.commands.as_mut_ptr();
+        self.command_buffer.command_capacity = self.commands.len();
+        self.command_buffer.num_commands = 0;
+        ctx.backtest_commands = &mut self.command_buffer;
         ctx.positions_ptr = self.execution.positions().as_ptr();
         ctx.num_positions = self.execution.positions().len();
     }
@@ -1189,9 +1192,10 @@ impl MaterializedBarSource {
         }
         self.platform_scratch = commands;
         self.platform_scratch.clear();
+        self.command_buffer.num_commands = command_count;
         let mut context = StrategyRuntimeContext {
             now: key.timestamp,
-            num_commands: command_count,
+            backtest_commands: &mut self.command_buffer,
             ..StrategyRuntimeContext::default()
         };
         self.process_commands(&mut context, true)
@@ -1287,10 +1291,11 @@ impl MaterializedBarSource {
         ctx: &mut StrategyRuntimeContext,
         allow_submit: bool,
     ) -> Result<(), MaterializedBarError> {
-        if ctx.num_commands > self.commands.len() {
+        let command_count = self.command_buffer.num_commands;
+        if command_count > self.commands.len() {
             return Err(MaterializedBarError::CommandOverflow);
         }
-        for index in 0..ctx.num_commands {
+        for index in 0..command_count {
             let command = self.commands[index];
             let decoded = decode_order_command(
                 command,
@@ -1410,10 +1415,10 @@ impl MaterializedBarSource {
                 None => {}
             }
         }
-        for command in &mut self.commands[..ctx.num_commands] {
+        for command in &mut self.commands[..command_count] {
             *command = OrderCommand::default();
         }
-        ctx.num_commands = 0;
+        self.command_buffer.num_commands = 0;
         Ok(())
     }
 
@@ -2450,7 +2455,7 @@ impl hftbacktest::backtest::result::ReusableRuntime for PreparedBarRuntime {
         self.context.clear_views();
         self.context.stop_requested = 0;
         self.context.last_error = 0;
-        self.context.num_commands = 0;
+        self.source.command_buffer.num_commands = 0;
         self.context.generation = self.context.generation.wrapping_add(1);
         if !self.context.state_f64_ptr.is_null() {
             unsafe {
@@ -2523,8 +2528,9 @@ mod tests {
         let state = unsafe { &mut *(ctx.user_data as *mut State) };
         state.calls.push(ctx.event_kind);
         if state.calls.len() == 1 {
+            let commands = unsafe { &mut *ctx.backtest_commands };
             unsafe {
-                *ctx.commands_ptr = OrderCommand {
+                *commands.commands_ptr = OrderCommand {
                     kind: ORDER_COMMAND_SUBMIT,
                     side: 1,
                     time_in_force: 3,
@@ -2535,7 +2541,7 @@ mod tests {
                     ..OrderCommand::default()
                 };
             }
-            ctx.num_commands = 1;
+            commands.num_commands = 1;
         }
         0
     }
@@ -3428,9 +3434,10 @@ mod tests {
         source.commands[0] = submit(1, 1, 1, 0.0);
         source.commands[1] = submit(2, -1, 0, 100.0);
         source.commands[2] = submit(3, -1, 0, 200.0);
+        source.command_buffer.num_commands = 3;
         let mut context = StrategyRuntimeContext {
             now: -1,
-            num_commands: 3,
+            backtest_commands: &mut source.command_buffer,
             ..StrategyRuntimeContext::default()
         };
         source.process_commands(&mut context, true).unwrap();
@@ -3460,8 +3467,9 @@ mod tests {
             .find(|item| item.name == "StrategyRuntimeContext")
             .unwrap();
         assert_eq!(context.size, size_of::<StrategyRuntimeContext>() as u64);
-        assert_eq!(context.fields.len(), 34);
+        assert_eq!(context.fields.len(), 37);
         assert_eq!(context.fields[0].name, "abi_version");
-        assert_eq!(context.fields[33].name, "last_error");
+        assert_eq!(context.fields[31].name, "last_error");
+        assert_eq!(context.fields[36].name, "execution_task_id_ptr");
     }
 }

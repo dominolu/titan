@@ -12,13 +12,13 @@
 
 ## Runtime 要求
 
-- `runtime_abi = 10`；
+- `runtime_abi = 12`；
 - OKX market binding 订阅 `Bbo`，Hyperliquid market binding 订阅 `Depth`；
 - 两个账户至少声明一类 account subscription，StrategyPlugin 会自动补齐 Order、Fill、Position、
   Balance、CommandResult、Reconcile 和 StreamState 的可靠有序路由；
 - `runtime.timer_interval` 建议配置为 `{ secs = 0, nanos = 100000000 }`（100ms），用于安静市场中的
   stale 检查和 hedge retry；
-- `shutdown = "cancel_owned_orders"`，停机操作会等待 owned orders 进入终态；
+- 停机只停止新回调并按 execution deadline 等待或取消尚未完成的 REST task；订单生命周期由 private WS 事实驱动；
 - Hyperliquid Depth 必须提供完整 snapshot batch（`kind=1`、snapshot flag）；增量 batch 会触发撤单并等待
   下一次完整快照。
 

@@ -11,7 +11,7 @@ use std::{
 };
 
 use crossbeam_queue::ArrayQueue;
-use titan_plugin_engine::{EventHandler, EventQos, EventView};
+use titan_core_types::{EventHandler, EventQos, EventView};
 
 use crate::{
     EngineError, EventDescriptor, EventHeader, FaultKind, FaultSignal, OwnedEvent, PoolKind,
@@ -487,7 +487,7 @@ impl PrimaryAsyncLane {
                         event_type: event.descriptor.event_type.as_ref(),
                         schema_version: event.descriptor.schema_version,
                         payload: event.payload.payload(),
-                        metadata: titan_plugin_engine::EventPublishMetadata {
+                        metadata: titan_core_types::EventPublishMetadata {
                             source_id: event.header.source_id,
                             source_sequence: event.header.source_sequence,
                             exchange_ts: event.header.exchange_ts,

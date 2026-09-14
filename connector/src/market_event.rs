@@ -11,12 +11,12 @@ use std::{
 use hftbacktest::types::{
     BUY_EVENT, DEPTH_BBO_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event, SELL_EVENT, TRADE_EVENT,
 };
-use titan_market_plugin::{
+use titan_core_types::TraceContext;
+use titan_market_service::{
     AssetId, BBO_EVENT, ConnectorError, DEPTH_BATCH_EVENT, DepthItemV1, FUNDING_RATE_EVENT,
     MARK_PRICE_EVENT, MarketBatchHeaderV1, MarketConnectorContext, MarketDataKind,
     STREAM_INVALIDATED_EVENT, TRADE_BATCH_EVENT,
 };
-use titan_plugin_engine::TraceContext;
 use titan_runtime_abi::DecimalUnit;
 
 use crate::connector::{MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent};
