@@ -1,4 +1,10 @@
-"""Small Numba pointer intrinsics used by the callback-only strategy context."""
+"""Leaf module: raw Numba pointer/host-call intrinsics with no ABI knowledge.
+
+``address_as_void_pointer`` is re-exported by :mod:`titan_strategy.abi_v10` and
+``call_execution_host`` by :mod:`titan_strategy.callbacks`; those two modules are the only
+supported import sites, so the dependency graph stays
+``intrinsic -> abi_v10 -> callbacks -> context -> strategies``.
+"""
 
 from numba import types
 from numba.core import cgutils

@@ -90,11 +90,40 @@ pub struct ExchangeRequest<A> {
     pub signature: crate::hyperliquid::signing::L1Signature,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub struct ExchangeResponse {
     pub status: String,
-    #[serde(default)]
     pub response: Option<ExchangeResponseData>,
+}
+
+impl<'de> Deserialize<'de> for ExchangeResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireResponse {
+            status: String,
+            #[serde(default)]
+            response: Option<serde_json::Value>,
+        }
+
+        let wire = WireResponse::deserialize(deserializer)?;
+        let response = match wire.response {
+            None => None,
+            Some(serde_json::Value::String(message)) => Some(ExchangeResponseData {
+                type_: "error".to_string(),
+                data: Some(serde_json::Value::String(message)),
+            }),
+            Some(value) => Some(
+                serde_json::from_value(value).map_err(serde::de::Error::custom)?,
+            ),
+        };
+        Ok(Self {
+            status: wire.status,
+            response,
+        })
+    }
 }
 
 #[derive(Deserialize, Debug)]

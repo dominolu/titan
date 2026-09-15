@@ -555,8 +555,13 @@ impl account::AccountConnector for AccountRuntime {
             })?;
             let side = match request.side {
                 1 => ApiSide::Buy,
-                2 | 255 => ApiSide::Sell,
-                _ => return Err(direct_rejected("INVALID_SIDE", "invalid submit side")),
+                -1 => ApiSide::Sell,
+                raw => {
+                    return Err(direct_rejected(
+                        "INVALID_SIDE",
+                        format!("invalid submit side {raw}"),
+                    ));
+                }
             };
             let order_type = match request.order_type {
                 0 => ApiOrderType::Limit,
@@ -1411,9 +1416,9 @@ fn managed_account_order(
     binding: &account::AccountInstrumentBinding,
 ) -> Result<Order, account::AccountConnectorError> {
     let side = match request.side {
-        ACCOUNT_SIDE_BUY => Side::Buy,
-        ACCOUNT_SIDE_SELL => Side::Sell,
-        _ => return Err(rejected("invalid submit side")),
+        1 => Side::Buy,
+        -1 => Side::Sell,
+        raw => return Err(rejected(format!("invalid submit side {raw}"))),
     };
     let order_type = if request.order_type == 0 {
         OrdType::Limit

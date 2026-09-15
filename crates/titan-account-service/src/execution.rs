@@ -18,7 +18,8 @@ pub type ExecutionFuture =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirectNewOrderRequest {
     pub asset_id: AssetId,
-    pub side: u8,
+    /// Strategy ABI direction: +1 buy, -1 sell.
+    pub side: i8,
     pub order_type: u8,
     pub time_in_force: u8,
     pub price_ticks: i64,
@@ -121,6 +122,7 @@ impl ExecutionObserver for TracingExecutionObserver {
                 account_id = result.account.account_id.0,
                 exchange = error.exchange,
                 code = error.code,
+                message = error.message.as_str(),
                 "direct execution REST request rejected"
             ),
             ObservedExecutionOutcome::Unknown(error) => tracing::error!(
@@ -128,6 +130,7 @@ impl ExecutionObserver for TracingExecutionObserver {
                 account_id = result.account.account_id.0,
                 exchange = error.exchange,
                 code = error.code,
+                message = error.message.as_str(),
                 "direct execution REST outcome unknown"
             ),
         }

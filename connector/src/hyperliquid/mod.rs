@@ -181,6 +181,13 @@ impl Hyperliquid {
             loop {
                 interval.tick().await;
                 if let Err(error) = BrokerApi::cancel_all_after(&client, timeout_ms).await {
+                    if is_schedule_cancel_unavailable(&error.to_string()) {
+                        warn!(
+                            ?error,
+                            "scheduled-cancel safety net unavailable for this account; disabling heartbeat"
+                        );
+                        return;
+                    }
                     error!(?error, "failed to refresh scheduled-cancel safety net");
                 }
             }
@@ -481,14 +488,14 @@ impl Connector for Hyperliquid {
             return Ok(());
         }
         if let Err(error) = BrokerApi::cancel_all_after(&self.client, 0).await {
-            // Clearing an exchange-side dead-man switch is best effort. Some Hyperliquid
-            // accounts are not eligible for scheduleCancel until they reach the venue's volume
-            // threshold. That must not prevent the stronger shutdown action below from
-            // explicitly cancelling every order on each registered symbol.
-            tracing::warn!(
-                ?error,
-                "failed to clear scheduled cancellation during shutdown"
-            );
+            if is_schedule_cancel_unavailable(&error.to_string()) {
+                warn!(?error, "scheduled-cancel safety net unavailable during shutdown");
+            } else {
+                tracing::warn!(
+                    ?error,
+                    "failed to clear scheduled cancellation during shutdown"
+                );
+            }
         }
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         let mut errors = Vec::new();
@@ -503,6 +510,10 @@ impl Connector for Hyperliquid {
             Err(errors.join("; "))
         }
     }
+}
+
+fn is_schedule_cancel_unavailable(message: &str) -> bool {
+    message.contains("scheduled cancel") && message.contains("enough volume traded")
 }
 
 #[cfg(test)]
@@ -970,6 +981,23 @@ mod unit_tests {
 
         let without_msg = exchange_response("err", None);
         assert_eq!(exchange_error_message(&without_msg), "err");
+    }
+
+    #[test]
+    fn test_exchange_response_accepts_string_error_payload() {
+        let response: ExchangeResponse = serde_json::from_str(
+            r#"{"status":"err","response":"Cannot set scheduled cancel time"}"#,
+        )
+        .unwrap();
+        assert_eq!(exchange_error_message(&response), "Cannot set scheduled cancel time");
+    }
+
+    #[test]
+    fn test_schedule_cancel_unavailable_detection() {
+        assert!(is_schedule_cancel_unavailable(
+            "hyperliquid: Cannot set scheduled cancel time until enough volume traded"
+        ));
+        assert!(!is_schedule_cancel_unavailable("agent not authorized"));
     }
 
     // ------------------------------------------------------------------
