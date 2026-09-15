@@ -729,7 +729,7 @@ unsafe extern "C" fn host_submit(
         }
         let result = binding.handle.submit(DirectNewOrderRequest {
             asset_id: AssetId(asset_id),
-            side: request.side as u8,
+            side: request.side,
             order_type: request.order_type,
             time_in_force: request.time_in_force,
             price_ticks: request.price as i64,

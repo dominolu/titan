@@ -151,18 +151,38 @@ pub struct Okx {
 }
 
 impl Okx {
+    fn safety_timeout_seconds(timeout_ms: u64) -> Result<u64, OkxError> {
+        if timeout_ms == 0 {
+            return Ok(0);
+        }
+        let seconds = timeout_ms.div_ceil(1_000);
+        if !(10..=120).contains(&seconds) {
+            return Err(OkxError::InvalidArg(
+                "safety_timeout_ms must be 0 or between 10000 and 120000",
+            ));
+        }
+        Ok(seconds)
+    }
+
     fn start_safety_heartbeat(&self) {
         let timeout_ms = self.config.safety_timeout_ms;
         if timeout_ms == 0 || self.config.api_key.is_empty() || self.config.secret.is_empty() {
             return;
         }
+        let timeout_seconds = match Self::safety_timeout_seconds(timeout_ms) {
+            Ok(value) => value,
+            Err(error) => {
+                error!(?error, "invalid cancel-all-after safety timeout");
+                return;
+            }
+        };
         let client = self.client.clone();
         tokio::spawn(async move {
             let refresh_ms = (timeout_ms / 3).max(1_000);
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(refresh_ms));
             loop {
                 interval.tick().await;
-                if let Err(error) = client.cancel_all_after(timeout_ms).await {
+                if let Err(error) = client.cancel_all_after(timeout_seconds).await {
                     error!(?error, "failed to refresh cancel-all-after safety net");
                 }
             }
@@ -267,6 +287,7 @@ impl ConnectorBuilder for Okx {
     fn build_from(config: &str) -> Result<Self, Self::Error> {
         crate::ensure_rustls_crypto_provider();
         let config: Config = toml::from_str(config)?;
+        Self::safety_timeout_seconds(config.safety_timeout_ms)?;
         if config.order_prefix.len() > 16 {
             return Err(OkxError::InvalidArg(
                 "order prefix length should be not greater than 16.",

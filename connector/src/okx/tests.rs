@@ -73,6 +73,14 @@ fn test_build_from_valid_config() {
 }
 
 #[test]
+fn test_cancel_all_after_timeout_uses_seconds() {
+    assert_eq!(Okx::safety_timeout_seconds(30_000).unwrap(), 30);
+    assert_eq!(Okx::safety_timeout_seconds(10_000).unwrap(), 10);
+    assert!(Okx::safety_timeout_seconds(9_000).is_err());
+    assert!(Okx::safety_timeout_seconds(121_000).is_err());
+}
+
+#[test]
 fn test_build_from_rejects_order_prefix_too_long() {
     let config = valid_config().replace("titan", "12345678901234567");
     assert!(matches!(

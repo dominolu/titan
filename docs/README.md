@@ -22,6 +22,8 @@
 
 ## 策略设计
 
+- [pair_arb：Slot 化双腿执行内核需求](pair_arb_strategy_requirements.md)
+- [pair_arb：可复用高频双腿执行内核设计](pair_arb_strategy_design.md)
 - [OKX–Hyperliquid 跨所做市需求](okx_hyperliquid_cross_exchange_market_making_requirements.md)
 - [OKX–Hyperliquid 跨所做市技术设计](okx_hyperliquid_cross_exchange_market_making_technical_design.md)
 

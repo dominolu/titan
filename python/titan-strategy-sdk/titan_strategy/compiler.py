@@ -8,27 +8,9 @@ from typing import Any
 
 import numpy as np
 
-from .context import callback_bridge, validate_handler, validate_runtime_descriptor
-
-ABI_VERSION = 12
-EVENT_SLOT_COUNT = 32
-
-EVENTS = (
-    (0, "on_start", "start"),
-    (1, "on_order", "order"),
-    (2, "on_filled", "filled"),
-    (3, "on_position", "position"),
-    (4, "on_funding", "funding"),
-    (5, "on_bar", "bar"),
-    (6, "on_tick", "tick"),
-    (7, "on_timer", "timer"),
-    (8, "on_error", "error"),
-    (9, "on_stop", "stop"),
-    (10, "on_balance", "balance"),
-    (12, "on_account_state", "account_state"),
-    (13, "on_depth", "depth"),
-)
-
+from .abi_v10 import ABI_VERSION, EVENT_HANDLERS, EVENT_SLOT_COUNT, validate_abi_layout
+from .callbacks import callback_bridge, validate_handler
+from .context import Strategy
 
 @dataclass
 class CompiledStrategy:
@@ -75,7 +57,7 @@ def compile_strategy(
         raise RuntimeError("Runtime callback slot count mismatch")
     if not runtime_abi.get("fingerprint"):
         raise RuntimeError("Runtime ABI descriptor is missing its fingerprint")
-    validate_runtime_descriptor(runtime_abi)
+    validate_abi_layout(runtime_abi)
 
     module_name, separator, function_name = entrypoint.partition(":")
     if not separator or not module_name or not function_name:
@@ -87,12 +69,12 @@ def compile_strategy(
     addresses = [0] * EVENT_SLOT_COUNT
     bridges: list[object] = []
     capabilities: list[str] = []
-    for slot, attribute, capability in EVENTS:
+    for slot, attribute, capability in EVENT_HANDLERS:
         handler = _member(strategy, attribute)
         if handler is None:
             continue
         validated = validate_handler(attribute, handler)
-        bridge = callback_bridge(validated)
+        bridge = callback_bridge(validated, Strategy)
         addresses[slot] = int(bridge.address)  # forces eager JIT compilation
         bridges.append(bridge)
         capabilities.append(capability)
@@ -104,7 +86,7 @@ def compile_strategy(
             raise ValueError(f"custom callback slot {slot} is outside the ABI table")
         if addresses[slot] != 0:
             raise ValueError(f"custom callback slot {slot} is already occupied")
-        bridge = callback_bridge(validate_handler(f"callback_{slot}", handler))
+        bridge = callback_bridge(validate_handler(f"callback_{slot}", handler), Strategy)
         addresses[slot] = int(bridge.address)
         bridges.append(bridge)
         capabilities.append(f"custom:{slot}")

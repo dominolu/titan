@@ -1,0 +1,399 @@
+"""The single source of truth for every Rust/Python/Numba shared ABI definition.
+
+Layering (dependencies only point downwards)::
+
+    abi_v10.py  <-  callbacks.py  <-  context.py  <-  strategies/*
+        ^
+    intrinsic.py (leaf: raw Numba pointer intrinsics)
+
+Anything the Rust worker, the Python compiler and strategies must agree on lives here and only
+here: dtypes, callback slot ids, order vocabulary, pointer helpers, and the Rust descriptor
+layout validation. A strategy package never declares or copies ABI content; it reads the facade
+in :mod:`titan_strategy.context` and the names exported by this module.
+
+Layout drift is guarded by :func:`validate_runtime_descriptor`, which compares every dtype field,
+offset, size and alignment against the descriptor published by ``titan-runtime-abi``. That check
+is intentionally kept here rather than next to the facade: it is the ABI contract, not a
+runtime convenience.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+# Re-export the raw pointer helper from the ABI boundary.  Consumers of the SDK should not need
+# to know that the Numba implementation lives in ``intrinsic.py``.
+from .intrinsic import address_as_void_pointer
+
+# --- ABI version and callback slots ---------------------------------------------------------
+
+#: Must match ``titan_runtime_abi::STRATEGY_ABI_VERSION``.
+ABI_VERSION = 12
+
+#: Number of callback slots in the runtime ABI table.
+EVENT_SLOT_COUNT = 32
+
+# Callback slot ids, identical to ``titan_runtime_abi::StrategyEventKind`` and to the
+# ``event_kind`` value the runtime publishes in the callback context.
+EVENT_START = 0
+EVENT_ORDER = 1
+EVENT_FILLED = 2
+EVENT_POSITION = 3
+EVENT_FUNDING = 4
+EVENT_BAR = 5
+EVENT_TICK = 6
+EVENT_TIMER = 7
+EVENT_ERROR = 8
+EVENT_STOP = 9
+EVENT_BALANCE = 10
+EVENT_ACCOUNT_STATE = 12
+EVENT_DEPTH = 13
+
+# The compiler consumes this table instead of carrying a second copy of the ABI event
+# vocabulary.  The numeric slot is deliberately explicit because slots 11 and 14..31 are
+# reserved for forward-compatible additions.
+EVENT_HANDLERS = (
+    (EVENT_START, "on_start", "start"),
+    (EVENT_ORDER, "on_order", "order"),
+    (EVENT_FILLED, "on_filled", "filled"),
+    (EVENT_POSITION, "on_position", "position"),
+    (EVENT_FUNDING, "on_funding", "funding"),
+    (EVENT_BAR, "on_bar", "bar"),
+    (EVENT_TICK, "on_tick", "tick"),
+    (EVENT_TIMER, "on_timer", "timer"),
+    (EVENT_ERROR, "on_error", "error"),
+    (EVENT_STOP, "on_stop", "stop"),
+    (EVENT_BALANCE, "on_balance", "balance"),
+    (EVENT_ACCOUNT_STATE, "on_account_state", "account_state"),
+    (EVENT_DEPTH, "on_depth", "depth"),
+)
+
+# --- order vocabulary -----------------------------------------------------------------------
+# Mirrors ``connector::account_plugin`` encodings so no translation layer is needed.
+
+SIDE_BUY = 1
+SIDE_SELL = -1
+
+ORD_TYPE_LIMIT = 0
+ORD_TYPE_MARKET = 1
+
+TIME_IN_FORCE_GTC = 0
+TIME_IN_FORCE_POST_ONLY = 1  # GTX / post only
+TIME_IN_FORCE_FOK = 2
+TIME_IN_FORCE_IOC = 3
+
+ORDER_COMMAND_NEW = 1
+ORDER_COMMAND_CANCEL = 2
+
+ORDER_STATUS_NEW = 1
+ORDER_STATUS_EXPIRED = 2
+ORDER_STATUS_FILLED = 3
+ORDER_STATUS_CANCELED = 4
+ORDER_STATUS_PARTIALLY_FILLED = 5
+ORDER_STATUS_REJECTED = 6
+ORDER_STATUS_UNKNOWN = 255
+
+# --- market / event dtypes ------------------------------------------------------------------
+
+event_dtype = np.dtype(
+    [("ev", "u8"), ("exch_ts", "i8"), ("local_ts", "i8"), ("px", "f8"),
+     ("qty", "f8"), ("order_id", "u8"), ("ival", "i8"), ("fval", "f8")],
+    align=True,
+)
+bar_dtype = np.dtype(
+    [("open_ts", "i8"), ("close_ts", "i8"), ("open", "f8"), ("high", "f8"),
+     ("low", "f8"), ("close", "f8"), ("volume", "f8"), ("quote_volume", "f8"),
+     ("buy_volume", "f8"), ("trade_count", "u8"), ("flags", "u8")],
+    align=True,
+)
+tick_item_dtype = np.dtype(
+    {"names": ["asset_no", "event"], "formats": ["u8", event_dtype],
+     "offsets": [0, 64], "itemsize": 128}, align=True,
+)
+bar_item_dtype = np.dtype([("asset_no", "u8"), ("bar", bar_dtype)], align=True)
+timed_bar_item_dtype = np.dtype(
+    [("asset_no", "u8"), ("timeframe_ns", "i8"), ("bar", bar_dtype)], align=True,
+)
+timer_dtype = np.dtype(
+    [("deadline_ts", "i8"), ("owner_id", "u8"), ("timer_id", "u8")], align=True,
+)
+funding_dtype = np.dtype(
+    [("event_id", "u8"), ("asset_no", "u4"), ("venue_no", "u4"),
+     ("instrument_id", "u4"), ("currency", "u4"), ("price_source", "u4"),
+     ("position_snapshot", "u1"), ("formula", "u1"), ("rounding_mode", "u1"),
+     ("boundary", "u1"), ("publication_ts", "i8"), ("effective_ts", "i8"),
+     ("settlement_ts", "i8"), ("delivery_ts", "i8"), ("rate", "f8"),
+     ("mark_price", "f8"), ("position_qty", "f8"), ("amount", "f8"),
+     ("rounding_increment", "f8")], align=True,
+)
+bar_history_view_dtype = np.dtype(
+    [("asset_no", "u8"), ("timeframe_ns", "i8"), ("bars_ptr", "u8"),
+     ("capacity", "u8"), ("len", "u8"), ("next", "u8")], align=True,
+)
+
+# --- account / order dtypes -----------------------------------------------------------------
+
+fill_dtype = np.dtype(
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("_account_reserved", "u4"), ("account_epoch", "u8"),
+     ("order_id", "u8"), ("venue_order_id", "u8"),
+     ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
+     ("price", "f8"), ("last_fill_qty", "f8"),
+     ("cumulative_filled_qty", "f8"), ("venue_no", "u4"),
+     ("instrument_id", "u4"), ("reason", "u4"), ("side", "i1"),
+     ("maker", "u1"), ("_reserved", "u1", (2,))], align=True,
+)
+order_event_dtype = np.dtype(
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("_account_reserved", "u4"), ("order_id", "u8"), ("venue_order_id", "u8"),
+     ("exch_ts", "i8"), ("local_ts", "i8"), ("sequence", "u8"),
+     ("price", "f8"), ("qty", "f8"), ("exec_price", "f8"),
+     ("exec_qty", "f8"), ("venue_no", "u4"), ("instrument_id", "u4"),
+     ("reason", "u4"), ("side", "i1"), ("status", "u1"),
+     ("request", "u1"), ("maker", "u1"), ("_reserved", "u1", (4,))], align=True,
+)
+depth_item_dtype = np.dtype(
+    [("price", "f8"), ("qty", "f8"), ("side", "u1"), ("action", "u1"),
+     ("_reserved", "u1", (6,))], align=True,
+)
+depth_batch_dtype = np.dtype(
+    [("asset_no", "u8"), ("market_no", "u4"), ("kind", "u4"),
+     ("flags", "u4"), ("stream_epoch", "u8"),
+     ("first_update_sequence", "u8"), ("last_update_sequence", "u8"),
+     ("exch_ts", "i8"), ("local_ts", "i8"), ("items_ptr", "u8"),
+     ("num_items", "u8")], align=True,
+)
+position_event_dtype = np.dtype(
+    [("asset_no", "u8"), ("local_account_no", "u4"),
+     ("margin_currency_id", "u4"), ("account_epoch", "u8"),
+     ("sequence", "u8"), ("quantity", "f8"), ("entry_price", "f8"),
+     ("liquidation_price", "f8"), ("realized_pnl", "f8"),
+     ("unrealized_pnl", "f8"), ("position_side", "u1"),
+     ("margin_type", "u1"), ("_reserved", "u1", (6,))], align=True,
+)
+balance_event_dtype = np.dtype(
+    [("local_account_no", "u4"), ("currency_id", "u4"),
+     ("account_epoch", "u8"), ("sequence", "u8"), ("wallet", "f8"),
+     ("available", "f8"), ("margin", "f8"), ("unrealized_pnl", "f8")],
+    align=True,
+)
+account_state_dtype = np.dtype(
+    [("local_account_no", "u4"), ("reason", "u4"),
+     ("account_epoch", "u8"), ("sequence", "u8"),
+     ("terminal_version", "u8"), ("kind", "u4"), ("flags", "u4"),
+     ("state", "u1"), ("success", "u1"), ("scope", "u1"),
+     ("_reserved", "u1", (5,))], align=True,
+)
+market_state_dtype = np.dtype(
+    [("best_bid", "f8"), ("best_ask", "f8"), ("best_bid_qty", "f8"),
+     ("best_ask_qty", "f8"), ("tick_size", "f8"), ("lot_size", "f8")], align=True,
+)
+
+# --- command / request dtypes ---------------------------------------------------------------
+
+order_command_dtype = np.dtype(
+    [("kind", "u1"), ("side", "i1"), ("time_in_force", "u1"),
+     ("order_type", "u1"), ("_reserved", "u1", (4,)),
+     ("local_account_no", "u4"), ("_account_reserved", "u4"),
+     ("asset_no", "u8"),
+     ("order_id", "u8"), ("price", "f8"), ("qty", "f8"),
+     ("trigger_price", "f8"), ("gtd_expiry_ts", "i8")], align=True,
+)
+backtest_command_buffer_dtype = np.dtype(
+    [("commands_ptr", "u8"), ("num_commands", "u8"),
+     ("command_capacity", "u8")], align=True,
+)
+new_order_request_dtype = np.dtype(
+    [("asset_no", "u8"), ("order_id", "u8"), ("price", "f8"),
+     ("qty", "f8"), ("side", "i1"), ("order_type", "u1"),
+     ("time_in_force", "u1"), ("_reserved", "u1", (5,))], align=True,
+)
+cancel_order_request_dtype = np.dtype(
+    [("asset_no", "u8"), ("order_id", "u8")], align=True,
+)
+
+# --- runtime callback context ---------------------------------------------------------------
+
+_ctx_fields = [
+    ("abi_version", "u4"), ("struct_size", "u4"), ("event_kind", "u4"),
+    ("stop_requested", "u4"), ("now", "i8"), ("generation", "u8"),
+    ("user_data", "u8"), ("bot_ptr", "u8"), ("ticks_ptr", "u8"),
+    ("num_ticks", "u8"), ("bars_ptr", "u8"), ("num_bars", "u8"),
+    ("bar_timeframe_ns", "i8"), ("bar_close_ts", "i8"), ("fills_ptr", "u8"),
+    ("num_fills", "u8"), ("orders_ptr", "u8"), ("num_orders", "u8"),
+    ("histories_ptr", "u8"), ("num_histories", "u8"), ("payload_ptr", "u8"),
+    ("payload_len", "u8"), ("state_f64_ptr", "u8"), ("state_f64_len", "u8"),
+    ("state_i64_ptr", "u8"), ("state_i64_len", "u8"),
+    ("backtest_commands", "u8"), ("positions_ptr", "u8"),
+    ("num_positions", "u8"), ("markets_ptr", "u8"), ("num_markets", "u8"),
+    ("last_error", "i8"),
+    ("execution_context", "u8"), ("execution_submit", "u8"),
+    ("execution_cancel", "u8"), ("execution_request_ptr", "u8"),
+    ("execution_task_id_ptr", "u8"),
+]
+runtime_ctx_dtype = np.dtype(_ctx_fields, align=True)
+
+_ABI_DTYPES = {
+    "Bar": bar_dtype,
+    "Event": event_dtype,
+    "FillEvent": fill_dtype,
+    "OrderEvent": order_event_dtype,
+    "DepthItemEvent": depth_item_dtype,
+    "DepthBatchEvent": depth_batch_dtype,
+    "PositionEvent": position_event_dtype,
+    "BalanceEvent": balance_event_dtype,
+    "AccountStateEvent": account_state_dtype,
+    "MarketState": market_state_dtype,
+    "BarItem": bar_item_dtype,
+    "TimedBarItem": timed_bar_item_dtype,
+    "RuntimeTimer": timer_dtype,
+    "BarHistoryView": bar_history_view_dtype,
+    "TickItem": tick_item_dtype,
+    "OrderCommand": order_command_dtype,
+    "BacktestCommandBuffer": backtest_command_buffer_dtype,
+    "AbiNewOrderRequest": new_order_request_dtype,
+    "AbiCancelOrderRequest": cancel_order_request_dtype,
+    "RuntimeFunding": funding_dtype,
+    "StrategyRuntimeContext": runtime_ctx_dtype,
+}
+_ABI_ALIGNMENTS = {name: dtype.alignment for name, dtype in _ABI_DTYPES.items()}
+_ABI_ALIGNMENTS.update({"Event": 64, "TickItem": 64})
+
+_PRIMITIVE_KINDS = {
+    "u8": ("u", 1), "i8": ("i", 1), "u32": ("u", 4), "i32": ("i", 4),
+    "u64": ("u", 8), "i64": ("i", 8), "f64": ("f", 8),
+}
+
+# --- Rust descriptor validation -------------------------------------------------------------
+
+
+def _validate_kind(name: str, field: str, kind: object, dtype: np.dtype,
+                   pointer_width: int) -> None:
+    if isinstance(kind, str):
+        if kind in ("pointer", "usize"):
+            expected = pointer_width // 8
+            if dtype.kind != "u" or dtype.itemsize != expected:
+                raise RuntimeError(f"{name}.{field} must be a {pointer_width}-bit {kind}")
+            return
+        expected = _PRIMITIVE_KINDS.get(kind)
+        if expected is None or (dtype.kind, dtype.itemsize) != expected:
+            raise RuntimeError(f"{name}.{field} type mismatch: expected {kind}")
+        return
+    if "struct" in kind:
+        nested = kind["struct"]
+        if nested not in _ABI_DTYPES or dtype != _ABI_DTYPES[nested]:
+            raise RuntimeError(f"{name}.{field} nested struct mismatch: expected {nested}")
+        return
+    if "array" in kind:
+        subdtype = dtype.subdtype
+        array = kind["array"]
+        if subdtype is None or int(np.prod(subdtype[1])) != int(array["len"]):
+            raise RuntimeError(f"{name}.{field} array length mismatch")
+        _validate_kind(name, field, array["element"], subdtype[0], pointer_width)
+        return
+    raise RuntimeError(f"{name}.{field} has unsupported ABI kind {kind!r}")
+
+
+def _kind_alignment(kind: object, dtype: np.dtype) -> int:
+    if isinstance(kind, str) and kind in ("pointer", "usize"):
+        return np.dtype(np.uintp).alignment
+    if isinstance(kind, dict) and "struct" in kind:
+        return _ABI_ALIGNMENTS[kind["struct"]]
+    if isinstance(kind, dict) and "array" in kind and dtype.subdtype is not None:
+        return _kind_alignment(kind["array"]["element"], dtype.subdtype[0])
+    return dtype.alignment
+
+
+def _fingerprint(runtime_abi: dict) -> str:
+    value = 0xcbf29ce484222325
+
+    def add(data: bytes) -> None:
+        nonlocal value
+        for byte in data:
+            value ^= byte
+            value = (value * 0x100000001b3) & 0xffffffffffffffff
+
+    def u8(item: int) -> None: add(int(item).to_bytes(1, "little"))
+    def u32(item: int) -> None: add(int(item).to_bytes(4, "little"))
+    def u64(item: int) -> None: add(int(item).to_bytes(8, "little"))
+    def string(item: str) -> None:
+        encoded = item.encode()
+        u64(len(encoded))
+        add(encoded)
+    def abi_kind(kind: object) -> None:
+        tags = {"u8": 0, "i8": 1, "u32": 2, "i32": 3, "u64": 4,
+                "i64": 5, "f64": 6, "usize": 7, "pointer": 8}
+        if isinstance(kind, str):
+            u8(tags[kind])
+        elif "array" in kind:
+            u8(9)
+            abi_kind(kind["array"]["element"])
+            u64(kind["array"]["len"])
+        elif "struct" in kind:
+            u8(10)
+            string(kind["struct"])
+        else:
+            raise RuntimeError(f"unsupported ABI kind {kind!r}")
+
+    u32(runtime_abi["abi_version"])
+    u64(runtime_abi["event_slot_count"])
+    u8(runtime_abi["pointer_width"])
+    u8(bool(runtime_abi["little_endian"]))
+    for slot in runtime_abi["event_slots"]:
+        string(slot["name"])
+        u32(slot["id"])
+    for item in runtime_abi["structs"]:
+        string(item["name"])
+        u64(item["size"])
+        u64(item["alignment"])
+        for field in item["fields"]:
+            string(field["name"])
+            abi_kind(field["kind"])
+            u64(field["offset"])
+            u64(field["size"])
+            u64(field["alignment"])
+    return f"fnv1a64:{value:016x}"
+
+
+def validate_runtime_descriptor(runtime_abi: dict) -> None:
+    """Reject any Rust/Python shared-ABI or descriptor fingerprint disagreement."""
+    pointer_width = int(runtime_abi.get("pointer_width", 0))
+    if pointer_width != np.dtype(np.uintp).itemsize * 8:
+        raise RuntimeError("Runtime ABI pointer width mismatch")
+    if bool(runtime_abi.get("little_endian")) != bool(np.little_endian):
+        raise RuntimeError("Runtime ABI endianness mismatch")
+    if runtime_abi.get("fingerprint") != _fingerprint(runtime_abi):
+        raise RuntimeError("Runtime ABI descriptor fingerprint mismatch")
+    structs = {item["name"]: item for item in runtime_abi.get("structs", ())}
+    if set(structs) != set(_ABI_DTYPES):
+        missing = sorted(set(_ABI_DTYPES) - set(structs))
+        extra = sorted(set(structs) - set(_ABI_DTYPES))
+        raise RuntimeError(f"Runtime ABI struct set mismatch: missing={missing}, extra={extra}")
+    for name, dtype in _ABI_DTYPES.items():
+        descriptor = structs[name]
+        if int(descriptor["size"]) != dtype.itemsize:
+            raise RuntimeError(f"{name} size mismatch")
+        if int(descriptor["alignment"]) != _ABI_ALIGNMENTS[name]:
+            raise RuntimeError(f"{name} alignment mismatch")
+        rust_fields = {field["name"]: field for field in descriptor.get("fields", ())}
+        if set(rust_fields) != set(dtype.fields):
+            raise RuntimeError(f"{name} field set mismatch")
+        for field, field_info in dtype.fields.items():
+            field_dtype, offset = field_info[:2]
+            rust = rust_fields[field]
+            if int(rust["offset"]) != offset or int(rust["size"]) != field_dtype.itemsize:
+                raise RuntimeError(f"{name}.{field} layout mismatch")
+            if int(rust["alignment"]) != _kind_alignment(rust["kind"], field_dtype):
+                raise RuntimeError(f"{name}.{field} alignment mismatch")
+            _validate_kind(name, field, rust["kind"], field_dtype, pointer_width)
+
+
+# Public name used by new callers.  Keep the descriptor-specific name as a compatibility alias
+# because the runtime/compiler integration introduced it before the three-file consolidation.
+validate_abi_layout = validate_runtime_descriptor
+
+
+__all__ = [
+    name for name in globals()
+    if not name.startswith("_") and name not in {"np"}
+]
