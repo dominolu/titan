@@ -1,73 +1,35 @@
-# titan-strategy-sdk
+# titan-strategy-sdk（Strategy ABI V13）
 
-Numba 策略 SDK：一个 ABI 定义入口 + 一个策略门面。策略包只依赖 `titan_strategy` 的门面，
-不接触 ABI 细节（dtype、offset、指针、订单编码）。
+该 SDK 是 Titan 唯一的策略编写与 AOT 编译入口。策略使用 typed state、只读 public views
+和 callback-local command staging；生产运行时只加载 `native-v13` 制品，不嵌入 Python。
 
-## 分层
+主要模块：
 
-```text
-intrinsic.py   Numba 指针 / 宿主调用 intrinsic（叶子模块）
-     ^
-abi_v10.py     唯一 ABI 定义：dtype、回调槽位、订单词表、Rust descriptor 布局校验
-     ^
-callbacks.py   执行宿主调用、请求写入、回测命令编码、callback bridge
-     ^
-context.py     Strategy facade：行情 / 账户 / 订单视图 + 下单接口
-     ^
-strategies/*   策略包
-```
+- `abi_v13.py`：固定宽度 ABI dtype、回调槽位、常量与 fingerprint。
+- `definition.py` / `parameters.py` / `state.py`：策略声明、参数 schema、typed state schema。
+- `context_v13.py`：只读行情/账户视图与 submit/cancel command staging。
+- `static_compiler.py`：受限定义加载、静态校验、Numba AOT、deterministic CBOR manifest。
+- `cli.py`：离线编译命令，由 Rust `titan strategy compile` 调用。
 
-依赖只能向下。`abi_v10.py` 不 import 上层模块；`callbacks.py` 不定义 dtype；
-`context.py` 不含指针运算和订单码表。`tests/test_strategy_surface.py` 用 AST 断言这三条规则，
-并用一个只调用门面的 Numba 策略做端到端编码校验。
+策略必须导出一个 `STRATEGY = StrategyDefinition(...)`，handler 使用 `@njit`，签名为
+`handler(context)`。参数在编译期校验并写入 initial state；部署期不能覆盖参数。
 
-## 策略写法
-
-```python
-from numba import njit
-import numpy as np
-
-
-def build(parameters):
-    state = np.zeros(8, dtype=np.float64)
-    state_i64 = np.zeros(8, dtype=np.int64)
-
-    @njit
-    def on_tick(s):
-        for tick in s.ticks():
-            price = tick["event"]["px"]
-            if price < s.best_bid(0):
-                s.submit_maker_order(0, 1, price, 1.0, 1)   # side: 1 buy / -1 sell
-        s.cancel_order(1, 0)
-
-    return {
-        "strategy_id": "example",
-        "strategy_version": "1.0.0",
-        "on_tick": on_tick,
-        "state": state,
-        "state_i64": state_i64,
-    }
-```
-
-`build(parameters)` 由 `titan_strategy.compiler.compile_strategy` 在冷路径调用；返回对象提供
-`state` / `state_i64` 两个一维 C 连续数组，以及一到多个 `@njit` 单参 handler。
-
-完整接口清单与分层约束见
-[docs/strategy_abi_v10_migration.md](../../docs/strategy_abi_v10_migration.md)。
-
-## 运行测试
-
-按仓库约定在编译服务器执行（需要带 numpy + numba 的解释器）：
+在编译服务器构建：
 
 ```bash
-cd ~/dev/titan && PYTHONPATH=$PWD/python/titan-strategy-sdk \
-  ~/miniconda3/envs/hft/bin/python -m unittest discover -s python/titan-strategy-sdk/tests -v
+titan strategy compile \
+  --strategy strategies/pair_arb/strategy.py \
+  --parameters strategies/pair_arb/parameters.json \
+  --target x86_64-unknown-linux-gnu \
+  --cpu-baseline x86-64-v2 \
+  --artifact-format bundle \
+  --output pair_arb.titan
 ```
 
-Rust 运行时的端到端验证（会用真实 ABI descriptor 编译策略包）：
+在编译服务器测试：
 
 ```bash
-cd ~/dev/titan && PYO3_PYTHON=$PWD/.venv/bin/python \
-  PYTHONHOME=$HOME/miniconda3/envs/hft LD_LIBRARY_PATH=$HOME/miniconda3/envs/hft/lib \
-  cargo test -p titan-cli --test cli_golden
+PYTHONPATH=python/titan-strategy-sdk:. \
+  uv run --project python/titan-strategy-sdk --with pytest \
+  pytest -q python/titan-strategy-sdk/tests
 ```

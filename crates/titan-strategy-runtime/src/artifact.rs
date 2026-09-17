@@ -4,67 +4,13 @@ use std::{
     time::Instant,
 };
 
-use sha2::{Digest, Sha256};
-#[cfg(feature = "numba-loader")]
-use titan_python_host::{LoadedNumbaStrategy, StrategyCompiler};
-use titan_runtime::CallbackRegistry;
-
 use crate::*;
 
-pub trait StrategyCodeKeepalive: Send + Sync + 'static {}
-impl<T: Send + Sync + 'static> StrategyCodeKeepalive for T {}
-
 #[derive(Clone)]
-pub struct StrategyCodeLease(Arc<dyn StrategyCodeKeepalive>);
-
-impl StrategyCodeLease {
-    pub fn new(value: impl StrategyCodeKeepalive) -> Self {
-        Self(Arc::new(value))
-    }
-
-    pub fn strong_count(&self) -> usize {
-        Arc::strong_count(&self.0)
-    }
-}
-
-impl Default for StrategyCodeLease {
-    fn default() -> Self {
-        Self::new(())
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct StrategyStateMemory {
-    pub f64_values: Vec<f64>,
-    pub i64_values: Vec<i64>,
-}
-
 pub struct StrategyArtifact {
     pub id: StrategyArtifactId,
     pub manifest: StrategyPackageManifest,
-    pub callbacks: CallbackRegistry,
-    pub state: StrategyStateMemory,
-    pub code_lease: StrategyCodeLease,
-}
-
-impl StrategyArtifact {
-    pub fn clone_for_instance(&self, f64_capacity: usize, i64_capacity: usize) -> Self {
-        let mut state = StrategyStateMemory {
-            f64_values: vec![0.0; f64_capacity],
-            i64_values: vec![0; i64_capacity],
-        };
-        let f64_len = state.f64_values.len().min(self.state.f64_values.len());
-        let i64_len = state.i64_values.len().min(self.state.i64_values.len());
-        state.f64_values[..f64_len].copy_from_slice(&self.state.f64_values[..f64_len]);
-        state.i64_values[..i64_len].copy_from_slice(&self.state.i64_values[..i64_len]);
-        Self {
-            id: self.id,
-            manifest: self.manifest.clone(),
-            callbacks: self.callbacks.clone(),
-            state,
-            code_lease: self.code_lease.clone(),
-        }
-    }
+    pub native: Arc<StrategyArtifactV13>,
 }
 
 #[derive(Clone)]
@@ -76,10 +22,6 @@ pub struct StrategyLoaderContext {
 #[derive(Clone)]
 pub struct StrategyLoadRequest {
     pub package: StrategyPackageRef,
-    pub entrypoint: Arc<str>,
-    pub parameters: Arc<[u8]>,
-    pub runtime_abi_fingerprint: Arc<str>,
-    pub target_cpu: Arc<str>,
 }
 
 pub trait StrategyPackageLoaderFactory: Send + Sync {
@@ -155,10 +97,6 @@ impl StrategyPackageLoaderRegistry {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ArtifactCacheKey {
     pub artifact_digest: [u8; 32],
-    pub entrypoint: Arc<str>,
-    pub normalized_parameters_digest: [u8; 32],
-    pub runtime_abi_fingerprint: Arc<str>,
-    pub target_cpu: Arc<str>,
 }
 
 struct CachedArtifact {
@@ -195,20 +133,13 @@ impl StrategyArtifactCache {
         })
     }
 
-    pub fn get(
-        &self,
-        key: &ArtifactCacheKey,
-        f64_capacity: usize,
-        i64_capacity: usize,
-    ) -> Option<StrategyArtifact> {
+    pub fn get(&self, key: &ArtifactCacheKey) -> Option<StrategyArtifact> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         state.clock = state.clock.wrapping_add(1);
         let clock = state.clock;
         state.values.get_mut(key).map(|cached| {
             cached.last_used = clock;
-            cached
-                .artifact
-                .clone_for_instance(f64_capacity, i64_capacity)
+            cached.artifact.clone()
         })
     }
 
@@ -219,7 +150,7 @@ impl StrategyArtifactCache {
                 let victim = state
                     .values
                     .iter()
-                    .filter(|(_, cached)| cached.artifact.code_lease.strong_count() == 1)
+                    .filter(|(_, cached)| Arc::strong_count(&cached.artifact.native) == 1)
                     .min_by_key(|(_, cached)| cached.last_used)
                     .map(|(key, _)| key.clone());
                 let Some(victim) = victim else {
@@ -250,104 +181,141 @@ impl StrategyArtifactCache {
     }
 }
 
-pub fn normalized_parameters_digest(parameters: &[u8]) -> LocalResult<[u8; 32]> {
-    let value: serde_json::Value = serde_json::from_slice(parameters).map_err(|_| {
-        StrategyError::new(
-            StrategyErrorKind::ParameterInvalid,
-            "parameters",
-            "invalid_json",
-            "strategy parameters are not valid JSON",
-        )
-    })?;
-    let normalized = serde_json::to_vec(&value).map_err(|_| {
-        StrategyError::new(
-            StrategyErrorKind::ParameterInvalid,
-            "parameters",
-            "normalization_failed",
-            "strategy parameters could not be normalized",
-        )
-    })?;
-    Ok(Sha256::digest(normalized).into())
-}
+pub struct NativeV13LoaderFactory;
 
-#[cfg(feature = "numba-loader")]
-pub struct InProcessNumbaLoaderFactory {
-    compiler: Arc<dyn StrategyCompiler>,
-}
-
-#[cfg(feature = "numba-loader")]
-impl InProcessNumbaLoaderFactory {
-    pub fn new(compiler: Arc<dyn StrategyCompiler>) -> Self {
-        Self { compiler }
-    }
-}
-
-#[cfg(feature = "numba-loader")]
-impl StrategyPackageLoaderFactory for InProcessNumbaLoaderFactory {
+impl StrategyPackageLoaderFactory for NativeV13LoaderFactory {
     fn loader_type(&self) -> &str {
-        "numba-python"
+        "native-v13"
     }
 
     fn create(
         &self,
         context: StrategyLoaderContext,
     ) -> Result<Arc<dyn StrategyPackageLoader>, StrategyError> {
-        Ok(Arc::new(InProcessNumbaLoader {
-            context,
-            compiler: self.compiler.clone(),
-        }))
+        Ok(Arc::new(NativeV13Loader { context }))
     }
 }
 
-#[cfg(feature = "numba-loader")]
-struct InProcessNumbaLoader {
+struct NativeV13Loader {
     context: StrategyLoaderContext,
-    compiler: Arc<dyn StrategyCompiler>,
 }
 
-#[cfg(feature = "numba-loader")]
-#[derive(serde::Deserialize)]
-struct PackageManifestFile {
-    strategy_type: String,
-    package_version: semver::Version,
-    runtime_abi: titan_core_types::ApiVersion,
-    parameter_schema: serde_json::Value,
-    parameter_schema_version: u32,
-    state_schema_version: u32,
-    callbacks: u32,
-    capabilities: u64,
-    artifact_digest: String,
-    content_files: Vec<String>,
+impl NativeV13Loader {
+    fn artifact_path(&self, package: &StrategyPackageRef) -> LocalResult<std::path::PathBuf> {
+        let raw = package
+            .uri
+            .strip_prefix("file://")
+            .ok_or_else(|| artifact_error("v13_uri", "V13 artifact URI must use file://"))?;
+        let path = std::fs::canonicalize(raw)
+            .map_err(|_| artifact_error("v13_path", "V13 artifact path cannot be resolved"))?;
+        let allowed = self.context.allowed_artifact_roots.iter().any(|root| {
+            std::fs::canonicalize(root.as_ref())
+                .is_ok_and(|root| path.starts_with(root))
+        });
+        if !allowed {
+            return Err(artifact_error(
+                "artifact_root_denied",
+                "V13 artifact is outside allowed roots",
+            ));
+        }
+        Ok(path)
+    }
+
+    fn loader(&self) -> NativeArtifactLoaderV13 {
+        NativeArtifactLoaderV13::new(
+            std::env::temp_dir().join("titan-native-v13-cache"),
+            V13TrustPolicy {
+                require_signature: self.context.require_signature,
+                ..V13TrustPolicy::default()
+            },
+        )
+    }
 }
 
-#[cfg(feature = "numba-loader")]
-impl StrategyPackageLoader for InProcessNumbaLoader {
+fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManifest> {
+    let package_version = semver::Version::parse(&value.strategy_version)
+        .map_err(|_| artifact_error("strategy_version", "V13 strategy version is not semver"))?;
+    let mut capabilities = 0_u64;
+    if value.capabilities.contains(StrategyCapabilitiesV13::MARKET_DATA) {
+        capabilities |= StrategyCapabilities::READ_TICK.0
+            | StrategyCapabilities::READ_BAR.0
+            | StrategyCapabilities::READ_DEPTH.0;
+    }
+    if value.capabilities.contains(StrategyCapabilitiesV13::ACCOUNT_DATA) {
+        capabilities |= StrategyCapabilities::READ_ACCOUNT.0;
+    }
+    if value.capabilities.contains(StrategyCapabilitiesV13::ORDER_EXECUTION) {
+        capabilities |= StrategyCapabilities::SUBMIT_ORDER.0 | StrategyCapabilities::CANCEL_ORDER.0;
+    }
+    if value.capabilities.contains(StrategyCapabilitiesV13::TIMER) {
+        capabilities |= StrategyCapabilities::SCHEDULE_TIMER.0;
+    }
+    let mut subscriptions = Vec::new();
+    for item in value.subscriptions.iter() {
+        let event_type: Arc<str> = Arc::from(match item.event {
+            V13EventKind::Tick => titan_market_service::BBO_EVENT,
+            V13EventKind::Bar => titan_market_service::BAR_BATCH_EVENT,
+            V13EventKind::Depth => titan_market_service::DEPTH_BATCH_EVENT,
+            V13EventKind::Fill => titan_account_service::FILL_EVENT,
+            V13EventKind::Order | V13EventKind::Cancel => titan_account_service::ORDER_CHANGED_EVENT,
+            V13EventKind::Position => titan_account_service::POSITION_CHANGED_EVENT,
+            V13EventKind::Balance => titan_account_service::BALANCE_CHANGED_EVENT,
+            V13EventKind::AccountState => titan_account_service::STREAM_STATE_CHANGED_EVENT,
+            V13EventKind::Timer | V13EventKind::Start | V13EventKind::Stop => "titan.strategy.Timer",
+        });
+        if event_type.as_ref() == "titan.strategy.Timer" {
+            continue;
+        }
+        let subscription = StrategySubscriptionSpec {
+            event_type,
+            schema_version: item.schema_version,
+            routing_keys: Arc::from([]),
+            qos: match item.qos {
+                V13EventQos::Latest => titan_core_types::EventQos::Latest,
+                V13EventQos::ReliableOrdered => titan_core_types::EventQos::ReliableOrdered,
+                V13EventQos::BestEffort => titan_core_types::EventQos::BestEffort,
+            },
+        };
+        if !subscriptions.iter().any(|existing: &StrategySubscriptionSpec| {
+            existing.event_type == subscription.event_type
+                && existing.schema_version == subscription.schema_version
+                && existing.qos == subscription.qos
+        }) {
+            subscriptions.push(subscription);
+        }
+    }
+    Ok(StrategyPackageManifest {
+        strategy_type: Arc::from("native-v13"),
+        package_version,
+        runtime_abi: titan_core_types::ApiVersion::new(13, 0),
+        parameter_schema: value.parameter_schema.clone(),
+        parameter_schema_version: 1,
+        state_schema_version: value.state.version,
+        state_byte_len: value.state.byte_len,
+        callbacks: StrategyCallbackMask(value.callback_mask as u32),
+        capabilities: StrategyCapabilities(capabilities),
+        subscriptions: subscriptions.into(),
+        artifact_digest: value.artifact_digest,
+    })
+}
+
+impl StrategyPackageLoader for NativeV13Loader {
     fn inspect(
         &self,
         package: &StrategyPackageRef,
     ) -> Result<StrategyPackageManifest, StrategyError> {
-        let (root, file) = self.read_manifest(package)?;
-        let digest = digest_content_files(&root, &file.content_files)?;
-        let declared = parse_sha256(&file.artifact_digest)?;
-        if digest != declared || digest != package.expected_digest {
-            return Err(StrategyError::new(
-                StrategyErrorKind::DigestMismatch,
-                "numba_inspect",
-                "content_digest_mismatch",
-                "package content does not match its pinned digest",
+        let path = self.artifact_path(package)?;
+        let value = self
+            .loader()
+            .inspect(&path)
+            .map_err(|_| artifact_error("v13_inspect", "V13 artifact inspection failed"))?;
+        if value.artifact_digest != package.expected_digest {
+            return Err(artifact_error(
+                "artifact_digest_mismatch",
+                "V13 artifact digest does not match deployment pin",
             ));
         }
-        Ok(StrategyPackageManifest {
-            strategy_type: Arc::from(file.strategy_type),
-            package_version: file.package_version,
-            runtime_abi: file.runtime_abi,
-            parameter_schema: Arc::new(file.parameter_schema),
-            parameter_schema_version: file.parameter_schema_version,
-            state_schema_version: file.state_schema_version,
-            callbacks: StrategyCallbackMask(file.callbacks),
-            capabilities: StrategyCapabilities(file.capabilities),
-            artifact_digest: digest,
-        })
+        manifest_v13(&value)
     }
 
     fn load(
@@ -356,217 +324,33 @@ impl StrategyPackageLoader for InProcessNumbaLoader {
         deadline: Instant,
     ) -> Result<StrategyArtifact, StrategyError> {
         if Instant::now() >= deadline {
-            return Err(StrategyError::new(
-                StrategyErrorKind::CompileFailed,
-                "numba_load",
-                "deadline",
-                "strategy compile deadline expired",
+            return Err(artifact_error("v13_load_deadline", "V13 load deadline expired"));
+        }
+        let path = self.artifact_path(&request.package)?;
+        let artifact = self
+            .loader()
+            .load(&path)
+            .map_err(|_| artifact_error("v13_load", "V13 native artifact load failed"))?;
+        if artifact.manifest.artifact_digest != request.package.expected_digest {
+            return Err(artifact_error(
+                "artifact_digest_mismatch",
+                "V13 artifact digest does not match deployment pin",
             ));
         }
-        let manifest = self.inspect(&request.package)?;
-        let parameters: serde_json::Value =
-            serde_json::from_slice(&request.parameters).map_err(|_| {
-                StrategyError::new(
-                    StrategyErrorKind::ParameterInvalid,
-                    "numba_load",
-                    "parameter_json",
-                    "strategy parameters are not valid JSON",
-                )
-            })?;
-        let loaded = self
-            .compiler
-            .compile(
-                &titan_python_host::StrategySpec {
-                    entrypoint: request.entrypoint.to_string(),
-                    parameters,
-                },
-                &titan_runtime::runtime_abi_descriptor(),
-            )
-            .map_err(|_| {
-                StrategyError::new(
-                    StrategyErrorKind::CompileFailed,
-                    "numba_load",
-                    "compile_failed",
-                    "Numba strategy compilation failed",
-                )
-            })?;
-        let callbacks = unsafe { CallbackRegistry::from_addresses(&loaded.callback_addresses) }
-            .map_err(|_| {
-                StrategyError::new(
-                    StrategyErrorKind::AbiMismatch,
-                    "numba_load",
-                    "callback_addresses",
-                    "compiled callback registry is invalid",
-                )
-            })?;
-        let state = unsafe {
-            StrategyStateMemory {
-                f64_values: std::slice::from_raw_parts(loaded.state_f64_ptr, loaded.state_f64_len)
-                    .to_vec(),
-                i64_values: std::slice::from_raw_parts(loaded.state_i64_ptr, loaded.state_i64_len)
-                    .to_vec(),
-            }
-        };
+        let manifest = manifest_v13(&artifact.manifest)?;
         Ok(StrategyArtifact {
-            id: StrategyArtifactId {
-                digest: manifest.artifact_digest,
-            },
+            id: StrategyArtifactId { digest: manifest.artifact_digest },
             manifest,
-            callbacks,
-            state,
-            code_lease: StrategyCodeLease::new(NumbaKeepalive { _loaded: loaded }),
+            native: Arc::new(artifact),
         })
     }
 }
 
-// The Python handle is created under the GIL and is never accessed on the callback worker. It is
-// retained solely to keep generated executable code and NumPy state owners alive.
-#[cfg(feature = "numba-loader")]
-struct NumbaKeepalive {
-    _loaded: LoadedNumbaStrategy,
-}
-#[cfg(feature = "numba-loader")]
-unsafe impl Send for NumbaKeepalive {}
-#[cfg(feature = "numba-loader")]
-unsafe impl Sync for NumbaKeepalive {}
-
-#[cfg(feature = "numba-loader")]
-impl InProcessNumbaLoader {
-    fn read_manifest(
-        &self,
-        package: &StrategyPackageRef,
-    ) -> LocalResult<(std::path::PathBuf, PackageManifestFile)> {
-        if self.context.require_signature && package.signature_ref.is_none() {
-            return Err(StrategyError::new(
-                StrategyErrorKind::SignatureInvalid,
-                "numba_inspect",
-                "signature_required",
-                "strategy package signature is required",
-            ));
-        }
-        let uri = package.uri.strip_prefix("file://").ok_or_else(|| {
-            StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "unsupported_uri",
-                "only file package URIs are enabled",
-            )
-        })?;
-        let root = std::fs::canonicalize(uri).map_err(|_| {
-            StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "package_not_found",
-                "strategy package could not be opened",
-            )
-        })?;
-        if self.context.allowed_artifact_roots.is_empty() {
-            return Err(StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "artifact_roots_empty",
-                "no artifact roots are authorized",
-            ));
-        }
-        let authorized = self.context.allowed_artifact_roots.iter().any(|allowed| {
-            std::fs::canonicalize(allowed.as_ref()).is_ok_and(|allowed| root.starts_with(allowed))
-        });
-        if !authorized {
-            return Err(StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "artifact_root_denied",
-                "strategy package is outside authorized roots",
-            ));
-        }
-        let bytes = std::fs::read(root.join("strategy-manifest.json")).map_err(|_| {
-            StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "manifest_not_found",
-                "strategy package manifest could not be read",
-            )
-        })?;
-        let manifest = serde_json::from_slice(&bytes).map_err(|_| {
-            StrategyError::new(
-                StrategyErrorKind::LoadFailed,
-                "numba_inspect",
-                "manifest_invalid",
-                "strategy package manifest is invalid",
-            )
-        })?;
-        Ok((root, manifest))
-    }
-}
-
-#[cfg(feature = "numba-loader")]
-fn digest_content_files(root: &std::path::Path, files: &[String]) -> LocalResult<[u8; 32]> {
-    if files.is_empty() {
-        return Err(StrategyError::new(
-            StrategyErrorKind::LoadFailed,
-            "numba_inspect",
-            "content_files_empty",
-            "manifest content file list is empty",
-        ));
-    }
-    let mut files = files.to_vec();
-    files.sort();
-    files.dedup();
-    let mut digest = Sha256::new();
-    for relative in files {
-        let path = root.join(&relative);
-        let canonical = std::fs::canonicalize(&path).map_err(|_| {
-            StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "content_file_missing",
-                "strategy package content file is missing",
-            )
-        })?;
-        if !canonical.starts_with(root) {
-            return Err(StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "content_path_escape",
-                "strategy package content path escapes its root",
-            ));
-        }
-        let bytes = std::fs::read(canonical).map_err(|_| {
-            StrategyError::new(
-                StrategyErrorKind::PackageNotFound,
-                "numba_inspect",
-                "content_file_unreadable",
-                "strategy package content file could not be read",
-            )
-        })?;
-        digest.update(relative.as_bytes());
-        digest.update([0]);
-        digest.update((bytes.len() as u64).to_le_bytes());
-        digest.update(bytes);
-    }
-    Ok(digest.finalize().into())
-}
-
-#[cfg(feature = "numba-loader")]
-fn parse_sha256(value: &str) -> LocalResult<[u8; 32]> {
-    let value = value.strip_prefix("sha256:").unwrap_or(value);
-    if value.len() != 64 {
-        return Err(digest_format_error());
-    }
-    let mut output = [0_u8; 32];
-    for (index, byte) in output.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| digest_format_error())?;
-    }
-    Ok(output)
-}
-
-#[cfg(feature = "numba-loader")]
-fn digest_format_error() -> StrategyError {
+fn artifact_error(code: &'static str, message: &'static str) -> StrategyError {
     StrategyError::new(
-        StrategyErrorKind::DigestMismatch,
-        "numba_inspect",
-        "digest_format",
-        "manifest digest is not a SHA-256 value",
+        StrategyErrorKind::LoadFailed,
+        "native_v13_loader",
+        code,
+        message,
     )
 }

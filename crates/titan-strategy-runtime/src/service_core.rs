@@ -48,7 +48,7 @@ impl Default for StrategyCoreConfig {
         Self {
             max_strategy_runtimes: 128,
             max_artifact_cache_entries: 64,
-            allowed_loader_types: [Arc::from("numba-python"), Arc::from("rust-static")]
+            allowed_loader_types: [Arc::from("native-v13")]
                 .into_iter()
                 .collect(),
             allowed_artifact_roots: Arc::from([]),
@@ -292,27 +292,14 @@ impl StrategyServiceCore {
         let inspect_package = definition.package.clone();
         let manifest = self.run_cold(deadline, move || inspect_loader.inspect(&inspect_package))?;
         validate_manifest(&self.config, &definition, &manifest)?;
-        let abi = titan_runtime::runtime_abi_descriptor();
         let key = ArtifactCacheKey {
             artifact_digest: definition.package.expected_digest,
-            entrypoint: definition.entrypoint.clone(),
-            normalized_parameters_digest: normalized_parameters_digest(&definition.parameters)?,
-            runtime_abi_fingerprint: Arc::from(abi.fingerprint.as_str()),
-            target_cpu: Arc::from(std::env::consts::ARCH),
         };
-        let artifact = if let Some(value) = self.cache.get(
-            &key,
-            definition.runtime.state_f64_capacity,
-            definition.runtime.state_i64_capacity,
-        ) {
+        let artifact = if let Some(value) = self.cache.get(&key) {
             value
         } else {
             let request = StrategyLoadRequest {
                 package: definition.package.clone(),
-                entrypoint: definition.entrypoint.clone(),
-                parameters: definition.parameters.clone(),
-                runtime_abi_fingerprint: Arc::from(abi.fingerprint.as_str()),
-                target_cpu: Arc::from(std::env::consts::ARCH),
             };
             let load_loader = loader.clone();
             let loaded = self.run_cold(deadline, move || load_loader.load(request, deadline))?;
@@ -324,12 +311,8 @@ impl StrategyServiceCore {
                     "loaded artifact digest does not match the pinned definition",
                 ));
             }
-            let instance = loaded.clone_for_instance(
-                definition.runtime.state_f64_capacity,
-                definition.runtime.state_i64_capacity,
-            );
-            self.cache.insert(key, loaded);
-            instance
+            self.cache.insert(key, loaded.clone());
+            loaded
         };
         validate_manifest(&self.config, &definition, &artifact.manifest)?;
         if artifact.manifest != manifest {
@@ -373,18 +356,11 @@ impl StrategyServiceCore {
             "titan.strategy.runtime",
             format!("{}-{}", definition.strategy_id.0, generation),
         ));
-        let event_adapter: Arc<dyn StrategyEventAdapter> =
-            Arc::new(CanonicalStrategyEventAdapter::with_accounts(
-                &resolved_markets,
-                &resolved_accounts,
-                handle,
-            ));
         let context = StrategyRuntimeBuildContext {
             strategy: handle,
             artifact_id: artifact.id,
             markets: resolved_markets.clone().into(),
             accounts: resolved_accounts.clone().into(),
-            event_adapter,
             execution: direct_execution.into(),
             state_snapshot_sink: Arc::new(DisabledSnapshotSink),
             clock: Arc::new(SystemStrategyClock),
@@ -394,7 +370,7 @@ impl StrategyServiceCore {
         };
         let factory = self.runtimes.get(&manifest.strategy_type)?;
         let runtime = factory.create(&definition, artifact, context)?;
-        let mut subscriptions = definition
+        let mut subscriptions = manifest
             .subscriptions
             .iter()
             .map(|spec| PrimarySubscriptionSpec {
@@ -404,7 +380,19 @@ impl StrategyServiceCore {
                 routing_keys: spec.routing_keys.clone(),
             })
             .collect::<Vec<_>>();
-        if definition
+        let market_keys = resolved_markets
+            .iter()
+            .map(|binding| u64::from(binding.asset_id))
+            .collect::<Vec<_>>();
+        for subscription in subscriptions.iter_mut().filter(|subscription| {
+            matches!(
+                subscription.event_type.as_ref(),
+                BBO_EVENT | DEPTH_BATCH_EVENT | TRADE_BATCH_EVENT | BAR_BATCH_EVENT
+            )
+        }) {
+            subscription.routing_keys = market_keys.clone().into();
+        }
+        if manifest
             .subscriptions
             .iter()
             .any(|spec| spec.event_type.starts_with("titan.account."))
@@ -463,6 +451,7 @@ impl StrategyServiceCore {
                     spin_iterations: 256,
                     idle_sleep: Duration::from_micros(10),
                     cpu_affinity: definition.runtime.cpu_affinity,
+                    max_handler_duration: definition.runtime.max_handler_duration,
                 },
                 runtime.clone(),
             )
@@ -578,6 +567,8 @@ impl StrategyServiceCore {
         }
         let mut initial_positions = Vec::new();
         let mut initial_balances = Vec::new();
+        let mut initial_accounts = Vec::new();
+        let mut initial_active_orders = Vec::new();
         for binding in resolved_accounts.iter() {
             let orders = self
                 .dependencies
@@ -620,37 +611,21 @@ impl StrategyServiceCore {
                     .filter(|position| position.asset_id.0 == asset.asset_id)
                 {
                     found = true;
-                    initial_positions.push(titan_runtime_abi::PositionEvent {
-                        asset_no: u64::from(asset.local_asset_no),
-                        local_account_no: binding.local_account_no,
-                        margin_currency_id: position.margin_currency_id.0,
-                        account_epoch: epoch,
-                        sequence: version,
-                        quantity: position.quantity_lots as f64,
-                        entry_price: position.entry_price_ticks as f64,
-                        liquidation_price: position.liquidation_price_ticks as f64,
-                        realized_pnl: position.realized_pnl_units as f64,
-                        unrealized_pnl: position.unrealized_pnl_units as f64,
-                        position_side: position.position_side,
-                        margin_type: position.margin_type,
-                        _reserved: [0; 6],
+                    initial_positions.push(TitanPositionView {
+                        asset_no: asset.local_asset_no,
+                        account_no: binding.local_account_no,
+                        qty_lots: position.quantity_lots,
+                        average_price_ticks: position.entry_price_ticks,
+                        realized_pnl_ticks: position.realized_pnl_units,
+                        account_sequence: version,
                     });
                 }
                 if !found {
-                    initial_positions.push(titan_runtime_abi::PositionEvent {
-                        asset_no: u64::from(asset.local_asset_no),
-                        local_account_no: binding.local_account_no,
-                        margin_currency_id: 0,
-                        account_epoch: epoch,
-                        sequence: version,
-                        quantity: 0.0,
-                        entry_price: 0.0,
-                        liquidation_price: 0.0,
-                        realized_pnl: 0.0,
-                        unrealized_pnl: 0.0,
-                        position_side: 0,
-                        margin_type: 0,
-                        _reserved: [0; 6],
+                    initial_positions.push(TitanPositionView {
+                        asset_no: asset.local_asset_no,
+                        account_no: binding.local_account_no,
+                        account_sequence: version,
+                        ..TitanPositionView::default()
                     });
                 }
             }
@@ -661,25 +636,46 @@ impl StrategyServiceCore {
                 .committed_version
                 .ok_or_else(|| dependency_error("balance_snapshot_version_missing"))?;
             initial_balances.extend(balances.items.iter().map(|balance| {
-                titan_runtime_abi::BalanceEvent {
-                    local_account_no: binding.local_account_no,
-                    currency_id: balance.currency_id.0,
-                    account_epoch: balance_epoch,
-                    sequence: balance_version,
-                    wallet: balance.wallet_units as f64,
-                    available: balance.available_units as f64,
-                    margin: balance.margin_units as f64,
-                    unrealized_pnl: balance.unrealized_pnl_units as f64,
+                TitanBalanceView {
+                    account_no: binding.local_account_no,
+                    currency_no: balance.currency_id.0,
+                    total_units: balance.wallet_units,
+                    available_units: balance.available_units,
+                    account_sequence: balance_version,
                 }
             }));
+            initial_accounts.push(TitanAccountView {
+                account_no: binding.local_account_no,
+                account_epoch: epoch.max(balance_epoch),
+                account_sequence: version.max(balance_version),
+                state: AccountLifecycle::Ready as u8,
+                ..TitanAccountView::default()
+            });
+            for order in orders.items.iter() {
+                let Some(asset) = binding.tradable_assets.iter().find(|asset| asset.asset_id == order.asset_id.0) else { continue; };
+                let order_id = v13_strategy_order_id(handle, order.client_order_id);
+                if order_id == 0 { continue; }
+                initial_active_orders.push(TitanActiveOrderView {
+                    order_id, asset_no: asset.local_asset_no, account_no: binding.local_account_no,
+                    price_ticks: order.price_ticks, qty_lots: order.quantity_lots,
+                    cumulative_filled_lots: order.filled_quantity_lots,
+                    created_ts_ns: orders.captured_at, updated_ts_ns: orders.captured_at,
+                    account_sequence: version, side: order.side, order_type: order.order_type,
+                    time_in_force: order.time_in_force, status: order.status,
+                    ..TitanActiveOrderView::default()
+                });
+            }
         }
-        runtime.seed_account_state(initial_positions.into(), initial_balances.into())?;
+        runtime.seed_public_state(StrategyPublicStateSeedV13 {
+            positions: initial_positions.into(), balances: initial_balances.into(),
+            accounts: initial_accounts.into(), active_orders: initial_active_orders.into(),
+        })?;
         // Event routing must exist before an upstream subscription can emit its initial image.
         // Each token is owned by the strategy resource scope, so replace/remove cannot leak a
         // venue subscription.
         for binding in resolved_markets.iter() {
             let mut kinds = Vec::new();
-            for subscription in definition.subscriptions.iter() {
+            for subscription in manifest.subscriptions.iter() {
                 if !subscription.routing_keys.is_empty()
                     && !subscription
                         .routing_keys
@@ -1464,7 +1460,6 @@ pub(crate) fn validate_definition(
     }
     if definition.strategy_key.is_empty()
         || definition.strategy_id.0 == 0
-        || definition.entrypoint.is_empty()
         || definition.definition_version == 0
     {
         return Err(definition_error("missing_identity"));
@@ -1493,11 +1488,7 @@ pub(crate) fn validate_definition(
         || runtime
             .timer_interval
             .is_some_and(|interval| interval.is_zero())
-        || runtime.callback_budget.soft_budget.is_zero()
-        || runtime.callback_budget.stall_threshold < runtime.callback_budget.soft_budget
-        || runtime.callback_budget.max_consecutive_violations == 0
-        || runtime.state_f64_capacity > config.max_state_capacity
-        || runtime.state_i64_capacity > config.max_state_capacity
+        || runtime.max_handler_duration.is_zero()
         || !config
             .allowed_worker_policies
             .contains(&runtime.worker_policy)
@@ -1543,9 +1534,8 @@ pub(crate) fn validate_definition(
             }
         }
     }
-    if definition.subscriptions.is_empty() {
-        return Err(definition_error("subscriptions_empty"));
-    }
+    // V13 subscriptions are signed artifact metadata. Deployment definitions only bind their
+    // routing keys and runtime resources.
     for subscription in definition.subscriptions.iter() {
         if !supported_strategy_subscription(
             subscription.event_type.as_ref(),
@@ -1603,7 +1593,7 @@ pub(crate) fn validate_manifest(
             "manifest digest does not match the pinned definition",
         ));
     }
-    if manifest.runtime_abi.major != titan_runtime_abi::STRATEGY_ABI_VERSION as u16 {
+    if manifest.runtime_abi.major != STRATEGY_ABI_V13 as u16 {
         return Err(StrategyError::new(
             StrategyErrorKind::AbiMismatch,
             "inspect",
@@ -1611,9 +1601,23 @@ pub(crate) fn validate_manifest(
             "strategy package requires an incompatible runtime ABI",
         ));
     }
-    let unavailable = StrategyCapabilities(
-        StrategyCapabilities::SCHEDULE_TIMER.0 | StrategyCapabilities::AMEND_ORDER.0,
-    );
+    if manifest.subscriptions.is_empty() {
+        return Err(definition_error("artifact_subscriptions_empty"));
+    }
+    if manifest.state_byte_len == 0 || manifest.state_byte_len > config.max_state_capacity {
+        return Err(definition_error("artifact_state_capacity"));
+    }
+    for subscription in manifest.subscriptions.iter() {
+        if !supported_strategy_subscription(subscription.event_type.as_ref(), subscription.schema_version) {
+            return Err(definition_error("artifact_subscription_unsupported"));
+        }
+        if !config.allowed_event_types.is_empty()
+            && !config.allowed_event_types.contains(&(subscription.event_type.clone(), subscription.schema_version))
+        {
+            return Err(definition_error("artifact_event_not_allowed"));
+        }
+    }
+    let unavailable = StrategyCapabilities(StrategyCapabilities::AMEND_ORDER.0);
     if manifest.capabilities.contains(unavailable) {
         return Err(StrategyError::new(
             StrategyErrorKind::UnsupportedCapability,
@@ -1630,45 +1634,8 @@ pub(crate) fn validate_manifest(
             "package capability exceeds service authorization",
         ));
     }
-    if manifest.parameter_schema_version != definition.parameter_schema_version {
-        return Err(StrategyError::new(
-            StrategyErrorKind::ParameterInvalid,
-            "inspect",
-            "parameter_schema_version",
-            "parameter schema version does not match",
-        ));
-    }
-    let value: serde_json::Value = serde_json::from_slice(&definition.parameters)
-        .map_err(|_| definition_error("parameter_json"))?;
-    let validator = jsonschema::validator_for(&manifest.parameter_schema)
-        .map_err(|_| definition_error("parameter_schema_invalid"))?;
-    if validator.validate(&value).is_err() {
-        return Err(StrategyError::new(
-            StrategyErrorKind::ParameterInvalid,
-            "inspect",
-            "parameter_schema_rejected",
-            "strategy parameters do not match the package schema",
-        ));
-    }
-    for subscription in definition.subscriptions.iter() {
-        let required = if subscription.event_type.contains("Depth") {
-            StrategyCapabilities::READ_DEPTH
-        } else if subscription.event_type.contains("Bar") {
-            StrategyCapabilities::READ_BAR
-        } else if subscription.event_type.starts_with("titan.account") {
-            StrategyCapabilities::READ_ACCOUNT
-        } else {
-            StrategyCapabilities::READ_TICK
-        };
-        if !manifest.capabilities.contains(required) {
-            return Err(StrategyError::new(
-                StrategyErrorKind::UnsupportedCapability,
-                "inspect",
-                "subscription_capability_missing",
-                "package did not declare a required read capability",
-            ));
-        }
-    }
+    // V13 parameters are normalized and baked into the signed artifact. Deployment-time
+    // definitions cannot override them or their schema.
     Ok(())
 }
 

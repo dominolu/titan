@@ -1,0 +1,19 @@
+[Unit]
+Description=Titan pair_arb ABI V13 mainnet canary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/titan-pair-arb-current
+Environment="PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="RUST_LOG=warn"
+ExecStart=%h/titan-pair-arb-current/target/release/titan core-run --config %h/titan-pair-arb-current/deploy/pair_arb_v13/runtime.toml --json
+Restart=no
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=append:%h/titan-pair-arb-current/deploy/pair_arb_v13/logs/runtime.log
+StandardError=append:%h/titan-pair-arb-current/deploy/pair_arb_v13/logs/runtime.log
+
+[Install]
+WantedBy=default.target

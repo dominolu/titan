@@ -4,12 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.0"
 
-[features]
-default = []
-numba-loader = ["dep:titan-python-host"]
-
 [dependencies]
-jsonschema = { version = "0.33", default-features = false }
+ed25519-dalek = "2"
+libloading = "0.8"
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
@@ -19,10 +16,8 @@ titan-account-service = { path = "../titan-account-service" }
 titan-event-engine = { path = "../titan-event-engine" }
 titan-market-service = { path = "../titan-market-service" }
 titan-core-types = { path = "../titan-core-types" }
-titan-python-host = { path = "../titan-python-host", optional = true }
-titan-runtime = { path = "../titan-runtime" }
-titan-runtime-abi = { path = "../titan-runtime-abi" }
 tracing = "0.1"
+zip = { version = "6", default-features = false }
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

@@ -20,6 +20,10 @@ build/
 # Local data and artifacts
 /data/
 artifacts/
+!deploy/pair_arb_v13/artifacts/
+!deploy/pair_arb_v13/artifacts/pair_arb.titan
+!crates/titan-cli/tests/fixtures/artifacts/
+!crates/titan-cli/tests/fixtures/artifacts/event_counter.titan
 backtest_reports/
 .titan/
 /internal-docs/

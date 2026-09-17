@@ -39,6 +39,8 @@ pub struct PrimaryAsyncLaneConfig {
     pub spin_iterations: usize,
     pub idle_sleep: Duration,
     pub cpu_affinity: Option<usize>,
+    /// Hard post-return duration limit for one complete handler invocation.
+    pub max_handler_duration: Duration,
 }
 
 impl Default for PrimaryAsyncLaneConfig {
@@ -53,6 +55,7 @@ impl Default for PrimaryAsyncLaneConfig {
             spin_iterations: 256,
             idle_sleep: Duration::from_micros(10),
             cpu_affinity: None,
+            max_handler_duration: Duration::from_millis(5),
         }
     }
 }
@@ -221,6 +224,7 @@ pub(crate) struct PrimaryAsyncLane {
     fault_signals: Arc<ArrayQueue<FaultSignal>>,
     snapshot_budget: Arc<SnapshotBarrierBudget>,
     snapshot_timeout: Duration,
+    max_handler_duration: Duration,
 }
 
 impl PrimaryAsyncLane {
@@ -243,6 +247,7 @@ impl PrimaryAsyncLane {
             || config.snapshot_staging_capacity == 0
             || config.control_capacity == 0
             || config.idle_sleep.is_zero()
+            || config.max_handler_duration.is_zero()
             || (config.runtime_mode == SubscriberRuntimeMode::Dedicated
                 && config.cpu_affinity.is_none())
         {
@@ -297,6 +302,7 @@ impl PrimaryAsyncLane {
             fault_signals,
             snapshot_budget,
             snapshot_timeout,
+            max_handler_duration: config.max_handler_duration,
         });
         let worker_lane = lane.clone();
         let (startup_tx, startup_rx) = sync_channel(1);
@@ -482,6 +488,7 @@ impl PrimaryAsyncLane {
             }
             if let Some(event) = self.pop_event() {
                 self.health.on_dispatched(event.admitted_sequence);
+                let started = Instant::now();
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     self.handler.handle(EventView {
                         event_type: event.descriptor.event_type.as_ref(),
@@ -499,7 +506,8 @@ impl PrimaryAsyncLane {
                         trace: event.header.trace,
                     })
                 }));
-                if matches!(result, Ok(Ok(()))) {
+                let timed_out = started.elapsed() > self.max_handler_duration;
+                if matches!(result, Ok(Ok(()))) && !timed_out {
                     self.health.on_committed(event.admitted_sequence);
                     if self.pending.is_empty() && self.health.state() == SubscriberState::Pending {
                         self.health.set_state(SubscriberState::Normal);
@@ -514,6 +522,7 @@ impl PrimaryAsyncLane {
                         sequence: event.admitted_sequence,
                         detail: event.descriptor.id as u64,
                     });
+                    self.release_queued_events();
                 }
                 continue;
             }
@@ -552,6 +561,17 @@ impl PrimaryAsyncLane {
         if let Some(worker) = self.worker.get() {
             worker.unpark();
         }
+    }
+
+    fn release_queued_events(&self) {
+        while self.queue.pop().is_some() {}
+        while self.pending.pop().is_some() {}
+        self.latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        self.health.set_channel_depth(0);
+        self.health.set_pending_depth(0);
     }
 
     pub(crate) fn stop_and_join(&self) {

@@ -379,18 +379,20 @@ strategies/pair_arb/
 
 Numba 热路径不做 Python 动态分派。`build(parameters)` 在冷路径选择 signal evaluator 和 execution policy，将对应的 `@njit` 函数闭包进统一 callbacks。
 
-固定数组按模块分段，不再把所有字段混成一套全局 offset：
+ABI V13 使用策略声明的 aligned structured dtype；私有状态按具名 nested record/fixed array 分组，
+不再维护按基础类型拆分的全局 offset：
 
 ```text
-state_f64:
-  market views | positions | risk | intent | execution metrics
+ctx.state:
+  engine | quote slots | private order refs | fill dedupe ring |
+  obligations | timers/counters | risk/intent/execution metrics
 
-state_i64:
-  engine | quote slots | order ring | fill dedupe ring |
-  position overlays | obligation ring | timers/counters
+ctx (runtime-owned readonly views):
+  market | positions | balances | accounts | active orders | current event
 ```
 
-每个 ring 必须有容量耗尽策略。order/fill/obligation ring 接近满时先停止 quoting 并 drain；不得覆盖尚未 terminal/satisfied 的项目。
+每个私有 ring 必须有容量耗尽策略。order-ref/fill-dedupe/obligation ring 接近满时先停止 quoting
+并 drain；不得覆盖尚未 terminal/satisfied 的项目。完整订单事实不进入任何私有 ring。
 
 ## 10. 配置边界
 
@@ -432,7 +434,7 @@ tick、lot、contract multiplier、fee 和 instrument 类型应优先由 runtime
 
 ## 11. 现有跨所做市策略的复用与修正
 
-现有 `strategies/okx_hyperliquid_xemm` 是成对执行引擎的一个跨所应用，可复用其中已经验证的 maker bid/ask slot、cancel-confirm-replace、fill dedupe、hedge IOC/retry、depth-aware VWAP、position epoch/version 和 readiness/stale gate。
+V13 `strategies/pair_arb` 直接实现成对执行状态机，并保留 maker bid/ask slot、cancel-confirm-replace、fill delta、hedge obligation、position epoch/version 和 readiness/stale gate；不再依赖或保留旧 XEMM/V12 策略包。
 
 通用内核不应直接复制以下耦合：
 

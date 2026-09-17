@@ -179,6 +179,67 @@ fn primary_async_lane_owns_handler_and_advances_three_watermarks() {
 }
 
 #[test]
+fn primary_async_lane_fails_after_hard_handler_duration_and_releases_tail() {
+    struct SlowHandler(AtomicUsize);
+    impl EventHandler for SlowHandler {
+        fn handle(&self, _: EventView<'_>) -> Result<(), CoreError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            thread::sleep(Duration::from_millis(5));
+            Ok(())
+        }
+    }
+
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event(
+            "slow-primary",
+            1,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .unwrap();
+    engine.start().unwrap();
+    let handler = Arc::new(SlowHandler(AtomicUsize::new(0)));
+    let lane = handle
+        .register_primary_async_lane(
+            &[PrimarySubscriptionSpec {
+                event_type: Arc::from("slow-primary"),
+                schema_version: 1,
+                qos: EventQos::ReliableOrdered,
+                routing_keys: Arc::from([]),
+            }],
+            PrimaryAsyncLaneConfig {
+                capacity: 8,
+                critical_reserve: 1,
+                reliable_pending_capacity: 4,
+                snapshot_staging_capacity: 8,
+                control_capacity: 4,
+                idle_sleep: Duration::from_millis(1),
+                max_handler_duration: Duration::from_millis(1),
+                ..PrimaryAsyncLaneConfig::default()
+            },
+            handler.clone(),
+        )
+        .unwrap();
+    for payload in [b"one".as_slice(), b"two", b"three"] {
+        handle
+            .try_publish(PublishRequest::new("slow-primary", 1, payload))
+            .unwrap();
+    }
+    wait_until(|| lane.health().state == SubscriberState::Failed);
+    assert_eq!(handler.0.load(Ordering::Acquire), 1);
+    assert_eq!(lane.health().channel_depth, 0);
+    assert_eq!(lane.health().pending_depth, 0);
+    assert!(
+        std::iter::from_fn(|| handle.pop_fault_signal())
+            .any(|signal| signal.kind == FaultKind::SubscriberFailed)
+    );
+    handle.unregister_primary_async_lane(lane.token());
+    engine.stop().unwrap();
+}
+
+#[test]
 fn snapshot_barrier_stages_then_replays_only_newer_tail() {
     let mut config = test_config();
     config.arena.snapshot.slots = 16;

@@ -1,58 +1,55 @@
-"""Fixed-memory dual moving average strategy for the Titan callback ABI."""
+"""Strategy ABI V13 typed-state dual moving average."""
 
-from types import SimpleNamespace
-
-import numpy as np
 from numba import njit
 
+from titan_strategy.definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
+from titan_strategy.parameters import IntParam
+from titan_strategy.state import array, float64, int64, new_state, record
+from titan_strategy.types import EventKind, EventQos
+
+MAX_WINDOW = 256
+state_dtype = record(
+    samples=array(float64, MAX_WINDOW), cursor=int64, count=int64,
+    fast=int64, slow=int64, fast_sum=float64, slow_sum=float64,
+    fast_mean=float64, slow_mean=float64,
+)
+SPEC = StrategySpec(
+    strategy_id="dual_ma", strategy_version="2.0.0", state_schema_version=1,
+    parameters=(IntParam("fast", required=False, default=2, minimum=1),
+                IntParam("slow", required=False, default=4, minimum=2, maximum=MAX_WINDOW)),
+    subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),
+                   EventSubscription(EventKind.BAR, "on_bar", 1, EventQos.RELIABLE_ORDERED)),
+    capabilities=Capability.MARKET_DATA,
+)
+
+@njit
+def update(s, price):
+    cursor, count, fast, slow = s["cursor"], s["count"], s["fast"], s["slow"]
+    if count >= slow:
+        s["slow_sum"] -= s["samples"][cursor]
+    if count >= fast:
+        s["fast_sum"] -= s["samples"][(cursor + slow - fast) % slow]
+    s["samples"][cursor] = price
+    s["fast_sum"] += price
+    s["slow_sum"] += price
+    count += 1
+    s["count"], s["cursor"] = count, (cursor + 1) % slow
+    s["fast_mean"] = s["fast_sum"] / min(count, fast)
+    s["slow_mean"] = s["slow_sum"] / min(count, slow)
+
+@njit
+def on_tick(ctx):
+    for tick in ctx.ticks():
+        update(ctx.state, tick["price_ticks"])
+
+@njit
+def on_bar(ctx):
+    for bar in ctx.bars():
+        update(ctx.state, bar["close_ticks"])
 
 def build(parameters):
-    fast = int(parameters.get("fast", 2))
-    slow = int(parameters.get("slow", 4))
-    if fast <= 0 or slow <= fast:
+    if parameters["slow"] <= parameters["fast"]:
         raise ValueError("dual_ma requires 0 < fast < slow")
-
-    state = np.zeros(4 + slow, dtype=np.float64)
-    state_i64 = np.zeros(2, dtype=np.int64)  # ring cursor, observed count
-
-    @njit
-    def update(s, close):
-        cursor = s.state_i64[0]
-        count = s.state_i64[1]
-        if count >= slow:
-            s.state[1] -= s.state[4 + cursor]
-        if count >= fast:
-            fast_out = (cursor + slow - fast) % slow
-            s.state[0] -= s.state[4 + fast_out]
-        s.state[4 + cursor] = close
-        s.state[0] += close
-        s.state[1] += close
-        next_count = count + 1
-        fast_count = min(next_count, fast)
-        slow_count = min(next_count, slow)
-        s.state[2] = s.state[0] / fast_count
-        s.state[3] = s.state[1] / slow_count
-        s.state_i64[0] = (cursor + 1) % slow
-        s.state_i64[1] = next_count
-
-    @njit
-    def on_bar(s):
-        bars = s.bars()
-        if len(bars) != 0:
-            update(s, bars[0]["bar"]["close"])
-
-    @njit
-    def on_tick(s):
-        ticks = s.ticks()
-        for tick in ticks:
-            update(s, tick["event"]["px"])
-
-    return SimpleNamespace(
-        strategy_id="dual_ma",
-        strategy_version="1.0.0",
-        on_bar=on_bar,
-        on_tick=on_tick,
-        state=state,
-        state_i64=state_i64,
-        metadata={"fast": fast, "slow": slow},
-    )
+    state = new_state(state_dtype)
+    state[0]["fast"], state[0]["slow"] = parameters["fast"], parameters["slow"]
+    return StrategyDefinition(SPEC, state, {"on_tick": on_tick, "on_bar": on_bar})

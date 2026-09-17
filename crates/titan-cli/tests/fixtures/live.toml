@@ -1,21 +1,20 @@
 schema_version = 1
 
 [strategy_service]
-allowed_artifact_roots = ["../../../../strategies"]
-python_paths = ["../../../../strategies", "../../../../python/titan-strategy-sdk"]
+allowed_artifact_roots = ["artifacts"]
 
 [[strategies]]
 strategy_key = "event_counter"
 strategy_id = 701
-package = { loader_type = "numba-python", uri = "file://../../../../strategies/event_counter", expected_digest = [196, 208, 8, 89, 144, 161, 123, 205, 18, 167, 187, 75, 229, 255, 113, 78, 196, 50, 231, 95, 87, 201, 52, 66, 31, 153, 185, 99, 235, 46, 192, 187] }
-entrypoint = "event_counter.strategy:build"
-parameters = [123, 125]
+package = { loader_type = "native-v13", uri = "file://artifacts/event_counter.titan", expected_digest = [169, 215, 167, 218, 177, 26, 206, 227, 116, 251, 150, 161, 77, 102, 54, 195, 101, 125, 179, 158, 21, 116, 233, 20, 155, 92, 48, 137, 206, 134, 234, 224] }
+entrypoint = "native-v13"
+parameters = '''{}'''
 parameter_schema_version = 1
 markets = []
 accounts = []
 subscriptions = [{ event_type = "titan.market.TradeBatch", schema_version = 1, routing_keys = [1], qos = "ReliableOrdered" }]
 risk_scope = "unused"
-runtime = { async_lane_capacity = 64, critical_reserve = 8, reliable_pending_capacity = 16, worker_policy = "spin_sleep", timer_capacity = 16, state_f64_capacity = 16, state_i64_capacity = 16, callback_budget = { soft_budget = { secs = 0, nanos = 100000 }, stall_threshold = { secs = 0, nanos = 5000000 }, max_consecutive_violations = 3 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+runtime = { async_lane_capacity = 64, critical_reserve = 8, reliable_pending_capacity = 16, worker_policy = "spin_sleep", timer_capacity = 16, max_handler_duration = { secs = 0, nanos = 5000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
 recovery = "fresh"
 enabled = true
 definition_version = 1
