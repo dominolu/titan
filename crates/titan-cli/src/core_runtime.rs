@@ -19,9 +19,8 @@ use titan_market_service::{
     BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, MARKET_EVENT_TYPES, MarketAdminService,
     MarketConnectorFactory, MarketCoreConfig, MarketServiceCore, MarketSourceDefinition,
 };
-use titan_python_host::EmbeddedPythonCompiler;
 use titan_strategy_runtime::{
-    InProcessNumbaLoaderFactory, NativeStrategyRuntimeFactory, StrategyAdminService,
+    NativeV13LoaderFactory, NativeV13RuntimeFactory, StrategyAdminService,
     StrategyCoreConfig, StrategyDataMode, StrategyDefinition, StrategyOperationState,
     StrategyPackageLoaderRegistry, StrategyRecoveryPolicy, StrategyRuntimeFactoryRegistry,
     StrategyServiceCore, StrategyServiceDependencies,
@@ -107,15 +106,12 @@ impl Default for AccountServiceConfig {
 pub struct StrategyServiceConfig {
     #[serde(default)]
     pub allowed_artifact_roots: Vec<PathBuf>,
-    #[serde(default)]
-    pub python_paths: Vec<PathBuf>,
 }
 
 impl Default for StrategyServiceConfig {
     fn default() -> Self {
         Self {
             allowed_artifact_roots: Vec::new(),
-            python_paths: Vec::new(),
         }
     }
 }
@@ -157,8 +153,6 @@ pub struct AdaptedConfiguration {
 #[derive(Clone)]
 struct StrategyBootstrap {
     config: StrategyCoreConfig,
-    python_paths: Vec<PathBuf>,
-    strategy_types: BTreeSet<Arc<str>>,
 }
 
 #[derive(Debug, Error)]
@@ -424,22 +418,14 @@ impl TradingRuntime {
         let account_startup_timeout =
             std::time::Duration::from_millis(account_service.startup_timeout_ms);
         let strategy = if let Some(bootstrap) = strategy_bootstrap {
-            let mut compiler = EmbeddedPythonCompiler::default();
-            for path in bootstrap.python_paths {
-                compiler = compiler.with_python_path(path);
-            }
             let loaders = Arc::new(StrategyPackageLoaderRegistry::default());
             loaders
-                .register(Arc::new(InProcessNumbaLoaderFactory::new(Arc::new(
-                    compiler,
-                ))))
+                .register(Arc::new(NativeV13LoaderFactory))
                 .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
             let runtimes = Arc::new(StrategyRuntimeFactoryRegistry::default());
-            for strategy_type in bootstrap.strategy_types {
-                runtimes
-                    .register(Arc::new(NativeStrategyRuntimeFactory::new(strategy_type)))
-                    .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
-            }
+            runtimes
+                .register(Arc::new(NativeV13RuntimeFactory))
+                .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
             let account_query: Arc<dyn AccountQueryService> = account.clone();
             Some(Arc::new(
                 StrategyServiceCore::new(
@@ -765,11 +751,6 @@ fn validate_account_source_capacity(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct StrategyManifestProbe {
-    strategy_type: String,
-}
-
 fn adapt_strategies(
     strategies: &mut [StrategyDefinition],
     config_directory: &Path,
@@ -791,15 +772,6 @@ fn adapt_strategies(
             "strategy_service requires at least one allowed_artifact_roots entry".into(),
         ));
     }
-    let mut python_paths = Vec::with_capacity(bootstrap.python_paths.len());
-    for path in bootstrap.python_paths {
-        python_paths.push(canonical_config_path(
-            config_directory,
-            &path,
-            "Python path",
-        )?);
-    }
-    let mut strategy_types = BTreeSet::new();
     for definition in strategies {
         if definition.recovery != StrategyRecoveryPolicy::Fresh {
             return Err(ConfigurationError::Invalid(format!(
@@ -807,7 +779,7 @@ fn adapt_strategies(
                 definition.strategy_key
             )));
         }
-        if definition.package.loader_type.as_ref() != "numba-python" {
+        if definition.package.loader_type.as_ref() != "native-v13" {
             return Err(ConfigurationError::Invalid(format!(
                 "strategy {} uses unsupported production loader {}",
                 definition.strategy_key, definition.package.loader_type
@@ -825,9 +797,9 @@ fn adapt_strategies(
             })?;
         let package_root =
             canonical_config_path(config_directory, Path::new(relative), "strategy package")?;
-        if !package_root.is_dir() {
+        if !package_root.is_file() {
             return Err(ConfigurationError::Invalid(format!(
-                "strategy package {} is not a directory",
+                "strategy artifact {} is not a file",
                 package_root.display()
             )));
         }
@@ -840,30 +812,8 @@ fn adapt_strategies(
                 package_root.display()
             )));
         }
-        let bytes =
-            std::fs::read(package_root.join("strategy-manifest.json")).map_err(|error| {
-                ConfigurationError::Invalid(format!(
-                    "cannot read strategy {} manifest: {error}",
-                    definition.strategy_key
-                ))
-            })?;
-        let probe = serde_json::from_slice::<StrategyManifestProbe>(&bytes).map_err(|error| {
-            ConfigurationError::Invalid(format!(
-                "invalid strategy {} manifest: {error}",
-                definition.strategy_key
-            ))
-        })?;
-        if probe.strategy_type.trim().is_empty() {
-            return Err(ConfigurationError::Invalid(format!(
-                "strategy {} manifest has an empty strategy_type",
-                definition.strategy_key
-            )));
-        }
-        strategy_types.insert(Arc::from(probe.strategy_type));
         definition.package.uri = Arc::from(format!("file://{}", package_root.display()));
     }
-    python_paths.sort();
-    python_paths.dedup();
     let mut config = StrategyCoreConfig::default();
     config.allowed_artifact_roots = allowed_roots
         .iter()
@@ -872,8 +822,6 @@ fn adapt_strategies(
         .into();
     Ok(Some(StrategyBootstrap {
         config,
-        python_paths,
-        strategy_types,
     }))
 }
 
@@ -1102,9 +1050,9 @@ mod tests {
     }
 
     #[test]
-    fn xemm_mainnet_runtime_template_deserializes_human_readable_byte_fields() {
+    fn pair_arb_v13_runtime_template_deserializes_human_readable_byte_fields() {
         let config: ApplicationConfig = toml::from_str(include_str!(
-            "../../../deploy/okx_hyperliquid_xemm_testnet/runtime.toml"
+            "../../../deploy/pair_arb_v13/runtime.toml"
         ))
         .unwrap();
         assert_eq!(config.market_sources.len(), 2);
@@ -1122,11 +1070,10 @@ mod tests {
         assert_eq!(config.event_engine.ingress.max_sources, 8_192);
         validate_account_source_capacity(&config.event_engine, &config.accounts).unwrap();
         assert_eq!(config.strategies.len(), 1);
-        assert!(
-            std::str::from_utf8(&config.strategies[0].parameters)
-                .unwrap()
-                .contains("\"min_profitability_bps\":10.0")
-        );
+        assert_eq!(config.strategies[0].package.loader_type.as_ref(), "native-v13");
+        assert_eq!(config.strategies[0].parameters.as_ref(), b"{}");
+        let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb_v13");
+        ConfigurationAdapter::adapt(config, &deployment).unwrap();
     }
 
     #[test]
@@ -1187,7 +1134,7 @@ config = {}
             strategy_key: Arc::from("freeze-test"),
             strategy_id: titan_strategy_runtime::StrategyId(99),
             package: titan_strategy_runtime::StrategyPackageRef {
-                loader_type: Arc::from("numba-python"),
+                loader_type: Arc::from("native-v13"),
                 uri: Arc::from("file:///unused"),
                 expected_digest: [1; 32],
                 signature_ref: None,

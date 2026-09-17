@@ -1,0 +1,123 @@
+schema_version = 1
+
+[market_service]
+max_sources = 16
+max_instruments = 4096
+stop_timeout_ms = 15000
+
+[account_service]
+max_accounts = 32
+max_instruments_per_account = 4096
+max_currencies_per_account = 512
+secret_root = "secrets"
+startup_timeout_ms = 30000
+stop_timeout_ms = 15000
+
+[strategy_service]
+allowed_artifact_roots = ["artifacts"]
+
+[execution]
+worker_threads = 2
+max_active_tasks = 8192
+shutdown_deadline_ms = 15000
+
+[event_engine.ingress]
+max_sources = 8192
+
+[[market_sources]]
+source_key = "okx-btc-mainnet"
+connector_type = "okx"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://ws.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://ws.okx.com:8443/ws/v5/private"
+api_key = ""
+secret = ""
+passphrase = ""
+simulated = false
+proxy = ""
+td_mode = "cross"
+order_prefix = ""
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 } }]
+enabled = false
+definition_version = 1
+
+[[market_sources]]
+source_key = "hyperliquid-btc-mainnet"
+connector_type = "hyperliquid"
+connector_config = '''
+info_url = "https://api.hyperliquid.xyz/info"
+exchange_url = "https://api.hyperliquid.xyz/exchange"
+ws_url = "wss://api.hyperliquid.xyz/ws"
+l2_fast = true
+is_mainnet = true
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 5 } }]
+enabled = false
+definition_version = 1
+
+[[accounts]]
+account_key = "okx-maker-mainnet"
+account_id = 2001
+connector_type = "okx-account"
+credential_ref = "secret://file/okx-mainnet.toml"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://ws.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://ws.okx.com:8443/ws/v5/private"
+simulated = false
+proxy = ""
+td_mode = "cross"
+order_prefix = ""
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 }, contract_multiplier = { coefficient = 1, scale = 0 } }]
+currencies = [{ native_currency = "USDT", currency_id = 1, amount_unit = { coefficient = 1, scale = 8 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = false
+definition_version = 1
+
+[[accounts]]
+account_key = "hyperliquid-hedge-mainnet"
+account_id = 2002
+connector_type = "hyperliquid-account"
+credential_ref = "secret://file/hyperliquid-mainnet.toml"
+connector_config = '''
+info_url = "https://api.hyperliquid.xyz/info"
+exchange_url = "https://api.hyperliquid.xyz/exchange"
+ws_url = "wss://api.hyperliquid.xyz/ws"
+is_mainnet = true
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 5 }, contract_multiplier = { coefficient = 1, scale = 0 } }]
+currencies = [{ native_currency = "USDC", currency_id = 2, amount_unit = { coefficient = 1, scale = 8 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = false
+definition_version = 1
+
+[[strategies]]
+strategy_key = "pair_arb"
+strategy_id = 9001
+package = { loader_type = "native-v13", uri = "file://artifacts/pair_arb.titan", expected_digest = [94, 168, 90, 124, 93, 98, 194, 213, 241, 144, 227, 60, 135, 51, 204, 171, 6, 32, 235, 1, 35, 103, 186, 115, 242, 24, 169, 86, 87, 86, 93, 57] }
+entrypoint = "native-v13"
+parameters = '''{}'''
+parameter_schema_version = 1
+markets = [
+  { local_market_no = 0, local_asset_no = 0, source_key = "okx-btc-mainnet", asset_id = 1001, data_mode = "tick" },
+  { local_market_no = 1, local_asset_no = 1, source_key = "hyperliquid-btc-mainnet", asset_id = 1002, data_mode = "tick" },
+]
+accounts = [
+  { local_account_no = 0, account_key = "okx-maker-mainnet", tradable_assets = [{ local_asset_no = 0, asset_id = 1001 }] },
+  { local_account_no = 1, account_key = "hyperliquid-hedge-mainnet", tradable_assets = [{ local_asset_no = 1, asset_id = 1002 }] },
+]
+subscriptions = []
+risk_scope = "okx-hyperliquid-mainnet-shadow"
+runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
+recovery = "fresh"
+enabled = false
+definition_version = 1

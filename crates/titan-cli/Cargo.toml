@@ -14,20 +14,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 thiserror = "2"
-hftbacktest = { path = "../../hftbacktest", default-features = false, features = ["backtest"] }
 libc = "0.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
 signal-hook = "0.3"
 sysinfo = "0.37"
-titan-python-host = { path = "../titan-python-host" }
-titan-runtime = { path = "../titan-runtime", default-features = false, features = ["backtest"] }
-titan-runtime-abi = { path = "../titan-runtime-abi" }
 titan-event-engine = { path = "../titan-event-engine" }
 titan-core-types = { path = "../titan-core-types" }
 titan-market-service = { path = "../titan-market-service" }
 titan-account-service = { path = "../titan-account-service" }
-titan-strategy-runtime = { path = "../titan-strategy-runtime", features = ["numba-loader"] }
+titan-strategy-runtime = { path = "../titan-strategy-runtime" }
 connector = { path = "../../connector" }
 semver = "1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

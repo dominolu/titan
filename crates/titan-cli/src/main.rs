@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::os::{fd::AsRawFd, unix::process::CommandExt};
+use std::os::unix::process::CommandExt;
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
@@ -19,29 +19,8 @@ mod registry;
 use registry::{Registry, StopAction, now_ns, process_start_time};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hftbacktest::{
-    backtest::{
-        Backtest, DataSource, ExchangeKind, L2AssetBuilder,
-        assettype::{AssetType, InverseAsset, LinearAsset},
-        data::Data,
-        execution::{ExecutionReport, FundingReport},
-        models::{
-            CommonFees, ConstantLatency, PowerProbQueueFunc3, ProbQueueModel, QueueModel,
-            RiskAdverseQueueModel, TradingValueFeeModel,
-        },
-        result::{AccountSnapshot, execution_report_counts},
-    },
-    depth::HashMapMarketDepth,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use titan_python_host::{EmbeddedPythonCompiler, StrategyCompiler, StrategySpec};
-use titan_runtime::{
-    CallbackRegistry, HybridFrameSource, MaterializedBarSource, RuntimeEvent, RuntimeEventSource,
-    RuntimeRunStats, StrategyRuntimeContext, TickFrameSource, run_event_runtime_counted,
-    runtime_abi_descriptor,
-};
-use titan_runtime_abi::{BAR_COMPLETE, BAR_NATIVE, Bar, Event, TimedBarItem};
 
 const RUN_SPEC_VERSION: u32 = 1;
 
@@ -175,11 +154,20 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Eagerly import and Numba-compile one strategy.
+    /// Compile an ABI V13 strategy to a native artifact.
     Compile {
-        name: String,
+        #[arg(long, value_name = "strategy.py")]
+        strategy: PathBuf,
         #[arg(long, default_value = "{}")]
         parameters: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "x86-64")]
+        cpu_baseline: String,
+        #[arg(long, default_value = "pair", value_parser = ["pair", "bundle"])]
+        artifact_format: String,
+        #[arg(long, value_name = "ARTIFACT")]
+        output: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -510,151 +498,6 @@ enum BacktestSourceSpec {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BarInput {
-    asset_no: u64,
-    timeframe_ns: i64,
-    open_ts: i64,
-    close_ts: i64,
-    open: f64,
-    high: f64,
-    low: f64,
-    close: f64,
-    #[serde(default)]
-    volume: f64,
-    #[serde(default)]
-    quote_volume: f64,
-    #[serde(default)]
-    buy_volume: f64,
-    #[serde(default)]
-    trade_count: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TickInput {
-    ev: u64,
-    exch_ts: i64,
-    local_ts: i64,
-    px: f64,
-    qty: f64,
-    #[serde(default)]
-    order_id: u64,
-    #[serde(default)]
-    ival: i64,
-    #[serde(default)]
-    fval: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct WorkerResult {
-    schema_version: u32,
-    run_id: String,
-    strategy_id: String,
-    strategy_version: String,
-    environment: Environment,
-    event_mode: EventMode,
-    config_sha256: String,
-    abi_fingerprint: String,
-    market_event_count: u64,
-    callback_count: Vec<u64>,
-    start_exchange_ts: i64,
-    end_exchange_ts: i64,
-    wall_time_ns: u64,
-    order_count: u64,
-    fill_count: u64,
-    reject_count: u64,
-    cancel_count: u64,
-    expire_count: u64,
-    execution_reports: Vec<ExecutionReportResult>,
-    funding_reports: Vec<FundingReportResult>,
-    exchange_final: Vec<AccountSnapshotResult>,
-    local_delivered_final: Vec<AccountSnapshotResult>,
-    returns: Vec<ReturnObservation>,
-    state_f64: Vec<f64>,
-    state_i64: Vec<i64>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExecutionReportResult {
-    kind: String,
-    reason: String,
-    venue_no: u32,
-    instrument_id: u32,
-    asset_no: u32,
-    order_id: u64,
-    venue_order_id: u64,
-    exchange_ts: i64,
-    delivery_ts: i64,
-    sequence: u64,
-    status: String,
-    side: String,
-    order_price: f64,
-    order_qty: f64,
-    exec_price: f64,
-    exec_qty: f64,
-    maker: bool,
-    account_delta: Option<AccountDeltaResult>,
-}
-
-#[derive(Debug, Serialize)]
-struct AccountDeltaResult {
-    instrument_id: u32,
-    position_delta: f64,
-    trade_qty: f64,
-    trade_value: f64,
-    currency: u32,
-    cash_delta: f64,
-    fee: f64,
-    funding: f64,
-    execution_price: f64,
-    realized_pnl: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct FundingReportResult {
-    event_id: u64,
-    venue_no: u32,
-    instrument_id: u32,
-    currency: u32,
-    exchange_ts: i64,
-    delivery_ts: i64,
-    sequence: u64,
-    position_qty: f64,
-    rate: f64,
-    mark_price: f64,
-    amount: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct AccountSnapshotResult {
-    venue_no: u32,
-    asset_no: u32,
-    currency: u32,
-    position: f64,
-    balance: f64,
-    fee: f64,
-    funding: f64,
-    realized_pnl: f64,
-    unrealized_pnl: f64,
-    margin: f64,
-}
-
-#[derive(Debug, Serialize)]
-struct ReturnObservation {
-    timestamp_ns: i64,
-    r#return: f64,
-}
-
-struct RuntimeExecutionOutcome {
-    stats: RuntimeRunStats,
-    execution_reports: Vec<ExecutionReport>,
-    funding_reports: Vec<FundingReport>,
-    exchange_final: Vec<AccountSnapshot>,
-    local_delivered_final: Vec<AccountSnapshot>,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 struct BundleFile {
     path: String,
@@ -702,12 +545,8 @@ enum CliError {
     WorkerFailed(String),
     #[error("report generation failed: {0}")]
     ReportFailed(String),
-    #[error("strategy compilation failed: {0}")]
-    Compile(#[from] titan_python_host::PythonHostError),
-    #[error("invalid callback descriptor: {0}")]
-    Callback(#[from] titan_runtime::RuntimeError),
-    #[error("invalid Bar input: {0}")]
-    Bar(#[from] titan_runtime::MaterializedBarError),
+    #[error("ABI V13 strategy compilation failed: {0}")]
+    StaticCompile(String),
     #[error("invalid configuration: {0}")]
     Engine(String),
     #[error("result serialization failed: {0}")]
@@ -732,9 +571,8 @@ impl CliError {
             Self::HistoryCapacity => "INVALID_HISTORY_CAPACITY",
             Self::Json { .. } => "INVALID_JSON",
             Self::Toml { .. } => "INVALID_TOML",
-            Self::Bar(_) | Self::Engine(_) => "INVALID_CONFIGURATION",
-            Self::Compile(_) => "STRATEGY_COMPILE_FAILED",
-            Self::Callback(_) => "RUNTIME_CALLBACK_FAILED",
+            Self::Engine(_) => "INVALID_CONFIGURATION",
+            Self::StaticCompile(_) => "STRATEGY_COMPILE_FAILED",
             Self::WorkerFailed(_) => "WORKER_FAILED",
             Self::ReportFailed(_) => "REPORT_FAILED",
             Self::Registry(_) => "REGISTRY_FAILED",
@@ -755,10 +593,8 @@ impl CliError {
             | Self::HistoryCapacity
             | Self::Json { .. }
             | Self::Toml { .. }
-            | Self::Bar(_)
             | Self::Engine(_) => 10,
-            Self::Compile(_) => 20,
-            Self::Callback(_) => 30,
+            Self::StaticCompile(_) => 20,
             Self::WorkerFailed(_) => 31,
             Self::ReportFailed(_) => 32,
             Self::Registry(_) => 40,
@@ -772,109 +608,6 @@ impl CliError {
 struct Heartbeat {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
-}
-
-struct StopAwareSource<S> {
-    inner: S,
-    stop: Arc<AtomicBool>,
-}
-
-#[cfg(unix)]
-struct ProcessOutputGuard {
-    stdout: libc::c_int,
-    stderr: libc::c_int,
-}
-
-#[cfg(unix)]
-impl Drop for ProcessOutputGuard {
-    fn drop(&mut self) {
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
-        // Safety: both descriptors were returned by dup and remain owned by this guard.
-        unsafe {
-            libc::dup2(self.stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.stderr, libc::STDERR_FILENO);
-            libc::close(self.stdout);
-            libc::close(self.stderr);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn redirect_process_output(path: &Path) -> Result<ProcessOutputGuard, CliError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| CliError::Read {
-            path: parent.into(),
-            source,
-        })?;
-    }
-    let output = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|source| CliError::Read {
-            path: path.into(),
-            source,
-        })?;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
-    // Safety: dup/dup2 operate on valid process descriptors and errors are checked immediately.
-    unsafe {
-        let stdout = libc::dup(libc::STDOUT_FILENO);
-        if stdout < 0 {
-            return Err(CliError::Spawn(std::io::Error::last_os_error()));
-        }
-        let stderr = libc::dup(libc::STDERR_FILENO);
-        if stderr < 0 {
-            libc::close(stdout);
-            return Err(CliError::Spawn(std::io::Error::last_os_error()));
-        }
-        if libc::dup2(output.as_raw_fd(), libc::STDOUT_FILENO) < 0
-            || libc::dup2(output.as_raw_fd(), libc::STDERR_FILENO) < 0
-        {
-            let error = std::io::Error::last_os_error();
-            libc::dup2(stdout, libc::STDOUT_FILENO);
-            libc::dup2(stderr, libc::STDERR_FILENO);
-            libc::close(stdout);
-            libc::close(stderr);
-            return Err(CliError::Spawn(error));
-        }
-        Ok(ProcessOutputGuard { stdout, stderr })
-    }
-}
-
-impl<S: RuntimeEventSource> RuntimeEventSource for StopAwareSource<S> {
-    type Error = S::Error;
-
-    fn next_event(&mut self) -> Result<Option<RuntimeEvent<'_>>, Self::Error> {
-        if self.stop.load(Ordering::Relaxed) {
-            Ok(None)
-        } else {
-            self.inner.next_event()
-        }
-    }
-
-    fn after_callback(
-        &mut self,
-        kind: u32,
-        context: &mut StrategyRuntimeContext,
-    ) -> Result<(), Self::Error> {
-        self.inner.after_callback(kind, context)
-    }
-
-    fn finish(&mut self) -> Result<(), Self::Error> {
-        self.inner.finish()
-    }
-
-    fn classify_error(
-        &self,
-        error: &Self::Error,
-    ) -> (
-        hftbacktest::backtest::result::EngineComponent,
-        hftbacktest::backtest::result::EngineErrorCode,
-    ) {
-        self.inner.classify_error(error)
-    }
 }
 
 impl Heartbeat {
@@ -1205,86 +938,130 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             Ok(())
         }
         StrategyCommands::Compile {
-            name,
+            strategy,
             parameters,
+            target,
+            cpu_baseline,
+            artifact_format,
+            output,
             json,
         } => {
-            let manifest = load_strategy_manifest(&name)?;
-            let parameters_value: serde_json::Value =
-                serde_json::from_str(&parameters).map_err(|source| CliError::Json {
-                    path: PathBuf::from("--parameters"),
-                    source,
-                })?;
-            let configured: BTreeMap<String, serde_json::Value> = parameters_value
-                .as_object()
-                .ok_or_else(|| CliError::Engine("--parameters must be a JSON object".into()))?
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
-            let parameters = resolve_json_parameters(&manifest, configured)?;
-            let strategy_root =
-                fs::canonicalize(strategies_path()).map_err(|source| CliError::Read {
-                    path: strategies_path(),
-                    source,
-                })?;
-            let mut compiler = EmbeddedPythonCompiler::default().with_python_path(strategy_root);
-            let sdk_path = std::env::var_os("TITAN_STRATEGY_SDK")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk"));
-            if sdk_path.exists() {
-                compiler =
-                    compiler.with_python_path(fs::canonicalize(&sdk_path).map_err(|source| {
-                        CliError::Read {
-                            path: sdk_path,
-                            source,
-                        }
-                    })?);
-            }
-            let manifest_path = strategy_manifest_path(&name);
-            let manifest_root = manifest_path.parent().unwrap_or(Path::new("."));
-            for path in &manifest.python_paths {
-                compiler = compiler.with_python_path(resolve_path(manifest_root, path)?);
-            }
-            let strategy_spec = StrategySpec {
-                entrypoint: manifest.entrypoint.clone(),
-                parameters,
-            };
-            #[cfg(unix)]
-            let loaded = {
-                let compile_log = registry_path().with_file_name("strategy-compile.log");
-                let _output = redirect_process_output(&compile_log)?;
-                compiler.compile(&strategy_spec, &runtime_abi_descriptor())?
-            };
-            #[cfg(not(unix))]
-            let loaded = compiler.compile(&strategy_spec, &runtime_abi_descriptor())?;
-            if loaded.metadata.strategy_id != manifest.strategy_id
-                || loaded.metadata.strategy_version != manifest.strategy_version
-            {
-                return Err(CliError::Engine(
-                    "compiled strategy identity does not match manifest".into(),
-                ));
-            }
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "schema_version": 1,
-                        "strategy_id": loaded.metadata.strategy_id,
-                        "strategy_version": loaded.metadata.strategy_version,
-                        "capabilities": loaded.metadata.capabilities
-                    })
-                );
-            } else {
-                println!(
-                    "{}\t{}\t{}",
-                    loaded.metadata.strategy_id,
-                    loaded.metadata.strategy_version,
-                    loaded.metadata.capabilities.join(",")
-                );
-            }
-            Ok(())
+            compile_v13_strategy(
+                &strategy,
+                &parameters,
+                target.as_deref(),
+                &cpu_baseline,
+                &artifact_format,
+                output.as_deref(),
+                json,
+            )
         }
     }
+}
+
+fn compile_v13_strategy(
+    strategy: &Path,
+    parameters: &str,
+    target: Option<&str>,
+    cpu_baseline: &str,
+    artifact_format: &str,
+    output: Option<&Path>,
+    json: bool,
+) -> Result<(), CliError> {
+    let output = output.ok_or_else(|| {
+        CliError::Engine("ABI V13 compile requires --output <artifact-path>".into())
+    })?;
+    if parameters == "{}" {
+        return Err(CliError::Engine(
+            "ABI V13 compile requires --parameters <parameters.json>".into(),
+        ));
+    }
+    if !strategy.is_file() {
+        return Err(CliError::Engine(format!(
+            "ABI V13 strategy source does not exist: {}",
+            strategy.display()
+        )));
+    }
+    let parameters_path = Path::new(parameters);
+    if !parameters_path.is_file() {
+        return Err(CliError::Engine(format!(
+            "ABI V13 parameters file does not exist: {}",
+            parameters_path.display()
+        )));
+    }
+
+    let sdk_path = std::env::var_os("TITAN_STRATEGY_SDK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk"));
+    if !sdk_path.is_dir() {
+        return Err(CliError::Engine(format!(
+            "Titan Strategy SDK directory does not exist: {}",
+            sdk_path.display()
+        )));
+    }
+    let mut python_paths = vec![
+        fs::canonicalize(&sdk_path).map_err(|source| CliError::Read {
+            path: sdk_path.clone(),
+            source,
+        })?,
+    ];
+    if let Some(existing) = std::env::var_os("PYTHONPATH") {
+        python_paths.extend(std::env::split_paths(&existing));
+    }
+    let python_path = std::env::join_paths(python_paths)
+        .map_err(|error| CliError::Engine(format!("cannot construct PYTHONPATH: {error}")))?;
+    let python = std::env::var_os("TITAN_STRATEGY_PYTHON")
+        .unwrap_or_else(|| std::ffi::OsString::from("python3"));
+    let mut command = Command::new(python);
+    command
+        .env("PYTHONPATH", python_path)
+        .arg("-m")
+        .arg("titan_strategy.cli")
+        .arg("compile")
+        .arg("--strategy")
+        .arg(strategy)
+        .arg("--parameters")
+        .arg(parameters_path)
+        .arg("--cpu-baseline")
+        .arg(cpu_baseline)
+        .arg("--artifact-format")
+        .arg(artifact_format)
+        .arg("--output")
+        .arg(output);
+    if let Some(target) = target {
+        command.arg("--target").arg(target);
+    }
+    let result = command.output().map_err(CliError::Spawn)?;
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
+        return Err(CliError::StaticCompile(if stderr.is_empty() {
+            format!("compiler exited with {}", result.status)
+        } else {
+            stderr
+        }));
+    }
+    let stdout = String::from_utf8(result.stdout).map_err(|error| {
+        CliError::StaticCompile(format!("compiler output is not UTF-8: {error}"))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|error| {
+        CliError::StaticCompile(format!("compiler returned invalid JSON: {error}"))
+    })?;
+    if json {
+        println!("{value}");
+    } else {
+        println!(
+            "{}\t{}\t{}",
+            value["strategy_id"].as_str().unwrap_or("-"),
+            value["strategy_version"].as_str().unwrap_or("-"),
+            value["artifact_digest"].as_str().unwrap_or("-")
+        );
+        if let Some(paths) = value["paths"].as_array() {
+            for path in paths.iter().filter_map(serde_json::Value::as_str) {
+                println!("{path}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf, CliError> {
@@ -1538,13 +1315,17 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
             "resolved strategy identity must not be empty".into(),
         ));
     }
-    let (module, function) = spec
-        .strategy
-        .entrypoint
-        .split_once(':')
-        .ok_or(CliError::Entrypoint)?;
-    if module.is_empty() || function.is_empty() {
-        return Err(CliError::Entrypoint);
+    if !matches!(spec.backend, BackendSpec::CoreLive { .. })
+        || spec.strategy.entrypoint.as_str() != "native-v13"
+    {
+        let (module, function) = spec
+            .strategy
+            .entrypoint
+            .split_once(':')
+            .ok_or(CliError::Entrypoint)?;
+        if module.is_empty() || function.is_empty() {
+            return Err(CliError::Entrypoint);
+        }
     }
     if spec.history_capacity == 0 {
         return Err(CliError::HistoryCapacity);
@@ -1783,344 +1564,6 @@ fn controller(
     }
 }
 
-fn read_bars(path: &Path) -> Result<Vec<TimedBarItem>, CliError> {
-    let bytes = fs::read(path).map_err(|source| CliError::Read {
-        path: path.into(),
-        source,
-    })?;
-    let rows =
-        serde_json::from_slice::<Vec<BarInput>>(&bytes).map_err(|source| CliError::Json {
-            path: path.into(),
-            source,
-        })?;
-    Ok(rows
-        .into_iter()
-        .map(|row| TimedBarItem {
-            asset_no: row.asset_no,
-            timeframe_ns: row.timeframe_ns,
-            bar: Bar {
-                open_ts: row.open_ts,
-                close_ts: row.close_ts,
-                open: row.open,
-                high: row.high,
-                low: row.low,
-                close: row.close,
-                volume: row.volume,
-                quote_volume: row.quote_volume,
-                buy_volume: row.buy_volume,
-                trade_count: row.trade_count,
-                flags: BAR_COMPLETE | BAR_NATIVE,
-            },
-        })
-        .collect())
-}
-
-fn read_ticks(path: &Path) -> Result<Vec<Event>, CliError> {
-    let bytes = fs::read(path).map_err(|source| CliError::Read {
-        path: path.into(),
-        source,
-    })?;
-    let rows =
-        serde_json::from_slice::<Vec<TickInput>>(&bytes).map_err(|source| CliError::Json {
-            path: path.into(),
-            source,
-        })?;
-    Ok(rows
-        .into_iter()
-        .map(|row| Event {
-            ev: row.ev,
-            exch_ts: row.exch_ts,
-            local_ts: row.local_ts,
-            px: row.px,
-            qty: row.qty,
-            order_id: row.order_id,
-            ival: row.ival,
-            fval: row.fval,
-        })
-        .collect())
-}
-
-fn build_tick_backtest(
-    events: &[Event],
-    tick_size: f64,
-    lot_size: f64,
-    execution: BacktestExecutionSpec,
-) -> Result<Backtest<HashMapMarketDepth>, CliError> {
-    if events.is_empty()
-        || !tick_size.is_finite()
-        || tick_size <= 0.0
-        || !lot_size.is_finite()
-        || lot_size <= 0.0
-    {
-        return Err(CliError::Engine(
-            "Tick data must be non-empty and tick/lot sizes positive".into(),
-        ));
-    }
-    match execution.asset {
-        AssetModel::Linear => build_tick_backtest_with_asset(
-            events,
-            tick_size,
-            lot_size,
-            execution,
-            LinearAsset::new(execution.contract_size),
-        ),
-        AssetModel::Inverse => build_tick_backtest_with_asset(
-            events,
-            tick_size,
-            lot_size,
-            execution,
-            InverseAsset::new(execution.contract_size),
-        ),
-    }
-}
-
-fn build_tick_backtest_with_asset<AT>(
-    events: &[Event],
-    tick_size: f64,
-    lot_size: f64,
-    execution: BacktestExecutionSpec,
-    asset_type: AT,
-) -> Result<Backtest<HashMapMarketDepth>, CliError>
-where
-    AT: AssetType + Clone + 'static,
-{
-    match execution.queue {
-        QueueModelSpec::RiskAverse => build_tick_backtest_with_models(
-            events,
-            tick_size,
-            lot_size,
-            execution,
-            asset_type,
-            RiskAdverseQueueModel::<HashMapMarketDepth>::new(),
-        ),
-        QueueModelSpec::PowerProbability => build_tick_backtest_with_models(
-            events,
-            tick_size,
-            lot_size,
-            execution,
-            asset_type,
-            ProbQueueModel::new(PowerProbQueueFunc3::new(execution.queue_power)),
-        ),
-    }
-}
-
-fn build_tick_backtest_with_models<AT, QM>(
-    events: &[Event],
-    tick_size: f64,
-    lot_size: f64,
-    execution: BacktestExecutionSpec,
-    asset_type: AT,
-    queue_model: QM,
-) -> Result<Backtest<HashMapMarketDepth>, CliError>
-where
-    AT: AssetType + Clone + 'static,
-    QM: QueueModel<HashMapMarketDepth> + 'static,
-{
-    let exchange = match execution.exchange {
-        ExchangeModel::NoPartialFill => ExchangeKind::NoPartialFillExchange,
-        ExchangeModel::PartialFill => ExchangeKind::PartialFillExchange,
-    };
-    let asset = L2AssetBuilder::default()
-        .data(vec![DataSource::Data(Data::from_data(events))])
-        .latency_offset(execution.latency_offset_ns)
-        .latency_model(ConstantLatency::new(
-            execution.entry_latency_ns,
-            execution.response_latency_ns,
-        ))
-        .asset_type(asset_type)
-        .fee_model(TradingValueFeeModel::new(CommonFees::new(
-            execution.maker_fee,
-            execution.taker_fee,
-        )))
-        .queue_model(queue_model)
-        .exchange(exchange)
-        .depth(move || HashMapMarketDepth::new(tick_size, lot_size))
-        .last_trades_capacity(execution.last_trades_capacity)
-        .build()
-        .map_err(|error| CliError::Engine(error.to_string()))?;
-    Backtest::builder()
-        .add_asset(asset)
-        .build()
-        .map_err(|error| CliError::Engine(error.to_string()))
-}
-
-fn execution_outcome(
-    stats: RuntimeRunStats,
-    reports: &[ExecutionReport],
-    funding: &[FundingReport],
-    snapshots: (Vec<AccountSnapshot>, Vec<AccountSnapshot>),
-) -> RuntimeExecutionOutcome {
-    RuntimeExecutionOutcome {
-        stats,
-        execution_reports: reports.to_vec(),
-        funding_reports: funding.to_vec(),
-        exchange_final: snapshots.0,
-        local_delivered_final: snapshots.1,
-    }
-}
-
-fn execute_backend(
-    backend: BackendSpec,
-    history_capacity: usize,
-    callbacks: &CallbackRegistry,
-    context: &mut StrategyRuntimeContext,
-    stop: Arc<AtomicBool>,
-) -> Result<RuntimeExecutionOutcome, CliError> {
-    match backend {
-        BackendSpec::Backtest { source, execution } => match source {
-            BacktestSourceSpec::Bar { data } => {
-                let records = read_bars(&data)?;
-                let mut source = MaterializedBarSource::new(&records, history_capacity)?;
-                source.configure_context(context);
-                let mut source = StopAwareSource {
-                    inner: source,
-                    stop,
-                };
-                let stats = run_event_runtime_counted(&mut source, callbacks, context)
-                    .map_err(CliError::Callback)?;
-                Ok(execution_outcome(
-                    stats,
-                    source.inner.execution_reports(),
-                    source.inner.funding_reports(),
-                    source.inner.account_snapshots(),
-                ))
-            }
-            BacktestSourceSpec::Tick {
-                data,
-                tick_size,
-                lot_size,
-                frame_interval_ns,
-                max_tick_batch,
-            } => {
-                let events = read_ticks(&data)?;
-                let mut backtest = build_tick_backtest(&events, tick_size, lot_size, execution)?;
-                let mut source =
-                    TickFrameSource::new(&mut backtest, frame_interval_ns, max_tick_batch);
-                source.configure_context(context);
-                let mut source = StopAwareSource {
-                    inner: source,
-                    stop,
-                };
-                let stats = run_event_runtime_counted(&mut source, callbacks, context)
-                    .map_err(CliError::Callback)?;
-                Ok(execution_outcome(
-                    stats,
-                    source.inner.execution_reports(),
-                    source.inner.funding_reports(),
-                    source.inner.account_snapshots(),
-                ))
-            }
-            BacktestSourceSpec::Hybrid {
-                tick_data,
-                bar_data,
-                tick_size,
-                lot_size,
-                frame_interval_ns,
-                max_tick_batch,
-            } => {
-                let events = read_ticks(&tick_data)?;
-                let bars = read_bars(&bar_data)?;
-                let mut backtest = build_tick_backtest(&events, tick_size, lot_size, execution)?;
-                let mut source = HybridFrameSource::new(
-                    &mut backtest,
-                    &bars,
-                    history_capacity,
-                    frame_interval_ns,
-                    max_tick_batch,
-                )
-                .map_err(|error| CliError::Engine(error.to_string()))?;
-                source.configure_context(context);
-                let mut source = StopAwareSource {
-                    inner: source,
-                    stop,
-                };
-                let stats = run_event_runtime_counted(&mut source, callbacks, context)
-                    .map_err(CliError::Callback)?;
-                Ok(execution_outcome(
-                    stats,
-                    source.inner.execution_reports(),
-                    source.inner.funding_reports(),
-                    source.inner.account_snapshots(),
-                ))
-            }
-        },
-        BackendSpec::CoreLive { .. } => Err(CliError::Engine(
-            "Core live backends are executed by the Core Runtime worker".into(),
-        )),
-    }
-}
-
-fn account_delta_result(
-    delta: hftbacktest::backtest::execution::AccountDelta,
-) -> AccountDeltaResult {
-    AccountDeltaResult {
-        instrument_id: delta.instrument_id.0,
-        position_delta: delta.position_delta,
-        trade_qty: delta.trade_qty,
-        trade_value: delta.trade_value,
-        currency: delta.currency.0,
-        cash_delta: delta.cash_delta,
-        fee: delta.fee,
-        funding: delta.funding,
-        execution_price: delta.execution_price,
-        realized_pnl: delta.realized_pnl,
-    }
-}
-
-fn execution_report_result(report: ExecutionReport) -> ExecutionReportResult {
-    ExecutionReportResult {
-        kind: format!("{:?}", report.kind).to_ascii_lowercase(),
-        reason: format!("{:?}", report.reason).to_ascii_lowercase(),
-        venue_no: report.venue_id.0,
-        instrument_id: report.instrument_id.0,
-        asset_no: report.asset_no,
-        order_id: report.order_id,
-        venue_order_id: report.venue_order_id,
-        exchange_ts: report.exchange_ts,
-        delivery_ts: report.delivery_ts,
-        sequence: report.sequence,
-        status: format!("{:?}", report.status).to_ascii_lowercase(),
-        side: format!("{:?}", report.side).to_ascii_lowercase(),
-        order_price: report.order_price,
-        order_qty: report.order_qty,
-        exec_price: report.exec_price,
-        exec_qty: report.exec_qty,
-        maker: report.maker,
-        account_delta: report.account_delta.map(account_delta_result),
-    }
-}
-
-fn funding_report_result(report: FundingReport) -> FundingReportResult {
-    FundingReportResult {
-        event_id: report.event.event_id,
-        venue_no: report.event.venue_id.0,
-        instrument_id: report.event.instrument_id.0,
-        currency: report.event.currency.0,
-        exchange_ts: report.event.settlement_ts,
-        delivery_ts: report.delivery_ts,
-        sequence: report.sequence,
-        position_qty: report.position_qty,
-        rate: report.event.rate,
-        mark_price: report.event.mark_price,
-        amount: report.amount,
-    }
-}
-
-fn account_snapshot_result(snapshot: AccountSnapshot) -> AccountSnapshotResult {
-    AccountSnapshotResult {
-        venue_no: snapshot.venue_no,
-        asset_no: snapshot.asset_no,
-        currency: snapshot.currency.0,
-        position: snapshot.position,
-        balance: snapshot.balance,
-        fee: snapshot.fee,
-        funding: snapshot.funding,
-        realized_pnl: snapshot.realized_pnl,
-        unrealized_pnl: snapshot.unrealized_pnl,
-        margin: snapshot.margin,
-    }
-}
-
 fn worker(
     spec_path: &Path,
     registry_path: &Path,
@@ -2150,140 +1593,9 @@ fn worker(
     if let BackendSpec::CoreLive { strategy_key } = &spec.backend {
         return core_live_worker(&registry, run_id, token, &spec, strategy_key, stop);
     }
-    let mut compiler = EmbeddedPythonCompiler::default();
-    for path in &spec.strategy.python_paths {
-        compiler = compiler.with_python_path(path);
-    }
-    let abi = runtime_abi_descriptor();
-    let loaded = compiler.compile(
-        &StrategySpec {
-            entrypoint: spec.strategy.entrypoint,
-            parameters: spec.strategy.parameters,
-        },
-        &abi,
-    )?;
-    if loaded.metadata.strategy_id != spec.strategy.strategy_id
-        || loaded.metadata.strategy_version != spec.strategy.strategy_version
-    {
-        return Err(CliError::Engine(format!(
-            "compiled strategy identity {}@{} does not match manifest {}@{}",
-            loaded.metadata.strategy_id,
-            loaded.metadata.strategy_version,
-            spec.strategy.strategy_id,
-            spec.strategy.strategy_version
-        )));
-    }
-    let required_callbacks: &[&str] = match spec.event_mode {
-        EventMode::Bar => &["bar"],
-        EventMode::Tick => &["tick"],
-        EventMode::Hybrid => &["bar", "tick"],
-    };
-    if let Some(missing) = required_callbacks.iter().find(|required| {
-        !loaded
-            .metadata
-            .capabilities
-            .iter()
-            .any(|actual| actual == **required)
-    }) {
-        return Err(CliError::Engine(format!(
-            "compiled strategy is missing required {missing} callback"
-        )));
-    }
-    registry.transition(run_id, token, "READY")?;
-    // Safety: the Python compiler validated the signature and `loaded` keeps every cfunc alive
-    // until after the synchronous Runtime call and final state copy below.
-    let callbacks = unsafe { CallbackRegistry::from_addresses(&loaded.callback_addresses) }?;
-    let mut context = StrategyRuntimeContext {
-        state_f64_ptr: loaded.state_f64_ptr,
-        state_f64_len: loaded.state_f64_len,
-        state_i64_ptr: loaded.state_i64_ptr,
-        state_i64_len: loaded.state_i64_len,
-        ..StrategyRuntimeContext::default()
-    };
-    let started = Instant::now();
-    registry.transition(run_id, token, "RUNNING")?;
-    let outcome = execute_backend(
-        spec.backend,
-        spec.history_capacity,
-        &callbacks,
-        &mut context,
-        Arc::clone(&stop),
-    )?;
-    let counts = execution_report_counts(&outcome.execution_reports);
-    let result = WorkerResult {
-        schema_version: 1,
-        run_id: run_id.into(),
-        strategy_id: loaded.metadata.strategy_id.clone(),
-        strategy_version: loaded.metadata.strategy_version.clone(),
-        environment: spec.environment,
-        event_mode: spec.event_mode,
-        config_sha256: spec.config_sha256,
-        abi_fingerprint: abi.fingerprint,
-        market_event_count: outcome.stats.market_event_count,
-        callback_count: outcome.stats.callback_count.to_vec(),
-        start_exchange_ts: outcome.stats.start_exchange_ts,
-        end_exchange_ts: outcome.stats.end_exchange_ts,
-        wall_time_ns: started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-        order_count: counts.order_count,
-        fill_count: counts.fill_count,
-        reject_count: counts.reject_count,
-        cancel_count: counts.cancel_count,
-        expire_count: counts.expire_count,
-        execution_reports: outcome
-            .execution_reports
-            .into_iter()
-            .map(execution_report_result)
-            .collect(),
-        funding_reports: outcome
-            .funding_reports
-            .into_iter()
-            .map(funding_report_result)
-            .collect(),
-        exchange_final: outcome
-            .exchange_final
-            .into_iter()
-            .map(account_snapshot_result)
-            .collect(),
-        local_delivered_final: outcome
-            .local_delivered_final
-            .into_iter()
-            .map(account_snapshot_result)
-            .collect(),
-        // Period returns are analytics derived from canonical snapshots. An empty table is
-        // explicit when this backend did not record an equity series; renderers never infer it.
-        returns: Vec::new(),
-        // Safety: these validated buffers remain owned by `loaded` here.
-        state_f64: unsafe {
-            std::slice::from_raw_parts(loaded.state_f64_ptr, loaded.state_f64_len)
-        }
-        .to_vec(),
-        state_i64: unsafe {
-            std::slice::from_raw_parts(loaded.state_i64_ptr, loaded.state_i64_len)
-        }
-        .to_vec(),
-    };
-    let result_json = serde_json::to_string_pretty(&result).map_err(CliError::ResultJson)?;
-    let record = registry
-        .get(run_id)?
-        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
-    commit_bundle(&record.result_path, run_id, &result, &result_json)?;
-    registry.update_metrics(
-        run_id,
-        token,
-        result.market_event_count,
-        result.order_count,
-        result.fill_count,
-    )?;
-    println!("{result_json}");
-    let final_state = if stop.load(Ordering::Relaxed) {
-        "STOPPED"
-    } else {
-        "COMPLETED"
-    };
-    registry.finish(run_id, token, final_state, 0, None)?;
-    drop(callbacks);
-    drop(loaded); // cfunc/state keepalive is dropped only after Runtime and result extraction.
-    Ok(())
+    Err(CliError::Engine(
+        "legacy in-process strategy backtests were removed by the ABI V13 hard cutover".into(),
+    ))
 }
 
 fn core_live_worker(
@@ -2371,31 +1683,6 @@ impl FileSync {
             source,
         })
     }
-}
-
-fn commit_bundle(
-    result_path: &Path,
-    run_id: &str,
-    result: &WorkerResult,
-    result_json: &str,
-) -> Result<(), CliError> {
-    atomic_write(result_path, result_json.as_bytes())?;
-    let digest = Sha256::digest(result_json.as_bytes());
-    let manifest = BundleManifest {
-        schema_version: 1,
-        run_id: run_id.into(),
-        strategy_id: result.strategy_id.clone(),
-        strategy_version: result.strategy_version.clone(),
-        abi_fingerprint: result.abi_fingerprint.clone(),
-        committed_at_ns: now_ns(),
-        files: vec![BundleFile {
-            path: "result.json".into(),
-            bytes: result_json.len() as u64,
-            sha256: format!("{digest:x}"),
-        }],
-    };
-    let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(CliError::ResultJson)?;
-    atomic_write(&result_path.with_file_name("manifest.json"), &manifest_json)
 }
 
 fn list_runs(
@@ -2986,5 +2273,47 @@ fn main() -> ExitCode {
             }
             ExitCode::from(error.exit_code())
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_v13_tests {
+    use super::*;
+
+    #[test]
+    fn parses_documented_v13_compile_command() {
+        let cli = Cli::try_parse_from([
+            "titan",
+            "strategy",
+            "compile",
+            "--strategy",
+            "strategy.py",
+            "--parameters",
+            "parameters.json",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--cpu-baseline",
+            "x86-64-v2",
+            "--artifact-format",
+            "bundle",
+            "--output",
+            "pair.titan",
+        ])
+        .expect("documented V13 compile command must parse");
+        let Commands::Strategy {
+            command:
+                StrategyCommands::Compile {
+                    strategy,
+                    artifact_format,
+                    output,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("unexpected command");
+        };
+        assert_eq!(strategy, PathBuf::from("strategy.py"));
+        assert_eq!(artifact_format, "bundle");
+        assert_eq!(output, Some(PathBuf::from("pair.titan")));
     }
 }

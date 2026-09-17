@@ -4168,7 +4168,9 @@ name = "titan-strategy-runtime"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "ed25519-dalek",
  "jsonschema",
+ "libloading",
  "semver",
  "serde",
  "serde_json",
@@ -4182,6 +4184,7 @@ dependencies = [
  "titan-runtime",
  "titan-runtime-abi",
  "tracing",
+ "zip",
 ]
 
 [[package]]

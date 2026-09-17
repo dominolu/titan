@@ -1,0 +1,7 @@
+{
+  "hedge_ratio_numerator": 1,
+  "hedge_ratio_denominator": 1,
+  "max_position_lots": 10,
+  "slot_lots": 2,
+  "slot_timeout_ns": 5000000000
+}

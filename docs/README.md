@@ -16,24 +16,18 @@
 
 ## 策略接口
 
-- [StrategyPlugin 技术实现设计](strategy_plugin_technical_design.md)
-- [Bar/Tick 与 Numba 策略接口](bar_tick_numba_strategy.md)
-- [Rust Strategy trait](rust_strategy.md)
+- [Strategy ABI V13 typed-state blob 技术设计](strategy_abi_v13_typed_state_blob_technical_design.md)
+- [Strategy ABI V13 实施状态](strategy_abi_v13_implementation_status.md)
 
 ## 策略设计
 
 - [pair_arb：Slot 化双腿执行内核需求](pair_arb_strategy_requirements.md)
 - [pair_arb：可复用高频双腿执行内核设计](pair_arb_strategy_design.md)
-- [OKX–Hyperliquid 跨所做市需求](okx_hyperliquid_cross_exchange_market_making_requirements.md)
-- [OKX–Hyperliquid 跨所做市技术设计](okx_hyperliquid_cross_exchange_market_making_technical_design.md)
 
 ## 数据协议
 
 - [ResultBundle schema v1](result_bundle_schema.md)
 
-## ABI 迁移
+## ABI
 
-- [Strategy ABI v7](strategy_abi_v7_migration.md)
-- [Strategy ABI v8](strategy_abi_v8_migration.md)
-- [Strategy ABI v10（当前）](strategy_abi_v10_migration.md)
-- [Strategy ABI v9（历史）](strategy_abi_v9_migration.md)
+仓库策略系统仅支持 Strategy ABI V13；旧 ABI 的运行时 loader、SDK 和迁移文档均已移除。

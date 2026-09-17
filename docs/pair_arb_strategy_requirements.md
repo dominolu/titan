@@ -47,7 +47,7 @@ Pair
   posture_latched
 
   current_slot
-  active_orders[MAX_ACTIVE_ORDERS]
+  order_refs[MAX_ORDER_REFS]
 ```
 
 字段定义：
@@ -69,7 +69,9 @@ Pair
 - `posture`：风险状态，取 `NORMAL`、`RESTRICTED`、`EMERGENCY`、`HALT`。
 - `posture_latched`：是否锁定在 HALT。
 - `current_slot`：Pair 唯一的 Slot 容器。没有活动任务时状态为 `INIT`；创建新 Slot 时直接将其中的 `slot_id` 在前一个值基础上递增，不另设 slot 计数器。
-- `active_orders`：当前 Slot 的活动订单，不是历史订单。
+- `order_refs`：只保存当前 Slot 无法由平台推导的最小业务关联（`order_id/slot_id/role`）；不复制
+  价格、数量、累计成交量或订单状态。
+- 活动订单事实由 runtime 维护，策略只通过 ABI V13 的只读 `ctx.active_orders()` 访问。
 - 历史订单由 runtime 侧的 append-only `OrdersList` 持久化管理。
 
 ## 3. Slot 数据结构
@@ -156,23 +158,27 @@ OrdersListItem
 - `submit_ts_ns`、`last_event_ts_ns`：请求和事件时间。
 - `error_code`：交易所或 Broker 错误码。
 
-订单活动期间，Numba 只在 `active_orders` 中保存必要的实时字段；订单结束、撤单确认或不再属于当前 Slot 后，由 runtime 将完整记录追加到 OrdersList 持久化。
+订单活动期间，Numba 只在 `order_refs` 中保存 Slot/role 关联；价格、数量、状态和累计成交量始终
+以 runtime 的 `ctx.active_orders()` 与当前事件 view 为准。订单结束、撤单确认或不再属于当前 Slot 后，
+runtime 将完整记录追加到 OrdersList 持久化。策略不得维护第二份完整活动订单事实。
 
 ## 5. Broker 调用结果
 
-Broker 返回值直接返回给发起调用的策略代码。runtime 不根据 Broker 返回值自动修改
-`active_orders` 或 `current_slot`；需要改变策略状态时，由对应的策略入口显式处理：
+V13 handler 不等待 Broker。`ctx.submit_order()` 只在本地 command staging 接受后返回稳定 order ID，
+`ctx.cancel_order()` 返回 command ID；runtime 在 callback 成功后原子提交整批命令。交易所接受、拒绝、
+成交与撤单结果以后续 `on_order/on_fill/on_cancel` 事件返回同一策略 lane。runtime 先更新公共订单事实，
+再调用 handler；策略只更新 `current_slot` 与 `order_refs` 的业务关系：
 
 ```python
-result = await broker.create_order(request)
-# 当前策略代码处理 result，并按接受/拒绝更新本地订单事实
+order_id = ctx.submit_order(...)
+ctx.state["slot"]["initiator_order_id"] = order_id
 ```
 
 撤单同理：
 
 ```python
-result = await broker.cancel_order(order_id)
-await strategy.on_cancel(ctx, result)
+command_id = ctx.cancel_order(account_no, asset_no, order_id)
+# 最终结果由 on_cancel/on_order 处理
 ```
 
 返回结果只确认本次请求被交易所接受或拒绝。接受后订单可能挂单、部分成交或成交，
@@ -367,7 +373,8 @@ HALT        禁止自动新增命令，只执行明确允许的撤单和人工�
 
 ### 6.3 `on_fill`
 
-`on_fill` 接收全部成交事件，包括部分成交和完全成交，不调用 `risk_check`。runtime 只负责投递事件，不直接修改 `active_orders` 或 `current_slot`：
+`on_fill` 接收全部成交事件，包括部分成交和完全成交，不调用 `risk_check`。runtime 在投递前先把
+成交应用到公共 active-order view；handler 不修改公共订单，只更新 `current_slot` 和最小私有关系：
 
 部分成交的触发源是 Broker/交易所的成交回报事件，而不是 `on_tick` 推导或轮询猜测。
 Broker 适配层必须先把交易所的不同回报格式转换为统一的策略成交事件。策略正常情况下
@@ -414,7 +421,8 @@ NormalizedFill
 - 下一个 Slot 只能由 `on_tick` 在当前 Slot 完成且开仓条件满足时创建。
 - 已结束 Slot、未知订单或无法绑定当前 Slot 的成交由 connector 转入 reconcile，不进入正常 `on_fill`。
 
-部分成交必须由 `on_fill` 更新活动订单和 current_slot，不能由 runtime 直接修改策略状态。部分成交撤单后，剩余数量必须按当前 Slot 累计成交量重新计算，不能按原始订单数量重挂。
+部分成交的公共订单累计量由 runtime 更新，`on_fill` 只更新 current_slot 的业务累计量。部分成交撤单后，
+剩余数量必须按当前 Slot 累计成交量重新计算，不能按原始订单数量重挂。
 
 ### 6.4 `on_cancel`
 
@@ -567,7 +575,7 @@ Broker 查询结果、账户持仓快照、差异数量、采取的冻结/恢复
 
 1. 创建 Pair 及两个 symbol/broker 配置。
 2. 设置 `hedge_ratio_abs`、spread、direction、start time、mode 和 max position。
-3. 初始化 Pair、唯一 current_slot 和 Numba 活动订单数组；runtime 初始化 append-only OrdersList。
+3. 初始化 Pair、唯一 current_slot 和私有 order_refs；runtime 初始化 active-order view 与 append-only OrdersList。
 4. 设置 `ready = false`、`status = CREATED`、`posture = NORMAL`。
 5. 完成账户 reconcile、行情检查和 Broker 可用性检查。
 6. 条件满足后设置 `ready = true`、`status = RUNNING`。
@@ -613,7 +621,7 @@ Broker 查询结果、账户持仓快照、差异数量、采取的冻结/恢复
 Broker 调用超时或传输异常时：
 
 ```text
-active_orders[order_id].status = UNKNOWN
+ctx.state["pair"]["reconcile_required"] = 1
   -> 不重复提交同一个未知请求
   -> 保留活动订单与 slot_id 关系
   -> 等待订单事件或 reconcile
@@ -637,22 +645,24 @@ ready = false
 
 ## 8. 固定内存要求
 
-Numba 层只保存一个当前 Slot 和当前活动订单；历史订单由 runtime 持久化：
+Numba 层只保存一个当前 Slot 和有界的最小订单关系；活动订单与历史订单均由 runtime 持有：
 
 ```text
 Pair             1 个
 current_slot     1 个
-active_orders    MAX_ACTIVE_ORDERS 个
+order_refs       MAX_ORDER_REFS 个（仅 order_id/slot_id/role）
+active_orders    runtime 公共只读 view
 OrdersList       runtime append-only store
 ```
 
 订单索引关系：
 
 ```text
-order_id -> active_orders / OrdersListItem -> slot_id -> current_slot
+order_id -> runtime active_orders / OrdersListItem
+order_id -> private order_refs -> slot_id/role -> current_slot
 ```
 
-活动订单数组容量耗尽时：
+私有关系数组容量耗尽时：
 
 - 不覆盖历史记录；
 - 禁止创建新的订单；
@@ -685,7 +695,7 @@ I16 撤单无回执、撤单失败或订单状态冲突时，不得提前重挂�
 
 ## 10. 实施顺序
 
-1. 在 `abi_v10.py` 统一定义通用订单、成交、市场和状态结构。
+1. 在 `abi_v13.py` 统一定义 typed-state runtime context、订单、成交、市场和公开状态视图。
 2. 在 `context.py` 提供 Pair、Slot、OrdersList 的访问和 Broker facade。
 3. 在 `callbacks.py` 连接 Broker 请求结果和订单事件回调。
 4. 实现 Pair、current Slot 和 active orders 的固定内存布局，OrdersList 由 runtime 持久化。
