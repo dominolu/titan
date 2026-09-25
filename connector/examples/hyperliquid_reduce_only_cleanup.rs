@@ -23,7 +23,10 @@ async fn main() -> Result<()> {
         Ok("sell") => ApiSide::Sell,
         _ => anyhow::bail!("HL_CLEANUP_SIDE must be buy or sell"),
     };
-    ensure!(qty.is_finite() && qty > 0.0, "cleanup quantity must be positive");
+    ensure!(
+        qty.is_finite() && qty > 0.0,
+        "cleanup quantity must be positive"
+    );
     let key_hex = key_hex.trim().strip_prefix("0x").unwrap_or(key_hex.trim());
     let mut key = [0_u8; 32];
     hex::decode_to_slice(key_hex, &mut key).context("private key must be 32-byte hex")?;
@@ -49,6 +52,9 @@ async fn main() -> Result<()> {
     )
     .await
     .context("submit reduce-only cleanup")?;
-    println!("cleanup_order_status={:?} executed_qty={}", order.status, order.executed_qty);
+    println!(
+        "cleanup_order_status={:?} executed_qty={}",
+        order.status, order.executed_qty
+    );
     Ok(())
 }

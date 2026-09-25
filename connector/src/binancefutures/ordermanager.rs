@@ -58,10 +58,7 @@ impl OrderManager {
         let already_removed = order_ext.removed_by_ws || order_ext.removed_by_rest;
         let previous_filled = (order_ext.order.qty - order_ext.order.leaves_qty).max(0.0);
         if resp.transaction_time * 1_000_000 >= order_ext.order.exch_timestamp {
-            let cumulative_filled = resp
-                .order
-                .order_filled_accumulated_qty
-                .max(previous_filled);
+            let cumulative_filled = resp.order.order_filled_accumulated_qty.max(previous_filled);
             order_ext.order.qty = resp.order.original_qty;
             order_ext.order.leaves_qty = (resp.order.original_qty - cumulative_filled).max(0.0);
             order_ext.order.side = resp.order.side;
@@ -208,7 +205,7 @@ mod tests {
             })
             .to_string(),
         )
-            .unwrap()
+        .unwrap()
     }
 
     #[test]
@@ -228,13 +225,25 @@ mod tests {
         assert!(manager.track_managed_order("BTCUSDT", client_order_id, order));
 
         let first = manager
-            .update_from_ws(&ws_update_with_quantities(client_order_id, 20, "PARTIALLY_FILLED", 0.25, 0.25))
+            .update_from_ws(&ws_update_with_quantities(
+                client_order_id,
+                20,
+                "PARTIALLY_FILLED",
+                0.25,
+                0.25,
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(first.exec_qty, 0.25);
 
         let duplicated = manager
-            .update_from_ws(&ws_update_with_quantities(client_order_id, 20, "PARTIALLY_FILLED", 0.25, 0.25))
+            .update_from_ws(&ws_update_with_quantities(
+                client_order_id,
+                20,
+                "PARTIALLY_FILLED",
+                0.25,
+                0.25,
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(duplicated.exec_qty, 0.0);

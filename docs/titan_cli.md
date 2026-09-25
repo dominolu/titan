@@ -1,112 +1,84 @@
-# Titan CLI 与 Agent 接口
+# Titan CLI（Strategy ABI V13）
 
-`titan` 是回测和实盘的统一入口。公开命令接收策略 ID 和 TOML 配置；controller 完成静态校验并生成内部 RunSpec，`run-worker` 仅作为隐藏的进程边界使用。
+`titan` 是 V13 回测与实盘的统一入口。策略参数、订阅和 callback 只来自已编译 `.titan` manifest；运行时不导入策略 Python，也不接受 `strategy.json` 或 `module:function`。
 
-## 运行
-
-```bash
-titan run <strategy> -e <backtest|live> -m <bar|tick|hybrid> -c <config.toml>
-```
-
-长选项为 `--env`、`--mode` 和 `--config`。前台与 `--detach` 使用同一条 spawn-worker 路径。
+## 编译与检查 artifact
 
 ```bash
-# Bar 回测
-titan run dual_ma -e backtest -m bar -c configs/dual_ma_aapl.toml
+titan strategy compile \
+  --strategy strategies/pair_arb/strategy.py \
+  --parameters strategies/pair_arb/parameters.json \
+  --artifact-format bundle \
+  --output pair_arb.titan \
+  --signing-key ed25519-private.key \
+  --key-id production-2026-09
 
-# Tick 实盘
-titan run dual_ma -e live -m tick -c configs/dual_ma_live.toml
-
-# 后台运行，返回 run_id
-titan run dual_ma -e backtest -m bar -c configs/dual_ma_aapl.toml --detach
+titan strategy ls \
+  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
+titan strategy show pair_arb.titan \
+  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
+titan strategy validate pair_arb.titan --require-signature \
+  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
 ```
 
-当前 live backend 支持 Tick 模式；不支持的 environment、mode、backend 或策略能力组合会在 worker 启动前失败。
+编译是唯一启动 Python/Numba 的 CLI 路径。生产部署默认要求 Ed25519 签名；开发或 shadow 配置只有显式设置 `strategy_service.allow_unsigned_artifacts = true` 才能加载 unsigned artifact。`trusted_ed25519_keys` 支持同时保留多个 key id 以完成轮换。
 
-## 配置
+回测也执行制品信任校验。签名制品在 `[backtest].trusted_ed25519_keys` 中配置 `key_id = "64位十六进制公钥"`；仅开发用 unsigned 制品必须显式设置 `allow_unsigned_artifact = true`。解析阶段和隔离 worker 会使用同一份策略重复校验，防止 RunSpec 生成后替换制品或降低信任要求。
 
-环境和事件模式只由 CLI 指定，TOML 保存策略参数和对应 backend 配置，避免重复配置产生覆盖优先级。
+## V13 Tick trace 回测
+
+```bash
+titan validate deploy/pair_arb_v13/artifacts/pair_arb.titan \
+  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
+
+titan run deploy/pair_arb_v13/artifacts/pair_arb.titan \
+  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
+```
+
+回测配置只描述 trace 和运行边界：
 
 ```toml
 schema_version = 1
-history_capacity = 16
-
-[strategy.parameters]
-fast = 20
-slow = 50
+history_capacity = 1024
 
 [backtest]
-data = "../data/bars.json"
+data = "../fixtures/pair_arb_v13_trace.json"
+command_capacity = 64
+allow_unsigned_artifact = true # 仅 checked-in 开发示例
 ```
 
-Hybrid 使用 `backtest.tick_data` 与 `backtest.bar_data`。Live 使用 `[live]` 和 `[[live.instruments]]`。相对路径以配置文件所在目录为基准；未知字段和无关 mode 的字段会被拒绝。Live 配置只保存 connector 引用，不保存凭证。
+trace schema 为 1，包含初始 V13 public projections，以及按顺序交付的 tick/depth/account/timer 事实。CLI 使用 `OfflineV13Adapter` 加载与实盘相同的 `.titan`，返回 event、submit、cancel 计数和最终 typed-state digest。需要真实撮合、延迟、费用和队列模型时，HftBacktest 的 `backtest::strategy_v13` 使用同一 adapter，将 staged command 接到其执行模型。
 
-Tick/Hybrid 回测可显式配置执行模型：
+当前公开 V13 profile 仅支持 Tick；Bar/Hybrid 会在 controller、SDK 和 Strategy Service 边界被明确拒绝，直到真实 producer、聚合器和契约测试完整。
 
-```toml
-[backtest.execution]
-entry_latency_ns = 100000
-response_latency_ns = 200000
-maker_fee = -0.0001
-taker_fee = 0.0005
-queue_power = 3.0
-queue = "power_probability" # 或 risk_averse
-exchange = "partial_fill" # 或 no_partial_fill
-asset = "linear"          # 或 inverse
-contract_size = 1.0
-latency_offset_ns = 0
-last_trades_capacity = 1024
-```
-
-controller 将解析结果保存到 `.titan/runs/<run-id>/run.json`。该文件是 controller 与 worker 之间的版本化内部协议，不是公开输入格式。
-
-## 运行管理
+## Core Live
 
 ```bash
-titan ls
+titan validate pair-arb-mainnet \
+  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+
+titan run pair-arb-mainnet \
+  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+```
+
+Live 的位置参数是部署配置中的 `strategy_key`。部署侧只配置 artifact URI/digest、market/account binding、risk scope、recovery 和 runtime policy；参数、订阅与 callback 均以 artifact manifest 为准。
+
+## 任务管理
+
+```bash
 titan ls --active
-titan ls --env live --strategy dual_ma
-titan show <run-id>
+titan show <run-id> --json
 titan logs <run-id>
 titan stop <run-id>
 ```
 
-运行记录包含策略版本、environment、event mode、进程身份、健康状态、执行计数、ResultBundle 和报告状态。状态覆盖 `STARTING`、`LOADING`、`COMPILING`、`READY`、`RUNNING`、`STOP_REQUESTED`、`CANCELLED` 及其他终态。
+`run`、`validate`、`ls`、`show`、`logs`、`stop` 和 `strategy` 子命令支持 `--json`。机器模式的 stdout 只输出 JSON；错误从 stderr 返回稳定的 `error.code` 与 `error.message`。
 
-## 策略目录
-
-```bash
-titan strategy ls
-titan strategy show dual_ma
-titan strategy validate dual_ma
-titan strategy compile dual_ma --parameters '{"fast":20,"slow":50}'
-```
-
-`ls/show/validate` 只读取静态 Manifest；只有 `compile` 初始化 Python 和 Numba。Manifest 声明策略支持的 environment、event mode 和参数 schema。
-
-## ResultBundle 与报告
+## Result 与报告
 
 ```bash
 titan report <run-id>
 titan report <run-id> --renderer native --output report.html
-titan report <run-id> --renderer quantstats --output quantstats.html
 ```
 
-Rust Runtime 是执行和账户事实的唯一来源。Python reporting 会重新校验 ResultBundle，只负责渲染，不重新计算成交、费用、资金费、PnL 或收益率。报告失败不会改变已完成任务的状态。
-报告输出必须位于 ResultBundle 目录之外；同一个 run 同一时间只允许一个 renderer 写入。
-若 Runtime 没有记录 canonical returns，QuantStats 会生成明确的 no-data 页面，不推导或伪造收益率。
-
-## Agent 调用
-
-主要命令均支持 `--json`：
-
-```bash
-titan run dual_ma -e backtest -m bar -c configs/dual_ma_aapl.toml --detach --json
-titan ls --active --json
-titan show <run-id> --json
-titan logs <run-id> --json
-titan stop <run-id> --json
-titan report <run-id> --output report.html --json
-```
-
-JSON 对象包含 `schema_version`。失败时 stderr 返回稳定的 `error.code` 和 `error.message`，退出码区分配置、编译、Runtime、报告、registry 和系统错误。worker、Python 和策略日志不会混入 stdout。
+Rust Runtime 是策略 state、订单、成交与账户事实的唯一权威。Python reporting 只校验并渲染 ResultBundle，不重新计算成交或收益。

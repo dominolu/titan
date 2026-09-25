@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "initial": {
+    "now_ns": 1000000000,
+    "markets": [
+      {"asset_no": 0, "best_bid_ticks": 100, "best_ask_ticks": 101, "tick_size": 1, "lot_size": 1},
+      {"asset_no": 1, "best_bid_ticks": 202, "best_ask_ticks": 203, "tick_size": 1, "lot_size": 1}
+    ],
+    "positions": [
+      {"account_no": 0, "asset_no": 0},
+      {"account_no": 1, "asset_no": 1}
+    ],
+    "accounts": [
+      {"account_no": 0, "account_epoch": 1, "account_sequence": 1, "state": 4},
+      {"account_no": 1, "account_epoch": 1, "account_sequence": 1, "state": 4}
+    ]
+  },
+  "events": [
+    {
+      "kind": "tick",
+      "now_ns": 1100000000,
+      "ticks": [
+        {"asset_no": 0, "receive_ts_ns": 1100000000, "price_ticks": 101, "qty_lots": 1},
+        {"asset_no": 1, "receive_ts_ns": 1100000000, "price_ticks": 202, "qty_lots": 1}
+      ]
+    },
+    {
+      "kind": "timer",
+      "now_ns": 1200000000,
+      "timer": {"timer_id": 1, "scheduled_ts_ns": 1200000000, "fired_ts_ns": 1200000000}
+    },
+    {
+      "kind": "order",
+      "now_ns": 1250000000,
+      "state": {
+        "now_ns": 1250000000,
+        "active_orders": [
+          {"order_id": 1, "asset_no": 0, "account_no": 0, "price_ticks": 100,
+           "qty_lots": 2, "account_sequence": 2, "side": 1, "order_type": 1,
+           "time_in_force": 4, "status": 2}
+        ]
+      },
+      "orders": [
+        {"order_id": 1, "asset_no": 0, "account_no": 0, "price_ticks": 100,
+         "qty_lots": 2, "event_ts_ns": 1250000000, "account_sequence": 2, "status": 2}
+      ]
+    }
+  ]
+}

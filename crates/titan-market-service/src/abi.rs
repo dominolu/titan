@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use titan_runtime_abi::Bar;
+use titan_domain_types::Bar;
 
 pub const DEPTH_BATCH_EVENT: &str = "titan.market.DepthBatch";
 pub const TRADE_BATCH_EVENT: &str = "titan.market.TradeBatch";

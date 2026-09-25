@@ -1,7 +1,7 @@
 # `pair_arb`：Slot 化双腿执行内核需求文档
 
-状态：需求稿 v2.2  
-目标运行时：Titan Strategy ABI v10  
+状态：ABI V13 实现基线 v3.0
+目标运行时：Titan Strategy ABI V13
 建议策略包：`strategies/pair_arb`
 
 ## 1. 设计定位

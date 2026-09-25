@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use titan_strategy_runtime::{
     CallbackCommandStagingV13, NativeArtifactLoaderV13, StagedCommandV13,
-    StrategyRuntimeContextV13, TitanFillView, TitanMarketView, V13EventKind, V13TrustPolicy,
+    StrategyRuntimeContextV13, TitanAccountView, TitanFillView, TitanMarketView, TitanPositionView,
+    V13EventKind, V13TrustPolicy,
 };
 
 fn main() {
@@ -26,10 +27,42 @@ fn main() {
             ..Default::default()
         },
     ];
+    let accounts = [
+        TitanAccountView {
+            account_no: 0,
+            account_epoch: 1,
+            account_sequence: 1,
+            state: 4,
+            ..Default::default()
+        },
+        TitanAccountView {
+            account_no: 1,
+            account_epoch: 1,
+            account_sequence: 1,
+            state: 4,
+            ..Default::default()
+        },
+    ];
+    let positions = [
+        TitanPositionView {
+            account_no: 0,
+            asset_no: 0,
+            ..Default::default()
+        },
+        TitanPositionView {
+            account_no: 1,
+            asset_no: 1,
+            ..Default::default()
+        },
+    ];
     let mut context = StrategyRuntimeContextV13 {
         now_ns: 1_000_000_000,
         markets_ptr: markets.as_ptr(),
         markets_len: markets.len() as u64,
+        accounts_ptr: accounts.as_ptr(),
+        accounts_len: accounts.len() as u64,
+        positions_ptr: positions.as_ptr(),
+        positions_len: positions.len() as u64,
         ..Default::default()
     };
     instance

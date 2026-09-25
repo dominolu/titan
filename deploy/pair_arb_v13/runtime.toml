@@ -15,6 +15,10 @@ stop_timeout_ms = 15000
 
 [strategy_service]
 allowed_artifact_roots = ["artifacts"]
+checkpoint_root = "checkpoints"
+# This checked-in deployment is disabled and intended for development/shadow validation only.
+# Production must remove this flag and configure trusted_ed25519_keys.
+allow_unsigned_artifacts = true
 
 [execution]
 worker_threads = 2
@@ -103,10 +107,7 @@ definition_version = 1
 [[strategies]]
 strategy_key = "pair_arb"
 strategy_id = 9001
-package = { loader_type = "native-v13", uri = "file://artifacts/pair_arb.titan", expected_digest = [94, 168, 90, 124, 93, 98, 194, 213, 241, 144, 227, 60, 135, 51, 204, 171, 6, 32, 235, 1, 35, 103, 186, 115, 242, 24, 169, 86, 87, 86, 93, 57] }
-entrypoint = "native-v13"
-parameters = '''{}'''
-parameter_schema_version = 1
+package = { loader_type = "native-v13", uri = "file://artifacts/pair_arb.titan", expected_digest = [156, 218, 72, 188, 165, 118, 216, 38, 146, 74, 198, 154, 162, 50, 43, 71, 7, 1, 94, 138, 87, 51, 78, 232, 183, 179, 20, 37, 22, 82, 139, 216] }
 markets = [
   { local_market_no = 0, local_asset_no = 0, source_key = "okx-btc-mainnet", asset_id = 1001, data_mode = "tick" },
   { local_market_no = 1, local_asset_no = 1, source_key = "hyperliquid-btc-mainnet", asset_id = 1002, data_mode = "tick" },
@@ -115,9 +116,8 @@ accounts = [
   { local_account_no = 0, account_key = "okx-maker-mainnet", tradable_assets = [{ local_asset_no = 0, asset_id = 1001 }] },
   { local_account_no = 1, account_key = "hyperliquid-hedge-mainnet", tradable_assets = [{ local_asset_no = 1, asset_id = 1002 }] },
 ]
-subscriptions = []
 risk_scope = "okx-hyperliquid-mainnet-shadow"
 runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
-recovery = "fresh"
+recovery = "restore_latest_checkpoint"
 enabled = false
 definition_version = 1

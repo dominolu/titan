@@ -9,7 +9,7 @@ semver = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 titan-core-types = { path = "../titan-core-types" }
-titan-runtime-abi = { path = "../titan-runtime-abi" }
+titan-domain-types = { path = "../titan-domain-types" }
 tracing = "0.1"
 zeroize = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

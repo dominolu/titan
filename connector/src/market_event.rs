@@ -12,12 +12,12 @@ use hftbacktest::types::{
     BUY_EVENT, DEPTH_BBO_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event, SELL_EVENT, TRADE_EVENT,
 };
 use titan_core_types::TraceContext;
+use titan_domain_types::DecimalUnit;
 use titan_market_service::{
     AssetId, BBO_EVENT, ConnectorError, DEPTH_BATCH_EVENT, DepthItemV1, FUNDING_RATE_EVENT,
     MARK_PRICE_EVENT, MarketBatchHeaderV1, MarketConnectorContext, MarketDataKind,
     STREAM_INVALIDATED_EVENT, TRADE_BATCH_EVENT,
 };
-use titan_runtime_abi::DecimalUnit;
 
 use crate::connector::{MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent};
 
@@ -681,7 +681,7 @@ pub(crate) fn scaled(value: f64, unit: f64, field: &str) -> Result<i64, Connecto
 #[cfg(test)]
 mod tests {
     use super::{parse_exact_decimal, scaled};
-    use titan_runtime_abi::DecimalUnit;
+    use titan_domain_types::DecimalUnit;
 
     #[test]
     fn decimal_scaling_rejects_invalid_values() {

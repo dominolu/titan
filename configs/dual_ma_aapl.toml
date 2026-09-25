@@ -1,9 +1,7 @@
 schema_version = 1
 history_capacity = 16
 
-[strategy.parameters]
-fast = 2
-slow = 4
-
 [backtest]
-data = "../crates/titan-cli/tests/fixtures/bars.json"
+data = "../fixtures/dual_ma_v13_trace.json"
+command_capacity = 16
+allow_unsigned_artifact = true

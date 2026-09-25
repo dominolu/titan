@@ -56,6 +56,18 @@ class TestV13Definition(unittest.TestCase):
         with self.assertRaises(ValueError):
             EventSubscription(EventKind.FILL, "on_fill", 1, EventQos.BEST_EFFORT)
 
+    def test_bar_profile_is_rejected_until_a_canonical_producer_exists(self):
+        with self.assertRaisesRegex(ValueError, "Bar/Hybrid is unavailable"):
+            StrategySpec(
+                strategy_id="bar_sample",
+                strategy_version="1.0.0",
+                state_schema_version=1,
+                subscriptions=(
+                    EventSubscription(EventKind.BAR, "on_bar", 1, EventQos.RELIABLE_ORDERED),
+                ),
+                capabilities=Capability.MARKET_DATA,
+            )
+
 
 class TestV13Abi(unittest.TestCase):
     def test_context_and_descriptor_layout(self):

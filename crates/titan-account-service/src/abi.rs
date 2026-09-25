@@ -83,6 +83,8 @@ pub mod event_flags {
     pub const EXTERNAL: u16 = 1 << 3;
     pub const FINAL: u16 = 1 << 4;
     pub const SYNTHETIC: u16 = 1 << 5;
+    /// The order is constrained to reduce an existing position.
+    pub const REDUCE_ONLY: u16 = 1 << 6;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

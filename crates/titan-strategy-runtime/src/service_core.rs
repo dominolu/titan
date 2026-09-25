@@ -1,5 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -11,8 +14,9 @@ use std::{
 use titan_account_service::{
     ACCOUNT_EVENT_SCHEMA_VERSION, AccountLifecycle, AccountService, AccountSnapshotState,
     BALANCE_CHANGED_EVENT, ExecutionDispatcher, ExecutionObserver, FILL_EVENT,
-    FILL_EVENT_SCHEMA_VERSION, ORDER_CHANGED_EVENT, OrderFilter, POSITION_CHANGED_EVENT,
-    PositionFilter, STREAM_INVALIDATED_EVENT as ACCOUNT_STREAM_INVALIDATED_EVENT,
+    FILL_EVENT_SCHEMA_VERSION, ORDER_CHANGED_EVENT, ObservedExecutionResult, OrderFilter,
+    POSITION_CHANGED_EVENT, PositionFilter,
+    STREAM_INVALIDATED_EVENT as ACCOUNT_STREAM_INVALIDATED_EVENT,
     STREAM_STATE_CHANGED_EVENT as ACCOUNT_STREAM_STATE_CHANGED_EVENT,
 };
 use titan_core_types::{ClosureResource, ResourceScope};
@@ -28,6 +32,44 @@ use tracing::warn;
 
 use crate::*;
 
+struct StrategyExecutionResultRelay {
+    target: RwLock<Option<std::sync::Weak<dyn StrategyRuntime>>>,
+    audit: Arc<dyn ExecutionObserver>,
+}
+
+impl StrategyExecutionResultRelay {
+    fn new(audit: Arc<dyn ExecutionObserver>) -> Self {
+        Self {
+            target: RwLock::new(None),
+            audit,
+        }
+    }
+
+    fn attach(&self, runtime: &Arc<dyn StrategyRuntime>) {
+        *self.target.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(runtime));
+    }
+}
+
+impl ExecutionObserver for StrategyExecutionResultRelay {
+    fn observe(&self, result: ObservedExecutionResult) {
+        self.audit.observe(result.clone());
+        let runtime = self
+            .target
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(runtime) = runtime
+            && let Err(error) = runtime.execution_result(result)
+        {
+            warn!(
+                reason_code = error.reason_code.as_ref(),
+                "strategy execution result could not be queued"
+            );
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StrategyCoreConfig {
     pub max_strategy_runtimes: usize,
@@ -41,6 +83,9 @@ pub struct StrategyCoreConfig {
     pub max_pending_capacity: usize,
     pub max_state_capacity: usize,
     pub max_concurrent_loads: usize,
+    pub checkpoint_root: Option<PathBuf>,
+    pub require_artifact_signature: bool,
+    pub trusted_artifact_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 impl Default for StrategyCoreConfig {
@@ -48,9 +93,7 @@ impl Default for StrategyCoreConfig {
         Self {
             max_strategy_runtimes: 128,
             max_artifact_cache_entries: 64,
-            allowed_loader_types: [Arc::from("native-v13")]
-                .into_iter()
-                .collect(),
+            allowed_loader_types: [Arc::from("native-v13")].into_iter().collect(),
             allowed_artifact_roots: Arc::from([]),
             allowed_event_types: BTreeSet::new(),
             allowed_worker_policies: vec![
@@ -67,6 +110,9 @@ impl Default for StrategyCoreConfig {
             max_pending_capacity: 1 << 18,
             max_state_capacity: 1 << 20,
             max_concurrent_loads: 2,
+            checkpoint_root: None,
+            require_artifact_signature: true,
+            trusted_artifact_keys: BTreeMap::new(),
         }
     }
 }
@@ -95,13 +141,179 @@ struct DisabledSnapshotSink;
 
 impl StrategyStateSnapshotSink for DisabledSnapshotSink {
     fn submit(&self, _snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
-        Err(StrategyError::new(
-            StrategyErrorKind::UnsupportedCapability,
-            "state_snapshot",
-            "state_snapshot_unavailable",
-            "strategy state snapshots are not part of the current runtime profile",
-        ))
+        Ok(())
     }
+
+    fn enabled(&self) -> bool {
+        false
+    }
+}
+
+struct FileCheckpointStore {
+    root: PathBuf,
+    sender: Mutex<Option<mpsc::SyncSender<Option<StrategyPrivateStateSnapshot>>>>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    failed: Arc<AtomicBool>,
+    generation_lock: Mutex<()>,
+}
+
+impl FileCheckpointStore {
+    fn new(root: PathBuf) -> LocalResult<Arc<Self>> {
+        fs::create_dir_all(&root).map_err(|_| checkpoint_error("checkpoint_root_unavailable"))?;
+        let (sender, receiver) = mpsc::sync_channel::<Option<StrategyPrivateStateSnapshot>>(16);
+        let writer_root = root.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let writer_failed = failed.clone();
+        let writer = std::thread::Builder::new()
+            .name("strategy-checkpoint-writer".into())
+            .spawn(move || {
+                while let Ok(Some(snapshot)) = receiver.recv() {
+                    if let Err(error) = write_checkpoint(&writer_root, &snapshot) {
+                        writer_failed.store(true, Ordering::Release);
+                        warn!(
+                            reason_code = error.reason_code.as_ref(),
+                            "strategy checkpoint write failed"
+                        );
+                    }
+                }
+            })
+            .map_err(|_| checkpoint_error("checkpoint_writer_start_failed"))?;
+        Ok(Arc::new(Self {
+            root,
+            sender: Mutex::new(Some(sender)),
+            writer: Mutex::new(Some(writer)),
+            failed,
+            generation_lock: Mutex::new(()),
+        }))
+    }
+
+    fn load(&self, strategy_id: StrategyId) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+        let path = checkpoint_path(&self.root, strategy_id);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(checkpoint_error("checkpoint_read_failed")),
+        };
+        let snapshot: StrategyPrivateStateSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|_| checkpoint_error("checkpoint_decode_failed"))?;
+        if snapshot.strategy.strategy_id != strategy_id
+            || snapshot.strategy.generation != snapshot.generation
+        {
+            return Err(checkpoint_error("checkpoint_identity_mismatch"));
+        }
+        Ok(Some(snapshot))
+    }
+
+    fn reserve_generation(&self, strategy_id: StrategyId, minimum: u64) -> LocalResult<u64> {
+        let _guard = self
+            .generation_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let path = generation_path(&self.root, strategy_id);
+        let persisted = match fs::read(&path) {
+            Ok(bytes) if bytes.len() == 8 => {
+                u64::from_le_bytes(bytes.try_into().expect("length checked"))
+            }
+            Ok(_) => return Err(checkpoint_error("generation_watermark_invalid")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(_) => return Err(checkpoint_error("generation_watermark_read_failed")),
+        };
+        let generation = persisted
+            .max(minimum)
+            .checked_add(1)
+            .filter(|value| {
+                value
+                    .checked_sub(1)
+                    .is_some_and(|prefix| prefix <= u64::from(u32::MAX))
+            })
+            .ok_or_else(|| checkpoint_error("generation_overflow"))?;
+        let temporary = self
+            .root
+            .join(format!(".strategy-{}.generation.tmp", strategy_id.0));
+        atomic_write(&self.root, &temporary, &path, &generation.to_le_bytes())?;
+        Ok(generation)
+    }
+}
+
+impl StrategyStateSnapshotSink for FileCheckpointStore {
+    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+        self.check_health()?;
+        let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
+        sender
+            .as_ref()
+            .ok_or_else(|| checkpoint_error("checkpoint_writer_stopped"))?
+            .try_send(Some(snapshot))
+            .map_err(|_| checkpoint_error("checkpoint_queue_full"))
+    }
+
+    fn check_health(&self) -> LocalResult<()> {
+        if self.failed.load(Ordering::Acquire) {
+            Err(checkpoint_error("checkpoint_writer_failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for FileCheckpointStore {
+    fn drop(&mut self) {
+        if let Some(sender) = self
+            .sender
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = sender.send(None);
+        }
+        if let Some(writer) = self
+            .writer
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            let _ = writer.join();
+        }
+    }
+}
+
+fn checkpoint_path(root: &Path, strategy_id: StrategyId) -> PathBuf {
+    root.join(format!("strategy-{}.json", strategy_id.0))
+}
+
+fn generation_path(root: &Path, strategy_id: StrategyId) -> PathBuf {
+    root.join(format!("strategy-{}.generation", strategy_id.0))
+}
+
+fn atomic_write(root: &Path, temporary: &Path, path: &Path, bytes: &[u8]) -> LocalResult<()> {
+    let mut file =
+        fs::File::create(temporary).map_err(|_| checkpoint_error("checkpoint_write_failed"))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| checkpoint_error("checkpoint_write_failed"))?;
+    fs::rename(temporary, path).map_err(|_| checkpoint_error("checkpoint_commit_failed"))?;
+    fs::File::open(root)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| checkpoint_error("checkpoint_directory_sync_failed"))
+}
+
+fn write_checkpoint(root: &Path, snapshot: &StrategyPrivateStateSnapshot) -> LocalResult<()> {
+    let path = checkpoint_path(root, snapshot.strategy.strategy_id);
+    let temporary = root.join(format!(
+        ".strategy-{}.json.tmp",
+        snapshot.strategy.strategy_id.0
+    ));
+    let bytes =
+        serde_json::to_vec(snapshot).map_err(|_| checkpoint_error("checkpoint_encode_failed"))?;
+    atomic_write(root, &temporary, &path, &bytes)
+}
+
+fn checkpoint_error(code: &'static str) -> StrategyError {
+    StrategyError::new(
+        StrategyErrorKind::CheckpointFailed,
+        "state_snapshot",
+        code,
+        "strategy checkpoint operation failed",
+    )
 }
 
 impl StrategyEntry {
@@ -154,6 +366,7 @@ pub struct StrategyServiceCore {
     next_operation: AtomicU64,
     operations: Mutex<BTreeMap<StrategyOperationId, GlobalOperation>>,
     cold_loads: Arc<ColdLoadLimiter>,
+    checkpoints: Option<Arc<FileCheckpointStore>>,
 }
 
 struct ColdLoadLimiter {
@@ -210,6 +423,11 @@ impl StrategyServiceCore {
         }
         let cache = StrategyArtifactCache::new(config.max_artifact_cache_entries)?;
         let max_concurrent_loads = config.max_concurrent_loads;
+        let checkpoints = config
+            .checkpoint_root
+            .clone()
+            .map(FileCheckpointStore::new)
+            .transpose()?;
         Ok(Self {
             config,
             dependencies,
@@ -225,6 +443,7 @@ impl StrategyServiceCore {
                 changed: Condvar::new(),
                 capacity: max_concurrent_loads,
             }),
+            checkpoints,
         })
     }
 
@@ -274,6 +493,7 @@ impl StrategyServiceCore {
         &self,
         definition: StrategyDefinition,
         generation: u64,
+        checkpoint: Option<StrategyPrivateStateSnapshot>,
     ) -> LocalResult<Arc<StrategyEntry>> {
         validate_definition(&self.config, &definition)?;
         let handle = StrategyHandle {
@@ -284,7 +504,8 @@ impl StrategyServiceCore {
             &definition.package.loader_type,
             StrategyLoaderContext {
                 allowed_artifact_roots: self.config.allowed_artifact_roots.clone(),
-                require_signature: false,
+                require_signature: self.config.require_artifact_signature,
+                ed25519_keys: self.config.trusted_artifact_keys.clone(),
             },
         )?;
         let deadline = Instant::now() + definition.runtime.startup_timeout;
@@ -326,15 +547,32 @@ impl StrategyServiceCore {
         let artifact_id = artifact.id;
         let resolved_markets = self.resolve_markets(&definition)?;
         let resolved_accounts = self.resolve_accounts(&definition)?;
+        if !resolved_accounts.is_empty() && self.checkpoints.is_none() {
+            return Err(StrategyError::new(
+                StrategyErrorKind::UnsupportedCapability,
+                "definition",
+                "execution_requires_checkpoint_root",
+                "strategies with account execution require a durable checkpoint root",
+            ));
+        }
         let dispatcher = self.dependencies.execution_dispatcher.as_ref();
-        let observer = self.dependencies.execution_observer.as_ref();
+        let execution_relay = if resolved_accounts.is_empty() {
+            None
+        } else {
+            let audit_observer = self
+                .dependencies
+                .execution_observer
+                .as_ref()
+                .ok_or_else(|| definition_error("direct_execution_observer_unavailable"))?;
+            Some(Arc::new(StrategyExecutionResultRelay::new(
+                audit_observer.clone(),
+            )))
+        };
         let direct_execution = resolved_accounts
             .iter()
             .map(|binding| {
                 let dispatcher = dispatcher
                     .ok_or_else(|| definition_error("direct_execution_dispatcher_unavailable"))?;
-                let observer = observer
-                    .ok_or_else(|| definition_error("direct_execution_observer_unavailable"))?;
                 let connector = self
                     .dependencies
                     .accounts
@@ -347,7 +585,14 @@ impl StrategyServiceCore {
                         .iter()
                         .map(|asset| (u64::from(asset.local_asset_no), asset.asset_id))
                         .collect(),
-                    handle: dispatcher.bind(binding.account, connector, observer.clone()),
+                    handle: dispatcher.bind(
+                        binding.account,
+                        connector,
+                        execution_relay
+                            .as_ref()
+                            .expect("non-empty account bindings have an execution relay")
+                            .clone(),
+                    ),
                 })
             })
             .collect::<LocalResult<Vec<_>>>()?;
@@ -362,7 +607,11 @@ impl StrategyServiceCore {
             markets: resolved_markets.clone().into(),
             accounts: resolved_accounts.clone().into(),
             execution: direct_execution.into(),
-            state_snapshot_sink: Arc::new(DisabledSnapshotSink),
+            state_snapshot_sink: self
+                .checkpoints
+                .as_ref()
+                .map(|store| store.clone() as Arc<dyn StrategyStateSnapshotSink>)
+                .unwrap_or_else(|| Arc::new(DisabledSnapshotSink)),
             clock: Arc::new(SystemStrategyClock),
             metrics: Arc::new(NoopStrategyMetrics),
             resources: resources.handle(),
@@ -370,6 +619,9 @@ impl StrategyServiceCore {
         };
         let factory = self.runtimes.get(&manifest.strategy_type)?;
         let runtime = factory.create(&definition, artifact, context)?;
+        if let Some(execution_relay) = execution_relay {
+            execution_relay.attach(&runtime);
+        }
         let mut subscriptions = manifest
             .subscriptions
             .iter()
@@ -569,6 +821,7 @@ impl StrategyServiceCore {
         let mut initial_balances = Vec::new();
         let mut initial_accounts = Vec::new();
         let mut initial_active_orders = Vec::new();
+        let mut initial_order_boundaries = Vec::new();
         for binding in resolved_accounts.iter() {
             let orders = self
                 .dependencies
@@ -603,6 +856,12 @@ impl StrategyServiceCore {
             let version = positions
                 .committed_version
                 .ok_or_else(|| dependency_error("account_snapshot_version_missing"))?;
+            let order_epoch = orders
+                .committed_epoch
+                .ok_or_else(|| dependency_error("order_snapshot_epoch_missing"))?;
+            let order_version = orders
+                .committed_version
+                .ok_or_else(|| dependency_error("order_snapshot_version_missing"))?;
             for asset in binding.tradable_assets.iter() {
                 let mut found = false;
                 for position in positions
@@ -635,41 +894,65 @@ impl StrategyServiceCore {
             let balance_version = balances
                 .committed_version
                 .ok_or_else(|| dependency_error("balance_snapshot_version_missing"))?;
-            initial_balances.extend(balances.items.iter().map(|balance| {
-                TitanBalanceView {
-                    account_no: binding.local_account_no,
-                    currency_no: balance.currency_id.0,
-                    total_units: balance.wallet_units,
-                    available_units: balance.available_units,
-                    account_sequence: balance_version,
-                }
+            if epoch != order_epoch || epoch != balance_epoch {
+                return Err(dependency_error("account_snapshot_epoch_mismatch"));
+            }
+            initial_balances.extend(balances.items.iter().map(|balance| TitanBalanceView {
+                account_no: binding.local_account_no,
+                currency_no: balance.currency_id.0,
+                total_units: balance.wallet_units,
+                available_units: balance.available_units,
+                account_sequence: balance_version,
             }));
             initial_accounts.push(TitanAccountView {
                 account_no: binding.local_account_no,
-                account_epoch: epoch.max(balance_epoch),
-                account_sequence: version.max(balance_version),
+                account_epoch: epoch,
+                account_sequence: version.max(balance_version).max(order_version),
                 state: AccountLifecycle::Ready as u8,
                 ..TitanAccountView::default()
             });
             for order in orders.items.iter() {
-                let Some(asset) = binding.tradable_assets.iter().find(|asset| asset.asset_id == order.asset_id.0) else { continue; };
+                let Some(asset) = binding
+                    .tradable_assets
+                    .iter()
+                    .find(|asset| asset.asset_id == order.asset_id.0)
+                else {
+                    continue;
+                };
                 let order_id = v13_strategy_order_id(handle, order.client_order_id);
-                if order_id == 0 { continue; }
+                if order_id == 0 {
+                    continue;
+                }
                 initial_active_orders.push(TitanActiveOrderView {
-                    order_id, asset_no: asset.local_asset_no, account_no: binding.local_account_no,
-                    price_ticks: order.price_ticks, qty_lots: order.quantity_lots,
+                    order_id,
+                    asset_no: asset.local_asset_no,
+                    account_no: binding.local_account_no,
+                    price_ticks: order.price_ticks,
+                    qty_lots: order.quantity_lots,
                     cumulative_filled_lots: order.filled_quantity_lots,
-                    created_ts_ns: orders.captured_at, updated_ts_ns: orders.captured_at,
-                    account_sequence: version, side: order.side, order_type: order.order_type,
-                    time_in_force: order.time_in_force, status: order.status,
+                    created_ts_ns: orders.captured_at,
+                    updated_ts_ns: orders.captured_at,
+                    account_sequence: order_version,
+                    side: order.side,
+                    order_type: account_order_type_to_v13(order.order_type)?,
+                    time_in_force: account_tif_to_v13(order.time_in_force)?,
+                    status: account_order_status_to_v13(order.status)?,
+                    reduce_only: u8::from(order.reduce_only),
                     ..TitanActiveOrderView::default()
                 });
             }
+            initial_order_boundaries.push((binding.local_account_no, order_version));
         }
         runtime.seed_public_state(StrategyPublicStateSeedV13 {
-            positions: initial_positions.into(), balances: initial_balances.into(),
-            accounts: initial_accounts.into(), active_orders: initial_active_orders.into(),
+            positions: initial_positions.into(),
+            balances: initial_balances.into(),
+            accounts: initial_accounts.into(),
+            active_orders: initial_active_orders.into(),
+            order_boundaries: initial_order_boundaries.into(),
         })?;
+        if let Some(checkpoint) = checkpoint {
+            runtime.restore_state(checkpoint)?;
+        }
         // Event routing must exist before an upstream subscription can emit its initial image.
         // Each token is owned by the strategy resource scope, so replace/remove cannot leak a
         // venue subscription.
@@ -1139,7 +1422,17 @@ impl StrategyServiceCore {
 impl StrategyAdminService for StrategyServiceCore {
     fn create(&self, definition: StrategyDefinition) -> LocalResult<StrategyHandle> {
         self.ensure_accepting()?;
-        let generation = {
+        let checkpoint = self
+            .checkpoints
+            .as_ref()
+            .map(|store| store.load(definition.strategy_id))
+            .transpose()?
+            .flatten();
+        if definition.recovery == StrategyRecoveryPolicy::RequireCheckpoint && checkpoint.is_none()
+        {
+            return Err(checkpoint_error("required_checkpoint_missing"));
+        }
+        let minimum_generation = {
             let state = self
                 .registry
                 .state
@@ -1163,14 +1456,27 @@ impl StrategyAdminService for StrategyServiceCore {
                     "strategy runtime limit reached",
                 ));
             }
-            state
+            let registry_generation = state
                 .last_generation
                 .get(&definition.strategy_id)
                 .copied()
-                .unwrap_or(0)
-                + 1
+                .unwrap_or(0);
+            let checkpoint_generation = checkpoint.as_ref().map_or(0, |value| value.generation);
+            registry_generation.max(checkpoint_generation)
         };
-        let entry = self.create_entry(definition, generation)?;
+        let generation = if let Some(store) = &self.checkpoints {
+            store.reserve_generation(definition.strategy_id, minimum_generation)?
+        } else {
+            minimum_generation
+                .checked_add(1)
+                .ok_or_else(|| definition_error("generation_overflow"))?
+        };
+        let restore = match definition.recovery {
+            StrategyRecoveryPolicy::Fresh => None,
+            StrategyRecoveryPolicy::RestoreLatestCheckpoint
+            | StrategyRecoveryPolicy::RequireCheckpoint => checkpoint,
+        };
+        let entry = self.create_entry(definition, generation, restore)?;
         let handle = entry.handle;
         let mut state = self
             .registry
@@ -1262,12 +1568,16 @@ impl StrategyAdminService for StrategyServiceCore {
         if definition.definition_version <= old.definition.definition_version {
             return Err(definition_error("definition_version_not_increased"));
         }
-        let generation = strategy
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| definition_error("generation_overflow"))?;
+        let generation = if let Some(store) = &self.checkpoints {
+            store.reserve_generation(strategy.strategy_id, strategy.generation)?
+        } else {
+            strategy
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| definition_error("generation_overflow"))?
+        };
         definition.strategy_id = strategy.strategy_id;
-        let candidate = self.create_entry(definition, generation)?;
+        let candidate = self.create_entry(definition, generation, None)?;
         if let Err(error) = self.ensure_ready(&candidate) {
             candidate.cleanup()?;
             return Err(error);
@@ -1450,12 +1760,20 @@ pub(crate) fn validate_definition(
     config: &StrategyCoreConfig,
     definition: &StrategyDefinition,
 ) -> LocalResult<()> {
-    if definition.recovery != StrategyRecoveryPolicy::Fresh {
+    if !definition.accounts.is_empty() && config.checkpoint_root.is_none() {
+        return Err(StrategyError::new(
+            StrategyErrorKind::UnsupportedCapability,
+            "definition",
+            "execution_requires_checkpoint_root",
+            "strategies with account execution require a durable checkpoint root",
+        ));
+    }
+    if definition.recovery != StrategyRecoveryPolicy::Fresh && config.checkpoint_root.is_none() {
         return Err(StrategyError::new(
             StrategyErrorKind::UnsupportedCapability,
             "definition",
             "recovery_unavailable",
-            "only fresh strategy startup is supported until a recovery subsystem is installed",
+            "strategy recovery requires a configured checkpoint root",
         ));
     }
     if definition.strategy_key.is_empty()
@@ -1534,49 +1852,6 @@ pub(crate) fn validate_definition(
             }
         }
     }
-    // V13 subscriptions are signed artifact metadata. Deployment definitions only bind their
-    // routing keys and runtime resources.
-    for subscription in definition.subscriptions.iter() {
-        if !supported_strategy_subscription(
-            subscription.event_type.as_ref(),
-            subscription.schema_version,
-        ) {
-            return Err(StrategyError::new(
-                StrategyErrorKind::UnsupportedCapability,
-                "definition",
-                "unsupported_strategy_subscription",
-                "strategy subscription is not supported by the current canonical adapter",
-            ));
-        }
-        if !config.allowed_event_types.is_empty()
-            && !config
-                .allowed_event_types
-                .contains(&(subscription.event_type.clone(), subscription.schema_version))
-        {
-            return Err(StrategyError::new(
-                StrategyErrorKind::UnsupportedCapability,
-                "definition",
-                "event_not_allowed",
-                "strategy subscription is not authorized",
-            ));
-        }
-        let critical_account_fact = matches!(
-            subscription.event_type.as_ref(),
-            titan_account_service::ORDER_CHANGED_EVENT
-                | titan_account_service::FILL_EVENT
-                | titan_account_service::POSITION_CHANGED_EVENT
-                | titan_account_service::BALANCE_CHANGED_EVENT
-        );
-        if critical_account_fact && subscription.qos != titan_core_types::EventQos::ReliableOrdered
-        {
-            return Err(definition_error("critical_account_qos"));
-        }
-        if subscription.event_type.as_ref() == titan_account_service::FILL_EVENT
-            && subscription.schema_version != titan_account_service::FILL_EVENT_SCHEMA_VERSION
-        {
-            return Err(definition_error("fill_schema_version"));
-        }
-    }
     Ok(())
 }
 
@@ -1608,11 +1883,16 @@ pub(crate) fn validate_manifest(
         return Err(definition_error("artifact_state_capacity"));
     }
     for subscription in manifest.subscriptions.iter() {
-        if !supported_strategy_subscription(subscription.event_type.as_ref(), subscription.schema_version) {
+        if !supported_strategy_subscription(
+            subscription.event_type.as_ref(),
+            subscription.schema_version,
+        ) {
             return Err(definition_error("artifact_subscription_unsupported"));
         }
         if !config.allowed_event_types.is_empty()
-            && !config.allowed_event_types.contains(&(subscription.event_type.clone(), subscription.schema_version))
+            && !config
+                .allowed_event_types
+                .contains(&(subscription.event_type.clone(), subscription.schema_version))
         {
             return Err(definition_error("artifact_event_not_allowed"));
         }
@@ -1778,18 +2058,16 @@ impl titan_core_types::Resource for StrategySupervisorResource {
 /// (FundingRate, MarkPrice and unsupported control facts)
 /// must be rejected here instead of falling through to a heuristic callback mapping.
 ///
-/// `BarBatch` is intentionally still accepted at the service API boundary: the typed adapter and
-/// unit/integration coverage exist. The live CLI rejects bar/hybrid profiles separately until a
-/// production `BarBatch` publisher is wired, so no runnable live configuration can silently wait
-/// for bars that no producer emits.
+/// Bar/Hybrid is not part of the runnable V13 profile until one canonical producer and backtest
+/// adapter exist. Rejecting it at the service boundary prevents artifacts from compiling into a
+/// profile that the runtime cannot dispatch.
 pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) -> bool {
     matches!(
         (event_type, schema_version),
         (
             DEPTH_BATCH_EVENT | TRADE_BATCH_EVENT | BBO_EVENT,
             MARKET_EVENT_SCHEMA_VERSION,
-        ) | (BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION)
-            | (ORDER_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
+        ) | (ORDER_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
             | (FILL_EVENT, FILL_EVENT_SCHEMA_VERSION)
             | (POSITION_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
             | (BALANCE_CHANGED_EVENT, ACCOUNT_EVENT_SCHEMA_VERSION)
@@ -1802,4 +2080,70 @@ pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) ->
                 ACCOUNT_EVENT_SCHEMA_VERSION
             )
     )
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn file_checkpoint_store_round_trips_latest_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "titan-strategy-checkpoint-{}-{}",
+            std::process::id(),
+            SystemStrategyClock.now_ns()
+        ));
+        let strategy = StrategyHandle {
+            strategy_id: StrategyId(91),
+            generation: 7,
+        };
+        let snapshot = StrategyPrivateStateSnapshot {
+            checkpoint_id: 11,
+            strategy,
+            strategy_instance_id: 91,
+            strategy_id: Arc::from("pair-arb"),
+            strategy_version: Arc::from("13.0.0"),
+            generation: 7,
+            event_committed_sequence: 22,
+            artifact_digest: [1; 32],
+            binding_digest: [2; 32],
+            abi_version: STRATEGY_ABI_V13,
+            state_schema_version: 3,
+            state_schema_hash: [4; 32],
+            state_alignment: 8,
+            state_bytes: Arc::from([5_u8, 6, 7]),
+            public_state_identity: [8; 32],
+            checksum: [9; 32],
+        };
+        let store = FileCheckpointStore::new(root.clone()).unwrap();
+        store.submit(snapshot).unwrap();
+        drop(store);
+
+        let store = FileCheckpointStore::new(root.clone()).unwrap();
+        let restored = store.load(strategy.strategy_id).unwrap().unwrap();
+        assert_eq!(restored.checkpoint_id, 11);
+        assert_eq!(restored.generation, 7);
+        assert_eq!(restored.state_bytes.as_ref(), [5, 6, 7]);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generation_watermark_survives_store_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "titan-strategy-generation-{}-{}",
+            std::process::id(),
+            SystemStrategyClock.now_ns()
+        ));
+        let strategy_id = StrategyId(92);
+        let store = FileCheckpointStore::new(root.clone()).unwrap();
+        assert_eq!(store.reserve_generation(strategy_id, 0).unwrap(), 1);
+        drop(store);
+
+        let store = FileCheckpointStore::new(root.clone()).unwrap();
+        assert_eq!(store.reserve_generation(strategy_id, 0).unwrap(), 2);
+        assert_eq!(store.reserve_generation(strategy_id, 8).unwrap(), 9);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

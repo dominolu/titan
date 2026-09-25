@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use titan_core_types::{
     CoreError, EventPublishMetadata, EventPublisher, ResourceScopeHandle, TraceContext,
 };
-use titan_runtime_abi::DecimalUnit;
+use titan_domain_types::DecimalUnit;
 
 use crate::{ConnectorError, MARKET_EVENT_SCHEMA_VERSION, MarketError, MarketErrorKind};
 
@@ -39,7 +39,7 @@ pub struct MarketInstrumentBinding {
 pub struct MarketSourceDefinition {
     pub source_key: Arc<str>,
     pub connector_type: Arc<str>,
-    #[serde(deserialize_with = "titan_runtime_abi::deserialize_arc_bytes")]
+    #[serde(deserialize_with = "titan_domain_types::deserialize_arc_bytes")]
     pub connector_config: Arc<[u8]>,
     pub instruments: Arc<[MarketInstrumentBinding]>,
     pub enabled: bool,

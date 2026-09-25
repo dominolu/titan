@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "initial": {
+    "now_ns": 1000000000,
+    "markets": [
+      {"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101, "tick_size": 1, "lot_size": 1}
+    ]
+  },
+  "events": [
+    {"kind": "tick", "now_ns": 1000000001, "ticks": [{"asset_no": 0, "receive_ts_ns": 1000000001, "price_ticks": 100, "qty_lots": 1}]},
+    {"kind": "tick", "now_ns": 1000000002, "ticks": [{"asset_no": 0, "receive_ts_ns": 1000000002, "price_ticks": 102, "qty_lots": 1}]},
+    {"kind": "tick", "now_ns": 1000000003, "ticks": [{"asset_no": 0, "receive_ts_ns": 1000000003, "price_ticks": 104, "qty_lots": 1}]},
+    {"kind": "tick", "now_ns": 1000000004, "ticks": [{"asset_no": 0, "receive_ts_ns": 1000000004, "price_ticks": 106, "qty_lots": 1}]}
+  ]
+}

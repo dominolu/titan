@@ -3,18 +3,15 @@ resolver = "2"
 members = [
   "hftbacktest",
   "hftbacktest-derive",
-  "crates/titan-runtime-abi",
-  "crates/titan-runtime",
+  "crates/titan-domain-types",
   "crates/titan-event-engine",
   "crates/titan-core-types",
   "crates/titan-market-service",
   "crates/titan-account-service",
-  "crates/titan-python-host",
   "crates/titan-strategy-runtime",
   "crates/titan-cli",
   "collector",
-  "connector",
-  "examples"]
+  "connector"]
 
 [profile.dev]
 opt-level = 0

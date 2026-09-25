@@ -58,6 +58,10 @@ pub mod live_bar;
 
 pub mod platform;
 
+/// ABI V13 artifact adapter. Exchange matching and scheduling stay in HftBacktest while strategy
+/// callbacks and command staging use the canonical Titan V13 runtime contract.
+pub mod strategy_v13;
+
 /// OrderBus implementation
 pub mod order;
 
@@ -2800,7 +2804,7 @@ mod test {
                     git_revision: "test".into(),
                     strategy_id: "tick-reset".into(),
                     strategy_version: "1".into(),
-                    runtime_abi_version: titan_runtime_abi::STRATEGY_ABI_VERSION,
+                    runtime_abi_version: 13,
                     phase_contract_version: crate::backtest::scheduler::PHASE_CONTRACT_VERSION,
                     data_manifest_hash: 1,
                     config_hash: 2,

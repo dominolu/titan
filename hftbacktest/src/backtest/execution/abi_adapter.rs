@@ -1,6 +1,6 @@
 //! Conversion between engine-domain reports and stable Runtime ABI payloads.
 
-use titan_runtime_abi::{FillEvent, OrderEvent};
+use titan_domain_types::{FillEvent, OrderEvent};
 
 use crate::types::{Order, Status};
 

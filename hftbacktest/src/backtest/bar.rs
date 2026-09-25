@@ -26,7 +26,7 @@ use crate::{
     market_data::{BAR_COMPLETE, BAR_EMPTY, BAR_PARTIAL},
     types::{OrdType, Side, Status, TimeInForce},
 };
-use titan_runtime_abi::{BarItem, FillEvent, OrderCommand, TimedBarItem};
+use titan_domain_types::{BarItem, FillEvent, OrderCommand, TimedBarItem};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BarBatchMeta {

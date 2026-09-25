@@ -142,9 +142,7 @@ impl UserDataStream {
         let ev_tx = self.ev_tx.clone();
         let mut last_ping = Instant::now();
 
-        if let Err(error) =
-            get_position_information(client.clone(), symbols, ev_tx.clone()).await
-        {
+        if let Err(error) = get_position_information(client.clone(), symbols, ev_tx.clone()).await {
             error!(?error, "Couldn't get initial position information.");
         }
 

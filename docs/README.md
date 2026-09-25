@@ -5,6 +5,7 @@
 ## 项目状态
 
 - [Titan 项目重构剩余任务清单](refactor_remaining_tasks.md)
+- [Strategy ABI V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)
 
 ## 架构与发布
 

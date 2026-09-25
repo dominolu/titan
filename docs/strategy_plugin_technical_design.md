@@ -2,7 +2,12 @@
 
 版本：v0.2
 
-状态：设计基线，待 EventEngine v1.4 可靠交付契约实现并验收
+状态：历史归档（ABI V8/旧 StrategyPlugin 方案），不再作为当前实现契约
+
+> 当前权威设计见 [Strategy ABI V13 typed-state 技术设计](strategy_abi_v13_typed_state_blob_technical_design.md)
+> 与 [V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。本文涉及的
+> `StrategyRuntimeContext`、`titan-runtime-abi`、`titan-runtime` 和 `titan-python-host`
+> 均为已经删除的历史架构。
 
 > 当前实施范围（2026-09-03）：主链采用 Fresh-only profile。StrategyPlugin 只绑定 MarketService、
 > AccountService 和 AccountExecutionService，命令直接进入 AccountExecutionService；不导出或依赖

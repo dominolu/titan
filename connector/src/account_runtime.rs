@@ -594,7 +594,7 @@ impl account::AccountConnector for AccountRuntime {
                     .then(|| from_units(request.price_ticks, binding.price_tick)),
                 qty: from_units(request.quantity_lots, binding.quantity_lot),
                 time_in_force: api_tif(request.time_in_force),
-                reduce_only: false,
+                reduce_only: request.reduce_only,
                 position_side: None,
                 client_order_id: Some(client_order_id),
                 stop_price: None,
@@ -938,7 +938,7 @@ impl AccountEventEncoder {
     fn cache_order(&self, event: &account::OrderChangedV1) {
         let mut cache = self.orders.lock().unwrap_or_else(|p| p.into_inner());
         let mut next = cache.to_vec();
-        let snapshot = account::OrderSnapshot {
+        let mut snapshot = account::OrderSnapshot {
             asset_id: account::AssetId(event.asset_id),
             side: event.side,
             order_type: event.order_type,
@@ -947,6 +947,7 @@ impl AccountEventEncoder {
             price_ticks: event.price_ticks,
             quantity_lots: event.quantity_lots,
             filled_quantity_lots: event.filled_quantity_lots,
+            reduce_only: event.header.flags & account::event_flags::REDUCE_ONLY != 0,
             client_order_id: event.client_order_id,
             venue_order_id: event.venue_order_id,
             command_id: event.command_id,
@@ -954,6 +955,9 @@ impl AccountEventEncoder {
         if let Some(existing) = next.iter_mut().find(|value| {
             value.asset_id == snapshot.asset_id && value.venue_order_id == snapshot.venue_order_id
         }) {
+            // Legacy connector order observations do not carry reduce-only. Preserve the value
+            // learned from the REST/account snapshot instead of silently downgrading it.
+            snapshot.reduce_only |= existing.reduce_only;
             *existing = snapshot;
         } else {
             next.push(snapshot);
@@ -1274,6 +1278,7 @@ fn order_snapshot(
         price_ticks: to_units(value.price, binding.price_tick)?,
         quantity_lots: to_units(value.qty, binding.quantity_lot)?,
         filled_quantity_lots: to_units(value.executed_qty, binding.quantity_lot)?,
+        reduce_only: value.reduce_only,
         client_order_id: ids.intern(&value.client_order_id),
         venue_order_id: ids.intern(&value.order_id),
         command_id: account::Id128::default(),
@@ -1324,9 +1329,12 @@ fn balance_snapshot(
 }
 
 fn order_event(
-    header: account::AccountEventHeaderV1,
+    mut header: account::AccountEventHeaderV1,
     value: &account::OrderSnapshot,
 ) -> account::OrderChangedV1 {
+    if value.reduce_only {
+        header.flags |= account::event_flags::REDUCE_ONLY;
+    }
     account::OrderChangedV1 {
         header,
         asset_id: value.asset_id.0,
@@ -1673,7 +1681,7 @@ mod tests {
                 avg_price: 0.0,
                 leaves_qty: 2.0,
                 time_in_force: ApiTimeInForce::GTC,
-                reduce_only: false,
+                reduce_only: true,
                 position_side: ApiPositionSide::Net,
                 create_time: 10,
                 update_time: 11,
@@ -1847,11 +1855,21 @@ mod tests {
         encoder.publish_ready().unwrap();
 
         assert!(encoder.ready.load(Ordering::Acquire));
-        assert_eq!(encoder.orders.lock().unwrap().len(), 1);
+        let orders = encoder.orders.lock().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert!(orders[0].reduce_only);
+        drop(orders);
         assert_eq!(encoder.positions.lock().unwrap()[0].quantity_lots, 125);
         assert_eq!(encoder.balances.lock().unwrap()[0].wallet_units, 100_000);
         let events = sink.events.lock().unwrap();
         assert_eq!(events.len(), 4);
+        let order_payload = events
+            .iter()
+            .find(|(event_type, _)| event_type == account::ORDER_CHANGED_EVENT)
+            .map(|(_, payload)| payload)
+            .unwrap();
+        let order = account::OrderChangedV1::decode(order_payload).unwrap();
+        assert_ne!(order.header.flags & account::event_flags::REDUCE_ONLY, 0);
         assert_eq!(
             events.last().unwrap().0,
             account::STREAM_STATE_CHANGED_EVENT

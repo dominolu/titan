@@ -20,6 +20,7 @@ build/
 # Local data and artifacts
 /data/
 artifacts/
+checkpoints/
 !deploy/pair_arb_v13/artifacts/
 !deploy/pair_arb_v13/artifacts/pair_arb.titan
 !crates/titan-cli/tests/fixtures/artifacts/

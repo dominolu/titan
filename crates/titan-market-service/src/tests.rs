@@ -1,4 +1,4 @@
-use titan_runtime_abi::{BAR_COMPLETE, Bar};
+use titan_domain_types::{BAR_COMPLETE, Bar};
 
 use crate::*;
 
@@ -63,7 +63,7 @@ fn closed_bar_batch_v1_round_trips_and_rejects_invalid_bars() {
     assert_eq!(BarBatchV1::decode(&encoded).unwrap(), batch);
 
     let mut partial = batch.clone();
-    partial.items[0].bar.flags = titan_runtime_abi::BAR_PARTIAL;
+    partial.items[0].bar.flags = titan_domain_types::BAR_PARTIAL;
     assert!(partial.encode().is_err());
     let mut mismatched = batch;
     mismatched.items[0].bar.close_ts += 1;

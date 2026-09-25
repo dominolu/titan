@@ -1,6 +1,10 @@
 # Titan 项目重构剩余任务清单
 
-状态：当前闭环已完成；外部实盘验收、目标硬件调优及未来插件仍待执行
+状态：历史归档（ABI V8/V12 阶段），不再作为当前实现或待办清单
+
+> 当前权威状态见 [Strategy ABI V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。
+> 本文保留旧架构决策和当时的验收记录，其中 `titan-runtime-abi`、`titan-runtime`、
+> `titan-python-host`、Fresh-only 等描述均不代表当前 V13 实现。
 
 更新时间：2026-09-07
 

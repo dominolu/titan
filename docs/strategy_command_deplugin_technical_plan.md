@@ -1,5 +1,11 @@
 # Titan 去插件化与最简策略执行技术方案
 
+状态：历史归档（ABI V12 过渡方案），不再作为当前实现契约
+
+> 当前策略执行契约见 [Strategy ABI V13 typed-state 技术设计](strategy_abi_v13_typed_state_blob_technical_design.md)
+> 与 [V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。本文的 ABI V12、
+> `BacktestCommandBuffer` 和旧 runtime 描述仅用于追溯迁移过程。
+
 ## 1. 架构决策
 
 当前阶段不建设 Gateway、轻量 OMS 或账户执行状态机。所有原 Plugin 形态都被移除：具有独立领域职责的

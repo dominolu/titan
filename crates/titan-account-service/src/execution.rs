@@ -24,6 +24,7 @@ pub struct DirectNewOrderRequest {
     pub time_in_force: u8,
     pub price_ticks: i64,
     pub quantity_lots: i64,
+    pub reduce_only: bool,
     pub client_order_id: ClientOrderId,
 }
 
@@ -93,10 +94,18 @@ pub enum ObservedExecutionOutcome {
     Unknown(DirectExecutionError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionRequestKind {
+    Submit,
+    Cancel,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservedExecutionResult {
     pub task_id: ExecutionTaskId,
     pub account: AccountHandle,
+    pub asset_id: AssetId,
+    pub request_kind: ExecutionRequestKind,
     pub client_order_id: Option<ClientOrderId>,
     pub outcome: ObservedExecutionOutcome,
 }
@@ -321,18 +330,34 @@ impl ExecutionHandle {
 
     pub fn submit(&self, request: DirectNewOrderRequest) -> Result<ExecutionTaskId, SpawnError> {
         let started = Instant::now();
+        let asset_id = request.asset_id;
         let client_order_id = Some(request.client_order_id);
-        self.spawn(client_order_id, || self.connector.submit(request), started)
+        self.spawn(
+            asset_id,
+            ExecutionRequestKind::Submit,
+            client_order_id,
+            || self.connector.submit(request),
+            started,
+        )
     }
 
     pub fn cancel(&self, request: DirectCancelOrderRequest) -> Result<ExecutionTaskId, SpawnError> {
         let started = Instant::now();
+        let asset_id = request.asset_id;
         let client_order_id = request.client_order_id;
-        self.spawn(client_order_id, || self.connector.cancel(request), started)
+        self.spawn(
+            asset_id,
+            ExecutionRequestKind::Cancel,
+            client_order_id,
+            || self.connector.cancel(request),
+            started,
+        )
     }
 
     fn spawn(
         &self,
+        asset_id: AssetId,
+        request_kind: ExecutionRequestKind,
         client_order_id: Option<ClientOrderId>,
         make_future: impl FnOnce() -> ExecutionFuture,
         started: Instant,
@@ -376,6 +401,8 @@ impl ExecutionHandle {
             observer.observe(ObservedExecutionResult {
                 task_id,
                 account,
+                asset_id,
+                request_kind,
                 client_order_id,
                 outcome,
             });
@@ -512,6 +539,7 @@ mod tests {
             time_in_force: 0,
             price_ticks: 10,
             quantity_lots: 1,
+            reduce_only: false,
             client_order_id: Id128([3; 16]),
         }
     }

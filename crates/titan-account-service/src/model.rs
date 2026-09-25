@@ -8,7 +8,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-pub use titan_runtime_abi::DecimalUnit;
+pub use titan_domain_types::DecimalUnit;
 
 use serde::{Deserialize, Serialize};
 use titan_core_types::{
@@ -94,7 +94,7 @@ pub struct AccountDefinition {
     pub account_id: AccountId,
     pub connector_type: Arc<str>,
     pub credential_ref: SecretRef,
-    #[serde(deserialize_with = "titan_runtime_abi::deserialize_arc_bytes")]
+    #[serde(deserialize_with = "titan_domain_types::deserialize_arc_bytes")]
     pub connector_config: Arc<[u8]>,
     pub instruments: Arc<[AccountInstrumentBinding]>,
     pub currencies: Arc<[AccountCurrencyBinding]>,
@@ -603,6 +603,7 @@ pub struct OrderSnapshot {
     pub price_ticks: i64,
     pub quantity_lots: i64,
     pub filled_quantity_lots: i64,
+    pub reduce_only: bool,
     pub client_order_id: Id128,
     pub venue_order_id: Id128,
     pub command_id: Id128,

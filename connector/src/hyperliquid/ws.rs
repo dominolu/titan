@@ -1331,7 +1331,11 @@ mod tests {
         }]);
         ws.handle_user_events(&event).await.unwrap();
         assert_eq!(
-            *ws.positions.lock().unwrap().get("BTC").expect("position must be cached"),
+            *ws.positions
+                .lock()
+                .unwrap()
+                .get("BTC")
+                .expect("position must be cached"),
             0.6
         );
         let duplicated = serde_json::json!([{
@@ -1346,7 +1350,11 @@ mod tests {
         }]);
         ws.handle_user_events(&duplicated).await.unwrap();
         assert_eq!(
-            *ws.positions.lock().unwrap().get("BTC").expect("position must be cached"),
+            *ws.positions
+                .lock()
+                .unwrap()
+                .get("BTC")
+                .expect("position must be cached"),
             0.6
         );
         let next = serde_json::json!([{
