@@ -212,17 +212,14 @@ def _cancel_order(typingctx, context_value, account_no, asset_no, order_id):
 
 @overload_method(StrategyContextType, "submit_order", inline="always")
 def overload_submit_order(context_value, account_no, asset_no, side, order_type, qty_lots,
-                          price_ticks, time_in_force, reduce_only=False,
-                          trigger_price_ticks=0, gtd_expiry_ns=0):
+                          price_ticks, time_in_force, reduce_only=False):
     if not isinstance(context_value, StrategyContextType):
         return None
 
     def implementation(context_value, account_no, asset_no, side, order_type, qty_lots,
-                       price_ticks, time_in_force, reduce_only=False,
-                       trigger_price_ticks=0, gtd_expiry_ns=0):
+                       price_ticks, time_in_force, reduce_only=False):
         return _submit_order(context_value, account_no, asset_no, side, order_type, qty_lots,
-                             price_ticks, time_in_force, reduce_only, trigger_price_ticks,
-                             gtd_expiry_ns)
+                             price_ticks, time_in_force, reduce_only, 0, 0)
 
     return implementation
 

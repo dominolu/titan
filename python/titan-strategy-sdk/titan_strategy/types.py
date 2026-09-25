@@ -38,8 +38,6 @@ class Side(IntEnum):
 class OrderType(IntEnum):
     LIMIT = 1
     MARKET = 2
-    STOP_LIMIT = 3
-    STOP_MARKET = 4
 
 
 class TimeInForce(IntEnum):
@@ -47,7 +45,6 @@ class TimeInForce(IntEnum):
     IOC = 2
     FOK = 3
     POST_ONLY = 4
-    GTD = 5
 
 
 class OrderStatus(IntEnum):

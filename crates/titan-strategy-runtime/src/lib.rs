@@ -6,6 +6,7 @@
 mod artifact;
 mod error;
 mod model;
+mod offline_v13;
 mod runtime;
 mod runtime_v13;
 mod service;
@@ -15,6 +16,7 @@ mod v13;
 pub use artifact::*;
 pub use error::*;
 pub use model::*;
+pub use offline_v13::*;
 pub use runtime::*;
 pub use runtime_v13::*;
 pub use service::*;

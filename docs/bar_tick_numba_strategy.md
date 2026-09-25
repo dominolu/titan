@@ -1,12 +1,8 @@
-# Bar/Tick 回测与实盘统一策略接口
+# Bar/Tick 旧方案（归档）
 
-> 状态：统一运行时已落地。Rust 事件循环、Numba 单参数回调、全局 TickBatch、显式 Bar、
-> 历史环、NextOpen/SignalClose/Touch/ConservativeOhlc/VolumeLimited、Hybrid、Timer、Funding，以及
-> native/canonical/recovery Live Bar 的去重与恢复组件均已实现；不受支持的能力组合 fail-fast。
->
-> 当前仓库只保留 Rust `Strategy` trait；最终面向策略作者的接口必须是 Numba Python
-> 单参数回调。Rust trait 可以作为核心内部接口、测试接口或迁移期兼容层，但不是最终的
-> Python 策略 API。
+> 状态：不再是可执行契约。ABI V13 当前只发布 Tick profile；Bar/Hybrid producer、聚合器与端到端
+> 测试未完成前，SDK、CLI 和 Strategy Service 均 fail-fast。本文件仅保留历史撮合语义背景，当前接口以
+> `strategy_abi_v13_typed_state_blob_technical_design.md` 和 `titan_cli.md` 为准。
 
 ## 目标
 
@@ -290,14 +286,9 @@ submit 与 cancel；不支持 modify，修改订单必须显式 cancel/replace�
 
 ### 可重复回调边界基准
 
-仓库提供 `titan-python-host` 的 `numba_rust_callback_benchmark` Release example。它使用同一个
-`StrategyRuntimeContext` ABI、相同的单指针函数签名和相同的 `state_f64[0] += 1` 工作量，对比原生 Rust
-回调与通过正式 `EmbeddedPythonCompiler` 生成的 Numba `@njit` 回调。每轮测量前预热 1,000,000 次，默认
-采集 10,000 个样本、每个样本批量调用 1,000 次，并在结束时校验状态增量，防止空调用或错误代码参与结果。
-
-```bash
-cargo run --release -p titan-python-host --example numba_rust_callback_benchmark
-```
+旧的进程内 Python host benchmark 已随 ABI V13 hard cutover 删除。当前性能验证直接加载 `.titan`
+native artifact，并使用 `StrategyRuntimeContextV13`、typed state blob 与统一 command staging；运行时不链接
+Python 或 Numba。
 
 Apple M1 Pro / aarch64 macOS 的当前实测报告保存在
 [`numba_rust_callback_benchmark_m1_pro.json`](numba_rust_callback_benchmark_m1_pro.json)：Rust 回调 P50/P99/P99.9

@@ -139,7 +139,8 @@ impl StrategyCapabilitiesV13 {
 
 macro_rules! v13_view {
     ($name:ident { $($field:ident: $type:ty),* $(,)? }) => {
-        #[derive(Clone, Copy, Debug, Default)]
+        #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
+        #[serde(default, deny_unknown_fields)]
         #[repr(C)]
         pub struct $name { $(pub $field: $type),* }
     };
@@ -365,11 +366,19 @@ impl CallbackCommandStagingV13 {
                 "invalid command staging configuration",
             ));
         }
+        let generation_prefix = generation
+            .checked_sub(1)
+            .filter(|value| *value <= u64::from(u32::MAX))
+            .ok_or(V13LoadError::Contract("strategy generation is too large"))?
+            << 32;
         Ok(Self {
             commands: Vec::with_capacity(capacity),
             capacity,
-            next_order_id: 1,
-            next_command_id: 1,
+            // Generation one deliberately keeps the historical 1-based identifiers. Later
+            // generations occupy disjoint 32-bit ranges so a restart can never reuse an order
+            // identifier that may still be live at a venue.
+            next_order_id: generation_prefix | 1,
+            next_command_id: generation_prefix | 1,
             gate_open: false,
             active_orders_ptr: std::ptr::null(),
             active_orders_len: 0,
@@ -426,8 +435,12 @@ unsafe extern "C" fn stage_submit_order_v13(
         || staging.commands.len() >= staging.capacity
         || request.qty_lots <= 0
         || !matches!(request.side, 1 | 2)
-        || request.order_type == 0
-        || request.time_in_force == 0
+        || !matches!(request.order_type, 1 | 2)
+        || !matches!(request.time_in_force, 1..=4)
+        || !matches!(request.reduce_only, 0 | 1)
+        || request.trigger_kind != 0
+        || request.trigger_price_ticks != 0
+        || request.gtd_expiry_ns != 0
     {
         return -2;
     }
@@ -1052,8 +1065,8 @@ pub fn public_state_identity_v13(
         digest.update(value.price_ticks.to_le_bytes());
         digest.update(value.qty_lots.to_le_bytes());
         digest.update(value.cumulative_filled_lots.to_le_bytes());
-        digest.update(value.created_ts_ns.to_le_bytes());
-        digest.update(value.updated_ts_ns.to_le_bytes());
+        // Snapshot capture timestamps are transport metadata and cannot be reconstructed from a
+        // venue snapshot after restart. Reconciliation is based on economic/order state instead.
         digest.update(value.account_sequence.to_le_bytes());
         digest.update([
             value.side,
@@ -1325,12 +1338,16 @@ fn parse_manifest(
     let subscriptions = value_array(map_get(value, "subscriptions")?)?
         .iter()
         .map(|subscription| {
-            let event = V13EventKind::from_manifest_name(value_text(map_get(subscription, "event")?)?)?;
+            let event =
+                V13EventKind::from_manifest_name(value_text(map_get(subscription, "event")?)?)?;
             let handler: Arc<str> = Arc::from(value_text(map_get(subscription, "handler")?)?);
-            let schema_version = u32::try_from(value_u64(map_get(subscription, "schema_version")?)?)
-                .map_err(|_| V13LoadError::Contract("subscription schema version overflow"))?;
+            let schema_version =
+                u32::try_from(value_u64(map_get(subscription, "schema_version")?)?)
+                    .map_err(|_| V13LoadError::Contract("subscription schema version overflow"))?;
             if schema_version == 0 || handler.as_ref() != CALLBACK_NAMES[event.index()] {
-                return Err(V13LoadError::Contract("subscription handler contract mismatch"));
+                return Err(V13LoadError::Contract(
+                    "subscription handler contract mismatch",
+                ));
             }
             let qos = V13EventQos::from_manifest_name(value_text(map_get(subscription, "qos")?)?)?;
             if matches!(
@@ -1343,13 +1360,23 @@ fn parse_manifest(
                     | V13EventKind::AccountState
             ) && qos != V13EventQos::ReliableOrdered
             {
-                return Err(V13LoadError::Contract("account subscription must be reliable ordered"));
+                return Err(V13LoadError::Contract(
+                    "account subscription must be reliable ordered",
+                ));
             }
-            Ok(EventSubscriptionV13 { event, handler, schema_version, qos })
+            Ok(EventSubscriptionV13 {
+                event,
+                handler,
+                schema_version,
+                qos,
+            })
         })
         .collect::<Result<Vec<_>, V13LoadError>>()?;
     let mut seen = BTreeSet::new();
-    if subscriptions.iter().any(|item| !seen.insert(item.event as u32)) {
+    if subscriptions
+        .iter()
+        .any(|item| !seen.insert(item.event as u32))
+    {
         return Err(V13LoadError::Contract("duplicate subscription event"));
     }
     let mut capabilities = StrategyCapabilitiesV13::default();
@@ -1362,15 +1389,32 @@ fn parse_manifest(
             _ => return Err(V13LoadError::Contract("unknown strategy capability")),
         };
     }
-    if subscriptions.iter().any(|item| matches!(item.event, V13EventKind::Tick | V13EventKind::Bar | V13EventKind::Depth))
-        && !capabilities.contains(StrategyCapabilitiesV13::MARKET_DATA)
+    if subscriptions.iter().any(|item| {
+        matches!(
+            item.event,
+            V13EventKind::Tick | V13EventKind::Bar | V13EventKind::Depth
+        )
+    }) && !capabilities.contains(StrategyCapabilitiesV13::MARKET_DATA)
     {
-        return Err(V13LoadError::Contract("market subscription lacks capability"));
+        return Err(V13LoadError::Contract(
+            "market subscription lacks capability",
+        ));
     }
-    if subscriptions.iter().any(|item| matches!(item.event, V13EventKind::Fill | V13EventKind::Order | V13EventKind::Cancel | V13EventKind::Position | V13EventKind::Balance | V13EventKind::AccountState))
-        && !capabilities.contains(StrategyCapabilitiesV13::ACCOUNT_DATA)
+    if subscriptions.iter().any(|item| {
+        matches!(
+            item.event,
+            V13EventKind::Fill
+                | V13EventKind::Order
+                | V13EventKind::Cancel
+                | V13EventKind::Position
+                | V13EventKind::Balance
+                | V13EventKind::AccountState
+        )
+    }) && !capabilities.contains(StrategyCapabilitiesV13::ACCOUNT_DATA)
     {
-        return Err(V13LoadError::Contract("account subscription lacks capability"));
+        return Err(V13LoadError::Contract(
+            "account subscription lacks capability",
+        ));
     }
     Ok(ArtifactManifestV13 {
         strategy_id: Arc::from(value_text(map_get(value, "strategy_id")?)?),
@@ -1471,7 +1515,10 @@ fn cbor_to_json(value: &CborValue) -> Result<serde_json::Value, V13LoadError> {
         }
         CborValue::Text(value) => serde_json::Value::String(value.clone()),
         CborValue::Array(values) => serde_json::Value::Array(
-            values.iter().map(cbor_to_json).collect::<Result<Vec<_>, _>>()?,
+            values
+                .iter()
+                .map(cbor_to_json)
+                .collect::<Result<Vec<_>, _>>()?,
         ),
         CborValue::Map(values) => {
             let mut output = serde_json::Map::new();
@@ -1488,7 +1535,11 @@ fn cbor_to_json(value: &CborValue) -> Result<serde_json::Value, V13LoadError> {
         CborValue::Float(value) => serde_json::Number::from_f64(*value)
             .map(serde_json::Value::Number)
             .ok_or(V13LoadError::Contract("non-finite JSON float"))?,
-        CborValue::Bytes(_) => return Err(V13LoadError::Contract("bytes are not valid JSON schema values")),
+        CborValue::Bytes(_) => {
+            return Err(V13LoadError::Contract(
+                "bytes are not valid JSON schema values",
+            ));
+        }
     })
 }
 
@@ -1795,6 +1846,15 @@ mod tests {
             0,
             "failed callbacks discard the whole batch"
         );
+    }
+
+    #[test]
+    fn command_ids_do_not_overlap_between_generations() {
+        let first = CallbackCommandStagingV13::new(2, 5, 1).unwrap();
+        let second = CallbackCommandStagingV13::new(2, 5, 2).unwrap();
+        assert_eq!(first.next_order_id, 1);
+        assert_eq!(second.next_order_id, (1_u64 << 32) | 1);
+        assert_ne!(first.next_order_id, second.next_order_id);
     }
 
     #[test]

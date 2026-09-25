@@ -86,6 +86,8 @@ class StrategySpec:
             raise ValueError("event subscriptions must be unique")
         if any(subscription.event_kind in (EventKind.START, EventKind.STOP) for subscription in subscriptions):
             raise ValueError("lifecycle handlers are declared by handlers, not subscriptions")
+        if any(subscription.event_kind == EventKind.BAR for subscription in subscriptions):
+            raise ValueError("ABI V13 Bar/Hybrid is unavailable until the canonical producer and backtest adapter exist")
         capabilities = Capability(self.capabilities)
         if any(s.event_kind in (EventKind.BBO, EventKind.BAR, EventKind.DEPTH) for s in subscriptions):
             if not capabilities & Capability.MARKET_DATA:

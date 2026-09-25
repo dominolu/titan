@@ -1,0 +1,7 @@
+schema_version = 1
+history_capacity = 1024
+
+[backtest]
+data = "../fixtures/pair_arb_v13_trace.json"
+command_capacity = 64
+allow_unsigned_artifact = true

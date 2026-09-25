@@ -16,9 +16,11 @@ def fresh_state():
 
 
 class StartContext:
-    def __init__(self, state, active):
+    def __init__(self, state, active, positions=None, account_state=strategy.ACCOUNT_READY):
         self.state = state
         self._active = active
+        self._positions = positions or {}
+        self._account_state = account_state
 
     def active_orders(self):
         return self._active
@@ -27,15 +29,26 @@ class StartContext:
         value = np.zeros(1, dtype=abi_v13.account_dtype)[0]
         value["account_no"] = account_no
         value["account_epoch"] = 1
-        value["state"] = strategy.ACCOUNT_READY
+        value["account_sequence"] = 10 + account_no
+        value["state"] = self._account_state
         return value
 
     def position(self, account_no, asset_no):
         value = np.zeros(1, dtype=abi_v13.position_dtype)[0]
         value["account_no"] = account_no
         value["asset_no"] = asset_no
+        value["qty_lots"] = self._positions.get((account_no, asset_no), 0)
         return value
 
+
+class OrderContext:
+    def __init__(self, state, events):
+        self.state = state
+        self.now = 100
+        self._events = events
+
+    def order_events(self):
+        return self._events
 
 class TestPairArbV13StateMachine(unittest.TestCase):
     def test_slot_requires_full_initiator_target_before_completion(self):
@@ -64,6 +77,20 @@ class TestPairArbV13StateMachine(unittest.TestCase):
         self.assertEqual(int(state[0]["pair"]["status"]), strategy.FAULTED)
         self.assertEqual(int(state[0]["pair"]["last_error"]), 303)
 
+    def test_start_rejects_nonzero_unreconciled_position(self):
+        state = fresh_state()
+        active = np.zeros(0, dtype=abi_v13.active_order_dtype)
+        strategy.on_start.py_func(StartContext(state[0], active, {(0, 0): 2}))
+        self.assertEqual(int(state[0]["pair"]["status"]), strategy.FAULTED)
+        self.assertEqual(int(state[0]["pair"]["last_error"]), 308)
+
+    def test_start_rejects_account_that_is_not_ready(self):
+        state = fresh_state()
+        active = np.zeros(0, dtype=abi_v13.active_order_dtype)
+        strategy.on_start.py_func(StartContext(state[0], active, account_state=5))
+        self.assertEqual(int(state[0]["pair"]["status"]), strategy.FAULTED)
+        self.assertEqual(int(state[0]["pair"]["last_error"]), 304)
+
     def test_replacement_fills_accumulate_and_create_hedge_debt(self):
         state = fresh_state()[0]
         state["slot"]["id"] = 1
@@ -79,6 +106,22 @@ class TestPairArbV13StateMachine(unittest.TestCase):
         self.assertEqual(strategy.hedge_debt.py_func(state), 3)
         strategy.apply_hedge_fill.py_func(state, 3, 40)
         self.assertEqual(strategy.hedge_debt.py_func(state), 0)
+
+    def test_unknown_submit_result_halts_strategy(self):
+        state = fresh_state()[0]
+        order = state["orders"][0]
+        order["order_id"] = 77
+        order["account_no"] = 0
+        order["asset_no"] = 0
+        order["qty_lots"] = 1
+        events = np.zeros(1, dtype=abi_v13.order_event_dtype)
+        events[0]["order_id"] = 77
+        events[0]["account_no"] = 0
+        events[0]["asset_no"] = 0
+        events[0]["status"] = strategy.UNKNOWN_STATUS
+        strategy.on_order.py_func(OrderContext(state, events))
+        self.assertEqual(int(state["pair"]["status"]), strategy.FAULTED)
+        self.assertEqual(int(state["pair"]["last_error"]), 503)
 
 
 if __name__ == "__main__":

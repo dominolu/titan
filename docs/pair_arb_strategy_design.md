@@ -1,7 +1,7 @@
 # `pair_arb`：可复用高频双腿执行内核设计
 
-状态：设计稿 v0.2  
-目标运行时：Titan Strategy ABI v10  
+状态：ABI V13 实现基线 v1.0
+目标运行时：Titan Strategy ABI V13
 策略包建议名：`strategies/pair_arb`
 
 ## 1. 设计目标
@@ -358,26 +358,14 @@ Signal 不选择具体 TIF、retry 或 command sequencing。配置选择 policy�
 
 ```text
 strategies/pair_arb/
-  strategy.py              # build 与 callback wiring
-  engine.py                # event reducer / engine mode
-  ledger.py                # position/order/fill/obligation ledgers
-  risk.py                  # risk calculation and gates
-  normalization.py         # tick/lot/contract conversion
-  execution/
-    maker_hedge.py
-    taker_taker.py          # later
-    unwind.py
-  signals/
-    protocol.py
-    executable_spread.py
-    basis.py
-    funding_carry.py
-    residual_zscore.py
-  strategy.json
-  strategy-manifest.json
+  strategy.py              # 唯一编译输入；Spec、typed state 与 callback wiring
+  parameters.json          # 冷路径编译参数
+
+deploy/pair_arb_v13/artifacts/
+  pair_arb.titan           # native library + canonical signed manifest
 ```
 
-Numba 热路径不做 Python 动态分派。`build(parameters)` 在冷路径选择 signal evaluator 和 execution policy，将对应的 `@njit` 函数闭包进统一 callbacks。
+Numba 热路径不做 Python 动态分派。`build(parameters)` 在受限编译 worker 中生成固定 typed state 与 module-level `@njit` callbacks；运行时只加载 `.titan`，不读取 Python manifest。
 
 ABI V13 使用策略声明的 aligned structured dtype；私有状态按具名 nested record/fixed array 分组，
 不再维护按基础类型拆分的全局 offset：

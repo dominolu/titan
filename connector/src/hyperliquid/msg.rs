@@ -115,9 +115,7 @@ impl<'de> Deserialize<'de> for ExchangeResponse {
                 type_: "error".to_string(),
                 data: Some(serde_json::Value::String(message)),
             }),
-            Some(value) => Some(
-                serde_json::from_value(value).map_err(serde::de::Error::custom)?,
-            ),
+            Some(value) => Some(serde_json::from_value(value).map_err(serde::de::Error::custom)?),
         };
         Ok(Self {
             status: wire.status,

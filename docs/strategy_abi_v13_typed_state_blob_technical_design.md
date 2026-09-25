@@ -1,6 +1,6 @@
 # Numba 策略三阶段技术方案：编写、静态编译与运行
 
-状态：设计稿（待实现）
+状态：已实现（Tick profile；Bar/Hybrid 暂不发布）
 目标接口：Strategy ABI V13
 核心方案：Typed State Blob + NumPy Structured Dtype + 离线 Numba AOT + Rust Native Runtime
 
@@ -971,7 +971,7 @@ typedef int32_t (*TitanCancelOrderFn)(
     const struct TitanCancelOrderRequest *request,
     uint64_t *command_id_out);
 
-struct StrategyRuntimeContext {
+struct StrategyRuntimeContextV13 {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t event_kind;
@@ -1184,7 +1184,7 @@ callback 返回 `0` 时按调用顺序原子提交该批命令，callback 返回
 state 修改已结束且本批命令已交给对应的回测或实盘 sink；不代表外部执行结果已完成。
 
 上述全部 `Titan*View` 的每个字段、offset、size、alignment 和语义都在 `abi_v13.py` 与 Rust
-`titan-runtime-abi` 的同一 canonical descriptor 中列出。
+`titan-strategy-runtime::v13` 的 canonical descriptor 与 Python `abi_v13.py` 中列出。
 descriptor 同时编码上述 context、request、view 和 function pointer 签名，SHA-256 结果为
 `abi_fingerprint`。compiler、manifest、native descriptor 和 runtime 四方必须完全相同。
 
@@ -1292,7 +1292,7 @@ fn build_callback_context(
     instance: &mut StrategyInstance,
     event: RuntimeEventView<'_>,
     commands: &HostCommandSinkBinding,
-) -> StrategyRuntimeContext
+) -> StrategyRuntimeContextV13
 ```
 
 - `instance`：状态和实例元数据；
@@ -1305,8 +1305,8 @@ fn build_callback_context(
 ```rust
 pub fn invoke(
     &self,
-    kind: StrategyEventKind,
-    context: &mut StrategyRuntimeContext,
+    kind: V13EventKind,
+    context: &mut StrategyRuntimeContextV13,
 ) -> Result<(), CallbackError>
 ```
 
@@ -1668,28 +1668,14 @@ subscriber fault 和 supervisor 停止联动，并补齐 QoS/隔离测试。Even
 用 pair_arb 验证完整三阶段，再验证多个独立策略；在编译服务器执行全量测试和 benchmark，
 输出 artifact、性能报告和未满足清单。
 
-### 当前未满足清单
+### 当前实现边界
 
-本文是待实现设计。在对应代码和编译服务器证据产出前，以下项目均视为未满足，而不是默认成立：
+Typed nested state、只读 public views、AOT native callback、canonical loader、command staging、checkpoint、
+generation rebind、账户启动对账和 V13 离线 adapter 均已落地。生产 runtime 不链接 Python/NumPy/Numba。
 
-1. Numba extension type 能否把每个策略的 `ctx.state` 降低为具体 nested structured dtype，并对公共
-   view 保持编译期只读；
-2. handler、bridge 和所需 runtime 支持能否形成不依赖 `libpython`、NumPy、Numba、llvmlite 动态库的
-   可加载 object/shared library；
-3. 标准事件 view、host function pointer、nested record 和 fixed array 原地修改是否全部通过无 Python
-   进程 smoke test；
-4. Rust ABI canonical descriptor、artifact loader、aligned state、实例归属、command staging 和
-   checkpoint/rebind 是否已按本文实现；
-5. EventEngine 是否已提供每实例 PRIMARY lane、三类 QoS、唯一 `max_handler_duration` 参数及 fault 到
-   supervisor 的停止联动；
-6. runtime/account/event 服务是否能在同一 checkpoint barrier 提供 public identity、durable sequence、
-   pending/unknown command ledger 和安全的 generation rebind；
-7. 完整 callback 热路径是否达到零 heap allocation，并满足相对 ABI V12 baseline 的吞吐和 p99 阈值；
-8. 旧 pair-arb 需求文档中由 Numba 私有 state 维护完整 active orders 的表述是否已同步改为 runtime
-   公共只读 view，避免实现时出现两套事实源。
-
-任何一项失败都必须记录实际证据、影响范围和收缩后的 V13 能力；不得以生产 runtime 内嵌 Python/JIT、
-恢复双数组状态接口或让策略直接依赖 connector 作为临时绕过。
+当前只发布 Tick profile。Bar/Hybrid 在 SDK、CLI 与 Strategy Service 边界明确拒绝；只有在真实 BarBatch
+producer、聚合器以及 live/offline 端到端顺序测试齐备后才能重新开放。性能门槛沿用 EventEngine 独立基准，
+本次迁移不再保留或执行 ABI V12 baseline。
 
 ## 27. 验收标准
 

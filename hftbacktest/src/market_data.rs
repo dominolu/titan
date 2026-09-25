@@ -5,7 +5,9 @@
 
 use crate::types::{BUY_EVENT, Event};
 
-pub use titan_runtime_abi::{BAR_COMPLETE, BAR_EMPTY, BAR_NATIVE, BAR_PARTIAL, BAR_SYNTHETIC, Bar};
+pub use titan_domain_types::{
+    BAR_COMPLETE, BAR_EMPTY, BAR_NATIVE, BAR_PARTIAL, BAR_SYNTHETIC, Bar,
+};
 
 /// How missing fixed intervals are represented by a canonical builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

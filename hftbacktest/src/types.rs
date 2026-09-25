@@ -377,7 +377,7 @@ pub enum WaitOrderResponse {
     Specified { asset_no: usize, order_id: OrderId },
 }
 
-pub use titan_runtime_abi::Event;
+pub use titan_domain_types::Event;
 
 unsafe impl POD for Event {}
 

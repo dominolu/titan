@@ -1136,7 +1136,7 @@ market_event_queue = 262144
         ("OpenCTP 项目和柜台兼容接口", "https://github.com/openctp/openctp"),
         ("ctp2rs 动态加载与 OpenCTP 示例", "https://github.com/pseudocodes/ctp2rs"),
         ("Titan Connector 现状", str(ROOT / "connector/README.md")),
-        ("Titan Runtime ABI", str(ROOT / "crates/titan-runtime-abi/src/lib.rs")),
+        ("Titan Domain Types", str(ROOT / "crates/titan-domain-types/src/lib.rs")),
         ("Titan Connector Loader", str(ROOT / "crates/titan-connector-loader/src/lib.rs")),
     ]
     for text, url in refs:

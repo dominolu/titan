@@ -920,7 +920,7 @@ market_event_queue = 262144
 - [OpenCTP 项目和柜台兼容接口](https://github.com/openctp/openctp)
 - [ctp2rs 动态加载与 OpenCTP 示例](https://github.com/pseudocodes/ctp2rs)
 - Titan Connector 现状  /workspace/dev/titan/connector/README.md
-- Titan Runtime ABI  /workspace/dev/titan/crates/titan-runtime-abi/src/lib.rs
+- Titan Domain Types  /workspace/dev/titan/crates/titan-domain-types/src/lib.rs
 - Titan Connector Loader  /workspace/dev/titan/crates/titan-connector-loader/src/lib.rs
 
 ## 20 5 首次评审清单

@@ -35,6 +35,9 @@ def parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--cpu-baseline", default="x86-64")
     compile_parser.add_argument("--artifact-format", choices=("pair", "bundle"), default="pair")
     compile_parser.add_argument("--output", required=True, type=Path)
+    compile_parser.add_argument("--signing-key", type=Path,
+                                help="file containing a 32-byte raw or 64-character hex Ed25519 private key")
+    compile_parser.add_argument("--key-id")
     return result
 
 
@@ -53,6 +56,15 @@ def main() -> None:
     parameters = json.loads(arguments.parameters.read_text(encoding="utf-8"))
     if not isinstance(parameters, dict):
         raise SystemExit("parameters JSON must be an object")
+    signing_key = None
+    if arguments.signing_key is not None:
+        raw = arguments.signing_key.read_bytes().strip()
+        if len(raw) == 64:
+            try:
+                raw = bytes.fromhex(raw.decode("ascii"))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise SystemExit(f"invalid Ed25519 signing key: {error}") from error
+        signing_key = raw
     result = compile_package(CompileRequest(
         source_file=arguments.strategy,
         parameters=parameters,
@@ -61,6 +73,7 @@ def main() -> None:
         artifact_format=arguments.artifact_format,
         output_path=arguments.output,
         runtime_abi={"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()},
+        signing_key=signing_key, signing_key_id=arguments.key_id,
     ))
     print(json.dumps({
         "strategy_id": result.strategy.definition.spec.strategy_id,

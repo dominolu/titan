@@ -1,11 +1,9 @@
 use std::{
-    fmt,
-    marker::PhantomData,
     sync::Arc,
     time::{Duration, SystemTime},
 };
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use titan_account_service::AccountHandle;
 use titan_core_types::{ApiVersion, EventQos};
 use titan_event_engine::SubscriberRuntimeMode;
@@ -127,13 +125,8 @@ pub struct StrategyDefinition {
     pub strategy_key: Arc<str>,
     pub strategy_id: StrategyId,
     pub package: StrategyPackageRef,
-    pub entrypoint: Arc<str>,
-    #[serde(deserialize_with = "deserialize_arc_bytes")]
-    pub parameters: Arc<[u8]>,
-    pub parameter_schema_version: u32,
     pub markets: Arc<[StrategyMarketBinding]>,
     pub accounts: Arc<[StrategyAccountBinding]>,
-    pub subscriptions: Arc<[StrategySubscriptionSpec]>,
     pub risk_scope: RiskScopeRef,
     pub runtime: StrategyRuntimeSpec,
     pub recovery: StrategyRecoveryPolicy,
@@ -158,7 +151,9 @@ impl StrategyCapabilities {
     pub const SUBMIT_ORDER: Self = Self(1 << 5);
     pub const CANCEL_ORDER: Self = Self(1 << 6);
     pub const AMEND_ORDER: Self = Self(1 << 7);
-    pub const SCHEDULE_TIMER: Self = Self(1 << 8);
+    /// The runtime owns a fixed periodic callback. Strategy-directed timer scheduling is not
+    /// exposed by ABI V13.
+    pub const TIMER_CALLBACK: Self = Self(1 << 8);
     pub const CHECKPOINT_STATE: Self = Self(1 << 9);
 
     pub const fn contains(self, other: Self) -> bool {
@@ -179,37 +174,6 @@ pub struct StrategyPackageManifest {
     pub capabilities: StrategyCapabilities,
     pub subscriptions: Arc<[StrategySubscriptionSpec]>,
     pub artifact_digest: [u8; 32],
-}
-
-fn deserialize_arc_bytes<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    struct ArcBytesVisitor(PhantomData<Arc<[u8]>>);
-    impl<'de> de::Visitor<'de> for ArcBytesVisitor {
-        type Value = Arc<[u8]>;
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a UTF-8 string or a sequence of bytes")
-        }
-        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-            Ok(Arc::from(value.as_bytes()))
-        }
-        fn visit_string<E: de::Error>(self, value: String) -> Result<Self::Value, E> {
-            Ok(Arc::from(value.into_bytes()))
-        }
-        fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-            Ok(Arc::from(value))
-        }
-        fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
-            Ok(Arc::from(value))
-        }
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
-            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
-            while let Some(byte) = sequence.next_element::<u8>()? { bytes.push(byte); }
-            Ok(Arc::from(bytes))
-        }
-    }
-    deserializer.deserialize_any(ArcBytesVisitor(PhantomData))
 }
 
 #[derive(Clone, Debug)]

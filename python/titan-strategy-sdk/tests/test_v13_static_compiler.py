@@ -52,6 +52,20 @@ class TestV13StaticCompiler(unittest.TestCase):
             self.assertEqual(verify_artifact(bundle.artifact.paths[0], runtime_abi)["state_len"], 48)
             self.assertEqual(pair.artifact.artifact_digest, bundle.artifact.artifact_digest)
 
+    def test_bundle_can_be_signed_with_ed25519_key_id(self):
+        source = Path(__file__).parents[3] / "strategies" / "v13_smoke" / "strategy.py"
+        runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "signed.titan"
+            result = compile_package(CompileRequest(
+                source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
+                "bundle", output, runtime_abi, bytes(range(32)), "rotation-2026-09",
+            ))
+            manifest = verify_artifact(result.artifact.paths[0], runtime_abi)
+            self.assertEqual(manifest["signature"]["algorithm"], "ed25519")
+            self.assertEqual(manifest["signature"]["key_id"], "rotation-2026-09")
+            self.assertEqual(len(manifest["signature"]["value"]), 64)
+
     def test_missing_public_view_returns_stable_callback_error(self):
         source = Path(__file__).parent / "fixtures" / "v13_missing_view.py"
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}

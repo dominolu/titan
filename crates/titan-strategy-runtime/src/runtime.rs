@@ -1,10 +1,15 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
+use serde::{Deserialize, Serialize};
 use titan_account_service::ExecutionHandle;
+use titan_account_service::ObservedExecutionResult;
 use titan_core_types::{EventHandler, ResourceScopeHandle};
 use titan_event_engine::PrimaryAsyncLaneHandle;
 
@@ -13,18 +18,31 @@ use crate::*;
 #[derive(Default)]
 pub struct StrategyActivationGate(AtomicBool);
 impl StrategyActivationGate {
-    pub fn open(&self) { self.0.store(true, Ordering::Release); }
-    pub fn close(&self) { self.0.store(false, Ordering::Release); }
-    pub fn is_open(&self) -> bool { self.0.load(Ordering::Acquire) }
+    pub fn open(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+    pub fn close(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+    pub fn is_open(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
 }
 
-pub trait StrategyClock: Send + Sync { fn now_ns(&self) -> i64; }
-pub trait StrategyMetrics: Send + Sync { fn callback_duration(&self, _kind: V13EventKind, _duration_ns: u64) {} }
+pub trait StrategyClock: Send + Sync {
+    fn now_ns(&self) -> i64;
+}
+pub trait StrategyMetrics: Send + Sync {
+    fn callback_duration(&self, _kind: V13EventKind, _duration_ns: u64) {}
+}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StrategyPrivateStateSnapshot {
     pub checkpoint_id: u64,
     pub strategy: StrategyHandle,
+    pub strategy_instance_id: u64,
+    pub strategy_id: Arc<str>,
+    pub strategy_version: Arc<str>,
     pub generation: u64,
     pub event_committed_sequence: u64,
     pub artifact_digest: [u8; 32],
@@ -40,6 +58,12 @@ pub struct StrategyPrivateStateSnapshot {
 
 pub trait StrategyStateSnapshotSink: Send + Sync {
     fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
+    fn check_health(&self) -> LocalResult<()> {
+        Ok(())
+    }
+    fn enabled(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,6 +72,9 @@ pub struct StrategyPublicStateSeedV13 {
     pub balances: Arc<[TitanBalanceView]>,
     pub accounts: Arc<[TitanAccountView]>,
     pub active_orders: Arc<[TitanActiveOrderView]>,
+    /// Per-account committed version of the open-order projection. This lets the runtime
+    /// distinguish an order absent from the snapshot from one created after the snapshot.
+    pub order_boundaries: Arc<[(u32, u64)]>,
 }
 
 pub struct StrategyRuntimeBuildContext {
@@ -72,21 +99,30 @@ pub struct StrategyExecutionBinding {
 
 pub trait StrategyRuntimeFactory: Send + Sync {
     fn strategy_type(&self) -> &str;
-    fn create(&self, definition: &StrategyDefinition, artifact: StrategyArtifact,
-              context: StrategyRuntimeBuildContext) -> Result<Arc<dyn StrategyRuntime>, StrategyError>;
+    fn create(
+        &self,
+        definition: &StrategyDefinition,
+        artifact: StrategyArtifact,
+        context: StrategyRuntimeBuildContext,
+    ) -> Result<Arc<dyn StrategyRuntime>, StrategyError>;
 }
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
     fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
+    fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
     fn fire_timer(&self, timer_id: u64) -> LocalResult<()>;
+    fn execution_result(&self, result: ObservedExecutionResult) -> LocalResult<()>;
     fn prepare(&self) -> LocalResult<StrategyOperationId>;
     fn start(&self) -> LocalResult<StrategyOperationId>;
     fn pause(&self, reason: PauseReason) -> LocalResult<StrategyOperationId>;
     fn resume(&self) -> LocalResult<StrategyOperationId>;
     fn invalidate(&self, reason: Arc<str>) -> LocalResult<StrategyOperationId>;
     fn stop(&self, deadline: Instant) -> LocalResult<StrategyOperationId>;
-    fn freeze_state(&self, request: StrategyStateSnapshotRequest) -> LocalResult<StrategyOperationId>;
+    fn freeze_state(
+        &self,
+        request: StrategyStateSnapshotRequest,
+    ) -> LocalResult<StrategyOperationId>;
     fn state(&self) -> StrategyRuntimeStateSnapshot;
     fn health(&self) -> StrategyRuntimeHealthSnapshot;
     fn diagnostics(&self) -> StrategyRuntimeDiagnosticSnapshot;
@@ -102,14 +138,28 @@ impl StrategyRuntimeFactoryRegistry {
         let key: Arc<str> = Arc::from(factory.strategy_type());
         let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
         if factories.insert(key, factory).is_some() {
-            return Err(StrategyError::new(StrategyErrorKind::AlreadyExists, "register_runtime_factory",
-                "strategy_type_conflict", "strategy runtime type is already registered"));
+            return Err(StrategyError::new(
+                StrategyErrorKind::AlreadyExists,
+                "register_runtime_factory",
+                "strategy_type_conflict",
+                "strategy runtime type is already registered",
+            ));
         }
         Ok(())
     }
     pub fn get(&self, strategy_type: &str) -> LocalResult<Arc<dyn StrategyRuntimeFactory>> {
-        self.factories.read().unwrap_or_else(|p| p.into_inner()).get(strategy_type).cloned()
-            .ok_or_else(|| StrategyError::new(StrategyErrorKind::LoadFailed, "create_runtime",
-                "runtime_factory_not_registered", "strategy runtime factory is not registered"))
+        self.factories
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(strategy_type)
+            .cloned()
+            .ok_or_else(|| {
+                StrategyError::new(
+                    StrategyErrorKind::LoadFailed,
+                    "create_runtime",
+                    "runtime_factory_not_registered",
+                    "strategy runtime factory is not registered",
+                )
+            })
     }
 }

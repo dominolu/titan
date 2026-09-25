@@ -37,7 +37,8 @@ tokio = { version = "1.48.0", features = ["full"], optional = true }
 uuid = { version = "1.19.0", features = ["v4"], optional = true }
 nom = { version = "8", optional = true }
 hftbacktest-derive = { path = "../hftbacktest-derive", optional = true, version = "0.2.0" }
-titan-runtime-abi = { path = "../crates/titan-runtime-abi" }
+titan-domain-types = { path = "../crates/titan-domain-types" }
+titan-strategy-runtime = { path = "../crates/titan-strategy-runtime" }
 aws-config = { version = "=1.8.11", optional = true, features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "=1.116.0", optional = true }
 

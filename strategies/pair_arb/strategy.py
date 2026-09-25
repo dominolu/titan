@@ -22,6 +22,7 @@ CANCEL_PENDING, CANCELED, REJECTED, EXPIRED = 6, 7, 8, 9
 BUY, SELL, LIMIT, MARKET, GTC, IOC, POST_ONLY = 1, 2, 1, 2, 1, 2, 4
 ACCEPTED_STATUS, PARTIAL_STATUS, FILLED_STATUS = 2, 3, 4
 CANCEL_PENDING_STATUS, CANCELED_STATUS, REJECTED_STATUS, EXPIRED_STATUS = 5, 6, 7, 8
+UNKNOWN_STATUS = 255
 ACCOUNT_READY = 4
 READY_MARKETS, READY_ACCOUNTS, READY_POSITIONS, READY_RECONCILED = 1, 2, 4, 8
 READY_ALL = READY_MARKETS | READY_ACCOUNTS | READY_POSITIONS | READY_RECONCILED
@@ -390,6 +391,39 @@ def drive(ctx):
 @njit
 def on_start(ctx):
     s, p = ctx.state, ctx.state["pair"]
+    previous_status = p["status"]
+    left_account = ctx.account(p["left_account_no"])
+    right_account = ctx.account(p["right_account_no"])
+    if (left_account["account_no"] != p["left_account_no"] or
+            right_account["account_no"] != p["right_account_no"] or
+            left_account["state"] != ACCOUNT_READY or right_account["state"] != ACCOUNT_READY):
+        halt(s, 304)
+        return
+    if ((p["left_account_epoch"] and p["left_account_epoch"] != left_account["account_epoch"]) or
+            (p["right_account_epoch"] and p["right_account_epoch"] != right_account["account_epoch"])):
+        halt(s, 305)
+        return
+    left_position = ctx.position(p["left_account_no"], p["left_asset_no"])
+    right_position = ctx.position(p["right_account_no"], p["right_asset_no"])
+    if (left_position["account_no"] != p["left_account_no"] or
+            left_position["asset_no"] != p["left_asset_no"] or
+            right_position["account_no"] != p["right_account_no"] or
+            right_position["asset_no"] != p["right_asset_no"]):
+        halt(s, 306)
+        return
+    restored = (p["left_account_epoch"] != 0 or p["right_account_epoch"] != 0 or
+                p["fill_count"] != 0 or s["slot"]["id"] != 0)
+    if restored and (p["left_position_lots"] != left_position["qty_lots"] or
+                     p["right_position_lots"] != right_position["qty_lots"]):
+        halt(s, 307)
+        return
+    if (not restored and
+            (left_position["qty_lots"] != 0 or right_position["qty_lots"] != 0)):
+        halt(s, 308)
+        return
+    p["left_position_lots"], p["right_position_lots"] = left_position["qty_lots"], right_position["qty_lots"]
+    p["left_account_epoch"], p["right_account_epoch"] = left_account["account_epoch"], right_account["account_epoch"]
+    p["left_account_sequence"], p["right_account_sequence"] = left_account["account_sequence"], right_account["account_sequence"]
     active = ctx.active_orders()
     for i in range(len(active)):
         a = active[i]
@@ -416,7 +450,9 @@ def on_start(ctx):
     # The runtime opens the command gate only after account/order/position snapshots are committed.
     # on_start performs the strategy-private half of that reconciliation.
     p["ready_mask"] |= READY_ACCOUNTS | READY_POSITIONS | READY_RECONCILED
-    p["reconcile_required"], p["status"] = 0, WARMING_UP
+    p["reconcile_required"] = 0
+    if previous_status in (CREATED, WARMING_UP, QUOTING):
+        p["status"] = WARMING_UP
 
 
 @njit
@@ -501,6 +537,9 @@ def on_order(ctx):
             s["pair"]["next_quote_ts_ns"] = ctx.now + s["pair"]["quote_cooldown_ns"]
         elif status == FILLED_STATUS:
             o["status"] = FILLED
+        elif status == UNKNOWN_STATUS:
+            o["status"] = UNKNOWN
+            halt(s, 503); return
         finish_slot(s, ctx.now)
 
 
@@ -515,9 +554,14 @@ def on_cancel(ctx):
         o = s["orders"][i]
         if e["asset_no"] != o["asset_no"] or e["account_no"] != o["account_no"]:
             halt(s, 602); return
-        if e["request_result"]:
+        if e["request_result"] == 1:
             o["cancel_failures"], o["status"] = o["cancel_failures"] + 1, o["status_before_cancel"]
             if o["cancel_failures"] > s["pair"]["cancel_retry_limit"]: halt(s, 603)
+        elif e["request_result"] == 2:
+            o["status"] = UNKNOWN
+            halt(s, 604)
+        elif e["request_result"] == 0 and e["final_status"] == 0:
+            o["status"] = CANCEL_PENDING
         elif e["final_status"] in (CANCELED_STATUS, REJECTED_STATUS, EXPIRED_STATUS):
             oid, role = o["order_id"], o["role"]; archive(s, i, CANCELED)
             if role == INITIATOR and sl["initiator_order_id"] == oid: sl["initiator_order_id"] = 0

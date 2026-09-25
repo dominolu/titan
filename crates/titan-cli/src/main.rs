@@ -44,9 +44,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve a strategy and config, then execute it in an isolated worker process.
+    /// Run a V13 artifact backtest or a configured Core Live strategy in an isolated worker.
     Run {
-        #[arg(value_name = "STRATEGY")]
+        /// `.titan` path for backtest; configured strategy_key for live.
+        #[arg(value_name = "ARTIFACT_OR_STRATEGY_KEY")]
         strategy: String,
         #[arg(short = 'e', long = "env", value_enum)]
         env: Environment,
@@ -71,9 +72,9 @@ enum Commands {
         #[arg(long)]
         registry: PathBuf,
     },
-    /// Validate a strategy and run config without starting Python or a worker.
+    /// Validate a V13 artifact/backtest trace or Core Live deployment without starting Python.
     Validate {
-        #[arg(value_name = "STRATEGY")]
+        #[arg(value_name = "ARTIFACT_OR_STRATEGY_KEY")]
         strategy: String,
         #[arg(short = 'e', long = "env", value_enum)]
         env: Environment,
@@ -137,20 +138,32 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum StrategyCommands {
-    /// List manifests without importing Python.
+    /// List compiled ABI V13 artifacts without importing strategy Python.
     Ls {
+        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
+        trusted_keys: Vec<String>,
+        #[arg(long)]
+        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Show one static manifest.
+    /// Show one compiled ABI V13 artifact manifest.
     Show {
-        name: String,
+        artifact: PathBuf,
+        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
+        trusted_keys: Vec<String>,
+        #[arg(long)]
+        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Validate one static manifest without importing Python.
+    /// Validate one compiled ABI V13 artifact, including native digest and signature policy.
     Validate {
-        name: String,
+        artifact: PathBuf,
+        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
+        trusted_keys: Vec<String>,
+        #[arg(long)]
+        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
@@ -168,6 +181,10 @@ enum StrategyCommands {
         artifact_format: String,
         #[arg(long, value_name = "ARTIFACT")]
         output: Option<PathBuf>,
+        #[arg(long, value_name = "PRIVATE_KEY")]
+        signing_key: Option<PathBuf>,
+        #[arg(long, requires = "signing_key")]
+        key_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -185,7 +202,7 @@ impl Commands {
             | Self::Stop { json, .. }
             | Self::Report { json, .. } => *json,
             Self::Strategy { command } => match command {
-                StrategyCommands::Ls { json }
+                StrategyCommands::Ls { json, .. }
                 | StrategyCommands::Show { json, .. }
                 | StrategyCommands::Validate { json, .. }
                 | StrategyCommands::Compile { json, .. } => *json,
@@ -284,52 +301,8 @@ struct RunSpec {
 struct StrategyRunSpec {
     strategy_id: String,
     strategy_version: String,
-    entrypoint: String,
-    #[serde(default)]
-    parameters: serde_json::Value,
-    #[serde(default)]
-    python_paths: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct StrategyManifest {
-    schema_version: u32,
-    strategy_id: String,
-    strategy_version: String,
-    entrypoint: String,
-    events: Vec<EventMode>,
-    environments: Vec<Environment>,
-    #[serde(default)]
-    capabilities: Vec<String>,
-    #[serde(default)]
-    parameters: BTreeMap<String, ParameterSpec>,
-    #[serde(default)]
-    python_paths: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ParameterSpec {
-    #[serde(rename = "type")]
-    kind: ParameterKind,
-    #[serde(default)]
-    required: bool,
-    #[serde(default)]
-    default: Option<serde_json::Value>,
-    #[serde(default)]
-    minimum: Option<f64>,
-    #[serde(default)]
-    maximum: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum ParameterKind {
-    Integer,
-    Number,
-    Boolean,
-    String,
+    artifact: PathBuf,
+    artifact_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -339,162 +312,97 @@ struct RunConfig {
     #[serde(default = "default_history_capacity")]
     history_capacity: usize,
     #[serde(default)]
-    strategy: RunConfigStrategy,
-    #[serde(default)]
     backtest: Option<BacktestConfig>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunConfigStrategy {
-    #[serde(default)]
-    parameters: BTreeMap<String, toml::Value>,
-    #[serde(default)]
-    python_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BacktestConfig {
+    data: PathBuf,
+    #[serde(default = "default_command_capacity")]
+    command_capacity: usize,
     #[serde(default)]
-    data: Option<PathBuf>,
+    allow_unsigned_artifact: bool,
     #[serde(default)]
-    tick_data: Option<PathBuf>,
-    #[serde(default)]
-    bar_data: Option<PathBuf>,
-    #[serde(default = "default_tick_size")]
-    tick_size: f64,
-    #[serde(default = "default_lot_size")]
-    lot_size: f64,
-    #[serde(default = "default_frame_interval")]
-    frame_interval_ns: i64,
-    #[serde(default = "default_max_tick_batch")]
-    max_tick_batch: usize,
-    #[serde(default)]
-    execution: BacktestExecutionSpec,
+    trusted_ed25519_keys: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BacktestExecutionSpec {
-    #[serde(default)]
-    entry_latency_ns: i64,
-    #[serde(default)]
-    response_latency_ns: i64,
-    #[serde(default)]
-    maker_fee: f64,
-    #[serde(default)]
-    taker_fee: f64,
-    #[serde(default = "default_queue_power")]
-    queue_power: f64,
-    #[serde(default)]
-    queue: QueueModelSpec,
-    #[serde(default)]
-    exchange: ExchangeModel,
-    #[serde(default)]
-    asset: AssetModel,
-    #[serde(default = "default_contract_size")]
-    contract_size: f64,
-    #[serde(default)]
-    latency_offset_ns: i64,
-    #[serde(default = "default_last_trades_capacity")]
-    last_trades_capacity: usize,
+struct V13Trace {
+    schema_version: u32,
+    initial: V13TraceState,
+    events: Vec<V13TraceEvent>,
 }
 
-impl Default for BacktestExecutionSpec {
-    fn default() -> Self {
-        Self {
-            entry_latency_ns: 0,
-            response_latency_ns: 0,
-            maker_fee: 0.0,
-            taker_fee: 0.0,
-            queue_power: default_queue_power(),
-            queue: QueueModelSpec::default(),
-            exchange: ExchangeModel::default(),
-            asset: AssetModel::default(),
-            contract_size: default_contract_size(),
-            latency_offset_ns: 0,
-            last_trades_capacity: default_last_trades_capacity(),
-        }
-    }
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V13TraceState {
+    now_ns: i64,
+    #[serde(default)]
+    markets: Vec<titan_strategy_runtime::TitanMarketView>,
+    #[serde(default)]
+    positions: Vec<titan_strategy_runtime::TitanPositionView>,
+    #[serde(default)]
+    balances: Vec<titan_strategy_runtime::TitanBalanceView>,
+    #[serde(default)]
+    accounts: Vec<titan_strategy_runtime::TitanAccountView>,
+    #[serde(default)]
+    active_orders: Vec<titan_strategy_runtime::TitanActiveOrderView>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ExchangeModel {
-    #[default]
-    NoPartialFill,
-    PartialFill,
+enum V13TraceEventKind {
+    Tick,
+    Depth,
+    Fill,
+    Order,
+    Cancel,
+    Position,
+    Balance,
+    AccountState,
+    Timer,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum QueueModelSpec {
-    RiskAverse,
-    #[default]
-    PowerProbability,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum AssetModel {
-    #[default]
-    Linear,
-    Inverse,
-}
-
-#[derive(Debug, Serialize)]
-struct StrategyCatalogEntry {
-    strategy_id: String,
-    strategy_version: Option<String>,
-    events: Vec<EventMode>,
-    environments: Vec<Environment>,
-    status: String,
-    source: PathBuf,
-    error: Option<String>,
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V13TraceEvent {
+    kind: V13TraceEventKind,
+    now_ns: i64,
+    #[serde(default)]
+    state: Option<V13TraceState>,
+    #[serde(default)]
+    ticks: Vec<titan_strategy_runtime::TitanTickView>,
+    #[serde(default)]
+    depth: Vec<titan_strategy_runtime::TitanDepthView>,
+    #[serde(default)]
+    fills: Vec<titan_strategy_runtime::TitanFillView>,
+    #[serde(default)]
+    orders: Vec<titan_strategy_runtime::TitanOrderEventView>,
+    #[serde(default)]
+    cancels: Vec<titan_strategy_runtime::TitanCancelEventView>,
+    #[serde(default)]
+    positions: Vec<titan_strategy_runtime::TitanPositionEventView>,
+    #[serde(default)]
+    balances: Vec<titan_strategy_runtime::TitanBalanceEventView>,
+    #[serde(default)]
+    account_states: Vec<titan_strategy_runtime::TitanAccountStateEventView>,
+    #[serde(default)]
+    timer: Option<titan_strategy_runtime::TitanTimerView>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum BackendSpec {
     Backtest {
-        source: BacktestSourceSpec,
-        #[serde(default)]
-        execution: BacktestExecutionSpec,
+        data: PathBuf,
+        command_capacity: usize,
+        allow_unsigned_artifact: bool,
+        trusted_ed25519_keys: BTreeMap<String, String>,
     },
     CoreLive {
         strategy_key: String,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum BacktestSourceSpec {
-    Bar {
-        data: PathBuf,
-    },
-    Tick {
-        data: PathBuf,
-        #[serde(default = "default_tick_size")]
-        tick_size: f64,
-        #[serde(default = "default_lot_size")]
-        lot_size: f64,
-        #[serde(default = "default_frame_interval")]
-        frame_interval_ns: i64,
-        #[serde(default = "default_max_tick_batch")]
-        max_tick_batch: usize,
-    },
-    Hybrid {
-        tick_data: PathBuf,
-        bar_data: PathBuf,
-        #[serde(default = "default_tick_size")]
-        tick_size: f64,
-        #[serde(default = "default_lot_size")]
-        lot_size: f64,
-        #[serde(default = "default_frame_interval")]
-        frame_interval_ns: i64,
-        #[serde(default = "default_max_tick_batch")]
-        max_tick_batch: usize,
     },
 }
 
@@ -535,8 +443,6 @@ enum CliError {
     },
     #[error("unsupported RunSpec schema_version {0}; expected {RUN_SPEC_VERSION}")]
     Schema(u32),
-    #[error("strategy entrypoint must use module:function syntax")]
-    Entrypoint,
     #[error("history_capacity must be positive")]
     HistoryCapacity,
     #[error("worker spawn failed: {0}")]
@@ -555,8 +461,6 @@ enum CliError {
     Registry(#[from] rusqlite::Error),
     #[error("run {0} was not found")]
     RunNotFound(String),
-    #[error("strategy {0} was not found")]
-    StrategyNotFound(String),
     #[error("run {0} is not running")]
     NotRunning(String),
     #[error("cannot signal worker {pid}: {source}")]
@@ -567,7 +471,6 @@ impl CliError {
     fn code(&self) -> &'static str {
         match self {
             Self::Schema(_) => "INVALID_SCHEMA",
-            Self::Entrypoint => "INVALID_ENTRYPOINT",
             Self::HistoryCapacity => "INVALID_HISTORY_CAPACITY",
             Self::Json { .. } => "INVALID_JSON",
             Self::Toml { .. } => "INVALID_TOML",
@@ -577,7 +480,6 @@ impl CliError {
             Self::ReportFailed(_) => "REPORT_FAILED",
             Self::Registry(_) => "REGISTRY_FAILED",
             Self::RunNotFound(_) => "RUN_NOT_FOUND",
-            Self::StrategyNotFound(_) => "STRATEGY_NOT_FOUND",
             Self::NotRunning(_) => "RUN_NOT_ACTIVE",
             Self::Signal { .. } => "SIGNAL_FAILED",
             Self::Read { .. } => "READ_FAILED",
@@ -589,7 +491,6 @@ impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
             Self::Schema(_)
-            | Self::Entrypoint
             | Self::HistoryCapacity
             | Self::Json { .. }
             | Self::Toml { .. }
@@ -598,7 +499,7 @@ impl CliError {
             Self::WorkerFailed(_) => 31,
             Self::ReportFailed(_) => 32,
             Self::Registry(_) => 40,
-            Self::RunNotFound(_) | Self::StrategyNotFound(_) | Self::NotRunning(_) => 41,
+            Self::RunNotFound(_) | Self::NotRunning(_) => 41,
             Self::Signal { .. } => 42,
             Self::Read { .. } | Self::Spawn(_) | Self::ResultJson(_) => 50,
         }
@@ -642,26 +543,8 @@ fn default_history_capacity() -> usize {
     1024
 }
 
-fn default_tick_size() -> f64 {
-    0.01
-}
-fn default_lot_size() -> f64 {
-    0.001
-}
-fn default_frame_interval() -> i64 {
-    10_000_000
-}
-fn default_max_tick_batch() -> usize {
-    65_536
-}
-fn default_last_trades_capacity() -> usize {
-    1024
-}
-fn default_queue_power() -> f64 {
-    3.0
-}
-fn default_contract_size() -> f64 {
-    1.0
+fn default_command_capacity() -> usize {
+    1_024
 }
 
 fn registry_path() -> PathBuf {
@@ -671,203 +554,45 @@ fn registry_path() -> PathBuf {
         .join("runs.sqlite3")
 }
 
-fn strategies_path() -> PathBuf {
-    std::env::var_os("TITAN_STRATEGIES")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("strategies"))
-}
-
-fn strategy_manifest_path(name: &str) -> PathBuf {
-    strategies_path().join(name).join("strategy.json")
-}
-
-fn load_strategy_manifest(name: &str) -> Result<StrategyManifest, CliError> {
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(CliError::Engine("invalid strategy id".into()));
-    }
-    let path = strategy_manifest_path(name);
-    if !path.try_exists().map_err(|source| CliError::Read {
-        path: path.clone(),
-        source,
-    })? {
-        return Err(CliError::StrategyNotFound(name.into()));
-    }
-    let bytes = fs::read(&path).map_err(|source| CliError::Read {
-        path: path.clone(),
-        source,
-    })?;
-    let manifest = serde_json::from_slice::<StrategyManifest>(&bytes)
-        .map_err(|source| CliError::Json { path, source })?;
-    validate_strategy_manifest(&manifest)?;
-    if manifest.strategy_id != name {
-        return Err(CliError::Engine(format!(
-            "strategy directory {name} contains manifest for {}",
-            manifest.strategy_id
-        )));
-    }
-    Ok(manifest)
-}
-
-fn validate_strategy_manifest(manifest: &StrategyManifest) -> Result<(), CliError> {
-    if manifest.schema_version != 1 {
-        return Err(CliError::Schema(manifest.schema_version));
-    }
-    if manifest.strategy_id.is_empty()
-        || manifest.strategy_version.is_empty()
-        || manifest.entrypoint.split_once(':').is_none()
-    {
-        return Err(CliError::Entrypoint);
-    }
-    if manifest.events.is_empty() || manifest.environments.is_empty() {
-        return Err(CliError::Engine(
-            "strategy events and environments must not be empty".into(),
-        ));
-    }
-    const ALLOWED: &[&str] = &["timer", "funding"];
-    if manifest
-        .capabilities
-        .iter()
-        .any(|item| !ALLOWED.contains(&item.as_str()))
-    {
-        return Err(CliError::Engine("unknown strategy capability".into()));
-    }
-    for (name, spec) in &manifest.parameters {
-        if name.is_empty() {
-            return Err(CliError::Engine("parameter name must not be empty".into()));
-        }
-        if let (Some(minimum), Some(maximum)) = (spec.minimum, spec.maximum)
-            && minimum > maximum
-        {
-            return Err(CliError::Engine(format!(
-                "parameter {name} minimum exceeds maximum"
-            )));
-        }
-        if let Some(default) = &spec.default {
-            validate_parameter_value(name, default, spec)?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_parameter_value(
-    name: &str,
-    value: &serde_json::Value,
-    spec: &ParameterSpec,
-) -> Result<(), CliError> {
-    let valid_type = match spec.kind {
-        ParameterKind::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
-        ParameterKind::Number => value.as_f64().is_some(),
-        ParameterKind::Boolean => value.is_boolean(),
-        ParameterKind::String => value.is_string(),
-    };
-    if !valid_type {
-        return Err(CliError::Engine(format!(
-            "strategy parameter {name} has the wrong type"
-        )));
-    }
-    if let Some(number) = value.as_f64() {
-        if spec.minimum.is_some_and(|minimum| number < minimum) {
-            return Err(CliError::Engine(format!(
-                "strategy parameter {name} is below its minimum"
-            )));
-        }
-        if spec.maximum.is_some_and(|maximum| number > maximum) {
-            return Err(CliError::Engine(format!(
-                "strategy parameter {name} exceeds its maximum"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn resolve_parameters(
-    manifest: &StrategyManifest,
-    configured: BTreeMap<String, toml::Value>,
-) -> Result<serde_json::Value, CliError> {
-    let configured = configured
-        .into_iter()
-        .map(|(name, value)| {
-            serde_json::to_value(value)
-                .map(|value| (name, value))
-                .map_err(CliError::ResultJson)
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    resolve_json_parameters(manifest, configured)
-}
-
-fn resolve_json_parameters(
-    manifest: &StrategyManifest,
-    mut configured: BTreeMap<String, serde_json::Value>,
-) -> Result<serde_json::Value, CliError> {
-    if let Some(unknown) = configured
-        .keys()
-        .find(|name| !manifest.parameters.contains_key(*name))
-    {
-        return Err(CliError::Engine(format!(
-            "unknown strategy parameter {unknown}"
-        )));
-    }
-    let mut resolved = serde_json::Map::new();
-    for (name, spec) in &manifest.parameters {
-        let value = configured.remove(name).or_else(|| spec.default.clone());
-        match value {
-            Some(value) => {
-                validate_parameter_value(name, &value, spec)?;
-                resolved.insert(name.clone(), value);
-            }
-            None if spec.required => {
-                return Err(CliError::Engine(format!(
-                    "missing required strategy parameter {name}"
-                )));
-            }
-            None => {}
-        }
-    }
-    Ok(serde_json::Value::Object(resolved))
-}
-
 fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     match command {
-        StrategyCommands::Ls { json } => {
-            let root = strategies_path();
-            let entries = fs::read_dir(&root).map_err(|source| CliError::Read {
-                path: root.clone(),
-                source,
-            })?;
+        StrategyCommands::Ls {
+            trusted_keys,
+            require_signature,
+            json,
+        } => {
+            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
+            let root = PathBuf::from("deploy");
             let mut catalog = Vec::new();
-            for entry in entries.flatten() {
-                let source = entry.path().join("strategy.json");
-                if !source.is_file() {
-                    continue;
+            if root.is_dir() {
+                for deployment in fs::read_dir(&root)
+                    .map_err(|source| CliError::Read {
+                        path: root.clone(),
+                        source,
+                    })?
+                    .flatten()
+                {
+                    let artifacts = deployment.path().join("artifacts");
+                    if !artifacts.is_dir() {
+                        continue;
+                    }
+                    for entry in fs::read_dir(&artifacts)
+                        .map_err(|source| CliError::Read {
+                            path: artifacts.clone(),
+                            source,
+                        })?
+                        .flatten()
+                    {
+                        let source = entry.path();
+                        if source.extension().and_then(|value| value.to_str()) != Some("titan") {
+                            continue;
+                        }
+                        catalog.push(v13_manifest_json(&source, trust.clone())?);
+                    }
                 }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let item = match load_strategy_manifest(&name) {
-                    Ok(manifest) => StrategyCatalogEntry {
-                        strategy_id: manifest.strategy_id,
-                        strategy_version: Some(manifest.strategy_version),
-                        events: manifest.events,
-                        environments: manifest.environments,
-                        status: "VALID".into(),
-                        source,
-                        error: None,
-                    },
-                    Err(error) => StrategyCatalogEntry {
-                        strategy_id: name,
-                        strategy_version: None,
-                        events: Vec::new(),
-                        environments: Vec::new(),
-                        status: "INVALID".into(),
-                        source,
-                        error: Some(error.to_string()),
-                    },
-                };
-                catalog.push(item);
             }
-            catalog.sort_by(|left, right| left.strategy_id.cmp(&right.strategy_id));
+            catalog
+                .sort_by_key(|value| value["strategy_id"].as_str().unwrap_or_default().to_owned());
             if json {
                 println!(
                     "{}",
@@ -878,31 +603,28 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
                     .map_err(CliError::ResultJson)?
                 );
             } else {
-                println!("STRATEGY\tVERSION\tEVENTS\tENVIRONMENTS\tSTATUS\tSOURCE");
+                println!("STRATEGY\tVERSION\tABI\tSIGNED\tARTIFACT");
                 for item in catalog {
                     println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        item.strategy_id,
-                        item.strategy_version.as_deref().unwrap_or("-"),
-                        item.events
-                            .iter()
-                            .map(|value| value.as_str())
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        item.environments
-                            .iter()
-                            .map(|value| value.as_str())
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        item.status,
-                        item.source.display()
+                        "{}\t{}\t{}\t{}\t{}",
+                        item["strategy_id"].as_str().unwrap_or("-"),
+                        item["strategy_version"].as_str().unwrap_or("-"),
+                        item["abi_version"].as_u64().unwrap_or_default(),
+                        item["signed"].as_bool().unwrap_or(false),
+                        item["artifact"].as_str().unwrap_or("-"),
                     );
                 }
             }
             Ok(())
         }
-        StrategyCommands::Show { name, json } => {
-            let manifest = load_strategy_manifest(&name)?;
+        StrategyCommands::Show {
+            artifact,
+            trusted_keys,
+            require_signature,
+            json,
+        } => {
+            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
+            let manifest = v13_manifest_json(&artifact, trust)?;
             if json {
                 println!(
                     "{}",
@@ -920,16 +642,23 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             }
             Ok(())
         }
-        StrategyCommands::Validate { name, json } => {
-            let manifest = load_strategy_manifest(&name)?;
+        StrategyCommands::Validate {
+            artifact,
+            trusted_keys,
+            require_signature,
+            json,
+        } => {
+            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
+            let manifest = v13_manifest_json(&artifact, trust)?;
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "schema_version": 1,
                         "valid": true,
-                        "strategy_id": manifest.strategy_id,
-                        "strategy_version": manifest.strategy_version
+                        "strategy_id": manifest["strategy_id"],
+                        "strategy_version": manifest["strategy_version"],
+                        "artifact_digest": manifest["artifact_digest"]
                     })
                 );
             } else {
@@ -944,19 +673,135 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             cpu_baseline,
             artifact_format,
             output,
+            signing_key,
+            key_id,
             json,
-        } => {
-            compile_v13_strategy(
-                &strategy,
-                &parameters,
-                target.as_deref(),
-                &cpu_baseline,
-                &artifact_format,
-                output.as_deref(),
-                json,
-            )
+        } => compile_v13_strategy(
+            &strategy,
+            &parameters,
+            target.as_deref(),
+            &cpu_baseline,
+            &artifact_format,
+            output.as_deref(),
+            signing_key.as_deref(),
+            key_id.as_deref(),
+            json,
+        ),
+    }
+}
+
+fn v13_manifest_json(
+    path: &Path,
+    trust: titan_strategy_runtime::V13TrustPolicy,
+) -> Result<serde_json::Value, CliError> {
+    let path = fs::canonicalize(path).map_err(|source| CliError::Read {
+        path: path.into(),
+        source,
+    })?;
+    let manifest = inspect_v13_artifact_with_policy(&path, trust)?;
+    Ok(serde_json::json!({
+        "strategy_id": manifest.strategy_id,
+        "strategy_version": manifest.strategy_version,
+        "abi_version": 13,
+        "artifact_digest": hex_digest(&manifest.artifact_digest),
+        "native_digest": hex_digest(&manifest.native_digest),
+        "target_triple": manifest.target_triple,
+        "cpu_baseline": manifest.cpu_baseline,
+        "signed": manifest.signature.is_some(),
+        "key_id": manifest.signature.as_ref().map(|value| value.key_id.as_ref()),
+        "artifact": path,
+    }))
+}
+
+fn inspect_v13_artifact_with_policy(
+    path: &Path,
+    trust: titan_strategy_runtime::V13TrustPolicy,
+) -> Result<titan_strategy_runtime::ArtifactManifestV13, CliError> {
+    use titan_strategy_runtime::NativeArtifactLoaderV13;
+    let loader =
+        NativeArtifactLoaderV13::new(std::env::temp_dir().join("titan-cli-v13-inspect"), trust);
+    loader
+        .inspect(path)
+        .map_err(|error| CliError::Engine(error.to_string()))
+}
+
+fn cli_trust_policy(
+    require_signature: bool,
+    trusted_keys: &[String],
+) -> Result<titan_strategy_runtime::V13TrustPolicy, CliError> {
+    let mut ed25519_keys = BTreeMap::new();
+    for item in trusted_keys {
+        let (key_id, encoded) = item
+            .split_once('=')
+            .ok_or_else(|| CliError::Engine("--trusted-key must use KEY_ID=HEX format".into()))?;
+        if key_id.is_empty() {
+            return Err(CliError::Engine(
+                "--trusted-key key id cannot be empty".into(),
+            ));
+        }
+        let key = decode_ed25519_key(encoded).map_err(|message| {
+            CliError::Engine(format!("invalid trusted Ed25519 key {key_id}: {message}"))
+        })?;
+        if ed25519_keys.insert(Arc::from(key_id), key).is_some() {
+            return Err(CliError::Engine(format!(
+                "duplicate trusted Ed25519 key id {key_id}"
+            )));
         }
     }
+    if require_signature && ed25519_keys.is_empty() {
+        return Err(CliError::Engine(
+            "--require-signature requires at least one --trusted-key KEY_ID=HEX".into(),
+        ));
+    }
+    Ok(titan_strategy_runtime::V13TrustPolicy {
+        require_signature,
+        ed25519_keys,
+    })
+}
+
+fn backtest_trust_policy(
+    allow_unsigned_artifact: bool,
+    trusted_ed25519_keys: &BTreeMap<String, String>,
+) -> Result<titan_strategy_runtime::V13TrustPolicy, CliError> {
+    let ed25519_keys = trusted_ed25519_keys
+        .iter()
+        .map(|(key_id, encoded)| {
+            decode_ed25519_key(encoded)
+                .map(|key| (Arc::from(key_id.as_str()), key))
+                .map_err(|message| {
+                    CliError::Engine(format!(
+                        "invalid backtest trusted Ed25519 key {key_id}: {message}"
+                    ))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if !allow_unsigned_artifact && ed25519_keys.is_empty() {
+        return Err(CliError::Engine(
+            "backtest requires trusted_ed25519_keys unless allow_unsigned_artifact is explicitly enabled"
+                .into(),
+        ));
+    }
+    Ok(titan_strategy_runtime::V13TrustPolicy {
+        require_signature: !allow_unsigned_artifact,
+        ed25519_keys,
+    })
+}
+
+fn decode_ed25519_key(value: &str) -> Result<[u8; 32], &'static str> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() != 64 {
+        return Err("public key must contain 64 hexadecimal characters");
+    }
+    let mut output = [0_u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| "public key contains non-hexadecimal characters")?;
+    }
+    Ok(output)
+}
+
+fn hex_digest(value: &[u8; 32]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn compile_v13_strategy(
@@ -966,6 +811,8 @@ fn compile_v13_strategy(
     cpu_baseline: &str,
     artifact_format: &str,
     output: Option<&Path>,
+    signing_key: Option<&Path>,
+    key_id: Option<&str>,
     json: bool,
 ) -> Result<(), CliError> {
     let output = output.ok_or_else(|| {
@@ -1031,6 +878,14 @@ fn compile_v13_strategy(
     if let Some(target) = target {
         command.arg("--target").arg(target);
     }
+    if let Some(signing_key) = signing_key {
+        command.arg("--signing-key").arg(signing_key);
+        command.arg("--key-id").arg(
+            key_id.ok_or_else(|| {
+                CliError::Engine("--key-id is required with --signing-key".into())
+            })?,
+        );
+    }
     let result = command.output().map_err(CliError::Spawn)?;
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
@@ -1077,28 +932,20 @@ fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf, CliError> {
 }
 
 fn resolve_run_spec(
-    strategy_name: &str,
+    strategy_target: &str,
     environment: Environment,
     event_mode: EventMode,
     config_path: &Path,
 ) -> Result<RunSpec, CliError> {
     if environment == Environment::Live {
-        return resolve_core_live_run_spec(strategy_name, event_mode, config_path);
+        return resolve_core_live_run_spec(strategy_target, event_mode, config_path);
     }
-    let manifest = load_strategy_manifest(strategy_name)?;
-    if !manifest.environments.contains(&environment) {
+    if event_mode != EventMode::Tick {
         return Err(CliError::Engine(format!(
-            "strategy {strategy_name} does not support environment {}",
-            environment.as_str()
+            "ABI V13 backtest currently supports tick event traces only; {} is not published",
+            event_mode.as_str(),
         )));
     }
-    if !manifest.events.contains(&event_mode) {
-        return Err(CliError::Engine(format!(
-            "strategy {strategy_name} does not support event mode {}",
-            event_mode.as_str()
-        )));
-    }
-
     let config_path = fs::canonicalize(config_path).map_err(|source| CliError::Read {
         path: config_path.into(),
         source,
@@ -1120,99 +967,24 @@ fn resolve_run_spec(
         return Err(CliError::HistoryCapacity);
     }
     let base = config_path.parent().unwrap_or(Path::new("."));
-    let parameters = resolve_parameters(&manifest, config.strategy.parameters)?;
-    let strategy_root = fs::canonicalize(strategies_path()).map_err(|source| CliError::Read {
-        path: strategies_path(),
+    let backend = config.backtest.ok_or_else(|| {
+        CliError::Engine("backtest environment requires a [backtest] section".into())
+    })?;
+    if backend.command_capacity == 0 {
+        return Err(CliError::Engine(
+            "backtest.command_capacity must be positive".into(),
+        ));
+    }
+    let artifact = fs::canonicalize(strategy_target).map_err(|source| CliError::Read {
+        path: PathBuf::from(strategy_target),
         source,
     })?;
-    let manifest_path = strategy_manifest_path(strategy_name);
-    let manifest_root = manifest_path.parent().unwrap_or(Path::new("."));
-    let mut python_paths = vec![strategy_root];
-    let sdk_path = std::env::var_os("TITAN_STRATEGY_SDK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk"));
-    if sdk_path.exists() {
-        python_paths.push(
-            fs::canonicalize(&sdk_path).map_err(|source| CliError::Read {
-                path: sdk_path,
-                source,
-            })?,
-        );
-    }
-    for path in manifest.python_paths {
-        python_paths.push(resolve_path(manifest_root, &path)?);
-    }
-    for path in config.strategy.python_paths {
-        python_paths.push(resolve_path(base, &path)?);
-    }
-    python_paths.sort();
-    python_paths.dedup();
-
-    let backend = match environment {
-        Environment::Backtest => {
-            let backend = config.backtest.ok_or_else(|| {
-                CliError::Engine("backtest environment requires a [backtest] section".into())
-            })?;
-            let execution = backend.execution;
-            match event_mode {
-                EventMode::Bar | EventMode::Tick
-                    if backend.tick_data.is_some() || backend.bar_data.is_some() =>
-                {
-                    return Err(CliError::Engine(
-                        "bar/tick mode accepts backtest.data only".into(),
-                    ));
-                }
-                EventMode::Hybrid if backend.data.is_some() => {
-                    return Err(CliError::Engine(
-                        "hybrid mode accepts backtest.tick_data and backtest.bar_data only".into(),
-                    ));
-                }
-                _ => {}
-            }
-            let source = match event_mode {
-                EventMode::Bar => BacktestSourceSpec::Bar {
-                    data: resolve_path(
-                        base,
-                        backend.data.as_deref().ok_or_else(|| {
-                            CliError::Engine("bar mode requires backtest.data".into())
-                        })?,
-                    )?,
-                },
-                EventMode::Tick => BacktestSourceSpec::Tick {
-                    data: resolve_path(
-                        base,
-                        backend.data.as_deref().ok_or_else(|| {
-                            CliError::Engine("tick mode requires backtest.data".into())
-                        })?,
-                    )?,
-                    tick_size: backend.tick_size,
-                    lot_size: backend.lot_size,
-                    frame_interval_ns: backend.frame_interval_ns,
-                    max_tick_batch: backend.max_tick_batch,
-                },
-                EventMode::Hybrid => BacktestSourceSpec::Hybrid {
-                    tick_data: resolve_path(
-                        base,
-                        backend.tick_data.as_deref().ok_or_else(|| {
-                            CliError::Engine("hybrid mode requires backtest.tick_data".into())
-                        })?,
-                    )?,
-                    bar_data: resolve_path(
-                        base,
-                        backend.bar_data.as_deref().ok_or_else(|| {
-                            CliError::Engine("hybrid mode requires backtest.bar_data".into())
-                        })?,
-                    )?,
-                    tick_size: backend.tick_size,
-                    lot_size: backend.lot_size,
-                    frame_interval_ns: backend.frame_interval_ns,
-                    max_tick_batch: backend.max_tick_batch,
-                },
-            };
-            BackendSpec::Backtest { source, execution }
-        }
-        Environment::Live => unreachable!("live returned before legacy run-spec resolution"),
-    };
+    let trust = backtest_trust_policy(
+        backend.allow_unsigned_artifact,
+        &backend.trusted_ed25519_keys,
+    )?;
+    let manifest = inspect_v13_artifact_with_policy(&artifact, trust)?;
+    let data = resolve_path(base, &backend.data)?;
 
     let spec = RunSpec {
         schema_version: RUN_SPEC_VERSION,
@@ -1221,13 +993,17 @@ fn resolve_run_spec(
         config_path,
         config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
         strategy: StrategyRunSpec {
-            strategy_id: manifest.strategy_id,
-            strategy_version: manifest.strategy_version,
-            entrypoint: manifest.entrypoint,
-            parameters,
-            python_paths,
+            strategy_id: manifest.strategy_id.to_string(),
+            strategy_version: manifest.strategy_version.to_string(),
+            artifact,
+            artifact_digest: hex_digest(&manifest.artifact_digest),
         },
-        backend,
+        backend: BackendSpec::Backtest {
+            data,
+            command_capacity: backend.command_capacity,
+            allow_unsigned_artifact: backend.allow_unsigned_artifact,
+            trusted_ed25519_keys: backend.trusted_ed25519_keys,
+        },
         history_capacity: config.history_capacity,
     };
     validate_spec(&spec)?;
@@ -1253,15 +1029,21 @@ fn resolve_core_live_run_spec(
         source,
     })?;
     let adapted = load_core_configuration(&config_path, Some((strategy_name, event_mode)))?;
+    let trust = adapted.v13_trust_policy();
     let definition = adapted
         .strategies
         .first()
         .ok_or_else(|| CliError::Engine(format!("strategy {strategy_name} is not enabled")))?;
-    let parameters =
-        serde_json::from_slice(&definition.parameters).map_err(|source| CliError::Json {
-            path: config_path.clone(),
-            source,
-        })?;
+    let artifact = definition
+        .package
+        .uri
+        .strip_prefix("file://")
+        .ok_or_else(|| CliError::Engine("V13 artifact URI must use file://".into()))?;
+    let artifact = fs::canonicalize(artifact).map_err(|source| CliError::Read {
+        path: PathBuf::from(artifact),
+        source,
+    })?;
+    let manifest = inspect_v13_artifact_with_policy(&artifact, trust)?;
     let spec = RunSpec {
         schema_version: RUN_SPEC_VERSION,
         environment: Environment::Live,
@@ -1270,10 +1052,9 @@ fn resolve_core_live_run_spec(
         config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
         strategy: StrategyRunSpec {
             strategy_id: definition.strategy_key.to_string(),
-            strategy_version: definition.definition_version.to_string(),
-            entrypoint: definition.entrypoint.to_string(),
-            parameters,
-            python_paths: Vec::new(),
+            strategy_version: manifest.strategy_version.to_string(),
+            artifact,
+            artifact_digest: hex_digest(&manifest.artifact_digest),
         },
         backend: BackendSpec::CoreLive {
             strategy_key: definition.strategy_key.to_string(),
@@ -1315,81 +1096,41 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
             "resolved strategy identity must not be empty".into(),
         ));
     }
-    if !matches!(spec.backend, BackendSpec::CoreLive { .. })
-        || spec.strategy.entrypoint.as_str() != "native-v13"
-    {
-        let (module, function) = spec
+    if spec.strategy.artifact_digest.len() != 64
+        || !spec
             .strategy
-            .entrypoint
-            .split_once(':')
-            .ok_or(CliError::Entrypoint)?;
-        if module.is_empty() || function.is_empty() {
-            return Err(CliError::Entrypoint);
-        }
+            .artifact_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(CliError::Engine(
+            "resolved V13 artifact digest is invalid".into(),
+        ));
     }
     if spec.history_capacity == 0 {
         return Err(CliError::HistoryCapacity);
     }
     match &spec.backend {
-        BackendSpec::Backtest { source, execution } => {
+        BackendSpec::Backtest {
+            data,
+            command_capacity,
+            allow_unsigned_artifact,
+            trusted_ed25519_keys,
+        } => {
             if spec.environment != Environment::Backtest {
                 return Err(CliError::Engine(
                     "backtest backend requires backtest environment".into(),
                 ));
             }
-            let expected_mode = match source {
-                BacktestSourceSpec::Bar { .. } => EventMode::Bar,
-                BacktestSourceSpec::Tick {
-                    tick_size,
-                    lot_size,
-                    frame_interval_ns,
-                    max_tick_batch,
-                    ..
-                }
-                | BacktestSourceSpec::Hybrid {
-                    tick_size,
-                    lot_size,
-                    frame_interval_ns,
-                    max_tick_batch,
-                    ..
-                } => {
-                    if *tick_size <= 0.0
-                        || *lot_size <= 0.0
-                        || *frame_interval_ns <= 0
-                        || *max_tick_batch == 0
-                    {
-                        return Err(CliError::Engine("invalid Tick backend limits".into()));
-                    }
-                    match source {
-                        BacktestSourceSpec::Tick { .. } => EventMode::Tick,
-                        BacktestSourceSpec::Hybrid { .. } => EventMode::Hybrid,
-                        _ => unreachable!(),
-                    }
-                }
-            };
-            if spec.event_mode != expected_mode {
+            if spec.event_mode != EventMode::Tick {
                 return Err(CliError::Engine(
-                    "backtest source does not match event mode".into(),
+                    "V13 trace backtest requires tick mode".into(),
                 ));
             }
-            if execution.entry_latency_ns < 0
-                || execution.response_latency_ns < 0
-                || !execution.maker_fee.is_finite()
-                || !execution.taker_fee.is_finite()
-                || (execution.queue == QueueModelSpec::PowerProbability
-                    && (!execution.queue_power.is_finite() || execution.queue_power <= 0.0))
-                || !execution.contract_size.is_finite()
-                || execution.contract_size <= 0.0
-            {
-                return Err(CliError::Engine("invalid backtest execution model".into()));
+            if *command_capacity == 0 || !data.is_file() {
+                return Err(CliError::Engine("invalid V13 trace backtest input".into()));
             }
-            if matches!(source, BacktestSourceSpec::Bar { .. })
-                && *execution != BacktestExecutionSpec::default()
-            {
-                return Err(CliError::Engine(
-                    "backtest.execution currently applies to tick and hybrid modes only".into(),
-                ));
-            }
+            backtest_trust_policy(*allow_unsigned_artifact, trusted_ed25519_keys)?;
         }
         BackendSpec::CoreLive { strategy_key } => {
             if spec.environment != Environment::Live {
@@ -1593,9 +1334,175 @@ fn worker(
     if let BackendSpec::CoreLive { strategy_key } = &spec.backend {
         return core_live_worker(&registry, run_id, token, &spec, strategy_key, stop);
     }
-    Err(CliError::Engine(
-        "legacy in-process strategy backtests were removed by the ABI V13 hard cutover".into(),
-    ))
+    v13_backtest_worker(&registry, run_id, token, &spec, stop)
+}
+
+fn v13_backtest_worker(
+    registry: &Registry,
+    run_id: &str,
+    token: &str,
+    spec: &RunSpec,
+    stop: Arc<AtomicBool>,
+) -> Result<(), CliError> {
+    use titan_strategy_runtime::{NativeArtifactLoaderV13, OfflineV13Adapter, StagedCommandV13};
+    let BackendSpec::Backtest {
+        data,
+        command_capacity,
+        allow_unsigned_artifact,
+        trusted_ed25519_keys,
+    } = &spec.backend
+    else {
+        return Err(CliError::Engine(
+            "backtest worker received a live spec".into(),
+        ));
+    };
+    let trace_bytes = fs::read(data).map_err(|source| CliError::Read {
+        path: data.clone(),
+        source,
+    })?;
+    let trace =
+        serde_json::from_slice::<V13Trace>(&trace_bytes).map_err(|source| CliError::Json {
+            path: data.clone(),
+            source,
+        })?;
+    if trace.schema_version != 1 {
+        return Err(CliError::Engine(format!(
+            "unsupported V13 trace schema_version {}",
+            trace.schema_version
+        )));
+    }
+    let trust = backtest_trust_policy(*allow_unsigned_artifact, trusted_ed25519_keys)?;
+    let loader = NativeArtifactLoaderV13::new(
+        registry_path()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("artifact-cache"),
+        trust,
+    );
+    let artifact = loader
+        .load(&spec.strategy.artifact)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    if hex_digest(&artifact.manifest.artifact_digest) != spec.strategy.artifact_digest {
+        return Err(CliError::Engine(
+            "V13 artifact digest changed after run resolution".into(),
+        ));
+    }
+    let initial = trace.initial;
+    let mut adapter = OfflineV13Adapter::new(
+        Arc::new(artifact),
+        1,
+        1,
+        *command_capacity,
+        initial.markets,
+        initial.positions,
+        initial.balances,
+        initial.accounts,
+        initial.active_orders,
+    )
+    .map_err(|error| CliError::Engine(error.to_string()))?;
+    adapter
+        .start(initial.now_ns)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    registry.transition(run_id, token, "READY")?;
+    registry.transition(run_id, token, "RUNNING")?;
+    let started = Instant::now();
+    let mut event_count = 0_u64;
+    let mut submit_count = 0_u64;
+    let mut cancel_count = 0_u64;
+    let mut last_now_ns = initial.now_ns;
+    for event in trace.events {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        if let Some(update) = event.state {
+            adapter.update_public_state(
+                update.markets,
+                update.positions,
+                update.balances,
+                update.accounts,
+                update.active_orders,
+            );
+        }
+        last_now_ns = last_now_ns.max(event.now_ns);
+        let commands = match event.kind {
+            V13TraceEventKind::Tick => adapter.on_ticks(event.now_ns, &event.ticks),
+            V13TraceEventKind::Depth => adapter.on_depth(event.now_ns, &event.depth),
+            V13TraceEventKind::Fill => adapter.on_fills(event.now_ns, &event.fills),
+            V13TraceEventKind::Order => adapter.on_orders(event.now_ns, &event.orders),
+            V13TraceEventKind::Cancel => adapter.on_cancels(event.now_ns, &event.cancels),
+            V13TraceEventKind::Position => adapter.on_positions(event.now_ns, &event.positions),
+            V13TraceEventKind::Balance => adapter.on_balances(event.now_ns, &event.balances),
+            V13TraceEventKind::AccountState => {
+                adapter.on_account_states(event.now_ns, &event.account_states)
+            }
+            V13TraceEventKind::Timer => adapter.on_timer(
+                event.now_ns,
+                &event
+                    .timer
+                    .unwrap_or(titan_strategy_runtime::TitanTimerView {
+                        fired_ts_ns: event.now_ns,
+                        ..Default::default()
+                    }),
+            ),
+        }
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+        for command in commands {
+            match command {
+                StagedCommandV13::Submit { .. } => submit_count += 1,
+                StagedCommandV13::Cancel { .. } => cancel_count += 1,
+            }
+        }
+        event_count += 1;
+    }
+    let stop_commands = adapter
+        .stop(last_now_ns)
+        .map_err(|error| CliError::Engine(error.to_string()))?;
+    for command in stop_commands {
+        match command {
+            StagedCommandV13::Submit { .. } => submit_count += 1,
+            StagedCommandV13::Cancel { .. } => cancel_count += 1,
+        }
+    }
+    let state_sha256 = format!("{:x}", Sha256::digest(adapter.state_bytes()));
+    let status = if stop.load(Ordering::Acquire) {
+        "STOPPED"
+    } else {
+        "COMPLETED"
+    };
+    let result = serde_json::json!({
+        "schema_version": 1,
+        "run_id": run_id,
+        "strategy_id": spec.strategy.strategy_id,
+        "strategy_version": spec.strategy.strategy_version,
+        "artifact_digest": spec.strategy.artifact_digest,
+        "environment": spec.environment,
+        "event_mode": spec.event_mode,
+        "config_sha256": spec.config_sha256,
+        "trace_sha256": format!("{:x}", Sha256::digest(&trace_bytes)),
+        "state_sha256": state_sha256,
+        "event_count": event_count,
+        "submit_count": submit_count,
+        "cancel_count": cancel_count,
+        "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        "status": status,
+    });
+    let result_json = serde_json::to_string_pretty(&result).map_err(CliError::ResultJson)?;
+    let record = registry
+        .get(run_id)?
+        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
+    atomic_write(&record.result_path, result_json.as_bytes())?;
+    let exit_code = 0;
+    let final_state = if status == "COMPLETED" {
+        "COMPLETED"
+    } else {
+        "STOPPED"
+    };
+    if !registry.finish(run_id, token, final_state, exit_code, None)? {
+        return Err(CliError::Engine(
+            "run ownership changed before backtest completion".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn core_live_worker(
@@ -2315,5 +2222,16 @@ mod cli_v13_tests {
         assert_eq!(strategy, PathBuf::from("strategy.py"));
         assert_eq!(artifact_format, "bundle");
         assert_eq!(output, Some(PathBuf::from("pair.titan")));
+    }
+
+    #[test]
+    fn strategy_validation_trust_keys_are_explicit_and_strict() {
+        assert!(cli_trust_policy(true, &[]).is_err());
+        assert!(cli_trust_policy(false, &["missing-separator".into()]).is_err());
+
+        let policy = cli_trust_policy(true, &[format!("production-2026-09={}", "01".repeat(32))])
+            .expect("valid key must build a signature-required trust policy");
+        assert!(policy.require_signature);
+        assert_eq!(policy.ed25519_keys["production-2026-09"], [1_u8; 32]);
     }
 }

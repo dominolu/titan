@@ -489,7 +489,10 @@ impl Connector for Hyperliquid {
         }
         if let Err(error) = BrokerApi::cancel_all_after(&self.client, 0).await {
             if is_schedule_cancel_unavailable(&error.to_string()) {
-                warn!(?error, "scheduled-cancel safety net unavailable during shutdown");
+                warn!(
+                    ?error,
+                    "scheduled-cancel safety net unavailable during shutdown"
+                );
             } else {
                 tracing::warn!(
                     ?error,
@@ -989,7 +992,10 @@ mod unit_tests {
             r#"{"status":"err","response":"Cannot set scheduled cancel time"}"#,
         )
         .unwrap();
-        assert_eq!(exchange_error_message(&response), "Cannot set scheduled cancel time");
+        assert_eq!(
+            exchange_error_message(&response),
+            "Cannot set scheduled cancel time"
+        );
     }
 
     #[test]

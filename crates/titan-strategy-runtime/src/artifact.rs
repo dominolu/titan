@@ -17,6 +17,7 @@ pub struct StrategyArtifact {
 pub struct StrategyLoaderContext {
     pub allowed_artifact_roots: Arc<[Arc<str>]>,
     pub require_signature: bool,
+    pub ed25519_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -209,8 +210,7 @@ impl NativeV13Loader {
         let path = std::fs::canonicalize(raw)
             .map_err(|_| artifact_error("v13_path", "V13 artifact path cannot be resolved"))?;
         let allowed = self.context.allowed_artifact_roots.iter().any(|root| {
-            std::fs::canonicalize(root.as_ref())
-                .is_ok_and(|root| path.starts_with(root))
+            std::fs::canonicalize(root.as_ref()).is_ok_and(|root| path.starts_with(root))
         });
         if !allowed {
             return Err(artifact_error(
@@ -226,7 +226,7 @@ impl NativeV13Loader {
             std::env::temp_dir().join("titan-native-v13-cache"),
             V13TrustPolicy {
                 require_signature: self.context.require_signature,
-                ..V13TrustPolicy::default()
+                ed25519_keys: self.context.ed25519_keys.clone(),
             },
         )
     }
@@ -236,19 +236,28 @@ fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManif
     let package_version = semver::Version::parse(&value.strategy_version)
         .map_err(|_| artifact_error("strategy_version", "V13 strategy version is not semver"))?;
     let mut capabilities = 0_u64;
-    if value.capabilities.contains(StrategyCapabilitiesV13::MARKET_DATA) {
+    if value
+        .capabilities
+        .contains(StrategyCapabilitiesV13::MARKET_DATA)
+    {
         capabilities |= StrategyCapabilities::READ_TICK.0
             | StrategyCapabilities::READ_BAR.0
             | StrategyCapabilities::READ_DEPTH.0;
     }
-    if value.capabilities.contains(StrategyCapabilitiesV13::ACCOUNT_DATA) {
+    if value
+        .capabilities
+        .contains(StrategyCapabilitiesV13::ACCOUNT_DATA)
+    {
         capabilities |= StrategyCapabilities::READ_ACCOUNT.0;
     }
-    if value.capabilities.contains(StrategyCapabilitiesV13::ORDER_EXECUTION) {
+    if value
+        .capabilities
+        .contains(StrategyCapabilitiesV13::ORDER_EXECUTION)
+    {
         capabilities |= StrategyCapabilities::SUBMIT_ORDER.0 | StrategyCapabilities::CANCEL_ORDER.0;
     }
     if value.capabilities.contains(StrategyCapabilitiesV13::TIMER) {
-        capabilities |= StrategyCapabilities::SCHEDULE_TIMER.0;
+        capabilities |= StrategyCapabilities::TIMER_CALLBACK.0;
     }
     let mut subscriptions = Vec::new();
     for item in value.subscriptions.iter() {
@@ -257,11 +266,15 @@ fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManif
             V13EventKind::Bar => titan_market_service::BAR_BATCH_EVENT,
             V13EventKind::Depth => titan_market_service::DEPTH_BATCH_EVENT,
             V13EventKind::Fill => titan_account_service::FILL_EVENT,
-            V13EventKind::Order | V13EventKind::Cancel => titan_account_service::ORDER_CHANGED_EVENT,
+            V13EventKind::Order | V13EventKind::Cancel => {
+                titan_account_service::ORDER_CHANGED_EVENT
+            }
             V13EventKind::Position => titan_account_service::POSITION_CHANGED_EVENT,
             V13EventKind::Balance => titan_account_service::BALANCE_CHANGED_EVENT,
             V13EventKind::AccountState => titan_account_service::STREAM_STATE_CHANGED_EVENT,
-            V13EventKind::Timer | V13EventKind::Start | V13EventKind::Stop => "titan.strategy.Timer",
+            V13EventKind::Timer | V13EventKind::Start | V13EventKind::Stop => {
+                "titan.strategy.Timer"
+            }
         });
         if event_type.as_ref() == "titan.strategy.Timer" {
             continue;
@@ -276,11 +289,14 @@ fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManif
                 V13EventQos::BestEffort => titan_core_types::EventQos::BestEffort,
             },
         };
-        if !subscriptions.iter().any(|existing: &StrategySubscriptionSpec| {
-            existing.event_type == subscription.event_type
-                && existing.schema_version == subscription.schema_version
-                && existing.qos == subscription.qos
-        }) {
+        if !subscriptions
+            .iter()
+            .any(|existing: &StrategySubscriptionSpec| {
+                existing.event_type == subscription.event_type
+                    && existing.schema_version == subscription.schema_version
+                    && existing.qos == subscription.qos
+            })
+        {
             subscriptions.push(subscription);
         }
     }
@@ -324,7 +340,10 @@ impl StrategyPackageLoader for NativeV13Loader {
         deadline: Instant,
     ) -> Result<StrategyArtifact, StrategyError> {
         if Instant::now() >= deadline {
-            return Err(artifact_error("v13_load_deadline", "V13 load deadline expired"));
+            return Err(artifact_error(
+                "v13_load_deadline",
+                "V13 load deadline expired",
+            ));
         }
         let path = self.artifact_path(&request.package)?;
         let artifact = self
@@ -339,7 +358,9 @@ impl StrategyPackageLoader for NativeV13Loader {
         }
         let manifest = manifest_v13(&artifact.manifest)?;
         Ok(StrategyArtifact {
-            id: StrategyArtifactId { digest: manifest.artifact_digest },
+            id: StrategyArtifactId {
+                digest: manifest.artifact_digest,
+            },
             manifest,
             native: Arc::new(artifact),
         })

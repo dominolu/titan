@@ -4,7 +4,7 @@ use crate::{
     backtest::execution::InstrumentId,
     market_data::{BAR_COMPLETE, BAR_EMPTY, BAR_SYNTHETIC, Bar},
 };
-use titan_runtime_abi::TimedBarItem;
+use titan_domain_types::TimedBarItem;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LiveBarOrigin {

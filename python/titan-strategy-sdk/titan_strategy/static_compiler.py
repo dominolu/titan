@@ -52,6 +52,8 @@ class CompileRequest:
     artifact_format: str
     output_path: Path
     runtime_abi: dict[str, object]
+    signing_key: bytes | None = None
+    signing_key_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -734,7 +736,18 @@ def write_artifact(strategy: ValidatedStrategy, native: NativeBuild, request: Co
     manifest = _manifest(strategy, native, request, library_name)
     unsigned = dict(manifest)
     unsigned.pop("signature")
-    artifact_digest = hashlib.sha256(cbor.dumps(unsigned)).digest()
+    unsigned_bytes = cbor.dumps(unsigned)
+    artifact_digest = hashlib.sha256(unsigned_bytes).digest()
+    if request.signing_key is not None:
+        if not request.signing_key_id:
+            raise StrategyCompileError("signing_key_id is required with signing_key")
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        if len(request.signing_key) != 32:
+            raise StrategyCompileError("Ed25519 signing key must be 32 raw bytes")
+        signature = Ed25519PrivateKey.from_private_bytes(request.signing_key).sign(unsigned_bytes)
+        manifest["signature"] = {
+            "algorithm": "ed25519", "key_id": request.signing_key_id, "value": signature,
+        }
     manifest_bytes = cbor.dumps(manifest)
     if request.artifact_format == "pair":
         final_library = base.with_name(library_name)
@@ -787,6 +800,8 @@ def _validate_compile_request(request: CompileRequest) -> None:
     )
     if request.cpu_baseline not in allowed_baselines:
         raise StrategyCompileError(f"unsupported CPU baseline {request.cpu_baseline!r}")
+    if (request.signing_key is None) != (request.signing_key_id is None):
+        raise StrategyCompileError("signing_key and signing_key_id must be supplied together")
     abi_v13.validate_abi_descriptor(request.runtime_abi)
 
 

@@ -17,8 +17,7 @@ SPEC = StrategySpec(
     strategy_id="dual_ma", strategy_version="2.0.0", state_schema_version=1,
     parameters=(IntParam("fast", required=False, default=2, minimum=1),
                 IntParam("slow", required=False, default=4, minimum=2, maximum=MAX_WINDOW)),
-    subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),
-                   EventSubscription(EventKind.BAR, "on_bar", 1, EventQos.RELIABLE_ORDERED)),
+    subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),),
     capabilities=Capability.MARKET_DATA,
 )
 
@@ -42,14 +41,9 @@ def on_tick(ctx):
     for tick in ctx.ticks():
         update(ctx.state, tick["price_ticks"])
 
-@njit
-def on_bar(ctx):
-    for bar in ctx.bars():
-        update(ctx.state, bar["close_ticks"])
-
 def build(parameters):
     if parameters["slow"] <= parameters["fast"]:
         raise ValueError("dual_ma requires 0 < fast < slow")
     state = new_state(state_dtype)
     state[0]["fast"], state[0]["slow"] = parameters["fast"], parameters["slow"]
-    return StrategyDefinition(SPEC, state, {"on_tick": on_tick, "on_bar": on_bar})
+    return StrategyDefinition(SPEC, state, {"on_tick": on_tick})

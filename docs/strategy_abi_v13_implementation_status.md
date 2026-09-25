@@ -1,6 +1,6 @@
 # Strategy ABI V13 实施状态
 
-更新日期：2026-09-17
+更新日期：2026-09-18
 
 ## 结论
 
@@ -27,13 +27,13 @@ in-process Python/Numba loader、f64/i64 双数组 state、V12 SDK surface、旧
 
 ## 编译服务器验证
 
-- Python SDK：13 passed，另有 5 个 subtests passed。
-- `titan-strategy-runtime` V13 单元测试：3 passed。
+- Python SDK：16 passed，另有 5 个 subtests passed。
+- `titan-strategy-runtime` V13 单元测试：7 passed。
 - Rust CLI 单元/配置/无 Python live validate 测试通过。
 - `pair_arb` AOT bundle：digest
-  `5ea85a7c5d62c2d5f190e33c8733ccab0620eb012367ba73f218a95657565d39`。
+  `9cda48bca576d826924ac69aa2322b4707015e8a57334ee8b7b3142516528bd8`。
 - Rust `v13_pair_arb_smoke`：`dlopen -> on_start -> initiator -> actual-fill-driven hedge` 通过。
-- `cargo check -p titan-strategy-runtime -p titan-cli` 无 warning。
+- `cargo check --workspace --all-targets` 通过。
 
 ## 本次未执行
 

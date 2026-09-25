@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -16,14 +16,14 @@ use titan_account_service::{
 use titan_core_types::{ActivationGate, ComponentIdentity, CoreError, EventPublisher};
 use titan_event_engine::{EventClass, EventEngine, EventEngineConfig, EventEngineHandle, PoolKind};
 use titan_market_service::{
-    BAR_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION, MARKET_EVENT_TYPES, MarketAdminService,
-    MarketConnectorFactory, MarketCoreConfig, MarketServiceCore, MarketSourceDefinition,
+    MARKET_EVENT_SCHEMA_VERSION, MARKET_EVENT_TYPES, MarketAdminService, MarketConnectorFactory,
+    MarketCoreConfig, MarketServiceCore, MarketSourceDefinition,
 };
 use titan_strategy_runtime::{
-    NativeV13LoaderFactory, NativeV13RuntimeFactory, StrategyAdminService,
-    StrategyCoreConfig, StrategyDataMode, StrategyDefinition, StrategyOperationState,
-    StrategyPackageLoaderRegistry, StrategyRecoveryPolicy, StrategyRuntimeFactoryRegistry,
-    StrategyServiceCore, StrategyServiceDependencies,
+    NativeV13LoaderFactory, NativeV13RuntimeFactory, StrategyAdminService, StrategyCoreConfig,
+    StrategyDataMode, StrategyDefinition, StrategyOperationState, StrategyPackageLoaderRegistry,
+    StrategyRecoveryPolicy, StrategyRuntimeFactoryRegistry, StrategyServiceCore,
+    StrategyServiceDependencies, V13TrustPolicy,
 };
 
 pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -106,12 +106,21 @@ impl Default for AccountServiceConfig {
 pub struct StrategyServiceConfig {
     #[serde(default)]
     pub allowed_artifact_roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub checkpoint_root: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_unsigned_artifacts: bool,
+    #[serde(default)]
+    pub trusted_ed25519_keys: BTreeMap<String, String>,
 }
 
 impl Default for StrategyServiceConfig {
     fn default() -> Self {
         Self {
             allowed_artifact_roots: Vec::new(),
+            checkpoint_root: None,
+            allow_unsigned_artifacts: false,
+            trusted_ed25519_keys: BTreeMap::new(),
         }
     }
 }
@@ -148,6 +157,18 @@ pub struct AdaptedConfiguration {
     pub strategies: Vec<StrategyDefinition>,
     account_secret_root: Option<PathBuf>,
     strategy_bootstrap: Option<StrategyBootstrap>,
+}
+
+impl AdaptedConfiguration {
+    pub fn v13_trust_policy(&self) -> V13TrustPolicy {
+        self.strategy_bootstrap
+            .as_ref()
+            .map(|bootstrap| V13TrustPolicy {
+                require_signature: bootstrap.config.require_artifact_signature,
+                ed25519_keys: bootstrap.config.trusted_artifact_keys.clone(),
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone)]
@@ -759,6 +780,11 @@ fn adapt_strategies(
     if strategies.is_empty() {
         return Ok(None);
     }
+    if !bootstrap.allow_unsigned_artifacts && bootstrap.trusted_ed25519_keys.is_empty() {
+        return Err(ConfigurationError::Invalid(
+            "strategy_service requires trusted_ed25519_keys unless allow_unsigned_artifacts is explicitly enabled for development".into(),
+        ));
+    }
     let mut allowed_roots = Vec::with_capacity(bootstrap.allowed_artifact_roots.len());
     for root in bootstrap.allowed_artifact_roots {
         allowed_roots.push(canonical_config_path(
@@ -772,10 +798,33 @@ fn adapt_strategies(
             "strategy_service requires at least one allowed_artifact_roots entry".into(),
         ));
     }
+    let checkpoint_root = if let Some(path) = bootstrap.checkpoint_root {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            config_directory.join(path)
+        };
+        std::fs::create_dir_all(&path).map_err(|error| {
+            ConfigurationError::Invalid(format!(
+                "cannot create strategy checkpoint root {}: {error}",
+                path.display()
+            ))
+        })?;
+        Some(std::fs::canonicalize(&path).map_err(|error| {
+            ConfigurationError::Invalid(format!(
+                "cannot resolve strategy checkpoint root {}: {error}",
+                path.display()
+            ))
+        })?)
+    } else {
+        None
+    };
     for definition in strategies {
-        if definition.recovery != StrategyRecoveryPolicy::Fresh {
+        if (definition.recovery != StrategyRecoveryPolicy::Fresh || !definition.accounts.is_empty())
+            && checkpoint_root.is_none()
+        {
             return Err(ConfigurationError::Invalid(format!(
-                "strategy {} must use recovery = fresh",
+                "strategy {} requires strategy_service.checkpoint_root",
                 definition.strategy_key
             )));
         }
@@ -820,9 +869,33 @@ fn adapt_strategies(
         .map(|root| Arc::from(root.to_string_lossy().as_ref()))
         .collect::<Vec<_>>()
         .into();
-    Ok(Some(StrategyBootstrap {
-        config,
-    }))
+    config.checkpoint_root = checkpoint_root;
+    config.require_artifact_signature = !bootstrap.allow_unsigned_artifacts;
+    config.trusted_artifact_keys = bootstrap
+        .trusted_ed25519_keys
+        .into_iter()
+        .map(|(key_id, encoded)| {
+            decode_ed25519_key(&encoded)
+                .map(|key| (Arc::from(key_id), key))
+                .map_err(|message| {
+                    ConfigurationError::Invalid(format!("invalid trusted Ed25519 key: {message}"))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(Some(StrategyBootstrap { config }))
+}
+
+fn decode_ed25519_key(value: &str) -> Result<[u8; 32], &'static str> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() != 64 {
+        return Err("public key must contain 64 hexadecimal characters");
+    }
+    let mut output = [0_u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| "public key contains non-hexadecimal characters")?;
+    }
+    Ok(output)
 }
 
 fn canonical_config_path(
@@ -858,14 +931,6 @@ fn validate_core_live_strategy_profile(
             if binding.data_mode != StrategyDataMode::Tick {
                 return Err(ConfigurationError::Invalid(format!(
                     "strategy {} declares non-tick data mode; live Bar/Hybrid is unavailable until a production BarBatch publisher is implemented",
-                    definition.strategy_key
-                )));
-            }
-        }
-        for subscription in definition.subscriptions.iter() {
-            if subscription.event_type.as_ref() == BAR_BATCH_EVENT {
-                return Err(ConfigurationError::Invalid(format!(
-                    "strategy {} subscribes to titan.market.BarBatch; no live BarBatch producer is currently configured",
                     definition.strategy_key
                 )));
             }
@@ -997,7 +1062,6 @@ const fn default_account_startup_ms() -> u64 {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use titan_core_types::EventQos;
 
     fn application() -> ApplicationConfig {
         ApplicationConfig {
@@ -1029,6 +1093,22 @@ mod tests {
     }
 
     #[test]
+    fn trusted_ed25519_keys_are_strict_and_rotation_friendly() {
+        assert_eq!(decode_ed25519_key(&"01".repeat(32)).unwrap(), [1_u8; 32]);
+        assert_eq!(
+            decode_ed25519_key(&format!("0x{}", "ab".repeat(32))).unwrap(),
+            [0xab; 32]
+        );
+        assert!(decode_ed25519_key("00").is_err());
+        assert!(decode_ed25519_key(&"zz".repeat(32)).is_err());
+
+        let mut keys = BTreeMap::new();
+        keys.insert("current".to_owned(), "01".repeat(32));
+        keys.insert("next".to_owned(), "02".repeat(32));
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
     fn account_secret_root_is_resolved_relative_to_the_runtime_config() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1051,10 +1131,8 @@ mod tests {
 
     #[test]
     fn pair_arb_v13_runtime_template_deserializes_human_readable_byte_fields() {
-        let config: ApplicationConfig = toml::from_str(include_str!(
-            "../../../deploy/pair_arb_v13/runtime.toml"
-        ))
-        .unwrap();
+        let config: ApplicationConfig =
+            toml::from_str(include_str!("../../../deploy/pair_arb_v13/runtime.toml")).unwrap();
         assert_eq!(config.market_sources.len(), 2);
         assert!(
             std::str::from_utf8(&config.market_sources[0].connector_config)
@@ -1070,8 +1148,10 @@ mod tests {
         assert_eq!(config.event_engine.ingress.max_sources, 8_192);
         validate_account_source_capacity(&config.event_engine, &config.accounts).unwrap();
         assert_eq!(config.strategies.len(), 1);
-        assert_eq!(config.strategies[0].package.loader_type.as_ref(), "native-v13");
-        assert_eq!(config.strategies[0].parameters.as_ref(), b"{}");
+        assert_eq!(
+            config.strategies[0].package.loader_type.as_ref(),
+            "native-v13"
+        );
         let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb_v13");
         ConfigurationAdapter::adapt(config, &deployment).unwrap();
     }
@@ -1124,12 +1204,7 @@ config = {}
         assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
     }
 
-    fn live_strategy(data_mode: StrategyDataMode, subscribe_bar_batch: bool) -> StrategyDefinition {
-        let event_type: &str = if subscribe_bar_batch {
-            BAR_BATCH_EVENT
-        } else {
-            titan_market_service::DEPTH_BATCH_EVENT
-        };
+    fn live_strategy(data_mode: StrategyDataMode) -> StrategyDefinition {
         StrategyDefinition {
             strategy_key: Arc::from("freeze-test"),
             strategy_id: titan_strategy_runtime::StrategyId(99),
@@ -1139,9 +1214,6 @@ config = {}
                 expected_digest: [1; 32],
                 signature_ref: None,
             },
-            entrypoint: Arc::from("freeze.strategy:build"),
-            parameters: Arc::from(b"{}".as_slice()),
-            parameter_schema_version: 1,
             markets: Arc::from([titan_strategy_runtime::StrategyMarketBinding {
                 local_market_no: 0,
                 local_asset_no: 0,
@@ -1150,12 +1222,6 @@ config = {}
                 data_mode,
             }]),
             accounts: Arc::from([]),
-            subscriptions: Arc::from([titan_strategy_runtime::StrategySubscriptionSpec {
-                event_type: Arc::from(event_type),
-                schema_version: titan_market_service::MARKET_EVENT_SCHEMA_VERSION,
-                routing_keys: Arc::from([1]),
-                qos: EventQos::ReliableOrdered,
-            }]),
             risk_scope: titan_strategy_runtime::RiskScopeRef(Arc::from("unused")),
             runtime: titan_strategy_runtime::StrategyRuntimeSpec::default(),
             recovery: titan_strategy_runtime::StrategyRecoveryPolicy::Fresh,
@@ -1166,39 +1232,26 @@ config = {}
 
     #[test]
     fn core_live_profile_freezes_bar_and_hybrid_until_producer_exists() {
-        let bar_mode = live_strategy(
-            titan_strategy_runtime::StrategyDataMode::Bar {
-                timeframe_ns: 60_000_000_000,
-            },
-            false,
-        );
+        let bar_mode = live_strategy(titan_strategy_runtime::StrategyDataMode::Bar {
+            timeframe_ns: 60_000_000_000,
+        });
         assert!(matches!(
             validate_core_live_strategy_profile(&[bar_mode]),
             Err(ConfigurationError::Invalid(_))
         ));
 
-        let hybrid_mode = live_strategy(
-            titan_strategy_runtime::StrategyDataMode::Hybrid {
-                signal_timeframe_ns: 60_000_000_000,
-            },
-            false,
-        );
+        let hybrid_mode = live_strategy(titan_strategy_runtime::StrategyDataMode::Hybrid {
+            signal_timeframe_ns: 60_000_000_000,
+        });
         assert!(matches!(
             validate_core_live_strategy_profile(&[hybrid_mode]),
             Err(ConfigurationError::Invalid(_))
         ));
 
-        let bar_subscription = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick, true);
-        assert!(matches!(
-            validate_core_live_strategy_profile(&[bar_subscription]),
-            Err(ConfigurationError::Invalid(_))
-        ));
-
-        let tick = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick, false);
+        let tick = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick);
         assert!(validate_core_live_strategy_profile(&[tick]).is_ok());
 
-        let mut account_strategy =
-            live_strategy(titan_strategy_runtime::StrategyDataMode::Tick, false);
+        let mut account_strategy = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick);
         account_strategy.accounts = Arc::from([titan_strategy_runtime::StrategyAccountBinding {
             local_account_no: 0,
             account_key: Arc::from("account"),
@@ -1246,7 +1299,7 @@ config = {}
             enabled: true,
             definition_version: 1,
         };
-        let mut strategy = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick, false);
+        let mut strategy = live_strategy(titan_strategy_runtime::StrategyDataMode::Tick);
         strategy.accounts = Arc::from([titan_strategy_runtime::StrategyAccountBinding {
             local_account_no: 0,
             account_key: Arc::from("account"),
