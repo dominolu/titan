@@ -18,8 +18,8 @@ in-process Python/Numba loader、f64/i64 双数组 state、V12 SDK surface、旧
   cache、实例隔离、事件解码、公开状态快照、订单 ownership 过滤、command 校验和 direct execution。
 - Engine 集成：V13 manifest 驱动订阅；市场 routing key 与账户 routing key 由部署 binding 注入；
   lifecycle、timer、supervisor、activation gate、handler deadline 与 EventEngine PRIMARY lane 接通。
-- `pair_arb`：maker-taker/taker-taker slot、累计成交 delta、hedge obligation ledger、受保护 IOC
-  对冲、cancel-confirm-replace、超时/冷却、账户/持仓/readiness/stale gate、draining 与故障姿态。
+- `pair_arb`：V3 单 current-slot、runtime-owned active orders/OrdersList、最小私有 order refs、
+  maker-taker/taker-taker、cancel-confirm-replace、账户/持仓/readiness/stale gate 与故障姿态。
 - CLI：`titan strategy compile --strategy ...` 为唯一策略编译入口；Core live 不再链接或加载
   libpython。旧的 in-process backtest worker已移除，避免继续暴露非 V13 策略执行路径。
 - 部署模板：`deploy/pair_arb_v13` 固定 V13 bundle 与 digest。所有主网 source/account/strategy
@@ -27,11 +27,11 @@ in-process Python/Numba loader、f64/i64 双数组 state、V12 SDK surface、旧
 
 ## 编译服务器验证
 
-- Python SDK：16 passed，另有 5 个 subtests passed。
-- `titan-strategy-runtime` V13 单元测试：7 passed。
+- Python SDK：25 passed，另有 5 个 subtests passed。
+- `titan-strategy-runtime` V13 单元测试：10 passed。
 - Rust CLI 单元/配置/无 Python live validate 测试通过。
-- `pair_arb` AOT bundle：digest
-  `9cda48bca576d826924ac69aa2322b4707015e8a57334ee8b7b3142516528bd8`。
+- `pair_arb` V3 AOT bundle：digest
+  `a67214598f0e708aa96a8f43710ce48fd05f3b2e0210241036bbea3873332c70`。
 - Rust `v13_pair_arb_smoke`：`dlopen -> on_start -> initiator -> actual-fill-driven hedge` 通过。
 - `cargo check --workspace --all-targets` 通过。
 

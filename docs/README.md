@@ -22,8 +22,7 @@
 
 ## 策略设计
 
-- [pair_arb：Slot 化双腿执行内核需求](pair_arb_strategy_requirements.md)
-- [pair_arb：可复用高频双腿执行内核设计](pair_arb_strategy_design.md)
+- [pair_arb：Slot 化双腿执行内核 V3 需求](pair_arb_strategy_requirements.md)
 
 ## 数据协议
 

@@ -258,7 +258,7 @@ Slot 或 initiator/hedge role 等策略语义。终态订单在相关事件提�
 
 该所有权规则取代早期 pair-arb 文档中“Numba 自己维护完整 active_orders 数组”的技术实现，但不
 改变其业务不变量：同一订单仍只能属于一个 Slot/role，未知或撤单中的订单仍阻止提前重挂，历史
-OrdersList 仍由 runtime append-only 持久化。实现 V13 pair-arb 前必须同步更新旧需求文档的内存归属
+OrdersList 仍由 runtime 按 `order_id` 唯一持久化，并随已确认生命周期事件单调更新。实现 V13 pair-arb 前必须同步更新旧需求文档的内存归属
 表述，不能同时保留两套订单事实源。
 
 公共 view 在 Numba 类型系统中是 read-only borrowed view。compiler 不为其注册 setitem、可写 record

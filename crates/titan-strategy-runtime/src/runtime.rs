@@ -52,8 +52,38 @@ pub struct StrategyPrivateStateSnapshot {
     pub state_schema_hash: [u8; 32],
     pub state_alignment: u32,
     pub state_bytes: Arc<[u8]>,
+    #[serde(default)]
+    pub orders_list: Arc<[StrategyOrderRecordV13]>,
+    #[serde(default)]
+    pub orders_list_checksum: [u8; 32],
     pub public_state_identity: [u8; 32],
     pub checksum: [u8; 32],
+}
+
+/// Runtime-owned order lifecycle history for Strategy ABI V13. Each order ID owns one record
+/// updated from confirmed events. Strategy-private Slot/role relationships remain in the
+/// checkpointed typed state and are never duplicated here.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+pub struct StrategyOrderRecordV13 {
+    pub order_id: u64,
+    pub asset_no: u32,
+    pub account_no: u32,
+    pub price_ticks: i64,
+    pub qty_lots: i64,
+    pub cumulative_filled_lots: i64,
+    pub last_fill_price_ticks: i64,
+    pub submit_ts_ns: i64,
+    pub last_fill_ts_ns: i64,
+    pub last_event_ts_ns: i64,
+    pub account_sequence: u64,
+    pub fill_count: u64,
+    pub side: u8,
+    pub order_type: u8,
+    pub time_in_force: u8,
+    pub status: u8,
+    pub reduce_only: u8,
+    pub error_code: u8,
+    pub reserved: [u8; 2],
 }
 
 pub trait StrategyStateSnapshotSink: Send + Sync {
