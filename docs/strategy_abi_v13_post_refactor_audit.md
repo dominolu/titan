@@ -297,7 +297,7 @@ timeframe 和 live/offline 端到端测试。
 - [x] OrderType/TIF/Status runtime 显式转换；
 - [x] IOC hedge 与 reduce-only 的 staging → Account → venue wire；
 - [x] REST Accepted/Rejected/Unknown 回送策略 lane；
-- [x] partial fill、hedge obligation、cancel-confirm-replace 和重复 fill；
+- [x] V3 partial fill 累计、完整 initiator fill 后 hedge、cancel-confirm-replace；
 - [x] 非零初始仓位、非 Ready account、恢复时缺失活动订单；
 - [x] generation order id 隔离、旧 generation ownership 与迟到事实；
 - [x] checkpoint round-trip、writer health 与 generation watermark restart；

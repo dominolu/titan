@@ -1548,7 +1548,6 @@ impl StrategyAdminService for StrategyServiceCore {
         deadline: Instant,
     ) -> LocalResult<StrategyOperationId> {
         let entry = self.entry(strategy)?;
-        entry.activation.close();
         let local = entry.runtime.stop(deadline)?;
         Ok(self.register_runtime_operation(entry, local, true))
     }
@@ -2112,6 +2111,12 @@ mod checkpoint_tests {
             state_schema_hash: [4; 32],
             state_alignment: 8,
             state_bytes: Arc::from([5_u8, 6, 7]),
+            orders_list: Arc::from([StrategyOrderRecordV13 {
+                order_id: 99,
+                status: 6,
+                ..StrategyOrderRecordV13::default()
+            }]),
+            orders_list_checksum: [10; 32],
             public_state_identity: [8; 32],
             checksum: [9; 32],
         };
@@ -2124,6 +2129,9 @@ mod checkpoint_tests {
         assert_eq!(restored.checkpoint_id, 11);
         assert_eq!(restored.generation, 7);
         assert_eq!(restored.state_bytes.as_ref(), [5, 6, 7]);
+        assert_eq!(restored.orders_list.len(), 1);
+        assert_eq!(restored.orders_list[0].order_id, 99);
+        assert_eq!(restored.orders_list_checksum, [10; 32]);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

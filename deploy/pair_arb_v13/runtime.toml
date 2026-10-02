@@ -107,7 +107,7 @@ definition_version = 1
 [[strategies]]
 strategy_key = "pair_arb"
 strategy_id = 9001
-package = { loader_type = "native-v13", uri = "file://artifacts/pair_arb.titan", expected_digest = [156, 218, 72, 188, 165, 118, 216, 38, 146, 74, 198, 154, 162, 50, 43, 71, 7, 1, 94, 138, 87, 51, 78, 232, 183, 179, 20, 37, 22, 82, 139, 216] }
+package = { loader_type = "native-v13", uri = "file://artifacts/pair_arb.titan", expected_digest = [166, 114, 20, 89, 143, 14, 112, 138, 169, 106, 143, 67, 113, 12, 228, 143, 208, 95, 59, 46, 2, 16, 36, 16, 54, 187, 234, 56, 115, 51, 44, 112] }
 markets = [
   { local_market_no = 0, local_asset_no = 0, source_key = "okx-btc-mainnet", asset_id = 1001, data_mode = "tick" },
   { local_market_no = 1, local_asset_no = 1, source_key = "hyperliquid-btc-mainnet", asset_id = 1002, data_mode = "tick" },

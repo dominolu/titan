@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use titan_strategy_runtime::{
     CallbackCommandStagingV13, NativeArtifactLoaderV13, StagedCommandV13,
     StrategyRuntimeContextV13, TitanAccountView, TitanFillView, TitanMarketView, TitanPositionView,
-    V13EventKind, V13TrustPolicy,
+    TitanTickView, V13EventKind, V13TrustPolicy,
 };
 
 fn main() {
@@ -70,6 +70,24 @@ fn main() {
         .expect("start callback");
     instance.start().expect("open instance command gate");
 
+    let ticks = [
+        TitanTickView {
+            asset_no: 0,
+            receive_ts_ns: 1_000_000_000,
+            price_ticks: 101,
+            qty_lots: 1,
+            ..Default::default()
+        },
+        TitanTickView {
+            asset_no: 1,
+            receive_ts_ns: 1_000_000_000,
+            price_ticks: 202,
+            qty_lots: 1,
+            ..Default::default()
+        },
+    ];
+    context.ticks_ptr = ticks.as_ptr();
+    context.ticks_len = ticks.len() as u64;
     let mut staging = CallbackCommandStagingV13::new(8, 100, 500).expect("command staging");
     staging.begin_callback(instance.command_gate_open(), &[]);
     staging.bind_context(&mut context);

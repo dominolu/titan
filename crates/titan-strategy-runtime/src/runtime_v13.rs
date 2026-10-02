@@ -105,6 +105,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     balances: Vec::with_capacity(PUBLIC_CAPACITY),
                     accounts,
                     active_orders: Vec::with_capacity(PUBLIC_CAPACITY),
+                    orders_list: BTreeMap::new(),
                     ticks: Vec::with_capacity(PUBLIC_CAPACITY),
                     depth: Vec::with_capacity(PUBLIC_CAPACITY),
                     order_versions: BTreeMap::new(),
@@ -116,6 +117,8 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     command_count: 0,
                     last_error: None,
                     stop_called: false,
+                    stop_operation: None,
+                    stop_deadline: None,
                     flight_records: VecDeque::with_capacity(128),
                 }),
                 lane: OnceLock::new(),
@@ -147,6 +150,7 @@ struct NativeV13Inner {
     balances: Vec<TitanBalanceView>,
     accounts: Vec<TitanAccountView>,
     active_orders: Vec<TitanActiveOrderView>,
+    orders_list: BTreeMap<u64, StrategyOrderRecordV13>,
     ticks: Vec<TitanTickView>,
     depth: Vec<TitanDepthView>,
     order_versions: BTreeMap<(u32, u64), u64>,
@@ -158,7 +162,72 @@ struct NativeV13Inner {
     command_count: u64,
     last_error: Option<Arc<str>>,
     stop_called: bool,
+    stop_operation: Option<StrategyOperationId>,
+    stop_deadline: Option<Instant>,
     flight_records: VecDeque<StrategyFlightRecord>,
+}
+
+fn orders_list_checksum(orders: &[StrategyOrderRecordV13]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"titan.strategy.orders-list.v13");
+    digest.update((orders.len() as u64).to_le_bytes());
+    for order in orders {
+        digest.update(order.order_id.to_le_bytes());
+        digest.update(order.asset_no.to_le_bytes());
+        digest.update(order.account_no.to_le_bytes());
+        digest.update(order.price_ticks.to_le_bytes());
+        digest.update(order.qty_lots.to_le_bytes());
+        digest.update(order.cumulative_filled_lots.to_le_bytes());
+        digest.update(order.last_fill_price_ticks.to_le_bytes());
+        digest.update(order.submit_ts_ns.to_le_bytes());
+        digest.update(order.last_fill_ts_ns.to_le_bytes());
+        digest.update(order.last_event_ts_ns.to_le_bytes());
+        digest.update(order.account_sequence.to_le_bytes());
+        digest.update(order.fill_count.to_le_bytes());
+        digest.update([
+            order.side,
+            order.order_type,
+            order.time_in_force,
+            order.status,
+            order.reduce_only,
+            order.error_code,
+        ]);
+        digest.update(order.reserved);
+    }
+    digest.finalize().into()
+}
+
+fn merge_seeded_order_record(
+    orders: &mut BTreeMap<u64, StrategyOrderRecordV13>,
+    value: TitanActiveOrderView,
+) -> LocalResult<()> {
+    let record = orders.entry(value.order_id).or_default();
+    if record.order_id != 0
+        && (record.account_no != value.account_no || record.asset_no != value.asset_no)
+    {
+        return Err(v13_runtime_error("orders_list_identity_mismatch"));
+    }
+    if record.order_id != 0 && record.account_sequence > value.account_sequence {
+        return Ok(());
+    }
+    record.order_id = value.order_id;
+    record.asset_no = value.asset_no;
+    record.account_no = value.account_no;
+    record.price_ticks = value.price_ticks;
+    record.qty_lots = value.qty_lots;
+    record.cumulative_filled_lots = value.cumulative_filled_lots;
+    if record.submit_ts_ns == 0 {
+        record.submit_ts_ns = value.created_ts_ns;
+    }
+    record.last_event_ts_ns = value.updated_ts_ns;
+    record.account_sequence = value.account_sequence;
+    record.side = value.side;
+    record.order_type = value.order_type;
+    record.time_in_force = value.time_in_force;
+    record.status = value.status;
+    record.reduce_only = value.reduce_only;
+    Ok(())
 }
 
 impl NativeV13Runtime {
@@ -281,7 +350,8 @@ impl EventHandler for NativeV13Runtime {
             inner.lifecycle,
             StrategyLifecycle::Running | StrategyLifecycle::Paused | StrategyLifecycle::Stopping
         );
-        let result = dispatch_event(&self.core, &mut inner, event, invoke_callbacks);
+        let result = dispatch_event(&self.core, &mut inner, event, invoke_callbacks)
+            .and_then(|_| finish_stop_if_drained(&self.core, &mut inner));
         if result.is_err() {
             self.core.context.activation.close();
             inner.lifecycle = StrategyLifecycle::Failed;
@@ -640,6 +710,24 @@ fn commit_commands(
                     reduce_only: request.reduce_only,
                     ..TitanActiveOrderView::default()
                 });
+                inner
+                    .orders_list
+                    .entry(order_id)
+                    .or_insert(StrategyOrderRecordV13 {
+                        order_id,
+                        asset_no: request.asset_no,
+                        account_no: request.account_no,
+                        price_ticks: request.price_ticks,
+                        qty_lots: request.qty_lots,
+                        submit_ts_ns: core.context.clock.now_ns(),
+                        last_event_ts_ns: core.context.clock.now_ns(),
+                        side: request.side,
+                        order_type: request.order_type,
+                        time_in_force: request.time_in_force,
+                        status: 1,
+                        reduce_only: request.reduce_only,
+                        ..StrategyOrderRecordV13::default()
+                    });
             }
             StagedCommandV13::Cancel { request, .. } => {
                 let binding = execution_binding(core, request.account_no, request.asset_no)?;
@@ -759,6 +847,19 @@ fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) {
             order.status = 4;
         }
     }
+    if let Some(order) = inner.orders_list.get_mut(&fill.order_id) {
+        order.cumulative_filled_lots = fill.cumulative_filled_lots;
+        order.last_fill_price_ticks = fill.fill_price_ticks;
+        order.last_fill_ts_ns = fill.receive_ts_ns;
+        order.last_event_ts_ns = fill.receive_ts_ns;
+        order.account_sequence = fill.account_sequence;
+        order.fill_count = order.fill_count.saturating_add(1);
+        if fill.final_fill != 0 || order.cumulative_filled_lots >= order.qty_lots {
+            order.status = 4;
+        } else {
+            order.status = 3;
+        }
+    }
 }
 fn update_active_order(
     inner: &mut NativeV13Inner,
@@ -814,6 +915,29 @@ fn update_active_order(
             ..TitanActiveOrderView::default()
         });
     }
+    let record = inner
+        .orders_list
+        .entry(value.order_id)
+        .or_insert(StrategyOrderRecordV13 {
+            order_id: value.order_id,
+            asset_no: value.asset_no,
+            account_no: value.account_no,
+            price_ticks: value.price_ticks,
+            qty_lots: value.qty_lots,
+            submit_ts_ns: value.event_ts_ns,
+            side,
+            order_type,
+            time_in_force: tif,
+            reduce_only,
+            ..StrategyOrderRecordV13::default()
+        });
+    record.price_ticks = value.price_ticks;
+    record.qty_lots = value.qty_lots;
+    record.cumulative_filled_lots = value.cumulative_filled_lots;
+    record.last_event_ts_ns = value.event_ts_ns;
+    record.account_sequence = value.account_sequence;
+    record.status = value.status;
+    record.error_code = value.reason;
     if matches!(value.status, 4 | 6 | 7 | 8) {
         inner
             .active_orders
@@ -1020,6 +1144,15 @@ fn dispatch_execution_result(
                 };
                 order.updated_ts_ns = now;
             }
+            if let Some(order) = inner.orders_list.get_mut(&order_id) {
+                order.status = match request_result {
+                    0 => 5,
+                    1 => existing.status,
+                    _ => 255,
+                };
+                order.last_event_ts_ns = now;
+                order.error_code = request_result;
+            }
             let view = TitanCancelEventView {
                 order_id,
                 asset_no,
@@ -1063,6 +1196,13 @@ fn checkpoint_state(
         .instance
         .freeze_state(checkpoint_id)
         .map_err(|_| v13_runtime_error("snapshot_failed"))?;
+    let orders_list: Arc<[StrategyOrderRecordV13]> = inner
+        .orders_list
+        .values()
+        .copied()
+        .collect::<Vec<_>>()
+        .into();
+    let orders_list_checksum = orders_list_checksum(&orders_list);
     let result = core
         .context
         .state_snapshot_sink
@@ -1081,6 +1221,8 @@ fn checkpoint_state(
             state_schema_hash: snapshot.state_schema_hash,
             state_alignment: snapshot.state_alignment,
             state_bytes: snapshot.state_bytes,
+            orders_list,
+            orders_list_checksum,
             public_state_identity: snapshot.public_state_identity,
             checksum: snapshot.checksum,
         });
@@ -1090,6 +1232,28 @@ fn checkpoint_state(
         inner.last_error = Some(Arc::from("checkpoint_submit_failed"));
     }
     result
+}
+
+fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> LocalResult<()> {
+    if inner.lifecycle != StrategyLifecycle::Stopping || !inner.active_orders.is_empty() {
+        return Ok(());
+    }
+    checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)?;
+    core.context.activation.close();
+    inner.instance.stop();
+    inner.lifecycle = StrategyLifecycle::Stopped;
+    if let Some(operation_id) = inner.stop_operation.take()
+        && let Some(operation) = core
+            .operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&operation_id)
+    {
+        operation.state = StrategyOperationState::Succeeded;
+        operation.detail = Arc::from("drained_and_stopped");
+    }
+    inner.stop_deadline = None;
+    Ok(())
 }
 
 impl StrategyRuntime for NativeV13Runtime {
@@ -1227,6 +1391,7 @@ impl StrategyRuntime for NativeV13Runtime {
                 }
                 inner.active_orders.push(value);
             }
+            merge_seeded_order_record(&mut inner.orders_list, value)?;
         }
         inner.pending_fills.clear();
         Ok(())
@@ -1235,6 +1400,18 @@ impl StrategyRuntime for NativeV13Runtime {
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
         if inner.lifecycle != StrategyLifecycle::Defined {
             return Err(v13_runtime_error("restore_after_prepare"));
+        }
+        let expected_orders_checksum = orders_list_checksum(&snapshot.orders_list);
+        let legacy_empty_orders =
+            snapshot.orders_list.is_empty() && snapshot.orders_list_checksum == [0; 32];
+        if !legacy_empty_orders && snapshot.orders_list_checksum != expected_orders_checksum {
+            return Err(v13_runtime_error("orders_list_checksum_mismatch"));
+        }
+        let mut restored_orders = BTreeMap::new();
+        for order in snapshot.orders_list.iter().copied() {
+            if order.order_id == 0 || restored_orders.insert(order.order_id, order).is_some() {
+                return Err(v13_runtime_error("orders_list_invalid_identity"));
+            }
         }
         let restored = StrategyStateSnapshotV13 {
             checkpoint_id: snapshot.checkpoint_id,
@@ -1257,6 +1434,7 @@ impl StrategyRuntime for NativeV13Runtime {
             .instance
             .restore_state(&restored)
             .map_err(|_| v13_runtime_error("snapshot_restore_failed"))?;
+        inner.orders_list = restored_orders;
         let identity = public_state_identity_v13(
             &inner.accounts,
             &inner.active_orders,
@@ -1277,7 +1455,10 @@ impl StrategyRuntime for NativeV13Runtime {
         let core = self.core.clone();
         lane.submit_safe_point(move || {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            if inner.lifecycle != StrategyLifecycle::Running {
+            if !matches!(
+                inner.lifecycle,
+                StrategyLifecycle::Running | StrategyLifecycle::Stopping
+            ) {
                 return Ok(());
             }
             let timer = TitanTimerView {
@@ -1290,6 +1471,7 @@ impl StrategyRuntime for NativeV13Runtime {
                 ctx.timer_len = 1;
             })
             .and_then(|_| checkpoint_state(&core, &mut inner, timer.fired_ts_ns as u64))
+            .and_then(|_| finish_stop_if_drained(&core, &mut inner))
             .map_err(|_| EngineError::SafePointPanicked)
         })
         .map(|_| ())
@@ -1304,7 +1486,10 @@ impl StrategyRuntime for NativeV13Runtime {
         let core = self.core.clone();
         let queued = lane.submit_safe_point(move || {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            if dispatch_execution_result(&core, &mut inner, result).is_err() {
+            if dispatch_execution_result(&core, &mut inner, result)
+                .and_then(|_| finish_stop_if_drained(&core, &mut inner))
+                .is_err()
+            {
                 core.context.activation.close();
                 inner.lifecycle = StrategyLifecycle::Failed;
                 inner.last_error = Some(Arc::from("execution_result_dispatch_failed"));
@@ -1391,22 +1576,79 @@ impl StrategyRuntime for NativeV13Runtime {
             Ok(())
         })
     }
-    fn stop(&self, _deadline: Instant) -> LocalResult<StrategyOperationId> {
-        self.schedule(|core| {
+    fn stop(&self, deadline: Instant) -> LocalResult<StrategyOperationId> {
+        let lane = self
+            .core
+            .lane
+            .get()
+            .ok_or_else(|| v13_runtime_error("lane_not_attached"))?;
+        let id = StrategyOperationId(self.core.next_operation.fetch_add(1, Ordering::AcqRel));
+        self.core
+            .operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                id,
+                StrategyOperationSnapshot {
+                    id,
+                    strategy: Some(self.core.context.strategy),
+                    state: StrategyOperationState::Pending,
+                    detail: Arc::from("draining"),
+                },
+            );
+        let core = self.core.clone();
+        lane.submit_safe_point(move || {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            if inner.lifecycle == StrategyLifecycle::Running {
-                checkpoint_state(core, &mut inner, core.context.clock.now_ns().max(1) as u64)?;
+            let result = (|| {
+                if inner.stop_operation.is_some() {
+                    return Err(v13_runtime_error("stop_already_pending"));
+                }
+                if matches!(
+                    inner.lifecycle,
+                    StrategyLifecycle::Defined | StrategyLifecycle::Ready
+                ) {
+                    core.context.activation.close();
+                    inner.instance.stop();
+                    inner.lifecycle = StrategyLifecycle::Stopped;
+                    return Ok(());
+                }
+                if !matches!(
+                    inner.lifecycle,
+                    StrategyLifecycle::Running | StrategyLifecycle::Paused
+                ) {
+                    return Err(v13_runtime_error("invalid_stop_state"));
+                }
+                inner.lifecycle = StrategyLifecycle::Stopping;
+                inner.stop_operation = Some(id);
+                inner.stop_deadline = Some(deadline);
+                core.context.activation.open();
+                if !inner.stop_called {
+                    NativeV13Runtime::invoke(&mut inner, &core, V13EventKind::Stop, 1, |_| {})?;
+                    inner.stop_called = true;
+                }
+                checkpoint_state(&core, &mut inner, core.context.clock.now_ns().max(1) as u64)?;
+                finish_stop_if_drained(&core, &mut inner)
+            })();
+            if let Err(error) = result {
+                core.context.activation.close();
+                inner.lifecycle = StrategyLifecycle::Failed;
+                inner.last_error = Some(error.reason_code.clone());
+                let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
+                let operation = operations.get_mut(&id).expect("operation exists");
+                operation.state = StrategyOperationState::Failed;
+                operation.detail = error.reason_code;
+                return Err(EngineError::SafePointPanicked);
             }
-            inner.lifecycle = StrategyLifecycle::Stopping;
-            if !inner.stop_called {
-                NativeV13Runtime::invoke(&mut inner, core, V13EventKind::Stop, 1, |_| {})?;
-                inner.stop_called = true;
+            if inner.lifecycle == StrategyLifecycle::Stopped {
+                let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
+                let operation = operations.get_mut(&id).expect("operation exists");
+                operation.state = StrategyOperationState::Succeeded;
+                operation.detail = Arc::from("stopped");
             }
-            core.context.activation.close();
-            inner.instance.stop();
-            inner.lifecycle = StrategyLifecycle::Stopped;
             Ok(())
         })
+        .map_err(|_| v13_runtime_error("control_queue_full"))?;
+        Ok(id)
     }
     fn freeze_state(
         &self,
@@ -1459,6 +1701,31 @@ impl StrategyRuntime for NativeV13Runtime {
         }
     }
     fn operation(&self, id: StrategyOperationId) -> StrategyOperationSnapshot {
+        {
+            let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            if inner.stop_operation == Some(id)
+                && inner
+                    .stop_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.core.context.activation.close();
+                inner.instance.stop();
+                inner.lifecycle = StrategyLifecycle::Failed;
+                inner.last_error = Some(Arc::from("stop_drain_deadline_exceeded"));
+                inner.stop_operation = None;
+                inner.stop_deadline = None;
+                if let Some(operation) = self
+                    .core
+                    .operations
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get_mut(&id)
+                {
+                    operation.state = StrategyOperationState::Failed;
+                    operation.detail = Arc::from("stop_drain_deadline_exceeded");
+                }
+            }
+        }
         self.core
             .operations
             .lock()
@@ -1528,5 +1795,52 @@ mod tests {
         };
         let encoded = client_order_id(first, 7);
         assert_eq!(v13_strategy_order_id(second, encoded), 7);
+    }
+
+    #[test]
+    fn orders_list_checksum_detects_tampering() {
+        let mut orders = [StrategyOrderRecordV13 {
+            order_id: 7,
+            account_no: 1,
+            asset_no: 2,
+            qty_lots: 3,
+            cumulative_filled_lots: 1,
+            ..StrategyOrderRecordV13::default()
+        }];
+        let checksum = orders_list_checksum(&orders);
+        orders[0].cumulative_filled_lots = 2;
+        assert_ne!(orders_list_checksum(&orders), checksum);
+    }
+
+    #[test]
+    fn newer_public_seed_advances_existing_order_history() {
+        let mut orders = BTreeMap::from([(
+            7,
+            StrategyOrderRecordV13 {
+                order_id: 7,
+                account_no: 1,
+                asset_no: 2,
+                cumulative_filled_lots: 1,
+                account_sequence: 10,
+                status: 3,
+                ..StrategyOrderRecordV13::default()
+            },
+        )]);
+        merge_seeded_order_record(
+            &mut orders,
+            TitanActiveOrderView {
+                order_id: 7,
+                account_no: 1,
+                asset_no: 2,
+                qty_lots: 5,
+                cumulative_filled_lots: 2,
+                account_sequence: 11,
+                status: 3,
+                ..TitanActiveOrderView::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(orders[&7].cumulative_filled_lots, 2);
+        assert_eq!(orders[&7].account_sequence, 11);
     }
 }

@@ -71,8 +71,11 @@ Pair
 - `current_slot`：Pair 唯一的 Slot 容器。没有活动任务时状态为 `INIT`；创建新 Slot 时直接将其中的 `slot_id` 在前一个值基础上递增，不另设 slot 计数器。
 - `order_refs`：只保存当前 Slot 无法由平台推导的最小业务关联（`order_id/slot_id/role`）；不复制
   价格、数量、累计成交量或订单状态。
+- `expected_left_position_lots/expected_right_position_lots`：根据已确认 fill 累计的策略持仓投影，
+  仅用于重启对账和防止公共持仓 view 滞后时启动新 Slot。
 - 活动订单事实由 runtime 维护，策略只通过 ABI V13 的只读 `ctx.active_orders()` 访问。
-- 历史订单由 runtime 侧的 append-only `OrdersList` 持久化管理。
+- 订单全生命周期事实由 runtime 侧的 `OrdersList` 持久化管理；每个 `order_id`
+  只有一条记录，由 runtime 按已确认事件单调更新。
 
 ## 3. Slot 数据结构
 
@@ -110,15 +113,13 @@ Slot
 
 ## 4. OrdersList 数据结构
 
-`OrdersList` 是历史订单表，统一保存已经结束或已经从活动订单中移出的订单请求、交易所返回结果和成交明细。OrdersList 位于 runtime 持久化层，不占用 Numba 的固定热路径内存。
+`OrdersList` 是 runtime 拥有的订单全生命周期表，统一保存订单请求、交易所返回结果和成交累计事实。OrdersList 位于 runtime 持久化层，不占用 Numba 的固定热路径内存。ABI V13 的标准下单请求不携带策略业务标签，因此 `slot_id/role` 不复制进 OrdersList，只存在 checkpointed typed state 的当前 `order_refs` 中。
 
 ```text
 OrdersListItem
   order_id
-  slot_id
-  role
-  symbol
-  broker
+  asset_no
+  account_no
 
   side
   price
@@ -127,9 +128,6 @@ OrdersListItem
   time_in_force
 
   status
-  venue_order_id
-
-  filled_qty
   cumulative_filled_qty
   last_fill_price
   last_fill_ts_ns
@@ -143,14 +141,10 @@ OrdersListItem
 字段定义：
 
 - `order_id`：本地订单 ID，也是所有后续订单事件的索引。
-- `slot_id`：该订单所属 Slot。订单创建时确定，不能改变。
-- `role`：该订单属于 initiator 还是 hedge。
-- `symbol`、`broker`：订单实际所属交易对象。
+- `asset_no`、`account_no`：ABI V13 binding 内的交易标的与账户编号。
 - `side`、`price`、`qty`：订单请求参数。
 - `order_type`、`time_in_force`：订单类型和有效期。
 - `status`：订单当前状态，取 `REQUESTING`、`UNKNOWN`、`WORKING`、`PARTIAL`、`FILLED`、`CANCEL_REQUESTED`、`CANCELED`、`REJECTED`。
-- `venue_order_id`：交易所订单 ID。
-- `filled_qty`：该订单新增成交累计量。
 - `cumulative_filled_qty`：交易所报告的累计成交量。
 - `last_fill_price`：最近成交价格。
 - `last_fill_ts_ns`：最近成交时间。
@@ -160,7 +154,10 @@ OrdersListItem
 
 订单活动期间，Numba 只在 `order_refs` 中保存 Slot/role 关联；价格、数量、状态和累计成交量始终
 以 runtime 的 `ctx.active_orders()` 与当前事件 view 为准。订单结束、撤单确认或不再属于当前 Slot 后，
-runtime 将完整记录追加到 OrdersList 持久化。策略不得维护第二份完整活动订单事实。
+runtime 将该 `order_id` 的完整记录保留在 OrdersList 并跟随确认事件更新。策略不得维护第二份完整活动订单事实。
+OrdersList 必须与 typed state 同 checkpoint 持久化并受完整性 checksum 保护；恢复时先验证完整性和
+`order_id` 唯一性，再替换 runtime 内存状态。Broker 启动快照较新时，按 `account_sequence`
+向前合并 OrdersList，不得因 checkpoint 中已存在记录而忽略新事实。
 
 ## 5. Broker 调用结果
 
@@ -401,7 +398,7 @@ NormalizedFill
 1. **接收规范化事件**：`on_fill` 只接收 connector 已确认归属、数量和顺序合法的 `NormalizedFill`，不再执行幂等检查。
 2. **定位当前订单**：通过 `order_id` 定位 `active_orders` 中的当前订单。connector 已保证该订单属于当前可处理 Slot；找不到订单属于 connector/reconcile 异常，不在策略中兜底查找和修正。
 3. **确认角色**：读取订单的 `role`。`initiator` 只更新 `initiator_filled_qty`，`hedge` 只更新 `hedge_filled_qty`。
-4. **更新订单事实**：直接使用本次 `fill_qty` 更新订单的 `filled_qty` 和 `cumulative_filled_qty`，同时写入成交价格、成交时间和 `fill_count`。`PARTIAL` 设置订单为部分成交，`FILLED` 设置订单为完全成交。
+4. **读取订单事实**：runtime 已在调用 handler 前用本次规范化事件更新 `active_orders/OrdersList`。策略只读取公共 view，不直接写订单状态、累计成交量或成交计数。
 5. **更新当前 Slot**：将同一个 `fill_qty` 加到当前 Slot 对应的累计成交量，并重新计算 imbalance。已结束 Slot、未知订单或无法绑定当前 Slot 的成交不会进入此步骤，而由 connector 转入 reconcile。部分成交保留当前 `order_id`，不创建新 Slot。
 6. **处理 initiator 完全成交**：先完成 `initiator_filled_qty` 更新并清理 initiator 的当前订单关系，再计算：
 
@@ -412,8 +409,8 @@ NormalizedFill
 
    若 `hedge_submit_qty > dust_threshold`，立即提交 taker，并将新订单 ID 写入 `current_slot.hedge_order_id`。
 7. **处理 hedge 完全成交**：先完成 `hedge_filled_qty` 更新，确认 imbalance 在 dust 范围内，再清除 `current_slot.hedge_order_id`，将当前 Slot 标记为完成。`on_fill` 不创建下一个 Slot。
-8. **归档订单**：完全成交订单从活动订单集合移入 OrdersList；部分成交订单继续保留在活动集合中。
-9. **持久化结果**：runtime 只持久化策略已经更新的订单和 Slot 事实，不在回调之外再次推导或修改策略状态。
+8. **收口活动 view**：runtime 将完全成交订单从活动订单 view 移除，OrdersList 中的同一记录保留；部分成交订单继续保留在活动 view 中。
+9. **持久化结果**：runtime 持久化已更新的 OrdersList 和策略 typed state，不在回调之外再次推导或修改策略私有状态。
 
 处理规则：
 
@@ -575,7 +572,7 @@ Broker 查询结果、账户持仓快照、差异数量、采取的冻结/恢复
 
 1. 创建 Pair 及两个 symbol/broker 配置。
 2. 设置 `hedge_ratio_abs`、spread、direction、start time、mode 和 max position。
-3. 初始化 Pair、唯一 current_slot 和私有 order_refs；runtime 初始化 active-order view 与 append-only OrdersList。
+3. 初始化 Pair、唯一 current_slot 和私有 order_refs；runtime 初始化 active-order view 与 OrdersList。
 4. 设置 `ready = false`、`status = CREATED`、`posture = NORMAL`。
 5. 完成账户 reconcile、行情检查和 Broker 可用性检查。
 6. 条件满足后设置 `ready = true`、`status = RUNNING`。
@@ -588,12 +585,11 @@ Broker 查询结果、账户持仓快照、差异数量、采取的冻结/恢复
 检查 start_time / ready / posture / capacity
   -> 从 current_slot.slot_id 递增生成新的 slot_id
   -> 使用 Pair.hedge_ratio_abs
-  -> 设置 initiator/hedge 两个订单的目标数量和方向
-  -> 增加 reservation
-  -> 由策略创建 initiator 活动订单记录并写入 current_slot.initiator_order_id
-  -> 直接调用 broker.create_order()
-  -> 由策略处理本次调用的接受/拒绝结果；后续成交或撤单仍分别进入 on_fill/on_cancel
-  -> runtime 只持久化策略确认后的历史 OrdersListItem
+  -> 设置 Slot 目标数量和方向
+  -> 通过 ctx.submit_order() 将命令暂存在当前 callback
+  -> 将返回的稳定 order_id 写入 current_slot 与 order_refs
+  -> callback 成功后 runtime 原子提交命令并创建 OrdersListItem
+  -> 交易所结果在后续 on_order / on_fill / on_cancel 事件处理
 ```
 
 ### 7.3 Maker-Taker
@@ -613,7 +609,7 @@ Broker 查询结果、账户持仓快照、差异数量、采取的冻结/恢复
 2. 在同一策略调度周期内直接提交两腿 IOC。
 3. 分别处理 Broker 接受/拒绝结果。
 4. 两腿成交统一进入 `on_fill`。
-5. 任一腿部分或完整成交都进入 `on_fill`；只有 initiator 完整成交才由 `on_fill` 立即提交缺口对应的 hedge。
+5. 任一腿部分或完整成交都进入 `on_fill`；已有同 Slot hedge 订单时不重复提交，未对冲缺口由已有 hedge 成交、撤单确认后的重提或 emergency 路径收口。
 6. hedge 撤单确认后由 `on_tick` 按剩余 hedge 数量立即重新提交 taker。
 
 ### 7.5 异常与未知结果
@@ -634,7 +630,7 @@ ctx.state["pair"]["reconcile_required"] = 1
 ready = false
   -> 停止创建新 Slot
   -> 查询账户、活动订单和成交
-  -> 通过 order_id 绑定活动订单或历史 OrdersListItem
+  -> 使用 checkpointed order_refs 绑定当前 Slot，并通过 order_id 校验 active_orders / OrdersListItem
   -> 恢复 current_slot 两腿累计成交量
   -> 重算所有 Slot imbalance
   -> 调用 risk_check()
@@ -642,6 +638,14 @@ ready = false
 ```
 
 未查询到的订单不得直接视为撤单成功。
+
+### 7.7 停机 drain
+
+`on_stop` 只开始 drain：停止新 Slot、撤销 initiator，并对已确认成交缺口提交受保护的 hedge。
+runtime 在活动订单清空前保持 `STOPPING` 事件处理和必要的 hedge/cancel 命令通道，撤单确认、
+晚到 fill 和 hedge 终态必须继续进入原 strategy lane。只有当活动订单清空且 Slot 缺口收口后，
+才在 `on_stop` 之后生成最终 checkpoint 并转为 `STOPPED`。超过 stop deadline 必须明确失败和告警，
+不得伪报已安全停止。
 
 ## 8. 固定内存要求
 
@@ -652,7 +656,7 @@ Pair             1 个
 current_slot     1 个
 order_refs       MAX_ORDER_REFS 个（仅 order_id/slot_id/role）
 active_orders    runtime 公共只读 view
-OrdersList       runtime append-only store
+OrdersList       runtime-owned persistent lifecycle store
 ```
 
 订单索引关系：
@@ -676,9 +680,9 @@ order_id -> private order_refs -> slot_id/role -> current_slot
 I1  Pair 只有一个 hedge_ratio_abs，bid/ask 和所有 Slot 共用它。
 I2  Slot 的 hedge 数量根据当前 Pair.hedge_ratio_abs 计算。
 I3  一个 order_id 在 OrdersList 中只有一条记录。
-I4  每个订单记录只属于一个 Slot 和一个角色（initiator 或 hedge）。
+I4  当前每个订单关系只属于一个 Slot 和一个角色（initiator 或 hedge）。
 I5  Slot 只保存当前 initiator_order_id 和 hedge_order_id；撤单确认后清除对应关系。
-I6  历史订单仍保存在 OrdersList，可通过 order_id 找回所属 Slot。
+I6  订单全生命周期事实保存在 OrdersList；当前 Slot/role 关系通过 typed state 的 order_refs 查找。
 I7  OrdersList 同时保存订单请求、Broker 返回和成交明细，不单独维护独立成交记录。
 I8  Broker timeout/transport error 后不得自动重发未知请求。
 I9  重复、乱序或非法成交回报必须由 connector 拦截，不得进入正常 on_fill。
