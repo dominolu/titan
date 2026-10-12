@@ -197,7 +197,15 @@ def _validate_handler_ast(handler: CPUDispatcher, name: str) -> frozenset[str]:
             ):
                 raise StrategyCompileError(f"{name}: public runtime views are read-only")
         if isinstance(node, ast.Return) and node.value is not None:
-            raise StrategyCompileError(f"{name}: ABI V13 handlers must return None")
+            value = node.value
+            if isinstance(value, ast.Constant) and value.value is None:
+                continue
+            sign = 1
+            if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.USub):
+                sign, value = -1, value.operand
+            if not (isinstance(value, ast.Constant) and type(value.value) is int
+                    and sign * value.value in (0, -1, -2, -3, -4)):
+                raise StrategyCompileError(f"{name}: return None or a literal ABI callback status (0, -1..-4)")
     return frozenset(context_calls)
 
 
@@ -446,6 +454,9 @@ def validate_strategy_definition(
 def _bridge(handler: ValidatedHandler, context_type: StrategyContextType, strategy: ValidatedStrategy):
     cast = make_context_from_pointer(context_type)
     dispatcher = handler.dispatcher
+    returns_status = any(isinstance(node, ast.Return) and node.value is not None
+                         and not (isinstance(node.value, ast.Constant) and node.value.value is None)
+                         for node in ast.walk(ast.parse(inspect.getsource(dispatcher.py_func))))
     expected_len = strategy.state_layout.itemsize
     expected_alignment = strategy.state_layout.alignment
     expected_version = strategy.definition.spec.state_schema_version
@@ -525,7 +536,12 @@ def _bridge(handler: ValidatedHandler, context_type: StrategyContextType, strate
         if validation != 0:
             return validation
         context_value = cast(raw)
-        dispatcher(context_value)
+        if returns_status:
+            status = dispatcher(context_value)
+            if status is not None and status != 0:
+                return status
+        else:
+            dispatcher(context_value)
         if last_error_code(raw) != 0:
             return int(-4)
         return int(0)

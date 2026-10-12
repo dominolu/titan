@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Instant, SystemTime},
 };
@@ -57,7 +57,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                 .map(|item| (item.local_account_no, item.account.account_id.0))
                 .collect(),
             routing_keys,
-            max_commands_per_callback: definition.runtime.timer_capacity.max(16),
+            max_commands_per_callback: definition.runtime.max_commands_per_callback,
             max_handler_duration: definition.runtime.max_handler_duration,
         };
         let generation = context.strategy.generation;
@@ -110,6 +110,15 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     depth: Vec::with_capacity(PUBLIC_CAPACITY),
                     order_versions: BTreeMap::new(),
                     pending_fills: BTreeMap::new(),
+                    settled_fills: BTreeMap::new(),
+                    awaiting_fills: BTreeMap::new(),
+                    checkpoint_dirty: false,
+                    last_checkpoint_ns: 0,
+                    checkpoint_interval_ns: definition
+                        .runtime
+                        .checkpoint_interval
+                        .as_nanos()
+                        .min(i64::MAX as u128) as i64,
                     position_versions: BTreeMap::new(),
                     balance_versions: BTreeMap::new(),
                     account_versions: BTreeMap::new(),
@@ -123,7 +132,10 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                 }),
                 lane: OnceLock::new(),
                 next_operation: AtomicU64::new(1),
-                operations: Mutex::new(BTreeMap::new()),
+                async_failure: AtomicBool::new(false),
+                operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
+                    value.state == StrategyOperationState::Pending
+                })),
             }),
         }))
     }
@@ -138,7 +150,9 @@ struct NativeV13Core {
     inner: Mutex<NativeV13Inner>,
     lane: OnceLock<PrimaryAsyncLaneHandle>,
     next_operation: AtomicU64,
-    operations: Mutex<BTreeMap<StrategyOperationId, StrategyOperationSnapshot>>,
+    async_failure: AtomicBool,
+    operations:
+        Mutex<titan_core_types::OperationHistory<StrategyOperationId, StrategyOperationSnapshot>>,
 }
 
 struct NativeV13Inner {
@@ -155,6 +169,11 @@ struct NativeV13Inner {
     depth: Vec<TitanDepthView>,
     order_versions: BTreeMap<(u32, u64), u64>,
     pending_fills: BTreeMap<(u32, u64), TitanFillView>,
+    settled_fills: BTreeMap<(u32, u64), i64>,
+    awaiting_fills: BTreeMap<(u32, u64), i64>,
+    checkpoint_dirty: bool,
+    last_checkpoint_ns: i64,
+    checkpoint_interval_ns: i64,
     position_versions: BTreeMap<(u32, u32), u64>,
     balance_versions: BTreeMap<(u32, u32), u64>,
     account_versions: BTreeMap<u32, u64>,
@@ -283,36 +302,39 @@ impl NativeV13Runtime {
         schema_version: u32,
         configure: impl FnOnce(&mut StrategyRuntimeContextV13),
     ) -> LocalResult<()> {
-        let mut context = StrategyRuntimeContextV13 {
-            event_schema_version: schema_version,
-            now_ns: core.context.clock.now_ns(),
-            markets_ptr: inner.markets.as_ptr(),
-            markets_len: inner.markets.len() as u64,
-            positions_ptr: inner.positions.as_ptr(),
-            positions_len: inner.positions.len() as u64,
-            balances_ptr: inner.balances.as_ptr(),
-            balances_len: inner.balances.len() as u64,
-            accounts_ptr: inner.accounts.as_ptr(),
-            accounts_len: inner.accounts.len() as u64,
-            active_orders_ptr: inner.active_orders.as_ptr(),
-            active_orders_len: inner.active_orders.len() as u64,
-            ..StrategyRuntimeContextV13::default()
-        };
+        let mut context = crate::v13::callback_context_v13(
+            core.context.clock.now_ns(),
+            schema_version,
+            &inner.markets,
+            &inner.positions,
+            &inner.balances,
+            &inner.accounts,
+            &inner.active_orders,
+        );
         configure(&mut context);
-        let gate = core.context.activation.is_open() && inner.instance.command_gate_open();
-        inner.staging.begin_callback(gate, &inner.active_orders);
-        inner.staging.bind_context(&mut context);
-        if inner.instance.invoke(kind, &mut context).is_err() {
-            inner.staging.finish_callback(-1);
-            core.context.activation.close();
-            inner.lifecycle = StrategyLifecycle::Failed;
-            inner.last_error = Some(Arc::from("v13_callback_failed"));
-            return Err(v13_runtime_error("v13_callback_failed"));
-        }
-        let commands = inner.staging.finish_callback(0).to_vec();
+        let commands = match crate::v13::invoke_staged_v13(
+            &mut inner.instance,
+            &mut inner.staging,
+            &mut context,
+            kind,
+            core.context.activation.is_open(),
+            &inner.active_orders,
+        ) {
+            Ok(commands) => commands,
+            Err(_) => {
+                core.context.activation.close();
+                fail_runtime(core, inner, Arc::from("v13_callback_failed"));
+                return Err(v13_runtime_error("v13_callback_failed"));
+            }
+        };
         commit_commands(core, inner, &commands)?;
+        if core.async_failure.load(Ordering::Acquire) {
+            return Err(v13_runtime_error("execution_result_queue_full"));
+        }
         inner.staging.clear_committed();
         inner.callback_count = inner.callback_count.saturating_add(1);
+        inner.checkpoint_dirty = true;
+        prune_terminal_history(inner);
         Ok(())
     }
 }
@@ -320,6 +342,14 @@ impl NativeV13Runtime {
 impl EventHandler for NativeV13Runtime {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if self.core.async_failure.load(Ordering::Acquire) {
+            fail_runtime(
+                &self.core,
+                &mut inner,
+                Arc::from("execution_result_queue_full"),
+            );
+            return Err(v13_core_error());
+        }
         if matches!(
             inner.lifecycle,
             StrategyLifecycle::Stopped | StrategyLifecycle::Failed | StrategyLifecycle::Invalidated
@@ -341,9 +371,11 @@ impl EventHandler for NativeV13Runtime {
             .check_health()
             .is_err()
         {
-            self.core.context.activation.close();
-            inner.lifecycle = StrategyLifecycle::Failed;
-            inner.last_error = Some(Arc::from("checkpoint_writer_failed"));
+            fail_runtime(
+                &self.core,
+                &mut inner,
+                Arc::from("checkpoint_writer_failed"),
+            );
             return Err(v13_core_error());
         }
         let invoke_callbacks = matches!(
@@ -352,10 +384,9 @@ impl EventHandler for NativeV13Runtime {
         );
         let result = dispatch_event(&self.core, &mut inner, event, invoke_callbacks)
             .and_then(|_| finish_stop_if_drained(&self.core, &mut inner));
-        if result.is_err() {
-            self.core.context.activation.close();
-            inner.lifecycle = StrategyLifecycle::Failed;
-            inner.last_error = Some(Arc::from("v13_event_dispatch_failed"));
+        prune_terminal_history(&mut inner);
+        if let Err(error) = result {
+            fail_runtime(&self.core, &mut inner, error.reason_code);
             return Err(v13_core_error());
         }
         Ok(())
@@ -662,40 +693,36 @@ fn commit_commands(
     inner: &mut NativeV13Inner,
     commands: &[StagedCommandV13],
 ) -> LocalResult<()> {
+    let submits = commands
+        .iter()
+        .filter(|command| matches!(command, StagedCommandV13::Submit { .. }))
+        .count();
+    if inner.active_orders.len().saturating_add(submits) > PUBLIC_CAPACITY {
+        return Err(v13_runtime_error("active_order_capacity"));
+    }
+    // Validate the entire callback before any external side effect.
+    for command in commands {
+        match *command {
+            StagedCommandV13::Submit { request, .. } => {
+                execution_binding(core, request.account_no, request.asset_no)?;
+                if !matches!(request.side, 1 | 2)
+                    || !matches!(request.order_type, 1 | 2)
+                    || request.qty_lots <= 0
+                {
+                    return Err(v13_runtime_error("invalid_order"));
+                }
+                v13_tif_to_account(request.time_in_force)?;
+            }
+            StagedCommandV13::Cancel { request, .. } => {
+                execution_binding(core, request.account_no, request.asset_no)?;
+            }
+        }
+    }
+    // Register the complete batch before invoking any external executor.
     for command in commands {
         match *command {
             StagedCommandV13::Submit { order_id, request } => {
-                let binding = execution_binding(core, request.account_no, request.asset_no)?;
-                let side = match request.side {
-                    1 => 1,
-                    2 => -1,
-                    _ => return Err(v13_runtime_error("invalid_side")),
-                };
-                let order_type = match request.order_type {
-                    1 => 0,
-                    2 => 1,
-                    _ => return Err(v13_runtime_error("unsupported_order_type")),
-                };
-                let time_in_force = v13_tif_to_account(request.time_in_force)?;
-                binding
-                    .handle
-                    .submit(DirectNewOrderRequest {
-                        asset_id: AssetId(
-                            *binding.assets.get(&u64::from(request.asset_no)).unwrap(),
-                        ),
-                        side,
-                        order_type,
-                        time_in_force,
-                        price_ticks: request.price_ticks,
-                        quantity_lots: request.qty_lots,
-                        reduce_only: request.reduce_only != 0,
-                        client_order_id: client_order_id(core.context.strategy, order_id),
-                    })
-                    .map_err(|_| v13_runtime_error("submit_dispatch_failed"))?;
-                if inner.active_orders.len() >= PUBLIC_CAPACITY {
-                    return Err(v13_runtime_error("active_order_capacity"));
-                }
-                inner.active_orders.push(TitanActiveOrderView {
+                let order = TitanActiveOrderView {
                     order_id,
                     asset_no: request.asset_no,
                     account_no: request.account_no,
@@ -708,49 +735,49 @@ fn commit_commands(
                     time_in_force: request.time_in_force,
                     status: 1,
                     reduce_only: request.reduce_only,
-                    ..TitanActiveOrderView::default()
-                });
-                inner
-                    .orders_list
-                    .entry(order_id)
-                    .or_insert(StrategyOrderRecordV13 {
-                        order_id,
-                        asset_no: request.asset_no,
-                        account_no: request.account_no,
-                        price_ticks: request.price_ticks,
-                        qty_lots: request.qty_lots,
-                        submit_ts_ns: core.context.clock.now_ns(),
-                        last_event_ts_ns: core.context.clock.now_ns(),
-                        side: request.side,
-                        order_type: request.order_type,
-                        time_in_force: request.time_in_force,
-                        status: 1,
-                        reduce_only: request.reduce_only,
-                        ..StrategyOrderRecordV13::default()
-                    });
+                    ..Default::default()
+                };
+                merge_seeded_order_record(&mut inner.orders_list, order)?;
+                inner.active_orders.push(order);
             }
             StagedCommandV13::Cancel { request, .. } => {
-                let binding = execution_binding(core, request.account_no, request.asset_no)?;
-                binding
-                    .handle
-                    .cancel(DirectCancelOrderRequest {
-                        asset_id: AssetId(
-                            *binding.assets.get(&u64::from(request.asset_no)).unwrap(),
-                        ),
-                        client_order_id: Some(client_order_id(
-                            core.context.strategy,
-                            request.order_id,
-                        )),
-                        venue_order_id: None,
-                    })
-                    .map_err(|_| v13_runtime_error("cancel_dispatch_failed"))?;
                 if let Some(order) = inner
                     .active_orders
                     .iter_mut()
                     .find(|item| item.order_id == request.order_id)
                 {
                     order.status = 5;
+                    order.updated_ts_ns = core.context.clock.now_ns();
                 }
+                if let Some(record) = inner.orders_list.get_mut(&request.order_id) {
+                    record.status = 5;
+                    record.last_event_ts_ns = core.context.clock.now_ns();
+                }
+            }
+        }
+    }
+    for command in commands {
+        match *command {
+            StagedCommandV13::Submit { order_id, request } => {
+                let binding = execution_binding(core, request.account_no, request.asset_no)?;
+                let _ = binding.handle.submit(DirectNewOrderRequest {
+                    asset_id: AssetId(*binding.assets.get(&u64::from(request.asset_no)).unwrap()),
+                    side: if request.side == 1 { 1 } else { -1 },
+                    order_type: u8::from(request.order_type == 2),
+                    time_in_force: v13_tif_to_account(request.time_in_force)?,
+                    price_ticks: request.price_ticks,
+                    quantity_lots: request.qty_lots,
+                    reduce_only: request.reduce_only != 0,
+                    client_order_id: client_order_id(core.context.strategy, order_id),
+                });
+            }
+            StagedCommandV13::Cancel { request, .. } => {
+                let binding = execution_binding(core, request.account_no, request.asset_no)?;
+                let _ = binding.handle.cancel(DirectCancelOrderRequest {
+                    asset_id: AssetId(*binding.assets.get(&u64::from(request.asset_no)).unwrap()),
+                    client_order_id: Some(client_order_id(core.context.strategy, request.order_id)),
+                    venue_order_id: None,
+                });
             }
         }
         inner.command_count = inner.command_count.saturating_add(1);
@@ -829,12 +856,23 @@ pub(crate) fn v13_strategy_order_id(
 }
 
 fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) {
+    let key = (fill.account_no, fill.order_id);
+    inner.settled_fills.insert(key, fill.cumulative_filled_lots);
+    if inner
+        .awaiting_fills
+        .get(&key)
+        .is_some_and(|target| *target <= fill.cumulative_filled_lots)
+    {
+        inner.awaiting_fills.remove(&key);
+    }
     inner
         .order_versions
         .insert((fill.account_no, fill.order_id), fill.account_sequence);
-    inner
-        .pending_fills
-        .insert((fill.account_no, fill.order_id), *fill);
+    if inner.lifecycle == StrategyLifecycle::Defined {
+        inner
+            .pending_fills
+            .insert((fill.account_no, fill.order_id), *fill);
+    }
     if let Some(order) = inner
         .active_orders
         .iter_mut()
@@ -869,6 +907,12 @@ fn update_active_order(
     tif: u8,
     reduce_only: u8,
 ) -> LocalResult<()> {
+    let key = (value.account_no, value.order_id);
+    if value.cumulative_filled_lots > inner.settled_fills.get(&key).copied().unwrap_or(0) {
+        inner
+            .awaiting_fills
+            .insert(key, value.cumulative_filled_lots);
+    }
     inner
         .order_versions
         .insert((value.account_no, value.order_id), value.account_sequence);
@@ -892,7 +936,7 @@ fn update_active_order(
         order.status = value.status;
         order.order_type = order_type;
         order.time_in_force = tif;
-        order.reduce_only = reduce_only;
+        order.reduce_only |= reduce_only;
     } else if value.order_id != 0 && value.status < 4 {
         if inner.active_orders.len() >= PUBLIC_CAPACITY {
             return Err(v13_runtime_error("active_order_capacity"));
@@ -938,6 +982,7 @@ fn update_active_order(
     record.account_sequence = value.account_sequence;
     record.status = value.status;
     record.error_code = value.reason;
+    record.reduce_only |= reduce_only;
     if matches!(value.status, 4 | 6 | 7 | 8) {
         inner
             .active_orders
@@ -1095,7 +1140,14 @@ fn dispatch_execution_result(
             }
             let status = match result.outcome {
                 ObservedExecutionOutcome::Accepted(info) => {
-                    account_order_status_to_v13(info.status)?
+                    let status = account_order_status_to_v13(info.status)?;
+                    // REST acceptance does not carry cumulative fills. Only canonical account
+                    // facts may retire an accepted order and close the stopping boundary.
+                    if matches!(status, 4 | 6 | 8) {
+                        2
+                    } else {
+                        status
+                    }
                 }
                 ObservedExecutionOutcome::Rejected(_) => 7,
                 ObservedExecutionOutcome::Unknown(_) => 255,
@@ -1132,6 +1184,11 @@ fn dispatch_execution_result(
                 ObservedExecutionOutcome::Rejected(_) => 1,
                 ObservedExecutionOutcome::Unknown(_) => 2,
             };
+            let restored_status = if existing.cumulative_filled_lots > 0 {
+                3
+            } else {
+                2
+            };
             if let Some(order) = inner
                 .active_orders
                 .iter_mut()
@@ -1139,7 +1196,7 @@ fn dispatch_execution_result(
             {
                 order.status = match request_result {
                     0 => 5,
-                    1 => 2,
+                    1 => restored_status,
                     _ => 255,
                 };
                 order.updated_ts_ns = now;
@@ -1147,7 +1204,7 @@ fn dispatch_execution_result(
             if let Some(order) = inner.orders_list.get_mut(&order_id) {
                 order.status = match request_result {
                     0 => 5,
-                    1 => existing.status,
+                    1 => restored_status,
                     _ => 255,
                 };
                 order.last_event_ts_ns = now;
@@ -1179,6 +1236,7 @@ fn checkpoint_state(
     if !core.context.state_snapshot_sink.enabled() {
         return Ok(());
     }
+    prune_terminal_history(inner);
     let checkpoint_id = checkpoint_id.max(1);
     let identity = public_state_identity_v13(
         &inner.accounts,
@@ -1231,14 +1289,84 @@ fn checkpoint_state(
         inner.lifecycle = StrategyLifecycle::Failed;
         inner.last_error = Some(Arc::from("checkpoint_submit_failed"));
     }
+    if result.is_ok() {
+        inner.checkpoint_dirty = false;
+        inner.last_checkpoint_ns = core.context.clock.now_ns();
+    }
     result
 }
 
+fn prune_terminal_history(inner: &mut NativeV13Inner) {
+    const HISTORY_LIMIT: usize = 4096;
+    if inner.orders_list.len() <= HISTORY_LIMIT + PUBLIC_CAPACITY {
+        return;
+    }
+    let mut terminal: Vec<_> = inner
+        .orders_list
+        .values()
+        .filter(|order| {
+            matches!(order.status, 4 | 6 | 7 | 8)
+                && !inner
+                    .awaiting_fills
+                    .contains_key(&(order.account_no, order.order_id))
+                && !inner
+                    .active_orders
+                    .iter()
+                    .any(|active| active.order_id == order.order_id)
+        })
+        .map(|order| (order.last_event_ts_ns, order.account_no, order.order_id))
+        .collect();
+    terminal.sort_unstable();
+    let remove = terminal.len().saturating_sub(HISTORY_LIMIT);
+    for (_, account, id) in terminal.into_iter().take(remove) {
+        inner.orders_list.remove(&id);
+        inner.order_versions.remove(&(account, id));
+        inner.settled_fills.remove(&(account, id));
+        inner.pending_fills.remove(&(account, id));
+    }
+}
+
+fn fail_runtime(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<str>) {
+    core.context.activation.close();
+    inner.lifecycle = StrategyLifecycle::Failed;
+    inner.last_error = Some(reason.clone());
+    if let Some(id) = inner.stop_operation.take()
+        && let Some(operation) = core
+            .operations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&id)
+    {
+        operation.state = StrategyOperationState::Failed;
+        operation.detail = reason;
+    }
+    inner.stop_deadline = None;
+}
+
 fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> LocalResult<()> {
-    if inner.lifecycle != StrategyLifecycle::Stopping || !inner.active_orders.is_empty() {
+    if inner
+        .stop_deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        fail_runtime(core, inner, Arc::from("stop_drain_deadline_exceeded"));
+        return Err(v13_runtime_error("stop_drain_deadline_exceeded"));
+    }
+    if inner.lifecycle != StrategyLifecycle::Stopping
+        || !inner.active_orders.is_empty()
+        || !inner.awaiting_fills.is_empty()
+    {
         return Ok(());
     }
-    checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)?;
+    let checkpoint = checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)
+        .and_then(|_| {
+            core.context
+                .state_snapshot_sink
+                .flush(inner.stop_deadline.unwrap_or_else(Instant::now))
+        });
+    if let Err(error) = checkpoint {
+        fail_runtime(core, inner, error.reason_code.clone());
+        return Err(error);
+    }
     core.context.activation.close();
     inner.instance.stop();
     inner.lifecycle = StrategyLifecycle::Stopped;
@@ -1394,6 +1522,18 @@ impl StrategyRuntime for NativeV13Runtime {
             merge_seeded_order_record(&mut inner.orders_list, value)?;
         }
         inner.pending_fills.clear();
+        let settled: Vec<_> = inner
+            .active_orders
+            .iter()
+            .map(|order| {
+                (
+                    (order.account_no, order.order_id),
+                    order.cumulative_filled_lots,
+                )
+            })
+            .collect();
+        inner.settled_fills.extend(settled);
+        inner.awaiting_fills.clear();
         Ok(())
     }
     fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
@@ -1470,12 +1610,46 @@ impl StrategyRuntime for NativeV13Runtime {
                 ctx.timer_ptr = &timer;
                 ctx.timer_len = 1;
             })
-            .and_then(|_| checkpoint_state(&core, &mut inner, timer.fired_ts_ns as u64))
+            .and_then(|_| {
+                if inner.checkpoint_dirty
+                    && timer.fired_ts_ns.saturating_sub(inner.last_checkpoint_ns)
+                        >= inner.checkpoint_interval_ns
+                {
+                    checkpoint_state(&core, &mut inner, timer.fired_ts_ns as u64)
+                } else {
+                    Ok(())
+                }
+            })
             .and_then(|_| finish_stop_if_drained(&core, &mut inner))
             .map_err(|_| EngineError::SafePointPanicked)
         })
         .map(|_| ())
         .map_err(|_| v13_runtime_error("timer_queue_full"))
+    }
+    fn advance_lifecycle(&self) -> LocalResult<()> {
+        if self
+            .core
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lifecycle
+            != StrategyLifecycle::Stopping
+        {
+            return Ok(());
+        }
+        let lane = self
+            .core
+            .lane
+            .get()
+            .ok_or_else(|| v13_runtime_error("lane_not_attached"))?;
+        let core = self.core.clone();
+        lane.submit_safe_point(move || {
+            let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = finish_stop_if_drained(&core, &mut inner);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|_| v13_runtime_error("control_queue_full"))
     }
     fn execution_result(&self, result: ObservedExecutionResult) -> LocalResult<()> {
         let lane = self
@@ -1490,18 +1664,26 @@ impl StrategyRuntime for NativeV13Runtime {
                 .and_then(|_| finish_stop_if_drained(&core, &mut inner))
                 .is_err()
             {
-                core.context.activation.close();
-                inner.lifecycle = StrategyLifecycle::Failed;
-                inner.last_error = Some(Arc::from("execution_result_dispatch_failed"));
+                fail_runtime(
+                    &core,
+                    &mut inner,
+                    Arc::from("execution_result_dispatch_failed"),
+                );
                 return Err(EngineError::SafePointPanicked);
             }
             Ok(())
         });
         if queued.is_err() {
             self.core.context.activation.close();
-            let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            inner.lifecycle = StrategyLifecycle::Failed;
-            inner.last_error = Some(Arc::from("execution_result_queue_full"));
+            self.core.async_failure.store(true, Ordering::Release);
+            // Local rejection observers may run inside commit_commands while it owns inner.
+            if let Ok(mut inner) = self.core.inner.try_lock() {
+                fail_runtime(
+                    &self.core,
+                    &mut inner,
+                    Arc::from("execution_result_queue_full"),
+                );
+            }
             return Err(v13_runtime_error("execution_result_queue_full"));
         }
         Ok(())
@@ -1605,7 +1787,9 @@ impl StrategyRuntime for NativeV13Runtime {
                 }
                 if matches!(
                     inner.lifecycle,
-                    StrategyLifecycle::Defined | StrategyLifecycle::Ready
+                    StrategyLifecycle::Defined
+                        | StrategyLifecycle::Ready
+                        | StrategyLifecycle::Stopped
                 ) {
                     core.context.activation.close();
                     inner.instance.stop();
@@ -1701,31 +1885,6 @@ impl StrategyRuntime for NativeV13Runtime {
         }
     }
     fn operation(&self, id: StrategyOperationId) -> StrategyOperationSnapshot {
-        {
-            let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            if inner.stop_operation == Some(id)
-                && inner
-                    .stop_deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                self.core.context.activation.close();
-                inner.instance.stop();
-                inner.lifecycle = StrategyLifecycle::Failed;
-                inner.last_error = Some(Arc::from("stop_drain_deadline_exceeded"));
-                inner.stop_operation = None;
-                inner.stop_deadline = None;
-                if let Some(operation) = self
-                    .core
-                    .operations
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .get_mut(&id)
-                {
-                    operation.state = StrategyOperationState::Failed;
-                    operation.detail = Arc::from("stop_drain_deadline_exceeded");
-                }
-            }
-        }
         self.core
             .operations
             .lock()

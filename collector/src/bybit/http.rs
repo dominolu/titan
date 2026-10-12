@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     select,
-    sync::mpsc::{UnboundedSender, unbounded_channel},
+    sync::mpsc::{Sender, unbounded_channel},
 };
 use tokio_tungstenite::{
     connect_async,
@@ -20,7 +20,7 @@ use tracing::{error, warn};
 pub async fn connect(
     url: &str,
     topics: Vec<String>,
-    ws_tx: UnboundedSender<(DateTime<Utc>, Utf8Bytes)>,
+    ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
 ) -> Result<(), anyhow::Error> {
     let request = url.into_client_request()?;
     let (ws_stream, _) = connect_async(request).await?;
@@ -72,7 +72,7 @@ pub async fn connect(
         match read.next().await {
             Some(Ok(Message::Text(text))) => {
                 let recv_time = Utc::now();
-                if ws_tx.send((recv_time, text)).is_err() {
+                if ws_tx.send((recv_time, text)).await.is_err() {
                     break;
                 }
             }
@@ -103,7 +103,7 @@ pub async fn connect(
 pub async fn keep_connection(
     topics: Vec<String>,
     symbol_list: Vec<String>,
-    ws_tx: UnboundedSender<(DateTime<Utc>, Utf8Bytes)>,
+    ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
 ) {
     let mut error_count = 0;
     loop {

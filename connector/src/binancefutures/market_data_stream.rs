@@ -336,13 +336,11 @@ impl MarketDataStream {
                         fval: 0.0,
                     });
                 }
-                self.ev_tx
-                    .send(PublishEvent::FeedBatch {
-                        symbol: data.symbol,
-                        events,
-                        stream: Some(stream),
-                    })
-                    .unwrap();
+                self.ev_tx.send(PublishEvent::FeedBatch {
+                    symbol: data.symbol,
+                    events,
+                    stream: Some(stream),
+                });
             }
             Err(error) => error!(?error, "Couldn't parse DepthUpdate stream."),
         }
@@ -398,7 +396,7 @@ impl MarketDataStream {
                         let previous = *previous;
                         let symbol = symbol.to_owned();
                         warn!(%symbol, previous, received = data.prev_update_id, "depth sequence gap; requesting a fresh snapshot");
-                        let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
                             symbol: symbol.clone(),
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                         });
@@ -424,30 +422,17 @@ impl MarketDataStream {
             }
             EventStream::MarkPriceUpdate(data) | EventStream::MarkPrice(data) => {
                 let symbol = data.symbol.clone();
-                if self
-                    .ev_tx
-                    .send(PublishEvent::MarkPrice {
-                        symbol: symbol.clone(),
-                        mark_price: data.mark_price,
-                        exch_ts: data.event_time * 1_000_000,
-                    })
-                    .is_err()
-                {
-                    warn!(symbol = %symbol, "market data sender closed while publishing mark price");
-                    return;
-                }
-                if self
-                    .ev_tx
-                    .send(PublishEvent::Funding {
-                        symbol: symbol.clone(),
-                        funding_rate: data.funding_rate,
-                        next_funding_time: data.next_funding_time * 1_000_000,
-                        exch_ts: data.event_time * 1_000_000,
-                    })
-                    .is_err()
-                {
-                    warn!(symbol = %symbol, "market data sender closed while publishing funding event");
-                }
+                self.ev_tx.send(PublishEvent::MarkPrice {
+                    symbol: symbol.clone(),
+                    mark_price: data.mark_price,
+                    exch_ts: data.event_time * 1_000_000,
+                });
+                self.ev_tx.send(PublishEvent::Funding {
+                    symbol: symbol.clone(),
+                    funding_rate: data.funding_rate,
+                    next_funding_time: data.next_funding_time * 1_000_000,
+                    exch_ts: data.event_time * 1_000_000,
+                });
             }
             EventStream::Trade(data) => {
                 let symbol = data.symbol.clone();
@@ -461,32 +446,26 @@ impl MarketDataStream {
                 }) {
                     return;
                 }
-                if self
-                    .ev_tx
-                    .send(PublishEvent::FeedBatch {
-                        symbol: symbol.clone(),
-                        events: vec![Event {
-                            ev: {
-                                if data.is_the_buyer_the_market_maker {
-                                    LOCAL_SELL_TRADE_EVENT
-                                } else {
-                                    LOCAL_BUY_TRADE_EVENT
-                                }
-                            },
-                            exch_ts: data.transaction_time * 1_000_000,
-                            local_ts: ws_recv_ts,
-                            order_id: 0,
-                            px: data.price,
-                            qty: data.qty,
-                            ival: 0,
-                            fval: 0.0,
-                        }],
-                        stream: None,
-                    })
-                    .is_err()
-                {
-                    warn!(symbol = %symbol, "market data sender closed while publishing trade batch");
-                }
+                self.ev_tx.send(PublishEvent::FeedBatch {
+                    symbol: symbol.clone(),
+                    events: vec![Event {
+                        ev: {
+                            if data.is_the_buyer_the_market_maker {
+                                LOCAL_SELL_TRADE_EVENT
+                            } else {
+                                LOCAL_BUY_TRADE_EVENT
+                            }
+                        },
+                        exch_ts: data.transaction_time * 1_000_000,
+                        local_ts: ws_recv_ts,
+                        order_id: 0,
+                        px: data.price,
+                        qty: data.qty,
+                        ival: 0,
+                        fval: 0.0,
+                    }],
+                    stream: None,
+                });
             }
             EventStream::BookTicker(data) => {
                 let symbol = data.symbol.clone();
@@ -528,17 +507,11 @@ impl MarketDataStream {
                     });
                 }
                 if !events.is_empty() {
-                    if self
-                        .ev_tx
-                        .send(PublishEvent::FeedBatch {
-                            symbol: symbol.clone(),
-                            events,
-                            stream: None,
-                        })
-                        .is_err()
-                    {
-                        warn!(symbol = %symbol, "market data sender closed while publishing bbo batch");
-                    }
+                    self.ev_tx.send(PublishEvent::FeedBatch {
+                        symbol: symbol.clone(),
+                        events,
+                        stream: None,
+                    });
                 }
             }
             _ => unreachable!(),
@@ -596,23 +569,16 @@ impl MarketDataStream {
                         fval: 0.0,
                     });
                 }
-                if self
-                    .ev_tx
-                    .send(PublishEvent::FeedBatch {
-                        symbol: symbol.clone(),
-                        events,
-                        stream: Some(MarketStreamMetadata {
-                            epoch,
-                            first_update_sequence: u64::try_from(snapshot_sequence).unwrap_or(0),
-                            last_update_sequence: u64::try_from(snapshot_sequence).unwrap_or(0),
-                            snapshot: true,
-                        }),
-                    })
-                    .is_err()
-                {
-                    warn!(symbol = %symbol, "market data sender closed while publishing snapshot batch");
-                    self.pending_depth_messages.remove(&symbol);
-                }
+                self.ev_tx.send(PublishEvent::FeedBatch {
+                    symbol: symbol.clone(),
+                    events,
+                    stream: Some(MarketStreamMetadata {
+                        epoch,
+                        first_update_sequence: u64::try_from(snapshot_sequence).unwrap_or(0),
+                        last_update_sequence: u64::try_from(snapshot_sequence).unwrap_or(0),
+                        snapshot: true,
+                    }),
+                });
             }
             Err(error) => {
                 error!(?error, "Couldn't parse Depth response.");
@@ -757,7 +723,7 @@ impl MarketDataStream {
                         if !self.route.includes(MarketDataKind::Depth) {
                             continue;
                         }
-                        let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                             symbol: symbol.clone(),
                         });

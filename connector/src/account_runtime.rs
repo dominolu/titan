@@ -18,9 +18,10 @@ use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
 use titan_account_service as account;
 use titan_account_service::SecretValue;
 use titan_core_types::{ClosureResource, TraceContext};
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Notify, oneshot, watch};
 
 use crate::{
+    account_projection::AccountProjection,
     api::{
         AccountInfo, ApiMarginType, ApiOrderStatus, ApiOrderType, ApiPositionSide, ApiSide,
         ApiTimeInForce, Balance, BrokerApi, CancelOrderRequest, OrderInfo, PositionInfo,
@@ -38,11 +39,56 @@ const ACCOUNT_POSITION_SIDE_NET: u8 = 0;
 const ACCOUNT_POSITION_SIDE_LONG: u8 = 1;
 const ACCOUNT_POSITION_SIDE_SHORT: u8 = 2;
 const ACCOUNT_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+const ACCOUNT_PENDING_CAPACITY: usize = 8192;
+#[derive(Default)]
+struct ReadinessFence {
+    current: AtomicU64,
+    committed: AtomicU64,
+}
+impl ReadinessFence {
+    fn changed(&self) -> u64 {
+        self.current.fetch_add(1, Ordering::AcqRel) + 1
+    }
+    fn commit(&self, revision: u64) -> bool {
+        self.committed.store(revision, Ordering::Release);
+        self.matches()
+    }
+    fn matches(&self) -> bool {
+        self.current.load(Ordering::Acquire) == self.committed.load(Ordering::Acquire)
+    }
+}
+struct PendingAccountFacts {
+    values: Vec<AccountPublication>,
+    capacity: usize,
+}
+impl PendingAccountFacts {
+    fn new(capacity: usize) -> Self {
+        Self {
+            values: Vec::new(),
+            capacity,
+        }
+    }
+    fn push(&mut self, event: AccountPublication) -> bool {
+        if self.values.len() >= self.capacity {
+            return false;
+        }
+        self.values.push(event);
+        true
+    }
+    fn clear(&mut self) {
+        self.values.clear();
+    }
+    fn drain(&mut self) -> std::vec::Drain<'_, AccountPublication> {
+        self.values.drain(..)
+    }
+}
+const ACCOUNT_BALANCE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 struct Running {
     stop: Option<oneshot::Sender<Instant>>,
     thread: Option<JoinHandle<()>>,
     shutdown_result: Arc<Mutex<Option<Result<(), account::AccountConnectorError>>>>,
+    requested_deadline: Option<Instant>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -57,6 +103,11 @@ trait AccountBootstrapApi: Send + Sync {
     async fn open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError>;
     async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError>;
     async fn account(&self) -> Result<AccountInfo, crate::api::ApiError>;
+    async fn order(
+        &self,
+        symbol: &str,
+        client_order_id: &str,
+    ) -> Result<OrderInfo, crate::api::ApiError>;
 }
 
 #[async_trait::async_trait]
@@ -75,6 +126,13 @@ impl<T: BrokerApi + ?Sized> AccountBootstrapApi for T {
 
     async fn account(&self) -> Result<AccountInfo, crate::api::ApiError> {
         self.get_account().await
+    }
+    async fn order(
+        &self,
+        symbol: &str,
+        client_order_id: &str,
+    ) -> Result<OrderInfo, crate::api::ApiError> {
+        self.get_order(symbol, None, Some(client_order_id)).await
     }
 }
 
@@ -102,7 +160,11 @@ async fn execute_shutdown_policy(
     actions: &impl ShutdownActions,
     policy: &account::ShutdownOrderPolicy,
     deadline: Instant,
+    committed: bool,
 ) -> Result<(), account::AccountConnectorError> {
+    if !committed {
+        return Ok(());
+    }
     match policy {
         account::ShutdownOrderPolicy::LeaveOpen => Ok(()),
         account::ShutdownOrderPolicy::CancelAll => {
@@ -135,6 +197,7 @@ struct IdInterner {
     by_text: HashMap<String, account::Id128>,
     by_id: HashMap<account::Id128, String>,
     next: u128,
+    next_prune: usize,
 }
 impl IdInterner {
     fn intern(&mut self, text: &str) -> account::Id128 {
@@ -165,6 +228,15 @@ impl IdInterner {
     fn contains_text(&self, text: &str) -> bool {
         self.by_text.contains_key(text)
     }
+    fn prune(&mut self, image: &AccountProjection) {
+        if self.by_id.len() < self.next_prune.max(4096) {
+            return;
+        }
+        let retained = image.retained_ids();
+        self.by_id.retain(|id, _| retained.contains(id));
+        self.by_text.retain(|_, id| retained.contains(id));
+        self.next_prune = self.by_id.len().saturating_mul(2).max(4096);
+    }
 }
 
 struct AccountRuntime {
@@ -176,11 +248,12 @@ struct AccountRuntime {
     started: AtomicBool,
     active: AtomicBool,
     ready: Arc<AtomicBool>,
+    readiness_fence: Arc<ReadinessFence>,
+    committed: Arc<AtomicBool>,
     epoch: Arc<AtomicU64>,
     version: Arc<AtomicU64>,
-    orders: Arc<Mutex<Arc<[account::OrderSnapshot]>>>,
-    positions: Arc<Mutex<Arc<[account::PositionSnapshot]>>>,
-    balances: Arc<Mutex<Arc<[account::BalanceSnapshot]>>>,
+    projection: Arc<Mutex<AccountProjection>>,
+    encoder: Arc<Mutex<Option<Arc<AccountEventEncoder>>>>,
     startup_error: Arc<Mutex<Option<String>>>,
     ids: Arc<Mutex<IdInterner>>,
 }
@@ -192,6 +265,7 @@ impl AccountRuntime {
         shutdown_policy: account::ShutdownOrderPolicy,
         context: account::AccountConnectorContext,
     ) -> Arc<Self> {
+        let committed = context.event_publisher.is_open();
         let value = Arc::new(Self {
             context,
             shutdown_policy,
@@ -201,11 +275,12 @@ impl AccountRuntime {
             started: AtomicBool::new(false),
             active: AtomicBool::new(false),
             ready: Arc::new(AtomicBool::new(false)),
+            readiness_fence: Arc::new(ReadinessFence::default()),
+            committed: Arc::new(AtomicBool::new(committed)),
             epoch: Arc::new(AtomicU64::new(0)),
             version: Arc::new(AtomicU64::new(0)),
-            orders: Arc::new(Mutex::new(Arc::from([]))),
-            positions: Arc::new(Mutex::new(Arc::from([]))),
-            balances: Arc::new(Mutex::new(Arc::from([]))),
+            projection: Arc::new(Mutex::new(AccountProjection::default())),
+            encoder: Arc::new(Mutex::new(None)),
             startup_error: Arc::new(Mutex::new(None)),
             ids: Arc::new(Mutex::new(IdInterner::default())),
         });
@@ -220,20 +295,29 @@ impl AccountRuntime {
             .expect("new account resource scope accepts its runtime");
         value
     }
-    fn snapshot<T>(&self, items: Arc<[T]>) -> account::AccountStateSnapshot<T> {
+    fn snapshot<T>(
+        &self,
+        epoch: u64,
+        version: u64,
+        items: Arc<[T]>,
+    ) -> account::AccountStateSnapshot<T> {
         account::AccountStateSnapshot {
             account: self.context.account,
-            state: if self.ready.load(Ordering::Acquire) {
+            state: if self.ready.load(Ordering::Acquire) && self.readiness_fence.matches() {
                 account::AccountSnapshotState::Ready
-            } else if self.active.load(Ordering::Acquire) {
+            } else if self.active.load(Ordering::Acquire)
+                || self
+                    .startup_error
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some()
+            {
                 account::AccountSnapshotState::Invalidated
             } else {
                 account::AccountSnapshotState::Stopped
             },
-            committed_epoch: (self.epoch.load(Ordering::Acquire) > 0)
-                .then(|| self.epoch.load(Ordering::Acquire)),
-            committed_version: (self.version.load(Ordering::Acquire) > 0)
-                .then(|| self.version.load(Ordering::Acquire)),
+            committed_epoch: (epoch > 0).then_some(epoch),
+            committed_version: (epoch > 0).then_some(version),
             captured_at: now_ns(),
             items,
         }
@@ -242,7 +326,22 @@ impl AccountRuntime {
 
 fn close_weak(weak: &Weak<AccountRuntime>) -> Result<(), titan_core_types::CoreError> {
     if let Some(runtime) = weak.upgrade() {
-        let _ = runtime.stop_inner(Instant::now() + Duration::from_secs(1));
+        let deadline = runtime
+            .running
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .and_then(|running| running.requested_deadline)
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
+        runtime.stop_inner(deadline).map_err(|error| {
+            titan_core_types::CoreError::new(
+                titan_core_types::ErrorKind::ResourceReleaseFailed,
+                titan_core_types::ComponentIdentity::new("titan.account", "connector-runtime"),
+                titan_core_types::ComponentState::Stopping,
+                "close_account_runtime",
+                error.to_string(),
+            )
+        })?;
     }
     Ok(())
 }
@@ -281,9 +380,10 @@ impl account::AccountConnector for AccountRuntime {
         let epoch = self.epoch.clone();
         let version = self.version.clone();
         let ready = self.ready.clone();
-        let orders = self.orders.clone();
-        let positions = self.positions.clone();
-        let balances = self.balances.clone();
+        let fence = self.readiness_fence.clone();
+        let committed = self.committed.clone();
+        let projection = self.projection.clone();
+        let encoder_slot = self.encoder.clone();
         let startup_error = self.startup_error.clone();
         let ids = self.ids.clone();
         let shutdown_policy = self.shutdown_policy.clone();
@@ -304,40 +404,39 @@ impl account::AccountConnector for AccountRuntime {
                         version: version.clone(),
                         ready: ready.clone(),
                         ids: ids.clone(),
-                        fill_cumulative: Mutex::new(HashMap::new()),
-                        orders: orders.clone(),
-                        positions: positions.clone(),
-                        balances: balances.clone(),
+                        projection: projection.clone(),
+                        publication: Mutex::new(()),
                     });
+                    *encoder_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(encoder.clone());
+                    let (connection_tx, mut connection_rx) = watch::channel((0_u64, false));
                     let stream_ready = Arc::new(AtomicBool::new(false));
                     let stream_ready_notify = Arc::new(Notify::new());
                     let bootstrapped = Arc::new(AtomicBool::new(false));
-                    let pending = Arc::new(Mutex::new(Vec::<AccountPublication>::new()));
+                    let pending = Arc::new(Mutex::new(PendingAccountFacts::new(ACCOUNT_PENDING_CAPACITY)));
                     let account_events = encoder.clone();
                     let callback_context = context.clone();
                     let callback_ready = stream_ready.clone();
                     let callback_notify = stream_ready_notify.clone();
                     let callback_bootstrapped = bootstrapped.clone();
                     let callback_pending = pending.clone();
+                    let overflowed = Arc::new(AtomicBool::new(false));
+                    let callback_overflowed = overflowed.clone();
+                    let callback_fence = fence.clone();
                     let tx = direct_publish_sender(move |publication| match publication {
                         DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
+                            let revision = callback_fence.changed();
+                            callback_bootstrapped.store(false, Ordering::Release);
+                            account_events.ready.store(false, Ordering::Release);
                             callback_ready.store(true, Ordering::Release);
+                            if revision > 1 { account_events.invalidate(account::invalidation_reason::PRIVATE_STREAM); }
                             callback_notify.notify_waiters();
-                            if callback_bootstrapped.load(Ordering::Acquire)
-                                && let Err(error) = account_events.publish_ready()
-                            {
-                                tracing::warn!(
-                                    account_id = callback_context.account.account_id.0,
-                                    ?error,
-                                    "Account ready publication failed."
-                                );
-                                account_events.invalidate(
-                                    account::invalidation_reason::DIRECT_FACT_PUBLICATION,
-                                );
-                            }
+                            connection_tx.send_modify(|value| { *value = (revision, true); });
                         }
                         DirectPublication::Account(AccountPublication::Error(error)) => {
+                            let revision = callback_fence.changed();
                             callback_ready.store(false, Ordering::Release);
+                            callback_bootstrapped.store(false, Ordering::Release);
+                            connection_tx.send_modify(|value| { *value = (revision, false); });
                             tracing::warn!(
                                 account_id = callback_context.account.account_id.0,
                                 ?error,
@@ -351,11 +450,17 @@ impl account::AccountConnector for AccountRuntime {
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                                 if !callback_bootstrapped.load(Ordering::Acquire) {
-                                    pending.push(event.clone());
+                                    if !pending.push(event.clone()) {
+                                        callback_overflowed.store(true, Ordering::Release);
+                                        account_events.invalidate(account::invalidation_reason::BOOTSTRAP);
+                                    }
                                     return;
                                 }
                             }
                             if let Err(error) = account_events.publish(event) {
+                                let revision = callback_fence.changed();
+                                callback_bootstrapped.store(false, Ordering::Release);
+                                connection_tx.send_modify(|value| { value.0 = revision; });
                                 tracing::warn!(
                                     account_id = callback_context.account.account_id.0,
                                     ?error,
@@ -376,42 +481,87 @@ impl account::AccountConnector for AccountRuntime {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .run_account(tx);
-                    let bootstrap = async {
-                        let (snapshot, ()) = tokio::try_join!(
-                            load_account_bootstrap(&context, api.as_ref(), ids.as_ref()),
-                            wait_for_private_stream(
-                                stream_ready.as_ref(),
-                                stream_ready_notify.as_ref(),
-                                ACCOUNT_BOOTSTRAP_TIMEOUT,
-                            ),
-                        )?;
-                        let mut pending = pending
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        encoder.install_bootstrap(snapshot)?;
-                        for event in pending.drain(..) {
-                            encoder.publish(&event)?;
+                    let mut first_recovery = true;
+                    let mut balance_tick = tokio::time::interval(ACCOUNT_BALANCE_REFRESH_INTERVAL);
+                    balance_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let stop = 'session: loop {
+                        ready.store(false, Ordering::Release);
+                        bootstrapped.store(false, Ordering::Release);
+                        if !first_recovery {
+                            epoch.fetch_add(1, Ordering::AcqRel);
                         }
-                        bootstrapped.store(true, Ordering::Release);
-                        encoder.publish_ready()
-                    };
-                    tokio::pin!(bootstrap);
-                    let stopped_during_bootstrap = tokio::select! {
-                        result = &mut bootstrap => {
-                            if let Err(error) = result {
-                                *startup_error.lock().unwrap_or_else(|p| p.into_inner()) =
-                                    Some(error.to_string());
-                                encoder.invalidate(account::invalidation_reason::BOOTSTRAP);
-                            } else {
-                                *startup_error.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                        first_recovery = false;
+                        if overflowed.swap(false, Ordering::AcqRel) {
+                            pending.lock().unwrap_or_else(|p| p.into_inner()).clear();
+                        }
+                        let recovery = async {
+                            wait_for_private_stream(stream_ready.as_ref(), stream_ready_notify.as_ref(), ACCOUNT_BOOTSTRAP_TIMEOUT).await?;
+                            let revision = *connection_rx.borrow_and_update();
+                            let known = projection.lock().unwrap_or_else(|p| p.into_inner())
+                                .orders(account::OrderFilter { asset_id: None, include_final: false }).1;
+                            let snapshot = reconcile_account_bootstrap(&context, api.as_ref(), ids.as_ref(), &known).await?;
+                            let mut buffered = pending.lock().unwrap_or_else(|p| p.into_inner());
+                            if overflowed.load(Ordering::Acquire) || !stream_ready.load(Ordering::Acquire)
+                                || *connection_rx.borrow() != revision {
+                                return Err(rejected("account stream changed or overflowed during reconciliation"));
                             }
-                            None
+                            seed_managed_orders(&connector, &context, &snapshot, &ids)?;
+                            encoder.install_bootstrap(snapshot)?;
+                            for event in buffered.drain() {
+                                encoder.publish(&event)?;
+                            }
+                            if !stream_ready.load(Ordering::Acquire) || *connection_rx.borrow() != revision || !fence.commit(revision.0) {
+                                return Err(rejected("account connection changed before READY commit"));
+                            }
+                            encoder.publish_ready()?;
+                            if !fence.matches() || !stream_ready.load(Ordering::Acquire) {
+                                encoder.invalidate(account::invalidation_reason::BOOTSTRAP);
+                                return Err(rejected("account connection changed during READY publication"));
+                            }
+                            bootstrapped.store(true, Ordering::Release);
+                            Ok::<(), account::AccountConnectorError>(())
+                        };
+                        let outcome = tokio::select! {
+                            stop = &mut stop_rx => break 'session stop,
+                            result = tokio::time::timeout(ACCOUNT_BOOTSTRAP_TIMEOUT, recovery) => result
+                                .unwrap_or_else(|_| Err(rejected("account reconciliation deadline exceeded"))),
+                        };
+                        match outcome {
+                            Err(error) => {
+                                *startup_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.to_string());
+                                encoder.invalidate(account::invalidation_reason::BOOTSTRAP);
+                                tokio::select! {
+                                    stop = &mut stop_rx => break 'session stop,
+                                    _ = connection_rx.changed() => {},
+                                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                                }
+                                continue;
+                            }
+                            Ok(()) => { *startup_error.lock().unwrap_or_else(|p| p.into_inner()) = None; }
                         }
-                        stop = &mut stop_rx => Some(stop),
-                    };
-                    let stop = match stopped_during_bootstrap {
-                        Some(stop) => stop,
-                        None => (&mut stop_rx).await,
+                        loop {
+                            tokio::select! {
+                                stop = &mut stop_rx => break 'session stop,
+                                changed = connection_rx.changed() => {
+                                    if changed.is_err() { ready.store(false, Ordering::Release); }
+                                    break;
+                                },
+                                _ = balance_tick.tick() => {
+                                    let refreshed = tokio::select! {
+                                        stop = &mut stop_rx => break 'session stop,
+                                        value = tokio::time::timeout(ACCOUNT_BOOTSTRAP_TIMEOUT, api.get_account()) => value,
+                                    };
+                                    let result = refreshed.map_err(|_| rejected("balance refresh deadline exceeded"))
+                                        .and_then(|value| value.map_err(|error| rejected(error.to_string())))
+                                        .and_then(|value| encoder.refresh_balances(&value));
+                                    if let Err(error) = result {
+                                        *startup_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.to_string());
+                                        encoder.invalidate(account::invalidation_reason::BOOTSTRAP);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     };
                     let result = match stop {
                         Err(_) => Err(account::AccountConnectorError::new(
@@ -420,14 +570,11 @@ impl account::AccountConnector for AccountRuntime {
                         )),
                         Ok(deadline) => {
                             execute_shutdown_policy(
-                                &VenueShutdownActions {
-                                    connector: connector.clone(),
-                                    api: api.clone(),
-                                },
+                                &VenueShutdownActions { connector: connector.clone(), api: api.clone() },
                                 &shutdown_policy,
                                 deadline,
-                            )
-                            .await
+                                committed.load(Ordering::Acquire),
+                            ).await
                         }
                     };
                     *thread_shutdown_result
@@ -444,9 +591,28 @@ impl account::AccountConnector for AccountRuntime {
             stop: Some(stop_tx),
             thread: Some(thread),
             shutdown_result,
+            requested_deadline: None,
         });
         Ok(())
     }
+    fn activate(&self) -> Result<(), account::AccountConnectorError> {
+        if !self.ready.load(Ordering::Acquire) || !self.readiness_fence.matches() {
+            return Err(rejected("candidate connection changed after preparation"));
+        }
+        let encoder = self
+            .encoder
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| rejected("candidate account encoder is not prepared"))?;
+        encoder.activate()?;
+        if !self.readiness_fence.matches() {
+            return Err(rejected("candidate session changed during activation"));
+        }
+        self.committed.store(true, Ordering::Release);
+        Ok(())
+    }
+
     fn stop(&self, deadline: Instant) -> Result<(), account::AccountConnectorError> {
         self.stop_inner(deadline)
     }
@@ -455,17 +621,9 @@ impl account::AccountConnector for AccountRuntime {
         filter: account::OrderFilter,
     ) -> Result<account::AccountStateSnapshot<account::OrderSnapshot>, account::AccountConnectorError>
     {
-        let values = self.orders.lock().unwrap_or_else(|p| p.into_inner());
-        let items: Arc<[_]> = values
-            .iter()
-            .filter(|order| {
-                filter.asset_id.is_none_or(|asset| asset == order.asset_id)
-                    && (filter.include_final || matches!(order.status, 1 | 5))
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-            .into();
-        Ok(self.snapshot(items))
+        let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+        let (version, items) = image.orders(filter);
+        Ok(self.snapshot(image.epoch, version, items))
     }
     fn positions(
         &self,
@@ -474,14 +632,9 @@ impl account::AccountConnector for AccountRuntime {
         account::AccountStateSnapshot<account::PositionSnapshot>,
         account::AccountConnectorError,
     > {
-        let values = self.positions.lock().unwrap_or_else(|p| p.into_inner());
-        let items: Arc<[_]> = values
-            .iter()
-            .filter(|o| filter.asset_id.is_none_or(|a| a == o.asset_id))
-            .cloned()
-            .collect::<Vec<_>>()
-            .into();
-        Ok(self.snapshot(items))
+        let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+        let (version, items) = image.positions(filter);
+        Ok(self.snapshot(image.epoch, version, items))
     }
     fn balances(
         &self,
@@ -489,15 +642,12 @@ impl account::AccountConnector for AccountRuntime {
         account::AccountStateSnapshot<account::BalanceSnapshot>,
         account::AccountConnectorError,
     > {
-        Ok(self.snapshot(
-            self.balances
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
-        ))
+        let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+        let (version, items) = image.balances();
+        Ok(self.snapshot(image.epoch, version, items))
     }
     fn health(&self) -> account::AccountConnectorHealthSnapshot {
-        let ready = self.ready.load(Ordering::Acquire);
+        let ready = self.ready.load(Ordering::Acquire) && self.readiness_fence.matches();
         let startup_error = self
             .startup_error
             .lock()
@@ -541,6 +691,19 @@ impl account::AccountConnector for AccountRuntime {
     }
 
     fn direct_submit(&self, request: account::DirectNewOrderRequest) -> account::ExecutionFuture {
+        if !self.committed.load(Ordering::Acquire)
+            || !self.ready.load(Ordering::Acquire)
+            || !self.readiness_fence.matches()
+            || !self.active.load(Ordering::Acquire)
+            || !self.context.event_publisher.is_open()
+        {
+            return Box::pin(async {
+                Err(direct_rejected(
+                    "ACCOUNT_NOT_READY",
+                    "account reconciliation or stop has closed order admission",
+                ))
+            });
+        }
         let api = self.api.clone();
         let connector = self.connector.clone();
         let binding = self
@@ -596,13 +759,17 @@ impl account::AccountConnector for AccountRuntime {
                 time_in_force: api_tif(request.time_in_force),
                 reduce_only: request.reduce_only,
                 position_side: None,
-                client_order_id: Some(client_order_id),
+                client_order_id: Some(client_order_id.clone()),
                 stop_price: None,
             };
-            api.submit_order(&wire)
-                .await
-                .map(direct_order_info)
-                .map_err(direct_api_error)
+            let result = api.submit_order(&wire).await;
+            if result.as_ref().is_err_and(|error| !error.outcome_unknown()) {
+                connector
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .reject_pending_order(&client_order_id);
+            }
+            result.map(direct_order_info).map_err(direct_api_error)
         })
     }
 
@@ -610,6 +777,17 @@ impl account::AccountConnector for AccountRuntime {
         &self,
         request: account::DirectCancelOrderRequest,
     ) -> account::ExecutionFuture {
+        if !self.committed.load(Ordering::Acquire)
+            || !self.active.load(Ordering::Acquire)
+            || !self.context.event_publisher.is_open()
+        {
+            return Box::pin(async {
+                Err(direct_rejected(
+                    "ACCOUNT_STOPPED",
+                    "account runtime has stopped",
+                ))
+            });
+        }
         let api = self.api.clone();
         let ids = self.ids.clone();
         let binding = self
@@ -685,6 +863,7 @@ impl AccountRuntime {
             return Ok(());
         };
         if let Some(stop) = running.stop.take() {
+            running.requested_deadline = Some(deadline);
             let _ = stop.send(deadline);
         }
         if let Some(thread) = running.thread.take() {
@@ -692,6 +871,8 @@ impl AccountRuntime {
                 std::thread::sleep(Duration::from_millis(1));
             }
             if !thread.is_finished() {
+                *self.startup_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some("account runtime stop deadline exceeded".into());
                 running.thread = Some(thread);
                 *self.running.lock().unwrap_or_else(|p| p.into_inner()) = Some(running);
                 return Err(account::AccountConnectorError::new(
@@ -714,6 +895,9 @@ impl AccountRuntime {
                     "account runtime exited without shutdown result",
                 ))
             });
+        if let Err(error) = &result {
+            *self.startup_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.to_string());
+        }
         result
     }
 }
@@ -789,6 +973,11 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
             .iter()
             .filter(|value| value.symbol.eq_ignore_ascii_case(&binding.native_symbol))
         {
+            if matched {
+                return Err(rejected(
+                    "multiple position sides for one asset cannot be committed to the net-position projection",
+                ));
+            }
             matched = true;
             positions.push((
                 position_snapshot(value, binding, context)?,
@@ -838,16 +1027,99 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
     })
 }
 
+async fn reconcile_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
+    context: &account::AccountConnectorContext,
+    api: &A,
+    ids: &Mutex<IdInterner>,
+    known: &[account::OrderSnapshot],
+) -> Result<AccountBootstrapSnapshot, account::AccountConnectorError> {
+    let mut snapshot = load_account_bootstrap(context, api, ids).await?;
+    for previous in known {
+        if snapshot
+            .orders
+            .iter()
+            .any(|(value, _)| value.client_order_id == previous.client_order_id)
+        {
+            continue;
+        }
+        let binding = context
+            .instruments
+            .iter()
+            .find(|value| value.asset_id == previous.asset_id)
+            .ok_or_else(|| rejected("recovery order asset is not bound"))?;
+        let client_id = resolve_id(ids, previous.client_order_id);
+        let value = api
+            .order(&binding.native_symbol, &client_id)
+            .await
+            .map_err(|error| rejected(format!("unresolved recovery order: {error}")))?;
+        snapshot.orders.push((
+            order_snapshot(&value, binding, ids)?,
+            value.update_time.saturating_mul(1_000_000),
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn seed_managed_orders(
+    connector: &Mutex<Box<dyn Connector>>,
+    context: &account::AccountConnectorContext,
+    snapshot: &AccountBootstrapSnapshot,
+    ids: &Mutex<IdInterner>,
+) -> Result<(), account::AccountConnectorError> {
+    let connector = connector.lock().unwrap_or_else(|p| p.into_inner());
+    for (value, ts) in &snapshot.orders {
+        if !matches!(value.status, 1 | 5) {
+            continue;
+        }
+        let binding = context
+            .instruments
+            .iter()
+            .find(|item| item.asset_id == value.asset_id)
+            .ok_or_else(|| rejected("seed order asset is not bound"))?;
+        let mut order = managed_account_order(
+            &account::DirectNewOrderRequest {
+                asset_id: value.asset_id,
+                side: if value.side == ACCOUNT_SIDE_BUY {
+                    1
+                } else {
+                    -1
+                },
+                order_type: value.order_type,
+                time_in_force: value.time_in_force,
+                price_ticks: value.price_ticks,
+                quantity_lots: value.quantity_lots,
+                reduce_only: value.reduce_only,
+                client_order_id: value.client_order_id,
+            },
+            binding,
+        )?;
+        order.status = if value.status == 5 {
+            Status::PartiallyFilled
+        } else {
+            Status::New
+        };
+        order.leaves_qty = from_units(
+            value.quantity_lots - value.filled_quantity_lots,
+            binding.quantity_lot,
+        );
+        order.exch_timestamp = *ts;
+        connector.track_managed_order(
+            &binding.native_symbol,
+            &resolve_id(ids, value.client_order_id),
+            &order,
+        );
+    }
+    Ok(())
+}
+
 struct AccountEventEncoder {
     context: account::AccountConnectorContext,
     epoch: Arc<AtomicU64>,
     version: Arc<AtomicU64>,
     ready: Arc<AtomicBool>,
     ids: Arc<Mutex<IdInterner>>,
-    fill_cumulative: Mutex<HashMap<account::Id128, i64>>,
-    orders: Arc<Mutex<Arc<[account::OrderSnapshot]>>>,
-    positions: Arc<Mutex<Arc<[account::PositionSnapshot]>>>,
-    balances: Arc<Mutex<Arc<[account::BalanceSnapshot]>>>,
+    projection: Arc<Mutex<AccountProjection>>,
+    publication: Mutex<()>,
 }
 impl AccountEventEncoder {
     fn header(&self, kind: u16, flags: u16, ts: i64) -> account::AccountEventHeaderV1 {
@@ -864,132 +1136,168 @@ impl AccountEventEncoder {
     }
 
     fn publish_ready(&self) -> Result<(), account::AccountConnectorError> {
+        let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+        self.publish_ready_locked()
+    }
+
+    fn publish_ready_locked(&self) -> Result<(), account::AccountConnectorError> {
         let event = account::StreamStateChangedV1(account::StreamStateV1 {
             header: self.header(account::event_kind::STREAM_STATE_CHANGED, 0, now_ns()),
             state: account::AccountLifecycle::Ready as u8,
             reason_code: 0,
         });
-        self.context
-            .event_publisher
-            .publish_encoded(&event, TraceContext::default())
-            .map_err(|error| rejected(error.to_string()))?;
+        self.emit(&event)?;
         self.ready.store(true, Ordering::Release);
         Ok(())
+    }
+
+    fn emit<T: account::AccountEventPayload>(
+        &self,
+        event: &T,
+    ) -> Result<(), account::AccountConnectorError> {
+        // A replacement candidate commits its local image while external publication is closed.
+        if !self.context.event_publisher.is_open() {
+            return Ok(());
+        }
+        self.context
+            .event_publisher
+            .publish_encoded(event, TraceContext::default())
+            .map_err(|error| rejected(error.to_string()))
     }
 
     fn install_bootstrap(
         &self,
         snapshot: AccountBootstrapSnapshot,
     ) -> Result<(), account::AccountConnectorError> {
-        let mut order_cache = Vec::with_capacity(snapshot.orders.len());
-        for (value, exchange_ts) in snapshot.orders {
+        let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+        self.install_bootstrap_locked(snapshot)
+    }
+
+    fn install_bootstrap_locked(
+        &self,
+        snapshot: AccountBootstrapSnapshot,
+    ) -> Result<(), account::AccountConnectorError> {
+        let mut image = AccountProjection::default();
+        image.epoch = self.epoch.load(Ordering::Acquire);
+        for (value, ts) in snapshot.orders {
             let event = order_event(
                 self.header(
                     account::event_kind::ORDER_CHANGED,
                     account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
-                    exchange_ts,
+                    ts,
                 ),
                 &value,
             );
-            self.context
-                .event_publisher
-                .publish_encoded(&event, TraceContext::default())
-                .map_err(|error| rejected(error.to_string()))?;
-            order_cache.push(value);
+            self.emit(&event)?;
+            image.order(&event);
         }
-        let mut position_cache = Vec::with_capacity(snapshot.positions.len());
-        for (value, exchange_ts) in snapshot.positions {
+        for (value, ts) in snapshot.positions {
             let event = position_event(
                 self.header(
                     account::event_kind::POSITION_CHANGED,
                     account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
-                    exchange_ts,
+                    ts,
                 ),
                 &value,
             );
-            self.context
-                .event_publisher
-                .publish_encoded(&event, TraceContext::default())
-                .map_err(|error| rejected(error.to_string()))?;
-            position_cache.push(value);
+            self.emit(&event)?;
+            image.position(&event);
         }
-        let mut balance_cache = Vec::with_capacity(snapshot.balances.len());
-        for (value, exchange_ts) in snapshot.balances {
+        for (value, ts) in snapshot.balances {
             let event = balance_event(
                 self.header(
                     account::event_kind::BALANCE_CHANGED,
                     account::event_flags::SNAPSHOT | account::event_flags::UPSERT,
-                    exchange_ts,
+                    ts,
                 ),
                 &value,
             );
-            self.context
-                .event_publisher
-                .publish_encoded(&event, TraceContext::default())
-                .map_err(|error| rejected(error.to_string()))?;
-            balance_cache.push(value);
+            self.emit(&event)?;
+            image.balance(&event);
         }
-        *self.orders.lock().unwrap_or_else(|p| p.into_inner()) = order_cache.into();
-        *self.positions.lock().unwrap_or_else(|p| p.into_inner()) = position_cache.into();
-        *self.balances.lock().unwrap_or_else(|p| p.into_inner()) = balance_cache.into();
+        *self.projection.lock().unwrap_or_else(|p| p.into_inner()) = image;
+        Ok(())
+    }
+
+    fn activate(&self) -> Result<(), account::AccountConnectorError> {
+        let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+        if !self.ready.load(Ordering::Acquire) || !self.context.event_publisher.is_open() {
+            return Err(rejected("account candidate is not ready for activation"));
+        }
+        let snapshot = {
+            let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+            AccountBootstrapSnapshot {
+                orders: image
+                    .orders(account::OrderFilter {
+                        asset_id: None,
+                        include_final: true,
+                    })
+                    .1
+                    .iter()
+                    .cloned()
+                    .map(|value| {
+                        let ts = image.order_time(&value);
+                        (value, ts)
+                    })
+                    .collect(),
+                positions: image
+                    .positions(account::PositionFilter::default())
+                    .1
+                    .iter()
+                    .cloned()
+                    .map(|value| {
+                        let ts = image.position_time(&value);
+                        (value, ts)
+                    })
+                    .collect(),
+                balances: image
+                    .balances()
+                    .1
+                    .iter()
+                    .cloned()
+                    .map(|value| {
+                        let ts = image.balance_time(&value);
+                        (value, ts)
+                    })
+                    .collect(),
+            }
+        };
+        self.install_bootstrap_locked(snapshot)?;
+        self.publish_ready_locked()
+    }
+
+    fn refresh_balances(&self, info: &AccountInfo) -> Result<(), account::AccountConnectorError> {
+        for balance in &info.balances {
+            self.publish(&AccountPublication::Balance {
+                currency: balance.asset.clone(),
+                wallet: balance.wallet_balance,
+                available: Some(balance.available_balance),
+                margin: Some(balance.margin_balance),
+                unrealized_pnl: Some(balance.unrealized_pnl),
+                exch_ts: info.timestamp.saturating_mul(1_000_000),
+            })?;
+        }
         Ok(())
     }
 
     fn cache_order(&self, event: &account::OrderChangedV1) {
-        let mut cache = self.orders.lock().unwrap_or_else(|p| p.into_inner());
-        let mut next = cache.to_vec();
-        let mut snapshot = account::OrderSnapshot {
-            asset_id: account::AssetId(event.asset_id),
-            side: event.side,
-            order_type: event.order_type,
-            time_in_force: event.time_in_force,
-            status: event.status,
-            price_ticks: event.price_ticks,
-            quantity_lots: event.quantity_lots,
-            filled_quantity_lots: event.filled_quantity_lots,
-            reduce_only: event.header.flags & account::event_flags::REDUCE_ONLY != 0,
-            client_order_id: event.client_order_id,
-            venue_order_id: event.venue_order_id,
-            command_id: event.command_id,
-        };
-        if let Some(existing) = next.iter_mut().find(|value| {
-            value.asset_id == snapshot.asset_id && value.venue_order_id == snapshot.venue_order_id
-        }) {
-            // Legacy connector order observations do not carry reduce-only. Preserve the value
-            // learned from the REST/account snapshot instead of silently downgrading it.
-            snapshot.reduce_only |= existing.reduce_only;
-            *existing = snapshot;
-        } else {
-            next.push(snapshot);
-        }
-        *cache = next.into();
+        let mut image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+        image.order(event);
+        self.ids
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .prune(&image);
     }
 
-    fn cache_position(&self, event: &account::PositionChangedV1) {
-        let mut cache = self.positions.lock().unwrap_or_else(|p| p.into_inner());
-        let mut next = cache.to_vec();
-        let snapshot = account::PositionSnapshot {
-            asset_id: account::AssetId(event.asset_id),
-            position_side: event.position_side,
-            margin_type: event.margin_type,
-            quantity_lots: event.quantity_lots,
-            entry_price_ticks: event.entry_price_ticks,
-            liquidation_price_ticks: event.liquidation_price_ticks,
-            realized_pnl_units: event.realized_pnl_units,
-            unrealized_pnl_units: event.unrealized_pnl_units,
-            margin_currency_id: account::CurrencyId(event.margin_currency_id),
-        };
-        if let Some(existing) = next.iter_mut().find(|value| {
-            value.asset_id == snapshot.asset_id && value.position_side == snapshot.position_side
-        }) {
-            *existing = snapshot;
-        } else {
-            next.push(snapshot);
-        }
-        *cache = next.into();
+    fn cache_position(&self, event: &account::PositionChangedV1) -> bool {
+        self.projection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .position(event)
     }
 
     fn publish(&self, event: &AccountPublication) -> Result<(), account::AccountConnectorError> {
+        let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
         match event {
             AccountPublication::Order {
                 symbol,
@@ -1014,47 +1322,33 @@ impl AccountEventEncoder {
                 let client_order_id = client_order_id.as_deref().map(|text| ids.intern(text));
                 drop(ids);
 
-                if order.exec_qty > 0.0 {
-                    let mut fills = self
-                        .fill_cumulative
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if fills
-                        .get(&id)
-                        .is_some_and(|quantity| cumulative_filled_quantity_lots <= *quantity)
-                    {
-                        // Duplicate or stale partial update for the same order.
-                        let changed = account::OrderChangedV1 {
-                            header: self.header(
-                                account::event_kind::ORDER_CHANGED,
-                                if order.active() {
-                                    account::event_flags::UPSERT
-                                } else {
-                                    account::event_flags::FINAL
-                                },
-                                order.exch_timestamp,
-                            ),
-                            asset_id: binding.asset_id.0,
-                            side: side(order.side),
-                            order_type: order_type(order.order_type),
-                            time_in_force: tif(order.time_in_force),
-                            status: status(order.status),
-                            price_ticks: order.price_tick,
-                            quantity_lots: to_units(order.qty, binding.quantity_lot)?,
-                            filled_quantity_lots: cumulative_filled_quantity_lots,
-                            average_price_ticks: order.exec_price_tick,
-                            venue_order_id: id,
-                            client_order_id: client_order_id.unwrap_or_default(),
-                            ..Default::default()
-                        };
-                        self.cache_order(&changed);
-                        return self
-                            .context
-                            .event_publisher
-                            .publish_encoded(&changed, TraceContext::default())
-                            .map_err(|e| rejected(e.to_string()));
-                    }
-                    fills.insert(id, cumulative_filled_quantity_lots);
+                let previous = self
+                    .projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .cumulative(binding.asset_id.0, id);
+                if self
+                    .projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .order_is_stale(
+                        binding.asset_id.0,
+                        id,
+                        order.exch_timestamp,
+                        cumulative_filled_quantity_lots,
+                    )
+                {
+                    return Ok(());
+                }
+                let publish_fill =
+                    order.exec_qty > 0.0 && cumulative_filled_quantity_lots > previous;
+                if publish_fill
+                    && to_units(order.exec_qty, binding.quantity_lot)?
+                        != cumulative_filled_quantity_lots - previous
+                {
+                    return Err(rejected(
+                        "missing or inconsistent cumulative fill; account reconciliation required",
+                    ));
                 }
 
                 let changed = account::OrderChangedV1 {
@@ -1080,12 +1374,9 @@ impl AccountEventEncoder {
                     client_order_id: client_order_id.unwrap_or_default(),
                     ..Default::default()
                 };
+                self.emit(&changed)?;
                 self.cache_order(&changed);
-                self.context
-                    .event_publisher
-                    .publish_encoded(&changed, TraceContext::default())
-                    .map_err(|e| rejected(e.to_string()))?;
-                if order.exec_qty > 0.0 {
+                if publish_fill {
                     let fill = account::FillV2 {
                         header: self.header(
                             account::event_kind::FILL,
@@ -1102,10 +1393,7 @@ impl AccountEventEncoder {
                         client_order_id: client_order_id.unwrap_or_default(),
                         ..Default::default()
                     };
-                    self.context
-                        .event_publisher
-                        .publish_encoded(&fill, TraceContext::default())
-                        .map_err(|e| rejected(e.to_string()))?;
+                    self.emit(&fill)?;
                     tracing::info!(
                         account_id = fill.header.account_id,
                         asset_id = fill.asset_id,
@@ -1114,12 +1402,6 @@ impl AccountEventEncoder {
                         cumulative_filled_quantity_lots = fill.cumulative_filled_quantity_lots,
                         "Account fill event published."
                     );
-                }
-                if order.status != Status::New && order.status != Status::PartiallyFilled {
-                    self.fill_cumulative
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&id);
                 }
                 Ok(())
             }
@@ -1134,37 +1416,126 @@ impl AccountEventEncoder {
                     .iter()
                     .find(|b| b.native_symbol.eq_ignore_ascii_case(symbol))
                     .ok_or_else(|| rejected("unbound position symbol"))?;
-                let event = account::PositionChangedV1 {
+                let header = self.header(
+                    account::event_kind::POSITION_CHANGED,
+                    account::event_flags::UPSERT,
+                    *exch_ts,
+                );
+                let previous = self
+                    .projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .position_image(b.asset_id.0)
+                    .cloned();
+                let mut event = previous
+                    .as_ref()
+                    .map(|value| position_event(header, value))
+                    .unwrap_or(account::PositionChangedV1 {
+                        header,
+                        asset_id: b.asset_id.0,
+                        ..Default::default()
+                    });
+                event.position_side = if previous
+                    .as_ref()
+                    .is_some_and(|value| value.position_side == ACCOUNT_POSITION_SIDE_NET)
+                {
+                    ACCOUNT_POSITION_SIDE_NET
+                } else if *qty > 0.0 {
+                    ACCOUNT_POSITION_SIDE_LONG
+                } else if *qty < 0.0 {
+                    ACCOUNT_POSITION_SIDE_SHORT
+                } else {
+                    ACCOUNT_POSITION_SIDE_NET
+                };
+                event.quantity_lots = to_units(*qty, b.quantity_lot)?;
+                if event.quantity_lots == 0 {
+                    event.entry_price_ticks = 0;
+                    event.liquidation_price_ticks = 0;
+                    event.unrealized_pnl_units = 0;
+                }
+                if self
+                    .projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .position_is_stale(event.asset_id, event.header.exchange_ts)
+                {
+                    return Ok(());
+                }
+                self.emit(&event)?;
+                self.cache_position(&event);
+                Ok(())
+            }
+            AccountPublication::Balance {
+                currency,
+                wallet,
+                available,
+                margin,
+                unrealized_pnl,
+                exch_ts,
+            } => {
+                let Some(binding) = self
+                    .context
+                    .currencies
+                    .iter()
+                    .find(|binding| binding.native_currency.eq_ignore_ascii_case(currency))
+                else {
+                    return Ok(());
+                };
+                let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+                let previous = image.balance_image(binding.currency_id.0).cloned();
+                let event = account::BalanceChangedV1 {
                     header: self.header(
-                        account::event_kind::POSITION_CHANGED,
+                        account::event_kind::BALANCE_CHANGED,
                         account::event_flags::UPSERT,
                         *exch_ts,
                     ),
-                    asset_id: b.asset_id.0,
-                    position_side: if *qty > 0.0 {
-                        ACCOUNT_POSITION_SIDE_LONG
-                    } else if *qty < 0.0 {
-                        ACCOUNT_POSITION_SIDE_SHORT
-                    } else {
-                        ACCOUNT_POSITION_SIDE_NET
-                    },
-                    quantity_lots: to_units(*qty, b.quantity_lot)?,
+                    currency_id: binding.currency_id.0,
+                    wallet_units: to_observation_units(*wallet, binding.amount_unit)?,
+                    available_units: available
+                        .map(|value| to_observation_units(value, binding.amount_unit))
+                        .transpose()?
+                        .unwrap_or_else(|| {
+                            previous.as_ref().map_or(0, |value| value.available_units)
+                        }),
+                    margin_units: margin
+                        .map(|value| to_observation_units(value, binding.amount_unit))
+                        .transpose()?
+                        .unwrap_or_else(|| previous.as_ref().map_or(0, |value| value.margin_units)),
+                    unrealized_pnl_units: unrealized_pnl
+                        .map(|value| to_observation_units(value, binding.amount_unit))
+                        .transpose()?
+                        .unwrap_or_else(|| {
+                            previous
+                                .as_ref()
+                                .map_or(0, |value| value.unrealized_pnl_units)
+                        }),
                     ..Default::default()
                 };
-                self.cache_position(&event);
-                self.context
-                    .event_publisher
-                    .publish_encoded(&event, TraceContext::default())
-                    .map_err(|e| rejected(e.to_string()))
+                let stale = image.balance_is_stale(event.currency_id, event.header.exchange_ts);
+                drop(image);
+                if stale {
+                    return Ok(());
+                }
+                self.emit(&event)?;
+                self.projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .balance(&event);
+                Ok(())
             }
             AccountPublication::Error(_) => {
-                self.invalidate(account::invalidation_reason::PRIVATE_STREAM);
+                self.invalidate_locked(account::invalidation_reason::PRIVATE_STREAM);
                 Ok(())
             }
         }
     }
 
     fn invalidate(&self, reason_code: u32) {
+        let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
+        self.invalidate_locked(reason_code);
+    }
+
+    fn invalidate_locked(&self, reason_code: u32) {
         self.ready.store(false, Ordering::Release);
         publish_invalidated(&self.context, &self.epoch, &self.version, reason_code);
     }
@@ -1176,6 +1547,9 @@ fn publish_invalidated(
     version: &AtomicU64,
     reason_code: u32,
 ) {
+    if !context.event_publisher.is_open() {
+        return;
+    }
     let event = account::StreamInvalidatedV1(account::StreamStateV1 {
         header: header(
             context,
@@ -1385,39 +1759,19 @@ fn balance_event(
 }
 
 fn to_units(value: f64, unit: account::DecimalUnit) -> Result<i64, account::AccountConnectorError> {
-    if !value.is_finite() {
-        return Err(rejected("non-finite venue decimal"));
-    }
-    let scaled = value * 10_f64.powi(i32::from(unit.scale())) / unit.coefficient() as f64;
-    let rounded = scaled.round();
-    if (scaled - rounded).abs() > 1e-7 || rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
-        return Err(rejected(
-            "venue decimal is not exactly representable in configured units",
-        ));
-    }
-    Ok(rounded as i64)
+    crate::units::integer_units(value, unit.as_f64(), true).map_err(rejected)
 }
 fn to_observation_units(
     value: f64,
     unit: account::DecimalUnit,
 ) -> Result<i64, account::AccountConnectorError> {
-    if !value.is_finite() {
-        return Err(rejected("non-finite venue observation"));
-    }
-    let rounded =
-        (value * 10_f64.powi(i32::from(unit.scale())) / unit.coefficient() as f64).round();
-    if rounded < i64::MIN as f64 || rounded > i64::MAX as f64 {
-        return Err(rejected(
-            "venue observation exceeds configured integer range",
-        ));
-    }
-    Ok(rounded as i64)
+    crate::units::integer_units(value, unit.as_f64(), false).map_err(rejected)
 }
 fn from_units(value: i64, unit: account::DecimalUnit) -> f64 {
-    value as f64 * unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
+    crate::units::from_units(value, unit)
 }
 fn decimal_unit_f64(unit: &account::DecimalUnit) -> f64 {
-    unit.coefficient() as f64 / 10_f64.powi(i32::from(unit.scale()))
+    unit.as_f64()
 }
 fn managed_account_order(
     request: &account::DirectNewOrderRequest,
@@ -1441,7 +1795,7 @@ fn managed_account_order(
         _ => return Err(rejected("invalid submit time in force")),
     };
     let qty = from_units(request.quantity_lots, binding.quantity_lot);
-    let order_id = u64::from_le_bytes(request.client_order_id.0[..8].try_into().unwrap());
+    let order_id = crate::utils::managed_order_id(&request.client_order_id.0);
     let mut order = Order::new(
         order_id,
         request.price_ticks,
@@ -1642,6 +1996,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<(String, Vec<u8>)>>,
+        reject: AtomicBool,
     }
 
     impl account::AccountEventSink for RecordingSink {
@@ -1651,6 +2006,15 @@ mod tests {
             payload: &[u8],
             _: TraceContext,
         ) -> Result<(), CoreError> {
+            if self.reject.load(Ordering::Acquire) {
+                return Err(CoreError::new(
+                    titan_core_types::ErrorKind::ControlQueueFull,
+                    ComponentIdentity::new("test", "account-sink"),
+                    titan_core_types::ComponentState::Running,
+                    "publish",
+                    "injected publication rejection",
+                ));
+            }
             self.events
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1659,7 +2023,10 @@ mod tests {
         }
     }
 
-    struct FakeBootstrapApi;
+    #[derive(Default)]
+    struct FakeBootstrapApi {
+        duplicate_positions: bool,
+    }
 
     #[async_trait::async_trait]
     impl AccountBootstrapApi for FakeBootstrapApi {
@@ -1690,7 +2057,7 @@ mod tests {
         }
 
         async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError> {
-            Ok(vec![PositionInfo {
+            let mut values = vec![PositionInfo {
                 symbol: "BTCUSDT".into(),
                 position_side: ApiPositionSide::Net,
                 qty: 1.25,
@@ -1703,7 +2070,11 @@ mod tests {
                 realized_pnl: 0.5,
                 notional: 126.25,
                 update_time: 12,
-            }])
+            }];
+            if self.duplicate_positions {
+                values.push(values[0].clone());
+            }
+            Ok(values)
         }
 
         async fn account(&self) -> Result<AccountInfo, crate::api::ApiError> {
@@ -1721,6 +2092,18 @@ mod tests {
                 }],
                 timestamp: 13,
             })
+        }
+        async fn order(
+            &self,
+            symbol: &str,
+            client: &str,
+        ) -> Result<OrderInfo, crate::api::ApiError> {
+            let mut order = self.open_orders(symbol).await?.remove(0);
+            order.client_order_id = client.into();
+            order.order_id = "missing-terminal".into();
+            order.status = ApiOrderStatus::Canceled;
+            order.executed_qty = 1.0;
+            Ok(order)
         }
     }
 
@@ -1763,10 +2146,8 @@ mod tests {
             version: Arc::new(AtomicU64::new(0)),
             ready: Arc::new(AtomicBool::new(true)),
             ids: Arc::new(Mutex::new(IdInterner::default())),
-            fill_cumulative: Mutex::new(HashMap::new()),
-            orders: Arc::new(Mutex::new(Arc::from([]))),
-            positions: Arc::new(Mutex::new(Arc::from([]))),
-            balances: Arc::new(Mutex::new(Arc::from([]))),
+            projection: Arc::new(Mutex::new(AccountProjection::default())),
+            publication: Mutex::new(()),
         };
 
         encoder
@@ -1790,12 +2171,98 @@ mod tests {
         assert_eq!(position.asset_id, 42);
         assert_eq!(position.position_side, ACCOUNT_POSITION_SIDE_SHORT);
         assert_eq!(position.quantity_lots, -125);
-        let cached = encoder
-            .positions
+        let (_, cached) = encoder
+            .projection
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap()
+            .positions(account::PositionFilter::default());
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].quantity_lots, -125);
+        drop(events);
+        sink.reject.store(true, Ordering::Release);
+        let version = encoder
+            .projection
+            .lock()
+            .unwrap()
+            .positions(account::PositionFilter::default())
+            .0;
+        assert!(
+            encoder
+                .publish(&AccountPublication::Position {
+                    symbol: "BTCUSDT".into(),
+                    qty: -2.0,
+                    exch_ts: 124
+                })
+                .is_err()
+        );
+        let (after, cached) = encoder
+            .projection
+            .lock()
+            .unwrap()
+            .positions(account::PositionFilter::default());
+        assert_eq!(after, version);
+        assert_eq!(cached[0].quantity_lots, -125);
+    }
+
+    #[test]
+    fn managed_orders_use_scoped_sequence_and_rejection_keeps_canonical_facts() {
+        let mut identities = std::collections::HashSet::new();
+        let binding = account::AccountInstrumentBinding {
+            native_symbol: Arc::from("BTCUSDT"),
+            asset_id: account::AssetId(42),
+            price_tick: account::DecimalUnit::new(1, 1).unwrap(),
+            quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
+            contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+        };
+        for sequence in [7_u64, 8] {
+            let mut id = [9_u8; 16];
+            id[8..].copy_from_slice(&sequence.to_le_bytes());
+            let request = account::DirectNewOrderRequest {
+                asset_id: binding.asset_id,
+                side: 1,
+                order_type: 0,
+                time_in_force: 0,
+                price_ticks: 1000,
+                quantity_lots: 2,
+                reduce_only: false,
+                client_order_id: account::Id128(id),
+            };
+            let mut order = managed_account_order(&request, &binding).unwrap();
+            assert_eq!(
+                order.order_id,
+                managed_account_order(&request, &binding).unwrap().order_id
+            );
+            assert!(identities.insert(order.order_id));
+            let mut other = request.clone();
+            other.client_order_id.0[0] ^= 1;
+            assert!(identities.insert(managed_account_order(&other, &binding).unwrap().order_id));
+            crate::utils::reject_pending_order(&mut order);
+            assert_eq!(order.status, Status::Rejected);
+            order.status = Status::New;
+            order.exch_timestamp = 100;
+            crate::utils::reject_pending_order(&mut order);
+            assert_eq!(order.status, Status::New);
+            assert_eq!(order.exch_timestamp, 100);
+        }
+    }
+
+    #[test]
+    fn id_retention_follows_active_and_retained_terminal_orders() {
+        let mut ids = IdInterner::default();
+        let retained = ids.intern("active-client");
+        for index in 0..5000 {
+            ids.intern(&format!("historical-order-{index}"));
+        }
+        let mut image = AccountProjection::default();
+        image.order(&account::OrderChangedV1 {
+            client_order_id: retained,
+            venue_order_id: retained,
+            status: 1,
+            ..Default::default()
+        });
+        ids.prune(&image);
+        assert_eq!(ids.by_id.len(), 1);
+        assert_eq!(ids.resolve(retained), "active-client");
     }
 
     #[tokio::test]
@@ -1842,37 +2309,213 @@ mod tests {
             version: Arc::new(AtomicU64::new(0)),
             ready: Arc::new(AtomicBool::new(false)),
             ids: Arc::new(Mutex::new(IdInterner::default())),
-            fill_cumulative: Mutex::new(HashMap::new()),
-            orders: Arc::new(Mutex::new(Arc::from([]))),
-            positions: Arc::new(Mutex::new(Arc::from([]))),
-            balances: Arc::new(Mutex::new(Arc::from([]))),
+            projection: Arc::new(Mutex::new(AccountProjection::default())),
+            publication: Mutex::new(()),
         };
 
-        let snapshot = load_account_bootstrap(&context, &FakeBootstrapApi, &encoder.ids)
+        let snapshot = load_account_bootstrap(&context, &FakeBootstrapApi::default(), &encoder.ids)
             .await
             .unwrap();
         encoder.install_bootstrap(snapshot).unwrap();
         encoder.publish_ready().unwrap();
 
         assert!(encoder.ready.load(Ordering::Acquire));
-        let orders = encoder.orders.lock().unwrap();
+        let (_, orders) = encoder
+            .projection
+            .lock()
+            .unwrap()
+            .orders(account::OrderFilter {
+                asset_id: None,
+                include_final: true,
+            });
         assert_eq!(orders.len(), 1);
         assert!(orders[0].reduce_only);
-        drop(orders);
-        assert_eq!(encoder.positions.lock().unwrap()[0].quantity_lots, 125);
-        assert_eq!(encoder.balances.lock().unwrap()[0].wallet_units, 100_000);
-        let events = sink.events.lock().unwrap();
-        assert_eq!(events.len(), 4);
-        let order_payload = events
-            .iter()
-            .find(|(event_type, _)| event_type == account::ORDER_CHANGED_EVENT)
-            .map(|(_, payload)| payload)
-            .unwrap();
-        let order = account::OrderChangedV1::decode(order_payload).unwrap();
-        assert_ne!(order.header.flags & account::event_flags::REDUCE_ONLY, 0);
+        let mut missing = orders[0].clone();
+        missing.client_order_id = encoder.ids.lock().unwrap().intern("missing-open");
+        let reconciled = reconcile_account_bootstrap(
+            &context,
+            &FakeBootstrapApi::default(),
+            &encoder.ids,
+            &[missing],
+        )
+        .await
+        .unwrap();
+        assert_eq!(reconciled.orders.len(), 2);
         assert_eq!(
-            events.last().unwrap().0,
-            account::STREAM_STATE_CHANGED_EVENT
+            reconciled.orders[1].0.status,
+            api_status(ApiOrderStatus::Canceled)
         );
+        assert_eq!(reconciled.orders[1].0.filled_quantity_lots, 100);
+        drop(orders);
+        assert_eq!(
+            encoder
+                .projection
+                .lock()
+                .unwrap()
+                .positions(account::PositionFilter::default())
+                .1[0]
+                .quantity_lots,
+            125
+        );
+        assert_eq!(
+            encoder.projection.lock().unwrap().balances().1[0].wallet_units,
+            100_000
+        );
+        {
+            let events = sink.events.lock().unwrap();
+            assert_eq!(events.len(), 4);
+            let order_payload = events
+                .iter()
+                .find(|(event_type, _)| event_type == account::ORDER_CHANGED_EVENT)
+                .map(|(_, payload)| payload)
+                .unwrap();
+            let order = account::OrderChangedV1::decode(order_payload).unwrap();
+            assert_ne!(order.header.flags & account::event_flags::REDUCE_ONLY, 0);
+            assert_eq!(
+                events.last().unwrap().0,
+                account::STREAM_STATE_CHANGED_EVENT
+            );
+        }
+        let previous_available = encoder.projection.lock().unwrap().balances().1[0].available_units;
+        encoder
+            .publish(&AccountPublication::Balance {
+                currency: "USDT".into(),
+                wallet: 900.0,
+                available: None,
+                margin: None,
+                unrealized_pnl: None,
+                exch_ts: now_ns(),
+            })
+            .unwrap();
+        let balances = encoder.projection.lock().unwrap().balances().1;
+        assert_eq!(balances[0].wallet_units, 90_000);
+        assert_eq!(balances[0].available_units, previous_available);
+        encoder
+            .publish(&AccountPublication::Position {
+                symbol: "BTCUSDT".into(),
+                qty: 2.0,
+                exch_ts: now_ns(),
+            })
+            .unwrap();
+        let position = encoder
+            .projection
+            .lock()
+            .unwrap()
+            .positions(account::PositionFilter::default())
+            .1[0]
+            .clone();
+        assert_eq!(position.quantity_lots, 200);
+        assert_eq!(position.entry_price_ticks, 1000);
+        assert_eq!(position.margin_currency_id, account::CurrencyId(9));
+        assert_eq!(position.position_side, ACCOUNT_POSITION_SIDE_NET);
+        assert!(
+            load_account_bootstrap(
+                &context,
+                &FakeBootstrapApi {
+                    duplicate_positions: true
+                },
+                &encoder.ids
+            )
+            .await
+            .is_err()
+        );
+
+        // Candidate preparation must not require external publication to be open.
+        context.event_publisher.close();
+        let emitted = sink.events.lock().unwrap().len();
+        encoder.ready.store(false, Ordering::Release);
+        encoder
+            .install_bootstrap(
+                load_account_bootstrap(&context, &FakeBootstrapApi::default(), &encoder.ids)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+        encoder.publish_ready().unwrap();
+        assert!(encoder.ready.load(Ordering::Acquire));
+        assert_eq!(sink.events.lock().unwrap().len(), emitted);
+    }
+
+    #[test]
+    fn pending_account_facts_have_a_hard_limit_and_preserve_order() {
+        let mut pending = PendingAccountFacts::new(2);
+        for qty in [1.0, 2.0] {
+            assert!(pending.push(AccountPublication::Position {
+                symbol: "BTC".into(),
+                qty,
+                exch_ts: 0
+            }));
+        }
+        assert!(!pending.push(AccountPublication::Position {
+            symbol: "BTC".into(),
+            qty: 3.0,
+            exch_ts: 0
+        }));
+        let quantities: Vec<_> = pending
+            .drain()
+            .map(|event| match event {
+                AccountPublication::Position { qty, .. } => qty,
+                _ => panic!("unexpected buffered fact"),
+            })
+            .collect();
+        assert_eq!(quantities, [1.0, 2.0]);
+        assert!(pending.push(AccountPublication::Position {
+            symbol: "BTC".into(),
+            qty: 4.0,
+            exch_ts: 0
+        }));
+    }
+
+    #[test]
+    fn a_new_connection_invalidates_a_late_ready_commit_from_the_previous_session() {
+        let fence = ReadinessFence::default();
+        let first = fence.changed();
+        assert!(fence.commit(first));
+        let next = fence.changed();
+        assert!(!fence.matches());
+        assert!(!fence.commit(first));
+        assert!(fence.commit(next));
+        fence.changed();
+        assert!(!fence.matches());
+    }
+
+    #[tokio::test]
+    async fn an_uncommitted_replacement_never_cancels_the_existing_accounts_orders() {
+        struct Actions(AtomicU64);
+        #[async_trait::async_trait(?Send)]
+        impl ShutdownActions for Actions {
+            async fn cancel_all(&self) -> Result<(), String> {
+                self.0.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+            async fn cancel_all_after(&self, _: u64) -> Result<(), String> {
+                self.0.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+        }
+        let actions = Actions(AtomicU64::new(0));
+        for policy in [
+            account::ShutdownOrderPolicy::CancelAll,
+            account::ShutdownOrderPolicy::CancelAllAfter { timeout_ms: 1000 },
+        ] {
+            execute_shutdown_policy(
+                &actions,
+                &policy,
+                Instant::now() + Duration::from_secs(1),
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(actions.0.load(Ordering::Acquire), 0);
+        execute_shutdown_policy(
+            &actions,
+            &account::ShutdownOrderPolicy::CancelAll,
+            Instant::now() + Duration::from_secs(1),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(actions.0.load(Ordering::Acquire), 1);
     }
 }

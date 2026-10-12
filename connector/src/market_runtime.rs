@@ -5,7 +5,7 @@
 //! deadline instead of escaping the market service resource scope.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -32,7 +32,8 @@ use crate::{
 };
 
 const COMMAND_QUEUE_CAPACITY: usize = 256;
-const OPERATION_HISTORY_LIMIT: usize = 1_024;
+#[cfg(test)]
+use titan_core_types::OPERATION_HISTORY_LIMIT;
 
 enum RuntimeCommand {
     Subscribe(String, Vec<MarketDataKind>, bool),
@@ -46,30 +47,22 @@ struct SubscriptionState {
     leases: HashMap<u64, (AssetId, Vec<MarketDataKind>)>,
 }
 
-#[derive(Default)]
 struct OperationStore {
-    values: HashMap<OperationId, (OperationState, Arc<str>)>,
-    terminal_order: VecDeque<OperationId>,
+    values: titan_core_types::OperationHistory<OperationId, (OperationState, Arc<str>)>,
 }
-
-impl OperationStore {
-    fn set(&mut self, id: OperationId, state: OperationState, detail: impl Into<Arc<str>>) {
-        let terminal = state != OperationState::Pending;
-        let was_terminal = self
-            .values
-            .get(&id)
-            .is_some_and(|(value, _)| *value != OperationState::Pending);
-        self.values.insert(id, (state, detail.into()));
-        if terminal && !was_terminal {
-            self.terminal_order.push_back(id);
-        }
-        while self.terminal_order.len() > OPERATION_HISTORY_LIMIT {
-            if let Some(expired) = self.terminal_order.pop_front() {
-                self.values.remove(&expired);
-            }
+impl Default for OperationStore {
+    fn default() -> Self {
+        Self {
+            values: titan_core_types::OperationHistory::new(|value| {
+                value.0 == OperationState::Pending
+            }),
         }
     }
-
+}
+impl OperationStore {
+    fn set(&mut self, id: OperationId, state: OperationState, detail: impl Into<Arc<str>>) {
+        self.values.insert(id, (state, detail.into()));
+    }
     fn fail_pending(&mut self, detail: &'static str) {
         let pending: Vec<_> = self
             .values
@@ -87,6 +80,7 @@ struct RunningRuntime {
     command: mpsc::Sender<RuntimeCommand>,
     thread: Option<JoinHandle<()>>,
     shutdown_result: Arc<Mutex<Option<Result<(), Arc<str>>>>>,
+    requested_deadline: Option<Instant>,
 }
 
 struct MarketConnectorRuntime {
@@ -330,6 +324,7 @@ impl MarketConnector for MarketConnectorRuntime {
             command: command_tx,
             thread: Some(thread),
             shutdown_result,
+            requested_deadline: None,
         });
         Ok(())
     }
@@ -345,6 +340,7 @@ impl MarketConnector for MarketConnectorRuntime {
             return Ok(());
         };
         if let Some(stop) = runtime.stop.take() {
+            runtime.requested_deadline = Some(deadline);
             let _ = stop.send(deadline);
         }
         if let Some(thread) = runtime.thread.take() {
@@ -702,20 +698,22 @@ fn register_resource(connector: &Arc<MarketConnectorRuntime>) -> Result<(), Conn
             "market-connector-runtime",
             ClosureResource(Some(move || {
                 if let Some(connector) = weak.upgrade() {
-                    connector
-                        .stop(Instant::now() + Duration::from_secs(5))
-                        .map_err(|error| {
-                            titan_core_types::CoreError::new(
-                                titan_core_types::ErrorKind::ResourceReleaseFailed,
-                                titan_core_types::ComponentIdentity::new(
-                                    "titan.market",
-                                    "connector",
-                                ),
-                                titan_core_types::ComponentState::Stopping,
-                                "stop_market_connector_runtime",
-                                error.to_string(),
-                            )
-                        })?;
+                    let deadline = connector
+                        .runtime
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|runtime| runtime.requested_deadline)
+                        .unwrap_or_else(|| Instant::now() + Duration::from_secs(5));
+                    connector.stop(deadline).map_err(|error| {
+                        titan_core_types::CoreError::new(
+                            titan_core_types::ErrorKind::ResourceReleaseFailed,
+                            titan_core_types::ComponentIdentity::new("titan.market", "connector"),
+                            titan_core_types::ComponentState::Stopping,
+                            "stop_market_connector_runtime",
+                            error.to_string(),
+                        )
+                    })?;
                 }
                 Ok(())
             })),

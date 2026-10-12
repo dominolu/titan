@@ -202,12 +202,10 @@ impl BinanceFutures {
                             ?error,
                             "An error occurred in the market data stream connection."
                         );
-                        ev_tx
-                            .send(PublishEvent::ConnectorError(LiveError::with(
-                                ErrorKind::ConnectionInterrupted,
-                                error.into(),
-                            )))
-                            .unwrap();
+                        ev_tx.send(PublishEvent::ConnectorError(LiveError::with(
+                            ErrorKind::ConnectionInterrupted,
+                            error.into(),
+                        )));
                         Ok(())
                     })
                     .retry(|| async {
@@ -242,12 +240,10 @@ impl BinanceFutures {
                         ?error,
                         "An error occurred in the user data stream connection."
                     );
-                    ev_tx
-                        .send_account(AccountPublication::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.into(),
-                        )))
-                        .unwrap();
+                    ev_tx.send_account(AccountPublication::Error(LiveError::with(
+                        ErrorKind::ConnectionInterrupted,
+                        error.into(),
+                    )));
                     Ok(())
                 })
                 .retry(|| async {
@@ -405,6 +401,13 @@ impl Connector for BinanceFutures {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .track_managed_order(symbol, client_order_id, order.clone());
+    }
+
+    fn reject_pending_order(&self, client_order_id: &str) {
+        self.order_manager
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reject_pending_order(client_order_id);
     }
 
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {

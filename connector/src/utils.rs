@@ -327,6 +327,23 @@ impl Equivalent<SymbolOrderId> for RefSymbolOrderId<'_> {
     }
 }
 
+/// Legacy numeric metadata keys include the complete canonical client namespace and sequence.
+pub(crate) fn managed_order_id(client_id: &[u8; 16]) -> u64 {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"titan.managed-order.metadata");
+    hash.update(client_id);
+    u64::from_le_bytes(hash.finalize()[..8].try_into().unwrap())
+}
+
+/// REST rejection only terminalizes a locally pending order. Canonical private facts win races.
+pub(crate) fn reject_pending_order(order: &mut hftbacktest::types::Order) {
+    if order.status == hftbacktest::types::Status::New && order.exch_timestamp == 0 {
+        order.status = hftbacktest::types::Status::Rejected;
+        order.exch_timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

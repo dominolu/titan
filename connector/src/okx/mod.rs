@@ -198,12 +198,10 @@ impl Okx {
             let _ = Retry::new(ExponentialBackoff::default())
                 .error_handler(|error: OkxError| {
                     error!(?error, "An error occurred in the public stream connection.");
-                    ev_tx
-                        .send(PublishEvent::ConnectorError(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.to_value(),
-                        )))
-                        .unwrap();
+                    ev_tx.send(PublishEvent::ConnectorError(LiveError::with(
+                        ErrorKind::ConnectionInterrupted,
+                        error.to_value(),
+                    )));
                     Ok(())
                 })
                 .retry(|| async {
@@ -214,18 +212,14 @@ impl Okx {
                     );
                     if let Err(error) = stream.connect(&public_url).await {
                         error!(?error, "A connection error occurred.");
-                        ev_tx
-                            .send(PublishEvent::ConnectorError(LiveError::with(
-                                ErrorKind::ConnectionInterrupted,
-                                error.to_value(),
-                            )))
-                            .unwrap();
+                        ev_tx.send(PublishEvent::ConnectorError(LiveError::with(
+                            ErrorKind::ConnectionInterrupted,
+                            error.to_value(),
+                        )));
                     } else {
-                        ev_tx
-                            .send(PublishEvent::ConnectorError(LiveError::new(
-                                ErrorKind::ConnectionInterrupted,
-                            )))
-                            .unwrap();
+                        ev_tx.send(PublishEvent::ConnectorError(LiveError::new(
+                            ErrorKind::ConnectionInterrupted,
+                        )));
                     }
                     Err::<(), OkxError>(OkxError::ConnectionInterrupted)
                 })
@@ -252,12 +246,10 @@ impl Okx {
                         ?error,
                         "An error occurred in the private stream connection."
                     );
-                    ev_tx
-                        .send_account(AccountPublication::Error(LiveError::with(
-                            ErrorKind::ConnectionInterrupted,
-                            error.to_value(),
-                        )))
-                        .unwrap();
+                    ev_tx.send_account(AccountPublication::Error(LiveError::with(
+                        ErrorKind::ConnectionInterrupted,
+                        error.to_value(),
+                    )));
                     Ok(())
                 })
                 .retry(|| async {
@@ -432,6 +424,13 @@ impl Connector for Okx {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .track_managed_order(symbol, client_order_id, order.clone());
+    }
+
+    fn reject_pending_order(&self, client_order_id: &str) {
+        self.order_manager
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reject_pending_order(client_order_id);
     }
 
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {

@@ -1028,7 +1028,11 @@ fn resolve_core_live_run_spec(
         path: config_path.clone(),
         source,
     })?;
-    let adapted = load_core_configuration(&config_path, Some((strategy_name, event_mode)))?;
+    let adapted = load_core_configuration_bytes(
+        &config_path,
+        &config_bytes,
+        Some((strategy_name, event_mode)),
+    )?;
     let trust = adapted.v13_trust_policy();
     let definition = adapted
         .strategies
@@ -1480,6 +1484,7 @@ fn v13_backtest_worker(
         "config_sha256": spec.config_sha256,
         "trace_sha256": format!("{:x}", Sha256::digest(&trace_bytes)),
         "state_sha256": state_sha256,
+        "returns": [],
         "event_count": event_count,
         "submit_count": submit_count,
         "cancel_count": cancel_count,
@@ -1490,7 +1495,7 @@ fn v13_backtest_worker(
     let record = registry
         .get(run_id)?
         .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
-    atomic_write(&record.result_path, result_json.as_bytes())?;
+    write_result_bundle(&record.result_path, run_id, spec, result_json.as_bytes())?;
     let exit_code = 0;
     let final_state = if status == "COMPLETED" {
         "COMPLETED"
@@ -1513,19 +1518,45 @@ fn core_live_worker(
     strategy_key: &str,
     stop: Arc<AtomicBool>,
 ) -> Result<(), CliError> {
-    let adapted =
-        load_core_configuration(&spec.config_path, Some((strategy_key, spec.event_mode)))?;
+    let bytes = fs::read(&spec.config_path).map_err(|source| CliError::Read {
+        path: spec.config_path.clone(),
+        source,
+    })?;
+    if format!("{:x}", Sha256::digest(&bytes)) != spec.config_sha256 {
+        return Err(CliError::Engine(
+            "configuration changed after run resolution".into(),
+        ));
+    }
+    let mut adapted = load_core_configuration_bytes(
+        &spec.config_path,
+        &bytes,
+        Some((strategy_key, spec.event_mode)),
+    )?;
+    let manifest =
+        inspect_v13_artifact_with_policy(&spec.strategy.artifact, adapted.v13_trust_policy())?;
+    if hex_digest(&manifest.artifact_digest) != spec.strategy.artifact_digest
+        || manifest.strategy_version.as_ref() != spec.strategy.strategy_version
+    {
+        return Err(CliError::Engine(
+            "strategy artifact changed after run resolution".into(),
+        ));
+    }
+    let definition = adapted
+        .strategies
+        .first_mut()
+        .ok_or_else(|| CliError::Engine("selected strategy missing".into()))?;
+    if definition.package.expected_digest != manifest.artifact_digest {
+        return Err(CliError::Engine(
+            "configured artifact identity differs from validated plan".into(),
+        ));
+    }
+    definition.package.uri = Arc::from(format!("file://{}", spec.strategy.artifact.display()));
     let mut runtime = titan_cli::TradingRuntime::start(adapted)
         .map_err(|error| CliError::Engine(error.to_string()))?;
     registry.transition(run_id, token, "READY")?;
     registry.transition(run_id, token, "RUNNING")?;
     let started = Instant::now();
-    while !stop.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_millis(50));
-    }
-    runtime
-        .shutdown()
-        .map_err(|error| CliError::Engine(error.to_string()))?;
+    monitor_and_shutdown(&mut runtime, || stop.load(Ordering::Acquire))?;
     let result = serde_json::json!({
         "schema_version": 1,
         "run_id": run_id,
@@ -1534,6 +1565,8 @@ fn core_live_worker(
         "environment": spec.environment,
         "event_mode": spec.event_mode,
         "config_sha256": spec.config_sha256,
+        "artifact_digest": spec.strategy.artifact_digest,
+        "returns": [],
         "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
         "status": "STOPPED"
     });
@@ -1541,11 +1574,63 @@ fn core_live_worker(
     let record = registry
         .get(run_id)?
         .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
-    atomic_write(&record.result_path, result_json.as_bytes())?;
+    write_result_bundle(&record.result_path, run_id, spec, result_json.as_bytes())?;
     registry.update_metrics(run_id, token, 0, 0, 0)?;
     registry.finish(run_id, token, "STOPPED", 0, None)?;
     println!("{result_json}");
     Ok(())
+}
+
+fn write_result_bundle(
+    path: &Path,
+    run_id: &str,
+    spec: &RunSpec,
+    bytes: &[u8],
+) -> Result<(), CliError> {
+    let manifest_path = path.with_file_name("manifest.json");
+    if manifest_path.exists() {
+        return Err(CliError::Engine("ResultBundle is already committed".into()));
+    }
+    atomic_write(path, bytes)?;
+    let manifest = BundleManifest {
+        schema_version: 1,
+        run_id: run_id.into(),
+        strategy_id: spec.strategy.strategy_id.clone(),
+        strategy_version: spec.strategy.strategy_version.clone(),
+        abi_fingerprint: hex_digest(&titan_strategy_runtime::V13_ABI_FINGERPRINT),
+        committed_at_ns: now_ns(),
+        files: vec![BundleFile {
+            path: "result.json".into(),
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+        }],
+    };
+    atomic_write(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).map_err(CliError::ResultJson)?,
+    )
+}
+
+fn monitor_and_shutdown(
+    runtime: &mut titan_cli::TradingRuntime,
+    should_stop: impl Fn() -> bool,
+) -> Result<(), CliError> {
+    let mut failure = None;
+    while !should_stop() {
+        if let Err(error) = runtime.check_health() {
+            failure = Some(error.to_string());
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let shutdown = runtime
+        .shutdown()
+        .map_err(|error| CliError::Engine(error.to_string()));
+    if let Some(error) = failure {
+        shutdown?;
+        return Err(CliError::Engine(error));
+    }
+    shutdown
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
@@ -1837,6 +1922,11 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
             manifest.schema_version
         )));
     }
+    if manifest.run_id != run_id || !manifest.files.iter().any(|file| file.path == "result.json") {
+        return Err(CliError::Engine(
+            "ResultBundle identity or result descriptor missing".into(),
+        ));
+    }
     let bundle = run
         .result_path
         .parent()
@@ -1845,7 +1935,14 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
         path: bundle.into(),
         source,
     })?;
+    let mut paths = std::collections::BTreeSet::new();
+    let mut verified_result = None;
     for descriptor in &manifest.files {
+        if !paths.insert(&descriptor.path) {
+            return Err(CliError::Engine(
+                "duplicate ResultBundle file descriptor".into(),
+            ));
+        }
         let target = bundle.join(&descriptor.path);
         let canonical_target = fs::canonicalize(&target).map_err(|source| CliError::Read {
             path: target.clone(),
@@ -1866,11 +1963,14 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
                 descriptor.path
             )));
         }
+        if descriptor.path == "result.json" {
+            verified_result = Some(
+                String::from_utf8(content).map_err(|error| CliError::Engine(error.to_string()))?,
+            );
+        }
     }
-    let result = fs::read_to_string(&run.result_path).map_err(|source| CliError::Read {
-        path: run.result_path.clone(),
-        source,
-    })?;
+    let result =
+        verified_result.ok_or_else(|| CliError::Engine("ResultBundle result is missing".into()))?;
     if let Some(output) = output {
         let output = normalized_absolute_path(output)?;
         let destination = canonical_destination(&output)?;
@@ -1962,17 +2062,14 @@ fn run_selected_core(
     } else {
         println!("Titan Core Runtime is running; press Ctrl-C to stop");
     }
-    while !interrupt.load(Ordering::Acquire) && !terminate.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_millis(50));
-    }
+    monitor_and_shutdown(&mut runtime, || {
+        interrupt.load(Ordering::Acquire) || terminate.load(Ordering::Acquire)
+    })?;
     let reason = if interrupt.load(Ordering::Acquire) {
         "SIGINT"
     } else {
         "SIGTERM"
     };
-    runtime
-        .shutdown()
-        .map_err(|error| CliError::Engine(error.to_string()))?;
     if json {
         println!(
             "{}",
@@ -1990,7 +2087,20 @@ fn load_core_configuration(
     config: &Path,
     selected: Option<(&str, EventMode)>,
 ) -> Result<titan_cli::AdaptedConfiguration, CliError> {
-    let mut adapted = titan_cli::ConfigurationAdapter::load_toml(config)
+    let bytes = fs::read(config).map_err(|source| CliError::Read {
+        path: config.into(),
+        source,
+    })?;
+    load_core_configuration_bytes(config, &bytes, selected)
+}
+
+fn load_core_configuration_bytes(
+    config: &Path,
+    bytes: &[u8],
+    selected: Option<(&str, EventMode)>,
+) -> Result<titan_cli::AdaptedConfiguration, CliError> {
+    let text = std::str::from_utf8(bytes).map_err(|error| CliError::Engine(error.to_string()))?;
+    let mut adapted = titan_cli::ConfigurationAdapter::load_contents(text, config)
         .map_err(|error| CliError::Engine(error.to_string()))?;
     if let Some((strategy_key, mode)) = selected {
         let selected = adapted

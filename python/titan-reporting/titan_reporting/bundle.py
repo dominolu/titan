@@ -31,6 +31,8 @@ def load_bundle(path: str | Path) -> ResultBundle:
     decoded: dict[str, Any] = {}
     for descriptor in manifest.get("files", ()):
         relative = descriptor.get("path", "")
+        if relative in decoded:
+            raise BundleError(f"Duplicate bundle file: {relative}")
         target = (root / relative).resolve()
         if root.resolve() not in target.parents:
             raise BundleError(f"Bundle file escapes root: {relative}")

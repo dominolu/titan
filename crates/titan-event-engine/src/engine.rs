@@ -26,6 +26,9 @@ use crate::{
     config::{DrainBudgetConfig, EventEngineConfig},
 };
 
+#[cfg(test)]
+mod publication_tests;
+
 pub(crate) struct StagedSubscription {
     pub owner: ComponentIdentity,
     pub mailbox: Option<Arc<str>>,
@@ -73,6 +76,9 @@ pub(crate) struct EngineShared {
     pub next_transaction: AtomicU64,
     pub next_candidate: AtomicU64,
     pub running: AtomicBool,
+    accepting_publications: AtomicBool,
+    active_publications: AtomicUsize,
+    source_sequences: Vec<Mutex<u64>>,
     pub clock: EngineClock,
     pub health_registry: RwLock<BTreeMap<u64, Arc<SubscriberHealth>>>,
     pub transactions: Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>,
@@ -334,18 +340,27 @@ impl AsyncFastLane {
     }
 
     fn stop_and_join(&self) {
+        let _ = self.stop_and_join_until(Instant::now() + Duration::from_secs(30));
+    }
+
+    fn stop_and_join_until(&self, deadline: Instant) -> Result<(), EngineError> {
         self.stopping.store(true, Ordering::Release);
         if let Some(worker) = self.worker.get() {
             worker.unpark();
         }
-        if let Some(join) = self
-            .join
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
+        let mut slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(join) = slot.as_ref() {
+            while !join.is_finished() {
+                if Instant::now() >= deadline {
+                    return Err(EngineError::ControlTimeout);
+                }
+                thread::yield_now();
+            }
+        }
+        if let Some(join) = slot.take() {
             let _ = join.join();
         }
+        Ok(())
     }
 
     fn depth(&self) -> usize {
@@ -360,9 +375,78 @@ impl FastLaneRoute {
             lane.stop_and_join();
         }
     }
+    fn stop_until(&self, deadline: Instant) -> Result<(), EngineError> {
+        self.active.store(false, Ordering::Release);
+        if let FastLaneDispatch::Async(lane) = &self.dispatch {
+            lane.stop_and_join_until(deadline)?;
+        }
+        Ok(())
+    }
 }
 
 impl EngineShared {
+    /// One admission boundary for copied and reserved payloads. Source ordering covers every
+    /// delivery path, and a rejected ingress reservation is never visible to a handler.
+    fn publish_record(&self, record: EventRecord) -> Result<(), PublishError> {
+        if !self.accepting_publications.load(Ordering::Acquire) {
+            return Err(PublishError::Stopped);
+        }
+        self.active_publications.fetch_add(1, Ordering::AcqRel);
+        let _permit = PublicationPermit(&self.active_publications);
+        if !self.accepting_publications.load(Ordering::Acquire) {
+            return Err(PublishError::Stopped);
+        }
+        let header = record.header;
+        let _source_scope = if header.source_sequence == 0 {
+            None
+        } else {
+            Some(SourcePublicationGuard::enter(
+                self as *const Self as usize,
+                header.source_id,
+            )?)
+        };
+        let mut source = if header.source_sequence == 0 {
+            None
+        } else {
+            Some(
+                self.source_sequences
+                    .get(header.source_id as usize)
+                    .ok_or(PublishError::InvalidEvent)?
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()),
+            )
+        };
+        if source
+            .as_ref()
+            .is_some_and(|last| **last != 0 && header.source_sequence <= **last)
+        {
+            self.metrics.drop_total.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        let descriptor = record.descriptor.clone();
+        let payload = record.payload.clone();
+        self.enqueue_record(record)?;
+        if let Some(last) = source.as_mut() {
+            if **last != 0 && header.source_sequence != (**last).saturating_add(1) {
+                self.metrics
+                    .source_sequence_gap_total
+                    .fetch_add(1, Ordering::Relaxed);
+                self.signal(FaultSignal {
+                    kind: FaultKind::SourceSequenceGap,
+                    subscriber_id: 0,
+                    sequence: header.source_sequence,
+                    detail: header.source_id as u64,
+                });
+                self.runtime_health
+                    .mark_source_gap(header.source_id, header.source_sequence);
+            }
+            **last = header.source_sequence;
+        }
+        self.dispatch_primary_lanes(&descriptor, header, &payload);
+        self.dispatch_fast_lanes(&descriptor, header, &payload);
+        Ok(())
+    }
+
     pub(crate) fn signal(&self, signal: FaultSignal) {
         if self.fault_signals.push(signal).is_err() {
             self.metrics
@@ -535,6 +619,39 @@ impl EngineShared {
     }
 }
 
+thread_local! {
+    static PUBLISHING_SOURCES: std::cell::RefCell<Vec<(usize, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+struct SourcePublicationGuard((usize, u32));
+impl SourcePublicationGuard {
+    fn enter(engine: usize, source: u32) -> Result<Self, PublishError> {
+        let key = (engine, source);
+        PUBLISHING_SOURCES.with(|sources| {
+            let mut sources = sources.borrow_mut();
+            if sources.contains(&key) {
+                return Err(PublishError::ReentrantSource);
+            }
+            sources.push(key);
+            Ok(Self(key))
+        })
+    }
+}
+impl Drop for SourcePublicationGuard {
+    fn drop(&mut self) {
+        PUBLISHING_SOURCES.with(|sources| {
+            let previous = sources.borrow_mut().pop();
+            debug_assert_eq!(previous, Some(self.0));
+        });
+    }
+}
+struct PublicationPermit<'a>(&'a AtomicUsize);
+
+impl Drop for PublicationPermit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub struct EventEngine {
     shared: Arc<EngineShared>,
     control_rx: Mutex<Option<Receiver<ControlCommand>>>,
@@ -568,6 +685,11 @@ impl EventEngine {
             next_transaction: AtomicU64::new(1),
             next_candidate: AtomicU64::new(1),
             running: AtomicBool::new(false),
+            accepting_publications: AtomicBool::new(false),
+            active_publications: AtomicUsize::new(0),
+            source_sequences: (0..config.ingress.max_sources)
+                .map(|_| Mutex::new(0))
+                .collect(),
             clock: EngineClock::new(),
             health_registry: RwLock::new(BTreeMap::new()),
             transactions: Arc::new(Mutex::new(BTreeMap::new())),
@@ -625,7 +747,10 @@ impl EventEngine {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
-            .ok_or(EngineError::AlreadyStarted)?;
+            .ok_or_else(|| {
+                self.shared.running.store(false, Ordering::Release);
+                EngineError::AlreadyStarted
+            })?;
         let shared = self.shared.clone();
         let thread_shared = shared.clone();
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
@@ -678,26 +803,55 @@ impl EventEngine {
             .runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(runtime);
+        self.shared
+            .accepting_publications
+            .store(true, Ordering::Release);
         Ok(())
     }
 
     pub fn stop(&self) -> Result<(), EngineError> {
+        self.stop_before(Instant::now() + Duration::from_secs(30))
+    }
+
+    pub fn stop_before(&self, deadline: Instant) -> Result<(), EngineError> {
+        self.shared
+            .accepting_publications
+            .store(false, Ordering::Release);
+        while self.shared.active_publications.load(Ordering::Acquire) != 0 {
+            if Instant::now() >= deadline {
+                return Err(EngineError::ControlTimeout);
+            }
+            thread::yield_now();
+        }
         let has_runtime = self
             .runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some();
-        if !has_runtime {
+        if !has_runtime
+            && self
+                .shared
+                .fast_lanes
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+            && self
+                .shared
+                .primary_lanes
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+        {
             return Ok(());
         }
-        let channels = if self.shared.running.load(Ordering::Acquire) {
+        let channels = if has_runtime && self.shared.running.load(Ordering::Acquire) {
             let (reply_tx, reply_rx) = bounded(1);
             self.shared
                 .control_tx
                 .try_send(ControlCommand::Shutdown { reply: reply_tx })
                 .map_err(|_| EngineError::ControlQueueFull)?;
             reply_rx
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .map_err(|_| EngineError::ControlTimeout)?
         } else {
             self.shared
@@ -711,14 +865,19 @@ impl EventEngine {
         for channel in channels {
             channel.stop_and_drain();
         }
-        if let Some(runtime) = self
-            .runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
+        let mut slot = self.runtime.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(runtime) = slot.as_ref() {
+            while !runtime.is_finished() {
+                if Instant::now() >= deadline {
+                    return Err(EngineError::ControlTimeout);
+                }
+                thread::yield_now();
+            }
+        }
+        if let Some(runtime) = slot.take() {
             let _ = runtime.join();
         }
+        drop(slot);
         while self.shared.critical_ingress.pop().is_some() {}
         while self.shared.market_ingress.pop().is_some() {}
         self.shared
@@ -726,30 +885,42 @@ impl EventEngine {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        let fast_lanes = std::mem::take(
-            &mut *self
-                .shared
-                .fast_lanes
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        for route in fast_lanes.into_values() {
-            route.stop();
+        let fast_lanes: Vec<_> = self
+            .shared
+            .fast_lanes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for route in fast_lanes {
+            route.stop_until(deadline)?;
         }
-        let primary_lanes = std::mem::take(
-            &mut *self
-                .shared
-                .primary_lanes
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        for lane in primary_lanes.into_values() {
-            lane.stop_and_join();
+        self.shared
+            .fast_lanes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        let primary_lanes: Vec<_> = self
+            .shared
+            .primary_lanes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        for lane in primary_lanes {
+            lane.stop_and_join_until(deadline)?;
         }
+        self.shared
+            .primary_lanes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.shared.running.store(false, Ordering::Release);
         // Subscriber runtimes observe channel closure asynchronously. Give a just-returning
         // handler a bounded chance to drop its final EventLease before reporting a real leak.
-        let lease_deadline = Instant::now() + Duration::from_millis(100);
+        let lease_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
         while self.shared.arena.outstanding_blocks() != 0 && Instant::now() < lease_deadline {
             thread::yield_now();
         }
@@ -1107,17 +1278,13 @@ impl EventEngineHandle {
             routing_key: request.routing_key,
             trace: request.trace,
         };
-        self.shared
-            .dispatch_primary_lanes(&descriptor, header, &payload);
-        self.shared
-            .dispatch_fast_lanes(&descriptor, header, &payload);
         let record = EventRecord {
             descriptor: descriptor.clone(),
             header,
             payload,
             ingress_at_ns: self.shared.clock.now_ns(),
         };
-        self.shared.enqueue_record(record)
+        self.shared.publish_record(record)
     }
 
     pub fn reserve_market_batch(
@@ -1377,17 +1544,13 @@ impl MarketBatchReservation {
 
     pub fn commit(self) -> Result<(), PublishError> {
         let payload = self.reservation.commit();
-        self.shared
-            .dispatch_primary_lanes(&self.descriptor, self.header, &payload);
-        self.shared
-            .dispatch_fast_lanes(&self.descriptor, self.header, &payload);
         let record = EventRecord {
             descriptor: self.descriptor,
             header: self.header,
             payload,
             ingress_at_ns: self.ingress_at_ns,
         };
-        self.shared.enqueue_record(record)
+        self.shared.publish_record(record)
     }
 }
 
@@ -1433,7 +1596,6 @@ struct EventLoop {
     shutdown_reply: Option<Sender<Vec<Arc<SubscriberChannel>>>>,
     idle_count: usize,
     timers: BinaryHeap<TimerEntry>,
-    source_sequences: Vec<u64>,
     last_service_ns: [u64; 4],
     pending_cursor: u64,
 }
@@ -1441,7 +1603,6 @@ struct EventLoop {
 impl EventLoop {
     fn new(shared: Arc<EngineShared>, control_rx: Receiver<ControlCommand>) -> Self {
         let timer_capacity = shared.config.dispatch.timer_capacity;
-        let max_sources = shared.config.ingress.max_sources;
         Self {
             shared,
             control_rx,
@@ -1458,7 +1619,6 @@ impl EventLoop {
             shutdown_reply: None,
             idle_count: 0,
             timers: BinaryHeap::with_capacity(timer_capacity),
-            source_sequences: vec![0; max_sources],
             last_service_ns: [0; 4],
             pending_cursor: 0,
         }
@@ -1946,10 +2106,6 @@ impl EventLoop {
                     stage: TraceStage::EventLoopDequeued,
                     timestamp_ns: self.shared.clock.now_ns(),
                 });
-                if !self.accept_source_sequence(&record) {
-                    processed += 1;
-                    continue;
-                }
                 FanoutContinuation {
                     record,
                     after_token: 0,
@@ -2444,38 +2600,6 @@ impl EventLoop {
         self.reserved_pending_unused -= guarantee - len.min(guarantee);
         route.pending.clear();
         route.channel.health().set_pending_depth(0);
-    }
-
-    fn accept_source_sequence(&mut self, record: &EventRecord) -> bool {
-        let sequence = record.header.source_sequence;
-        if sequence == 0 {
-            return true;
-        }
-        let last = &mut self.source_sequences[record.header.source_id as usize];
-        if *last != 0 && sequence <= *last {
-            self.shared
-                .metrics
-                .drop_total
-                .fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        if *last != 0 && sequence != last.saturating_add(1) {
-            self.shared
-                .metrics
-                .source_sequence_gap_total
-                .fetch_add(1, Ordering::Relaxed);
-            self.shared.signal(FaultSignal {
-                kind: FaultKind::SourceSequenceGap,
-                subscriber_id: 0,
-                sequence,
-                detail: record.header.source_id as u64,
-            });
-            self.shared
-                .runtime_health
-                .mark_source_gap(record.header.source_id, sequence);
-        }
-        *last = sequence;
-        true
     }
 
     fn process_due_timers(&mut self, budget: DrainBudgetConfig) -> usize {

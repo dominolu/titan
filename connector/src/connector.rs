@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use hftbacktest::types::{Event, LiveError, Order};
 use titan_market_service::MarketDataKind;
 #[allow(unused_imports)]
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
 
 /// Exchange-owned stream coordinates attached by the concrete market-data connector. The service
 /// adapter transports these values unchanged; it must not infer gaps or create epochs itself.
@@ -122,6 +122,14 @@ pub enum AccountPublication {
         qty: f64,
         exch_ts: i64,
     },
+    Balance {
+        currency: String,
+        wallet: f64,
+        available: Option<f64>,
+        margin: Option<f64>,
+        unrealized_pnl: Option<f64>,
+        exch_ts: i64,
+    },
     Error(LiveError),
 }
 
@@ -134,12 +142,9 @@ pub struct PublishSender {
 }
 
 impl PublishSender {
-    /// Direct publication is synchronous and never signals queue pressure. Publication failures
-    /// are observed by the direct callback (MarketEventBridge/AccountEventEncoder), which owns
-    /// invalidation/recovery. The `Result` return is retained only for legacy call-site parity.
-    pub fn send(&self, event: PublishEvent) -> Result<(), TrySendError<PublishEvent>> {
+    /// Publication failures are owned by the callback, which invalidates and reconciles the stream.
+    pub fn send(&self, event: PublishEvent) {
         (self.publish)(DirectPublication::Event(&event));
-        Ok(())
     }
 
     /// Publishes a borrowed venue batch without constructing normalized `Event` vectors.
@@ -151,14 +156,9 @@ impl PublishSender {
         true
     }
 
-    /// Publishes an authenticated account fact directly into the AccountService encoder. As with
-    /// [`Self::send`], errors are handled by the direct callback and the `Result` is parity-only.
-    pub fn send_account(
-        &self,
-        publication: AccountPublication,
-    ) -> Result<(), TrySendError<AccountPublication>> {
+    /// Publishes an authenticated account fact through the same callback contract.
+    pub fn send_account(&self, publication: AccountPublication) {
         (self.publish)(DirectPublication::Account(&publication));
-        Ok(())
     }
 }
 
@@ -314,6 +314,7 @@ pub trait Connector: Send + Sync {
     fn track_managed_order(&self, symbol: &str, client_order_id: &str, order: &Order) {
         let _ = (symbol, client_order_id, order);
     }
+    fn reject_pending_order(&self, _client_order_id: &str) {}
 
     /// Requests a fresh exchange-owned snapshot without running trading initialization.
     fn request_snapshot(&mut self, _symbol: String) {}
@@ -410,8 +411,8 @@ mod tests {
                 snapshot: false,
             }),
         };
-        sender.send(delta.clone()).unwrap();
-        sender.send(delta.clone()).unwrap();
+        sender.send(delta.clone());
+        sender.send(delta.clone());
         assert!(matches!(
             receiver.recv().await,
             Some(PublishEvent::FeedBatch { symbol, .. }) if symbol == "BTC"
@@ -439,13 +440,11 @@ mod tests {
                 capture.fetch_add(1, Ordering::Relaxed);
             }
         });
-        sender
-            .send_account(AccountPublication::Position {
-                symbol: "BTC".to_owned(),
-                qty: -2.0,
-                exch_ts: 99,
-            })
-            .unwrap();
+        sender.send_account(AccountPublication::Position {
+            symbol: "BTC".to_owned(),
+            qty: -2.0,
+            exch_ts: 99,
+        });
         assert_eq!(observed.load(Ordering::Relaxed), 1);
     }
 }

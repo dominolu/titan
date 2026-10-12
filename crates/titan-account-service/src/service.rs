@@ -17,6 +17,9 @@ pub trait AccountAdminService: Send + Sync {
 }
 
 pub trait AccountService: Send + Sync {
+    fn pin_binding(&self, _account: AccountHandle) -> LocalResult<titan_core_types::BindingLease> {
+        Ok(Default::default())
+    }
     fn resolve(&self, account_key: &str) -> LocalResult<AccountHandle>;
     fn orders(
         &self,

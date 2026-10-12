@@ -47,5 +47,18 @@ fn main() {
         .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
         .collect();
     assert_eq!(&words[..5], &[5, 77, 0, 0, 3]);
+    instance.update_checkpoint_boundary(7, [9; 32]);
+    let snapshot = instance.freeze_state(1).expect("freeze checkpoint");
+    let mut successor = artifact
+        .instantiate(42, 2)
+        .expect("instantiate successor generation");
+    successor
+        .restore_state(&snapshot)
+        .expect("restore persisted generation");
+    successor
+        .complete_restore([9; 32], 2)
+        .expect("reconcile successor generation");
+    assert_eq!(successor.state.as_bytes(), instance.state.as_bytes());
+    assert!(!successor.command_gate_open());
     println!("V13 native artifact smoke passed: {words:?}");
 }

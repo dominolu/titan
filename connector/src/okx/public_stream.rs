@@ -232,8 +232,7 @@ impl PublicStream {
                             epoch,
                             ..LocalBook::default()
                         };
-                        let _ = self
-                            .ev_tx
+                        self.ev_tx
                             .send(PublishEvent::StreamInvalidated { symbol, epoch });
                         return Err(OkxError::ConnectionInterrupted);
                     }
@@ -245,8 +244,7 @@ impl PublicStream {
                             epoch,
                             ..LocalBook::default()
                         };
-                        let _ = self
-                            .ev_tx
+                        self.ev_tx
                             .send(PublishEvent::StreamInvalidated { symbol, epoch });
                         return Err(OkxError::ConnectionInterrupted);
                     }
@@ -292,18 +290,16 @@ impl PublicStream {
                         fval: 0.0,
                     });
                 }
-                self.ev_tx
-                    .send(PublishEvent::FeedBatch {
-                        symbol: data.arg.inst_id.clone().unwrap_or_default(),
-                        events,
-                        stream: Some(MarketStreamMetadata {
-                            epoch,
-                            first_update_sequence: u64::try_from(books.seq_id).unwrap_or(0),
-                            last_update_sequence: u64::try_from(books.seq_id).unwrap_or(0),
-                            snapshot,
-                        }),
-                    })
-                    .unwrap();
+                self.ev_tx.send(PublishEvent::FeedBatch {
+                    symbol: data.arg.inst_id.clone().unwrap_or_default(),
+                    events,
+                    stream: Some(MarketStreamMetadata {
+                        epoch,
+                        first_update_sequence: u64::try_from(books.seq_id).unwrap_or(0),
+                        last_update_sequence: u64::try_from(books.seq_id).unwrap_or(0),
+                        snapshot,
+                    }),
+                });
             }
             "trades" => {
                 let trades: Vec<Trade> = data
@@ -313,40 +309,36 @@ impl PublicStream {
                     .collect::<Result<_, _>>()?;
                 let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
                 for trade in trades {
-                    self.ev_tx
-                        .send(PublishEvent::FeedBatch {
-                            symbol: trade.inst_id.clone(),
-                            events: vec![Event {
-                                ev: if trade.side == "sell" {
-                                    LOCAL_SELL_TRADE_EVENT
-                                } else {
-                                    LOCAL_BUY_TRADE_EVENT
-                                },
-                                exch_ts: trade.ts.parse().unwrap_or(0) * 1_000_000,
-                                local_ts,
-                                order_id: 0,
-                                px: trade.px.parse().unwrap_or(0.0),
-                                qty: trade.sz.parse().unwrap_or(0.0),
-                                ival: 0,
-                                fval: 0.0,
-                            }],
-                            stream: None,
-                        })
-                        .unwrap();
+                    self.ev_tx.send(PublishEvent::FeedBatch {
+                        symbol: trade.inst_id.clone(),
+                        events: vec![Event {
+                            ev: if trade.side == "sell" {
+                                LOCAL_SELL_TRADE_EVENT
+                            } else {
+                                LOCAL_BUY_TRADE_EVENT
+                            },
+                            exch_ts: trade.ts.parse().unwrap_or(0) * 1_000_000,
+                            local_ts,
+                            order_id: 0,
+                            px: trade.px.parse().unwrap_or(0.0),
+                            qty: trade.sz.parse().unwrap_or(0.0),
+                            ival: 0,
+                            fval: 0.0,
+                        }],
+                        stream: None,
+                    });
                 }
             }
             "funding-rate" => {
                 for value in &data.data {
                     let funding: FundingRate = serde_json::from_value(value.clone())?;
-                    self.ev_tx
-                        .send(PublishEvent::Funding {
-                            symbol: funding.inst_id,
-                            funding_rate: funding.funding_rate.parse().unwrap_or(0.0),
-                            next_funding_time: funding.next_funding_time.parse().unwrap_or(0)
-                                * 1_000_000,
-                            exch_ts: funding.funding_time.parse().unwrap_or(0) * 1_000_000,
-                        })
-                        .unwrap();
+                    self.ev_tx.send(PublishEvent::Funding {
+                        symbol: funding.inst_id,
+                        funding_rate: funding.funding_rate.parse().unwrap_or(0.0),
+                        next_funding_time: funding.next_funding_time.parse().unwrap_or(0)
+                            * 1_000_000,
+                        exch_ts: funding.funding_time.parse().unwrap_or(0) * 1_000_000,
+                    });
                 }
             }
             "books5" => {
@@ -392,18 +384,16 @@ impl PublicStream {
                             fval: 0.0,
                         });
                     }
-                    self.ev_tx
-                        .send(PublishEvent::FeedBatch {
-                            symbol,
-                            events,
-                            stream: Some(MarketStreamMetadata {
-                                epoch,
-                                first_update_sequence: 1,
-                                last_update_sequence: 1,
-                                snapshot: true,
-                            }),
-                        })
-                        .unwrap();
+                    self.ev_tx.send(PublishEvent::FeedBatch {
+                        symbol,
+                        events,
+                        stream: Some(MarketStreamMetadata {
+                            epoch,
+                            first_update_sequence: 1,
+                            last_update_sequence: 1,
+                            snapshot: true,
+                        }),
+                    });
                 }
             }
             "bbo-tbt" => {
@@ -449,13 +439,11 @@ impl PublicStream {
                         });
                     }
                     if !events.is_empty() {
-                        self.ev_tx
-                            .send(PublishEvent::FeedBatch {
-                                symbol,
-                                events,
-                                stream: None,
-                            })
-                            .unwrap();
+                        self.ev_tx.send(PublishEvent::FeedBatch {
+                            symbol,
+                            events,
+                            stream: None,
+                        });
                     }
                 }
             }
@@ -512,7 +500,7 @@ impl PublicStream {
                     Ok(MarketDataCommand::Snapshot { symbol }) => {
                         let epoch = self.books.lock().unwrap_or_else(|p| p.into_inner())
                             .get(&symbol).map_or(0, |book| book.epoch);
-                        let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
                             symbol: symbol.clone(), epoch,
                         });
                         self.resubscribe_book(&mut write, symbol).await?;

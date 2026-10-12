@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
             AccountPublication::Position { symbol, qty, .. } => {
                 let _ = tx.send((format!("Position {symbol}={qty}"), Instant::now()));
             }
+            AccountPublication::Balance { .. } => {}
             AccountPublication::Error(e) => {
                 let _ = tx.send((format!("AccountError: {e:?}"), Instant::now()));
             }

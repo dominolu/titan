@@ -185,29 +185,24 @@ impl OfflineV13Adapter {
         now_ns: i64,
         configure: impl FnOnce(&mut StrategyRuntimeContextV13),
     ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
-        let mut context = StrategyRuntimeContextV13 {
+        let mut context = crate::v13::callback_context_v13(
             now_ns,
-            markets_ptr: self.markets.as_ptr(),
-            markets_len: self.markets.len() as u64,
-            positions_ptr: self.positions.as_ptr(),
-            positions_len: self.positions.len() as u64,
-            balances_ptr: self.balances.as_ptr(),
-            balances_len: self.balances.len() as u64,
-            accounts_ptr: self.accounts.as_ptr(),
-            accounts_len: self.accounts.len() as u64,
-            active_orders_ptr: self.active_orders.as_ptr(),
-            active_orders_len: self.active_orders.len() as u64,
-            ..StrategyRuntimeContextV13::default()
-        };
+            event.schema_version(),
+            &self.markets,
+            &self.positions,
+            &self.balances,
+            &self.accounts,
+            &self.active_orders,
+        );
         configure(&mut context);
-        self.staging
-            .begin_callback(self.instance.command_gate_open(), &self.active_orders);
-        self.staging.bind_context(&mut context);
-        if let Err(error) = self.instance.invoke(event, &mut context) {
-            self.staging.finish_callback(-1);
-            return Err(error);
-        }
-        let commands = self.staging.finish_callback(0).to_vec();
+        let commands = crate::v13::invoke_staged_v13(
+            &mut self.instance,
+            &mut self.staging,
+            &mut context,
+            event,
+            true,
+            &self.active_orders,
+        )?;
         self.staging.clear_committed();
         Ok(commands)
     }

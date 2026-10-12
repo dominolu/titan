@@ -264,12 +264,13 @@ impl ExecutionRuntime {
         metrics_snapshot(&self.state)
     }
 
-    pub fn shutdown(&mut self, deadline: Instant) {
+    pub fn shutdown(&mut self, deadline: Instant) -> Result<(), usize> {
         self.state.accepting.store(false, Ordering::Release);
         while self.active_tasks() != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
         let mut tasks = self.state.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let unfinished = self.active_tasks();
         if self.active_tasks() != 0 {
             for task in tasks.iter() {
                 if !task.is_finished() {
@@ -281,6 +282,11 @@ impl ExecutionRuntime {
         drop(tasks);
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+        if unfinished == 0 {
+            Ok(())
+        } else {
+            Err(unfinished)
         }
     }
 }
@@ -310,7 +316,7 @@ impl ExecutionDispatcher {
 
 impl Drop for ExecutionRuntime {
     fn drop(&mut self) {
-        self.shutdown(Instant::now());
+        let _ = self.shutdown(Instant::now());
     }
 }
 
@@ -332,26 +338,66 @@ impl ExecutionHandle {
         let started = Instant::now();
         let asset_id = request.asset_id;
         let client_order_id = Some(request.client_order_id);
-        self.spawn(
+        let result = self.spawn(
             asset_id,
             ExecutionRequestKind::Submit,
             client_order_id,
             || self.connector.submit(request),
             started,
-        )
+        );
+        if let Err(error) = result {
+            self.observe_local_rejection(
+                asset_id,
+                ExecutionRequestKind::Submit,
+                client_order_id,
+                error,
+            );
+        }
+        result
     }
 
     pub fn cancel(&self, request: DirectCancelOrderRequest) -> Result<ExecutionTaskId, SpawnError> {
         let started = Instant::now();
         let asset_id = request.asset_id;
         let client_order_id = request.client_order_id;
-        self.spawn(
+        let result = self.spawn(
             asset_id,
             ExecutionRequestKind::Cancel,
             client_order_id,
             || self.connector.cancel(request),
             started,
-        )
+        );
+        if let Err(error) = result {
+            self.observe_local_rejection(
+                asset_id,
+                ExecutionRequestKind::Cancel,
+                client_order_id,
+                error,
+            );
+        }
+        result
+    }
+
+    fn observe_local_rejection(
+        &self,
+        asset_id: AssetId,
+        request_kind: ExecutionRequestKind,
+        client_order_id: Option<ClientOrderId>,
+        error: SpawnError,
+    ) {
+        self.observer.observe(ObservedExecutionResult {
+            task_id: 0,
+            account: self.account,
+            asset_id,
+            request_kind,
+            client_order_id,
+            outcome: ObservedExecutionOutcome::Rejected(DirectExecutionError {
+                exchange: "runtime",
+                code: "LOCAL_DISPATCH_REJECTED".into(),
+                message: error.to_string(),
+                outcome_unknown: false,
+            }),
+        });
     }
 
     fn spawn(
@@ -563,7 +609,7 @@ mod tests {
         assert!(running.spawn_p50_ns <= running.spawn_p99_ns);
         assert!(running.spawn_p99_ns <= running.spawn_p999_ns);
         assert!(running.spawn_p999_ns <= running.spawn_max_ns);
-        runtime.shutdown(Instant::now());
+        assert!(runtime.shutdown(Instant::now()).is_err());
         assert_eq!(handle.submit(order()), Err(SpawnError::RuntimeStopping));
         let stopped = runtime.metrics();
         assert_eq!(stopped.stopping_rejections, 1);
@@ -586,7 +632,7 @@ mod tests {
                 matches!(observed.outcome, ObservedExecutionOutcome::Unknown(_)),
                 unknown
             );
-            runtime.shutdown(Instant::now() + Duration::from_secs(1));
+            let _ = runtime.shutdown(Instant::now() + Duration::from_secs(1));
         }
     }
 

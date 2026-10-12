@@ -642,6 +642,10 @@ pub trait AccountConnectorFactory: Send + Sync + 'static {
 
 pub trait AccountConnector: Send + Sync + 'static {
     fn start(&self) -> Result<(), AccountConnectorError>;
+    /// Publish an already prepared candidate image after its external admission gate opens.
+    fn activate(&self) -> Result<(), AccountConnectorError> {
+        Ok(())
+    }
     fn stop(&self, deadline: Instant) -> Result<(), AccountConnectorError>;
     fn orders(
         &self,

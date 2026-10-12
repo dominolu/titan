@@ -209,7 +209,14 @@ impl ConfigurationAdapter {
                 path: path.to_path_buf(),
                 source,
             })?;
-        let config = toml::from_str::<ApplicationConfig>(&contents).map_err(|source| {
+        Self::load_contents(&contents, path)
+    }
+
+    pub fn load_contents(
+        contents: &str,
+        path: &Path,
+    ) -> Result<AdaptedConfiguration, ConfigurationError> {
+        let config = toml::from_str::<ApplicationConfig>(contents).map_err(|source| {
             ConfigurationError::Toml {
                 path: path.to_path_buf(),
                 source,
@@ -496,6 +503,55 @@ impl TradingRuntime {
         self.strategy.as_ref()
     }
 
+    pub fn check_health(&self) -> Result<(), ApplicationRuntimeError> {
+        use titan_market_service::MarketService;
+        let events = self.event_handle.runtime_health();
+        if events.event_loop_failed
+            || events.market_stream_invalid
+            || events.critical_ingress_backpressure
+            || events.arena_pressure_mask != 0
+        {
+            return Err(ApplicationRuntimeError::Shutdown(format!(
+                "event engine unhealthy: {events:?}"
+            )));
+        }
+        for entry in self.market.list().iter().filter(|entry| entry.enabled) {
+            let health = self
+                .market
+                .health(entry.handle)
+                .map_err(|error| ApplicationRuntimeError::Shutdown(error.to_string()))?;
+            if health.state != titan_market_service::ConnectorHealth::Running {
+                return Err(ApplicationRuntimeError::Shutdown(format!(
+                    "market {}: {:?}: {}",
+                    entry.source_key, health.state, health.message
+                )));
+            }
+        }
+        for entry in self.account.list().iter().filter(|entry| entry.enabled) {
+            let health = self
+                .account
+                .health(entry.handle)
+                .map_err(|error| ApplicationRuntimeError::Shutdown(error.to_string()))?;
+            if health.state != titan_account_service::AccountLifecycle::Ready {
+                return Err(ApplicationRuntimeError::Shutdown(format!(
+                    "account {}: {:?}: {}",
+                    entry.account_key, health.state, health.message
+                )));
+            }
+        }
+        if let Some(service) = &self.strategy {
+            for entry in service.list().iter().filter(|entry| entry.enabled) {
+                if entry.lifecycle != titan_strategy_runtime::StrategyLifecycle::Running {
+                    return Err(ApplicationRuntimeError::Shutdown(format!(
+                        "strategy {}: {:?}",
+                        entry.strategy_key, entry.lifecycle
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn shutdown(&mut self) -> Result<(), ApplicationRuntimeError> {
         let deadline = std::time::Instant::now() + self.shutdown_deadline;
         let mut failures = Vec::new();
@@ -517,7 +573,11 @@ impl TradingRuntime {
             spawn_max_ns = execution_metrics.spawn_max_ns,
             "direct execution runtime summary"
         );
-        self.execution.shutdown(deadline);
+        if let Err(active) = self.execution.shutdown(deadline) {
+            failures.push(format!(
+                "execution shutdown timed out with {active} active requests"
+            ));
+        }
         if let Err(error) = self.account.quiesce_all(deadline) {
             failures.push(format!("account quiesce: {error}"));
         }
@@ -530,7 +590,7 @@ impl TradingRuntime {
         if let Err(error) = self.market.shutdown() {
             failures.push(format!("market shutdown: {error}"));
         }
-        if let Err(error) = self.events.stop() {
+        if let Err(error) = self.events.stop_before(deadline) {
             failures.push(format!("event engine stop: {error}"));
         }
         if failures.is_empty() {

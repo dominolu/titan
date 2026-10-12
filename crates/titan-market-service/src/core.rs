@@ -45,9 +45,10 @@ pub struct MarketServiceCore {
     registry: ConnectorRegistry,
     runtime: RwLock<Option<RuntimeBindings>>,
     next_operation_id: AtomicU64,
-    operations: RwLock<HashMap<OperationId, MarketOperationSnapshot>>,
+    operations: RwLock<titan_core_types::OperationHistory<OperationId, MarketOperationSnapshot>>,
     accepting: AtomicBool,
     mutation: Mutex<()>,
+    binding_pins: titan_core_types::BindingPins<MarketSourceHandle>,
 }
 
 impl MarketServiceCore {
@@ -58,9 +59,12 @@ impl MarketServiceCore {
             registry: ConnectorRegistry::default(),
             runtime: RwLock::new(None),
             next_operation_id: AtomicU64::new(1),
-            operations: RwLock::new(HashMap::new()),
+            operations: RwLock::new(titan_core_types::OperationHistory::new(|value| {
+                value.state == OperationState::Pending
+            })),
             accepting: AtomicBool::new(false),
             mutation: Mutex::new(()),
+            binding_pins: Default::default(),
         })
     }
 
@@ -310,6 +314,12 @@ impl MarketAdminService for MarketServiceCore {
     fn remove(&self, source: MarketSourceHandle) -> LocalResult<OperationId> {
         self.ensure_accepting()?;
         let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        if self.binding_pins.is_pinned(source) {
+            return Err(MarketError::new(
+                MarketErrorKind::ConnectorRejected,
+                "market source is bound to a strategy",
+            ));
+        }
         let entry = self.registry.get(source)?;
         if matches!(
             entry.lifecycle(),
@@ -334,6 +344,12 @@ impl MarketAdminService for MarketServiceCore {
     ) -> LocalResult<MarketSourceHandle> {
         self.ensure_accepting()?;
         let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        if self.binding_pins.is_pinned(source) {
+            return Err(MarketError::new(
+                MarketErrorKind::ConnectorRejected,
+                "component is bound to a strategy; stop and remove that strategy before replacement",
+            ));
+        }
         let old = self.registry.get(source)?;
         if old.definition.source_key != definition.source_key {
             return Err(MarketError::new(
@@ -403,6 +419,14 @@ impl MarketAdminService for MarketServiceCore {
 }
 
 impl MarketService for MarketServiceCore {
+    fn pin_binding(
+        &self,
+        handle: MarketSourceHandle,
+    ) -> LocalResult<titan_core_types::BindingLease> {
+        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        self.registry.get(handle)?;
+        Ok(self.binding_pins.pin(handle))
+    }
     fn resolve(&self, source_key: &str) -> LocalResult<MarketSourceHandle> {
         self.registry.resolve(source_key)
     }
