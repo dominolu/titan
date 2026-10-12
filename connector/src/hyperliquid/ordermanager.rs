@@ -53,6 +53,13 @@ impl OrderManager {
         }
     }
 
+    pub fn reject_pending_order(&mut self, client_order_id: &str) {
+        let key = Self::normalize_cloid(client_order_id);
+        if let Some(order) = self.orders.get_mut(&key) {
+            crate::utils::reject_pending_order(&mut order.order);
+        }
+    }
+
     pub fn track_managed_order(
         &mut self,
         symbol: &str,

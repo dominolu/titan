@@ -4,15 +4,15 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 pub use http::{fetch_depth_snapshot, keep_connection};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::channel;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 use tracing::{error, warn};
 
 use crate::{error::ConnectorError, throttler::Throttler};
 
-fn handle(
+async fn handle(
     prev_u_map: &mut HashMap<String, i64>,
-    writer_tx: &UnboundedSender<(DateTime<Utc>, String, String)>,
+    writer_tx: &crate::pipeline::WriterSender,
     recv_time: DateTime<Utc>,
     data: Utf8Bytes,
     throttler: &Throttler,
@@ -51,7 +51,7 @@ fn handle(
                     match throttler_.execute(fetch_depth_snapshot(&symbol_)).await {
                         Some(Ok(data)) => {
                             let recv_time = Utc::now();
-                            let _ = writer_tx_.send((recv_time, symbol_, data));
+                            let _ = writer_tx_.send((recv_time, symbol_, data)).await;
                         }
                         Some(Err(error)) => {
                             error!(
@@ -71,7 +71,10 @@ fn handle(
             }
             *prev_u_map.entry(symbol.to_string()).or_insert(0) = u;
         }
-        let _ = writer_tx.send((recv_time, symbol.to_string(), data.to_string()));
+        writer_tx
+            .send((recv_time, symbol.to_string(), data.to_string()))
+            .await
+            .map_err(|_| ConnectorError::FormatError)?;
     }
     Ok(())
 }
@@ -79,21 +82,22 @@ fn handle(
 pub async fn run_collection(
     streams: Vec<String>,
     symbols: Vec<String>,
-    writer_tx: UnboundedSender<(DateTime<Utc>, String, String)>,
+    writer_tx: crate::pipeline::WriterSender,
 ) -> Result<(), anyhow::Error> {
     let mut prev_u_map = HashMap::new();
-    let (ws_tx, mut ws_rx) = unbounded_channel();
-    let h = tokio::spawn(keep_connection(streams, symbols, ws_tx.clone()));
+    let (ws_tx, mut ws_rx) = channel(8192);
+    let mut h =
+        crate::pipeline::AbortOnDrop(tokio::spawn(keep_connection(streams, symbols, ws_tx)));
     // https://www.binance.com/en/support/faq/rate-limits-on-binance-futures-281596e222414cdd9051664ea621cdc3
     // The default rate limit per IP is 2,400/min and the weight is 20 at a depth of 1000.
     // The maximum request rate for fetching snapshots is 120 per minute.
     // Sets the rate limit with a margin to account for connection requests.
     let throttler = Throttler::new(100);
     while let Some((recv_time, data)) = ws_rx.recv().await {
-        if let Err(error) = handle(&mut prev_u_map, &writer_tx, recv_time, data, &throttler) {
+        if let Err(error) = handle(&mut prev_u_map, &writer_tx, recv_time, data, &throttler).await {
             error!(?error, "couldn't handle the received data.");
         }
     }
-    let _ = h.await;
+    let _ = (&mut h.0).await;
     Ok(())
 }

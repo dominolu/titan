@@ -500,9 +500,9 @@ fn engine_control_error(error: EngineError) -> CoreError {
 fn publish_control_error(error: PublishError) -> CoreError {
     let kind = match error {
         PublishError::Stopped => ErrorKind::RuntimeNotActive,
-        PublishError::InvalidEvent | PublishError::PayloadTooLarge { .. } => {
-            ErrorKind::SubscriptionRejected
-        }
+        PublishError::InvalidEvent
+        | PublishError::ReentrantSource
+        | PublishError::PayloadTooLarge { .. } => ErrorKind::SubscriptionRejected,
         PublishError::EventArenaExhausted(_)
         | PublishError::CriticalIngressFull
         | PublishError::MarketIngressFull => ErrorKind::ControlQueueFull,

@@ -20,7 +20,7 @@ impl RotatingFile {
         let date = datetime.date_naive().format("%Y%m%d");
         let file = File::options()
             .create(true)
-            .write(true)
+            .append(true)
             .open(format!("{path}_{date}.gz"))?;
         Ok(GzEncoder::new(file, Compression::default()))
     }
@@ -37,7 +37,7 @@ impl RotatingFile {
         let date = datetime.date_naive();
         if date != self.date {
             let file = self.file.take().unwrap();
-            let _ = file.finish();
+            file.finish()?.sync_all()?;
             self.file = Some(Self::create(datetime, &self.path)?);
             self.date = date;
             info!(%date, %self.path, "date is changed");
@@ -50,9 +50,18 @@ impl RotatingFile {
     }
 }
 
+impl RotatingFile {
+    fn finish(&mut self) -> io::Result<()> {
+        if let Some(file) = self.file.take() {
+            file.finish()?.sync_all()?;
+        }
+        Ok(())
+    }
+}
+
 impl Drop for RotatingFile {
     fn drop(&mut self) {
-        let _ = self.file.take().unwrap().finish();
+        let _ = self.finish();
     }
 }
 
@@ -88,5 +97,15 @@ impl Writer {
             }
         }
         Ok(())
+    }
+
+    pub fn finish(&mut self) -> io::Result<()> {
+        let mut failure = None;
+        for file in self.file.values_mut() {
+            if let Err(error) = file.finish() {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
 }

@@ -248,13 +248,6 @@ impl MarketEventBridge {
             .ok_or_else(|| ConnectorError::new("depth item count overflow"))?;
         let item_count =
             u16::try_from(count).map_err(|_| ConnectorError::new("too many depth items"))?;
-        let payload_length = MarketBatchHeaderV1::ENCODED_LEN
-            .checked_add(
-                count
-                    .checked_mul(DepthItemV1::ENCODED_LEN)
-                    .ok_or_else(|| ConnectorError::new("depth payload overflow"))?,
-            )
-            .ok_or_else(|| ConnectorError::new("depth payload overflow"))?;
         let header = MarketBatchHeaderV1 {
             asset_id: asset_id.0,
             kind: if stream.snapshot { 1 } else { 2 },
@@ -267,22 +260,11 @@ impl MarketEventBridge {
             exchange_ts,
             receive_ts,
         };
-        self.context.event_publisher.publish_market_batch(
-            DEPTH_BATCH_EVENT,
-            payload_length,
-            asset_id,
-            exchange_ts,
-            receive_ts,
-            TraceContext::default(),
-            |payload| {
-                header
-                    .encode_into_slice(payload)
-                    .map_err(ConnectorError::new)?;
-                let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
-                for (side, levels) in [(1, bids), (2, asks)] {
-                    let mut encode_level = |price: &str,
-                                            quantity: &str|
-                     -> Result<(), ConnectorError> {
+        publish_batch(&self.context, DEPTH_BATCH_EVENT, header, |payload| {
+            let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
+            for (side, levels) in [(1, bids), (2, asks)] {
+                let mut encode_level =
+                    |price: &str, quantity: &str| -> Result<(), ConnectorError> {
                         let price_ticks = parse_exact_decimal(price, units.price_unit, "price")?;
                         let quantity_lots =
                             parse_exact_decimal(quantity, units.quantity_unit, "quantity")?;
@@ -296,22 +278,21 @@ impl MarketEventBridge {
                         offset = end;
                         Ok(())
                     };
-                    match levels {
-                        NativeDepthLevels::Owned(levels) => {
-                            for (price, quantity) in levels {
-                                encode_level(price, quantity)?;
-                            }
+                match levels {
+                    NativeDepthLevels::Owned(levels) => {
+                        for (price, quantity) in levels {
+                            encode_level(price, quantity)?;
                         }
-                        NativeDepthLevels::Borrowed(levels) => {
-                            for &(price, quantity) in levels {
-                                encode_level(price, quantity)?;
-                            }
+                    }
+                    NativeDepthLevels::Borrowed(levels) => {
+                        for &(price, quantity) in levels {
+                            encode_level(price, quantity)?;
                         }
                     }
                 }
-                Ok(())
-            },
-        )
+            }
+            Ok(())
+        })
     }
 
     fn publish_native_values(
@@ -333,8 +314,6 @@ impl MarketEventBridge {
         }
         let item_count = u16::try_from(values.len())
             .map_err(|_| ConnectorError::new("too many market items"))?;
-        let payload_length =
-            MarketBatchHeaderV1::ENCODED_LEN + values.len() * DepthItemV1::ENCODED_LEN;
         let header = MarketBatchHeaderV1 {
             asset_id: asset_id.0,
             kind,
@@ -347,34 +326,23 @@ impl MarketEventBridge {
             exchange_ts,
             receive_ts,
         };
-        self.context.event_publisher.publish_market_batch(
-            event_type,
-            payload_length,
-            asset_id,
-            exchange_ts,
-            receive_ts,
-            TraceContext::default(),
-            |payload| {
-                header
-                    .encode_into_slice(payload)
+        publish_batch(&self.context, event_type, header, |payload| {
+            let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
+            for &(price, quantity, side) in values {
+                let item = DepthItemV1 {
+                    price_ticks: scaled(price, units.price_tick, "price")?,
+                    quantity_lots: scaled(quantity, units.quantity_lot, "quantity")?,
+                    side,
+                    action: if quantity == 0.0 { 2 } else { 1 },
+                    reserved: [0; 6],
+                };
+                let end = offset + DepthItemV1::ENCODED_LEN;
+                item.encode_into_slice(&mut payload[offset..end])
                     .map_err(ConnectorError::new)?;
-                let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
-                for &(price, quantity, side) in values {
-                    let item = DepthItemV1 {
-                        price_ticks: scaled(price, units.price_tick, "price")?,
-                        quantity_lots: scaled(quantity, units.quantity_lot, "quantity")?,
-                        side,
-                        action: if quantity == 0.0 { 2 } else { 1 },
-                        reserved: [0; 6],
-                    };
-                    let end = offset + DepthItemV1::ENCODED_LEN;
-                    item.encode_into_slice(&mut payload[offset..end])
-                        .map_err(ConnectorError::new)?;
-                    offset = end;
-                }
-                Ok(())
-            },
-        )
+                offset = end;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -511,9 +479,6 @@ fn publish_events(
         };
         let item_count = u16::try_from(item_count)
             .map_err(|_| ConnectorError::new("too many market batch items"))?;
-        let payload_length = MarketBatchHeaderV1::ENCODED_LEN
-            .checked_add(usize::from(item_count) * DepthItemV1::ENCODED_LEN)
-            .ok_or_else(|| ConnectorError::new("market batch payload overflow"))?;
         let header = MarketBatchHeaderV1 {
             asset_id: asset_id.0,
             kind,
@@ -526,34 +491,48 @@ fn publish_events(
             exchange_ts,
             receive_ts,
         };
-        context.event_publisher.publish_market_batch(
-            event_type,
-            payload_length,
-            asset_id,
-            exchange_ts,
-            receive_ts,
-            TraceContext::default(),
-            |payload| {
-                header
-                    .encode_into_slice(payload)
+        publish_batch(context, event_type, header, |payload| {
+            let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
+            for event in events
+                .iter()
+                .filter(|event| event_batch_index(event) == Some(index))
+            {
+                let end = offset + DepthItemV1::ENCODED_LEN;
+                encode_item(event, units)?
+                    .encode_into_slice(&mut payload[offset..end])
                     .map_err(ConnectorError::new)?;
-                let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
-                for event in events
-                    .iter()
-                    .filter(|event| event_batch_index(event) == Some(index))
-                {
-                    let end = offset + DepthItemV1::ENCODED_LEN;
-                    encode_item(event, units)?
-                        .encode_into_slice(&mut payload[offset..end])
-                        .map_err(ConnectorError::new)?;
-                    offset = end;
-                }
-                debug_assert_eq!(offset, payload.len());
-                Ok(())
-            },
-        )?;
+                offset = end;
+            }
+            debug_assert_eq!(offset, payload.len());
+            Ok(())
+        })?;
     }
     Ok(())
+}
+
+fn publish_batch(
+    context: &MarketConnectorContext,
+    event_type: &str,
+    header: MarketBatchHeaderV1,
+    encode: impl FnOnce(&mut [u8]) -> Result<(), ConnectorError>,
+) -> Result<(), ConnectorError> {
+    let length = MarketBatchHeaderV1::ENCODED_LEN
+        .checked_add(usize::from(header.item_count) * DepthItemV1::ENCODED_LEN)
+        .ok_or_else(|| ConnectorError::new("market batch payload overflow"))?;
+    context.event_publisher.publish_market_batch(
+        event_type,
+        length,
+        AssetId(header.asset_id),
+        header.exchange_ts,
+        header.receive_ts,
+        TraceContext::default(),
+        |payload| {
+            header
+                .encode_into_slice(payload)
+                .map_err(ConnectorError::new)?;
+            encode(payload)
+        },
+    )
 }
 
 fn event_batch_index(event: &Event) -> Option<usize> {
@@ -659,23 +638,8 @@ fn is_active(
 }
 
 pub(crate) fn scaled(value: f64, unit: f64, field: &str) -> Result<i64, ConnectorError> {
-    if !value.is_finite() || !unit.is_finite() || unit <= 0.0 {
-        return Err(ConnectorError::new(
-            "non-finite value or invalid instrument unit",
-        ));
-    }
-    let normalized = value / unit;
-    if !normalized.is_finite() || normalized.abs() > i64::MAX as f64 {
-        return Err(ConnectorError::new(format!("{field} is out of range")));
-    }
-    let rounded = normalized.round();
-    let tolerance = normalized.abs().max(1.0) * 1e-9;
-    if (normalized - rounded).abs() > tolerance {
-        return Err(ConnectorError::new(format!(
-            "{field} is not aligned to its instrument unit"
-        )));
-    }
-    Ok(rounded as i64)
+    crate::units::integer_units(value, unit, true)
+        .map_err(|error| ConnectorError::new(format!("{field}: {error}")))
 }
 
 #[cfg(test)]

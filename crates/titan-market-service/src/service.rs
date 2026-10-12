@@ -21,6 +21,12 @@ pub trait MarketAdminService: Send + Sync {
 }
 
 pub trait MarketService: Send + Sync {
+    fn pin_binding(
+        &self,
+        _source: MarketSourceHandle,
+    ) -> LocalResult<titan_core_types::BindingLease> {
+        Ok(Default::default())
+    }
     fn resolve(&self, source_key: &str) -> LocalResult<MarketSourceHandle>;
     fn subscribe(
         &self,

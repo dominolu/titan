@@ -76,6 +76,9 @@ pub enum V13EventKind {
 }
 
 impl V13EventKind {
+    pub(crate) fn schema_version(self) -> u32 {
+        if self == Self::Fill { 2 } else { 1 }
+    }
     fn index(self) -> usize {
         self as usize
     }
@@ -95,6 +98,49 @@ impl V13EventKind {
             _ => return Err(V13LoadError::Contract("unknown subscription event")),
         })
     }
+}
+
+pub(crate) fn callback_context_v13(
+    now_ns: i64,
+    schema_version: u32,
+    markets: &[TitanMarketView],
+    positions: &[TitanPositionView],
+    balances: &[TitanBalanceView],
+    accounts: &[TitanAccountView],
+    active_orders: &[TitanActiveOrderView],
+) -> StrategyRuntimeContextV13 {
+    StrategyRuntimeContextV13 {
+        now_ns,
+        event_schema_version: schema_version,
+        markets_ptr: markets.as_ptr(),
+        markets_len: markets.len() as u64,
+        positions_ptr: positions.as_ptr(),
+        positions_len: positions.len() as u64,
+        balances_ptr: balances.as_ptr(),
+        balances_len: balances.len() as u64,
+        accounts_ptr: accounts.as_ptr(),
+        accounts_len: accounts.len() as u64,
+        active_orders_ptr: active_orders.as_ptr(),
+        active_orders_len: active_orders.len() as u64,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn invoke_staged_v13(
+    instance: &mut StrategyInstanceV13,
+    staging: &mut CallbackCommandStagingV13,
+    context: &mut StrategyRuntimeContextV13,
+    kind: V13EventKind,
+    gate: bool,
+    active_orders: &[TitanActiveOrderView],
+) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+    staging.begin_callback(gate && instance.command_gate_open(), active_orders);
+    staging.bind_context(context);
+    if let Err(error) = instance.invoke(kind, context) {
+        staging.finish_callback(-1);
+        return Err(error);
+    }
+    Ok(staging.finish_callback(0).to_vec())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -922,6 +968,8 @@ impl StrategyInstanceV13 {
         }
         self.command_gate_open = false;
         self.lifecycle = StrategyInstanceLifecycleV13::Restoring;
+        // Reconciliation compares the successor against the persisted generation.
+        self.generation = snapshot.generation;
         self.state
             .as_bytes_mut()
             .copy_from_slice(&snapshot.state_bytes);

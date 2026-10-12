@@ -365,13 +365,9 @@ fn publish_stream_error(
     error: LiveError,
 ) {
     if private_channels {
-        sender
-            .send_account(AccountPublication::Error(error))
-            .expect("account publication receiver must remain live while connector runs");
+        sender.send_account(AccountPublication::Error(error));
     } else {
-        sender
-            .send(PublishEvent::ConnectorError(error))
-            .expect("market publication receiver must remain live while connector runs");
+        sender.send(PublishEvent::ConnectorError(error));
     }
 }
 
@@ -475,6 +471,13 @@ impl Connector for Hyperliquid {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .track_managed_order(symbol, client_order_id, order.clone());
+    }
+
+    fn reject_pending_order(&self, client_order_id: &str) {
+        self.order_manager
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reject_pending_order(client_order_id);
     }
 
     fn broker_api(&self) -> Option<Arc<dyn crate::api::BrokerApi>> {
@@ -1259,6 +1262,7 @@ mod live_ws_tests {
                 AccountPublication::Position { symbol, qty, .. } => {
                     let _ = tx.send(PrivateFact::Position(symbol.clone(), *qty));
                 }
+                AccountPublication::Balance { .. } => {}
                 AccountPublication::Error(e) => {
                     let _ = tx.send(PrivateFact::Error(format!("AccountError: {e:?}")));
                 }

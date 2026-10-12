@@ -107,6 +107,37 @@ def active_order(order_id, *, role=strategy.INITIATOR, status=strategy.ACCEPTED_
 
 
 class TestPairArbV3StateMachine(unittest.TestCase):
+    def test_unresolved_risk_gap_cannot_be_reported_as_successful_stop(self):
+        state = fresh_state()
+        state["slot"]["id"], state["slot"]["target_lots"] = 1, 2
+        state["slot"]["hedge_filled_lots"] = 2
+        context = Context(state)
+        with (patch.object(strategy, "cancel_role", strategy.cancel_role.py_func),
+              patch.object(strategy, "ensure_draining_hedge", strategy.ensure_draining_hedge.py_func)):
+            self.assertEqual(strategy.on_stop.py_func(context), -1)
+        self.assertEqual(int(state["pair"]["status"]), strategy.ERROR)
+        self.assertEqual(context.submits, [])
+    def test_taker_legs_accept_either_fill_order_without_false_halt(self):
+        for roles in ((strategy.HEDGE, strategy.INITIATOR), (strategy.INITIATOR, strategy.HEDGE)):
+            with self.subTest(roles=roles):
+                state = fresh_state(mode="TAKER_TAKER")
+                state["slot"]["id"], state["slot"]["target_lots"] = 1, 2
+                state["slot"]["initiator_order_id"], state["slot"]["hedge_order_id"] = 7, 8
+                strategy.bind_ref.py_func(state, 7, strategy.INITIATOR)
+                strategy.bind_ref.py_func(state, 8, strategy.HEDGE)
+                context = Context(state)
+                for role in roles:
+                    fills = np.zeros(1, dtype=abi_v13.fill_dtype)
+                    fills[0]["order_id"] = 7 if role == strategy.INITIATOR else 8
+                    fills[0]["fill_qty_lots"], fills[0]["fill_price_ticks"], fills[0]["final_fill"] = 2, 100, 1
+                    context._fills = fills
+                    with patch.object(strategy, "ensure_draining_hedge", strategy.ensure_draining_hedge.py_func):
+                        strategy.on_fill.py_func(context)
+                    self.assertEqual(int(state["pair"]["last_error"]), 0)
+                self.assertEqual(int(state["slot"]["initiator_filled_lots"]), 2)
+                self.assertEqual(int(state["slot"]["hedge_filled_lots"]), 2)
+                self.assertEqual(context.submits, [])
+
     def test_private_state_contains_only_minimal_order_refs(self):
         names = set(strategy.state_dtype.names)
         self.assertEqual(names, {"pair", "slot", "order_refs"})

@@ -2,7 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, Side, Status};
+#[cfg(test)]
+use hftbacktest::types::Side;
+use hftbacktest::types::{Order, Status};
 
 use crate::{
     connector::GetOrders,
@@ -50,6 +52,13 @@ impl OrderManager {
             prefix: prefix.to_string(),
             orders: Default::default(),
             order_id_map: Default::default(),
+        }
+    }
+
+    pub fn reject_pending_order(&mut self, client_order_id: &str) {
+        let key = client_order_id.to_owned();
+        if let Some(order) = self.orders.get_mut(&key) {
+            crate::utils::reject_pending_order(&mut order.order);
         }
     }
 
@@ -127,6 +136,7 @@ impl OrderManager {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn cancel_all(&mut self, symbol: &str, pos_side: Option<&str>) -> Vec<Order> {
         let mut removed_order_ids = Vec::new();
         let mut removed_orders = Vec::new();

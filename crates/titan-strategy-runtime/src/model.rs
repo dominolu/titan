@@ -85,6 +85,10 @@ pub struct StrategyRuntimeSpec {
     pub reliable_pending_capacity: usize,
     pub worker_policy: SubscriberRuntimeMode,
     pub timer_capacity: usize,
+    #[serde(default = "default_command_capacity")]
+    pub max_commands_per_callback: usize,
+    #[serde(default = "default_checkpoint_interval")]
+    pub checkpoint_interval: Duration,
     /// Optional live housekeeping callback cadence. Timer callbacks are serialized on the
     /// strategy's primary lane and therefore share ordering with account and market facts.
     #[serde(default)]
@@ -103,6 +107,8 @@ impl Default for StrategyRuntimeSpec {
             reliable_pending_capacity: 1_024,
             worker_policy: SubscriberRuntimeMode::SpinSleep,
             timer_capacity: 64,
+            max_commands_per_callback: default_command_capacity(),
+            checkpoint_interval: default_checkpoint_interval(),
             timer_interval: None,
             max_handler_duration: Duration::from_millis(5),
             cpu_affinity: None,
@@ -110,6 +116,13 @@ impl Default for StrategyRuntimeSpec {
             stop_timeout: Duration::from_secs(10),
         }
     }
+}
+
+fn default_command_capacity() -> usize {
+    64
+}
+fn default_checkpoint_interval() -> Duration {
+    Duration::from_secs(1)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -273,6 +286,7 @@ pub struct StrategyInstanceSnapshot {
     pub definition_version: u64,
     pub artifact_id: StrategyArtifactId,
     pub lifecycle: StrategyLifecycle,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

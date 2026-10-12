@@ -8,12 +8,14 @@
 mod activation;
 mod error;
 mod event;
+mod lifecycle;
 mod model;
 mod resources;
 
 pub use activation::*;
 pub use error::*;
 pub use event::*;
+pub use lifecycle::*;
 pub use model::*;
 pub use resources::*;
 

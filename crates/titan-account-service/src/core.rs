@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -40,9 +39,10 @@ pub struct AccountServiceCore {
     secret_provider: Arc<dyn SecretProvider>,
     runtime: RwLock<Option<RuntimeBindings>>,
     next_operation_id: AtomicU64,
-    operations: RwLock<HashMap<OperationId, AccountOperationSnapshot>>,
+    operations: RwLock<titan_core_types::OperationHistory<OperationId, AccountOperationSnapshot>>,
     accepting: AtomicBool,
     mutation: Mutex<()>,
+    binding_pins: titan_core_types::BindingPins<AccountHandle>,
 }
 
 impl AccountServiceCore {
@@ -60,9 +60,12 @@ impl AccountServiceCore {
             secret_provider,
             runtime: RwLock::new(None),
             next_operation_id: AtomicU64::new(1),
-            operations: RwLock::new(HashMap::new()),
+            operations: RwLock::new(titan_core_types::OperationHistory::new(|value| {
+                value.state == OperationState::Pending
+            })),
             accepting: AtomicBool::new(false),
             mutation: Mutex::new(()),
+            binding_pins: Default::default(),
         })
     }
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
@@ -313,6 +316,12 @@ impl AccountAdminService for AccountServiceCore {
     fn remove(&self, h: AccountHandle) -> LocalResult<OperationId> {
         self.ensure_accepting()?;
         let _g = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        if self.binding_pins.is_pinned(h) {
+            return Err(AccountError::new(
+                AccountErrorKind::ConnectorRejected,
+                "account is bound to a strategy",
+            ));
+        }
         let e = self.registry.get(h)?;
         if !matches!(
             e.lifecycle(),
@@ -330,6 +339,12 @@ impl AccountAdminService for AccountServiceCore {
     fn replace(&self, h: AccountHandle, d: AccountDefinition) -> LocalResult<AccountHandle> {
         self.ensure_accepting()?;
         let _g = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        if self.binding_pins.is_pinned(h) {
+            return Err(AccountError::new(
+                AccountErrorKind::ConnectorRejected,
+                "component is bound to a strategy; stop and remove that strategy before replacement",
+            ));
+        }
         let old = self.registry.get(h)?;
         if old.definition.account_key != d.account_key || old.handle.account_id != d.account_id {
             return Err(AccountError::new(
@@ -392,6 +407,15 @@ impl AccountAdminService for AccountServiceCore {
             .publisher_admission
             .store(true, Ordering::Release);
         if was_active {
+            if let Err(error) = replacement.connector.activate() {
+                replacement.close_publication();
+                replacement.set_lifecycle(AccountLifecycle::Failed);
+                let _ = old.close_resources();
+                return Err(connector_error(
+                    "replace activate committed candidate",
+                    error,
+                ));
+            }
             replacement.set_lifecycle(AccountLifecycle::Ready);
         }
         old.close_resources()?;
@@ -415,6 +439,11 @@ impl AccountAdminService for AccountServiceCore {
 }
 
 impl AccountService for AccountServiceCore {
+    fn pin_binding(&self, handle: AccountHandle) -> LocalResult<titan_core_types::BindingLease> {
+        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        self.registry.get(handle)?;
+        Ok(self.binding_pins.pin(handle))
+    }
     fn resolve(&self, k: &str) -> LocalResult<AccountHandle> {
         self.registry.resolve(k)
     }

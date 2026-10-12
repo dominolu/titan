@@ -13,11 +13,13 @@
 //! let ticker = api.get_ticker("BTCUSDT").await?;
 //! ```
 
+mod account_projection;
 pub mod account_runtime;
 pub mod api;
 pub mod connector;
 mod market_event;
 pub mod market_runtime;
+mod units;
 mod utils;
 
 /// Installs the connector crate's process-wide TLS crypto provider before any

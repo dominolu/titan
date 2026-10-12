@@ -67,14 +67,22 @@ impl UserDataStream {
                 return Err(BinanceFuturesError::ListenKeyExpired);
             }
             EventStream::AccountUpdate(data) => {
+                for balance in data.account.balance {
+                    self.ev_tx.send_account(AccountPublication::Balance {
+                        currency: balance.asset,
+                        wallet: balance.wallet_balance,
+                        available: None,
+                        margin: Some(balance.cross_wallet_balance),
+                        unrealized_pnl: None,
+                        exch_ts: data.transaction_time * 1_000_000,
+                    });
+                }
                 for position in data.account.position {
-                    self.ev_tx
-                        .send_account(AccountPublication::Position {
-                            symbol: position.symbol,
-                            qty: position.position_amount,
-                            exch_ts: data.transaction_time * 1_000_000,
-                        })
-                        .unwrap();
+                    self.ev_tx.send_account(AccountPublication::Position {
+                        symbol: position.symbol,
+                        qty: position.position_amount,
+                        exch_ts: data.transaction_time * 1_000_000,
+                    });
                 }
             }
             EventStream::OrderTradeUpdate(data) => {
@@ -91,14 +99,12 @@ impl UserDataStream {
                             client_order_id = %data.order.client_order_id,
                             "binance execution report published"
                         );
-                        self.ev_tx
-                            .send_account(AccountPublication::Order {
-                                symbol: data.order.symbol,
-                                client_order_id: Some(data.order.client_order_id.clone()),
-                                venue_order_id: Some(data.order.order_id.to_string()),
-                                order,
-                            })
-                            .unwrap();
+                        self.ev_tx.send_account(AccountPublication::Order {
+                            symbol: data.order.symbol,
+                            client_order_id: Some(data.order.client_order_id.clone()),
+                            venue_order_id: Some(data.order.order_id.to_string()),
+                            order,
+                        });
                     }
                     Ok(None) => {
                         info!("binance execution report already finalized");
@@ -146,9 +152,7 @@ impl UserDataStream {
             error!(?error, "Couldn't get initial position information.");
         }
 
-        self.ev_tx
-            .send(PublishEvent::PrivateStreamReady)
-            .map_err(|_| BinanceFuturesError::ConnectionInterrupted)?;
+        self.ev_tx.send(PublishEvent::PrivateStreamReady);
 
         loop {
             select! {
@@ -239,23 +243,19 @@ pub async fn get_position_information(
     let position_information = client.get_position_information().await?;
     position_information.into_iter().for_each(|position| {
         if symbols.remove(&position.symbol) {
-            ev_tx
-                .send_account(AccountPublication::Position {
-                    symbol: position.symbol,
-                    qty: position.position_amount,
-                    exch_ts: position.update_time * 1_000_000,
-                })
-                .unwrap();
+            ev_tx.send_account(AccountPublication::Position {
+                symbol: position.symbol,
+                qty: position.position_amount,
+                exch_ts: position.update_time * 1_000_000,
+            });
         }
     });
     for symbol in symbols {
-        ev_tx
-            .send_account(AccountPublication::Position {
-                symbol,
-                qty: 0.0,
-                exch_ts: 0,
-            })
-            .unwrap();
+        ev_tx.send_account(AccountPublication::Position {
+            symbol,
+            qty: 0.0,
+            exch_ts: 0,
+        });
     }
     Ok(())
 }

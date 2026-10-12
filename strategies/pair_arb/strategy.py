@@ -271,7 +271,7 @@ def ensure_draining_hedge(ctx):
         p["status"] = STOPPED
         return
     gap = hedge_gap(s)
-    if gap < -p["dust_lots"]:
+    if gap < -p["dust_lots"] and not (p["mode"] == TAKER_TAKER and sl["initiator_order_id"] != 0):
         fail_closed(s, 205)
     elif gap > p["dust_lots"] and sl["hedge_order_id"] == 0:
         submit_role(ctx, HEDGE, gap, 1)
@@ -452,7 +452,7 @@ def drive(ctx):
     if p["mode"] == MAKER_TAKER and posture == NORMAL and p["status"] == RUNNING:
         reconcile_quote(ctx)
     gap = hedge_gap(s) if sl["id"] else 0
-    if gap < -p["dust_lots"]:
+    if gap < -p["dust_lots"] and not (p["mode"] == TAKER_TAKER and sl["initiator_order_id"] != 0):
         fail_closed(s, 204)
         return
     emergency = posture == EMERGENCY
@@ -481,11 +481,11 @@ def on_start(ctx):
             or right_account["account_no"] != p["right_account_no"]
             or left_account["state"] != ACCOUNT_READY or right_account["state"] != ACCOUNT_READY):
         fail_closed(s, 301)
-        return
+        return -1
     if ((p["left_account_epoch"] and p["left_account_epoch"] != left_account["account_epoch"])
             or (p["right_account_epoch"] and p["right_account_epoch"] != right_account["account_epoch"])):
         fail_closed(s, 302)
-        return
+        return -1
     p["left_account_epoch"], p["right_account_epoch"] = left_account["account_epoch"], right_account["account_epoch"]
     p["left_account_sequence"] = left_account["account_sequence"]
     p["right_account_sequence"] = right_account["account_sequence"]
@@ -496,30 +496,33 @@ def on_start(ctx):
             or right_position["account_no"] != p["right_account_no"]
             or right_position["asset_no"] != p["right_asset_no"]):
         fail_closed(s, 303)
-        return
+        return -1
     active, restored = ctx.active_orders(), sl["id"] != 0
     if not restored and (left_position["qty_lots"] != 0 or right_position["qty_lots"] != 0 or len(active) != 0):
         fail_closed(s, 304)
-        return
+        return -1
     if restored and (left_position["qty_lots"] != p["expected_left_position_lots"]
                      or right_position["qty_lots"] != p["expected_right_position_lots"]):
         fail_closed(s, 307)
-        return
+        return -1
     for i in range(len(active)):
         ref_index = find_ref(s, active[i]["order_id"])
         if ref_index < 0 or not restored_order_valid(s, active[i], s["order_refs"][ref_index]):
             fail_closed(s, 305)
-            return
+            return -1
     for i in range(MAX_ORDER_REFS):
         ref = s["order_refs"][i]
         if ref["order_id"] and (ref["slot_id"] != sl["id"]
                                 or active_index(active, ref["order_id"]) < 0):
             fail_closed(s, 306)
-            return
+            return -1
     p["ready_mask"] |= READY_ACCOUNTS | READY_POSITIONS | READY_RECONCILED
     p["reconcile_required"] = 0
     if p["status"] in (CREATED, WARMING_UP, RUNNING):
         p["status"] = WARMING_UP
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_tick(ctx):
@@ -530,10 +533,16 @@ def on_tick(ctx):
         elif tick["asset_no"] == p["right_asset_no"]:
             p["right_market_ts_ns"] = tick["receive_ts_ns"]
     drive(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_timer(ctx):
     drive(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_fill(ctx):
@@ -542,11 +551,11 @@ def on_fill(ctx):
         index = find_ref(s, fill["order_id"])
         if index < 0:
             require_reconcile(s, 401)
-            return
+            return -1
         ref = s["order_refs"][index]
         if ref["slot_id"] != sl["id"] or fill["fill_qty_lots"] <= 0:
             require_reconcile(s, 402)
-            return
+            return -1
         role, delta = ref["role"], fill["fill_qty_lots"]
         p["filled_gross_notional_ticks"] += abs(delta * fill["fill_price_ticks"])
         p["fill_count"] += 1
@@ -556,7 +565,7 @@ def on_fill(ctx):
             sl["initiator_fill_sequence"] = max(sl["initiator_fill_sequence"], fill["account_sequence"])
             if sl["initiator_filled_lots"] > sl["target_lots"]:
                 fail_closed(s, 403)
-                return
+                return -1
             if fill["final_fill"] or sl["initiator_filled_lots"] >= sl["target_lots"]:
                 clear_ref(s, fill["order_id"])
                 sl["initiator_order_id"] = 0
@@ -567,17 +576,22 @@ def on_fill(ctx):
             sl["hedge_filled_lots"] += delta
             p["expected_right_position_lots"] += -delta if p["direction"] == LONG_SPREAD else delta
             sl["hedge_fill_sequence"] = max(sl["hedge_fill_sequence"], fill["account_sequence"])
-            if hedge_gap(s) < -p["dust_lots"]:
+            if (sl["hedge_filled_lots"] > required_hedge_lots(s, sl["target_lots"])
+                    or (hedge_gap(s) < -p["dust_lots"]
+                        and not (p["mode"] == TAKER_TAKER and sl["initiator_order_id"] != 0))):
                 fail_closed(s, 404)
-                return
-            if fill["final_fill"] or hedge_gap(s) <= p["dust_lots"]:
+                return -1
+            if fill["final_fill"] or sl["hedge_filled_lots"] >= required_hedge_lots(s, sl["target_lots"]):
                 clear_ref(s, fill["order_id"])
                 sl["hedge_order_id"] = 0
         else:
             fail_closed(s, 405)
-            return
+            return -1
     finish_slot(s, ctx.now)
     ensure_draining_hedge(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_order(ctx):
@@ -588,14 +602,14 @@ def on_order(ctx):
             if event["status"] in (FILLED_STATUS, CANCELED_STATUS, REJECTED_STATUS, EXPIRED_STATUS):
                 continue
             require_reconcile(s, 501)
-            return
+            return -1
         ref = s["order_refs"][index]
         if ref["slot_id"] != sl["id"]:
             require_reconcile(s, 502)
-            return
+            return -1
         if event["status"] == UNKNOWN_STATUS:
             require_reconcile(s, 503)
-            return
+            return -1
         if event["status"] == REJECTED_STATUS:
             role = ref["role"]
             p["reject_count"] += 1
@@ -606,6 +620,9 @@ def on_order(ctx):
                 sl["hedge_order_id"] = 0
             p["next_quote_ts_ns"] = ctx.now + p["quote_cooldown_ns"]
     ensure_draining_hedge(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_cancel(ctx):
@@ -616,12 +633,12 @@ def on_cancel(ctx):
             if event["final_status"] in (CANCELED_STATUS, REJECTED_STATUS, EXPIRED_STATUS):
                 continue
             require_reconcile(s, 601)
-            return
+            return -1
         ref = s["order_refs"][index]
         role = ref["role"]
         if ref["slot_id"] != sl["id"]:
             require_reconcile(s, 602)
-            return
+            return -1
         if event["request_result"] == 1:
             if role == INITIATOR:
                 sl["initiator_cancel_failures"] += 1
@@ -634,7 +651,7 @@ def on_cancel(ctx):
             continue
         if event["request_result"] == 2:
             require_reconcile(s, 604)
-            return
+            return -1
         if event["final_status"] == FILLED_STATUS:
             continue
         if event["final_status"] in (CANCELED_STATUS, REJECTED_STATUS, EXPIRED_STATUS):
@@ -648,17 +665,26 @@ def on_cancel(ctx):
             p["next_quote_ts_ns"] = ctx.now + p["quote_cooldown_ns"]
     finish_slot(s, ctx.now)
     ensure_draining_hedge(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_position(ctx):
     for _event in ctx.position_events():
         pass
     risk_check(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_balance(ctx):
     for _event in ctx.balance_events():
         pass
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_account_state(ctx):
@@ -667,12 +693,12 @@ def on_account_state(ctx):
         if event["account_no"] == p["left_account_no"]:
             if p["left_account_epoch"] and event["account_epoch"] != p["left_account_epoch"]:
                 require_reconcile(s, 701)
-                return
+                return -1
             p["left_account_sequence"] = event["account_sequence"]
         elif event["account_no"] == p["right_account_no"]:
             if p["right_account_epoch"] and event["account_epoch"] != p["right_account_epoch"]:
                 require_reconcile(s, 702)
-                return
+                return -1
             p["right_account_sequence"] = event["account_sequence"]
         if (event["account_no"] in (p["left_account_no"], p["right_account_no"])
                 and event["state"] != ACCOUNT_READY):
@@ -681,14 +707,22 @@ def on_account_state(ctx):
             set_posture(s, RESTRICTED)
             return
     risk_check(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 @njit
 def on_stop(ctx):
     p = ctx.state["pair"]
+    if p["status"] in (ERROR, RECONCILING) or p["reconcile_required"]:
+        return -1
     p["drain_requested"], p["status"] = 1, DRAINING
     cancel_role(ctx, INITIATOR)
     p["ready_mask"] = 0
     ensure_draining_hedge(ctx)
+    if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
+        return -1
+
 
 def build(parameters):
     if parameters["left_asset_no"] == parameters["right_asset_no"]:

@@ -316,9 +316,7 @@ impl HyperliquidWs {
                     .is_some_and(|kind| self.pending_private_subscriptions.remove(kind))
                     && self.pending_private_subscriptions.is_empty();
                 if ready {
-                    self.ev_tx
-                        .send(PublishEvent::PrivateStreamReady)
-                        .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
+                    self.ev_tx.send(PublishEvent::PrivateStreamReady);
                     #[cfg(test)]
                     if self
                         .reconnect_fault
@@ -405,18 +403,17 @@ impl HyperliquidWs {
             *value = value.saturating_add(1);
             *value
         };
-        self.ev_tx
-            .send(PublishEvent::FeedBatch {
-                symbol: symbol.to_owned(),
-                events,
-                stream: Some(MarketStreamMetadata {
-                    epoch,
-                    first_update_sequence: 1,
-                    last_update_sequence: 1,
-                    snapshot: true,
-                }),
-            })
-            .map_err(|_| HyperliquidError::ConnectionInterrupted)
+        self.ev_tx.send(PublishEvent::FeedBatch {
+            symbol: symbol.to_owned(),
+            events,
+            stream: Some(MarketStreamMetadata {
+                epoch,
+                first_update_sequence: 1,
+                last_update_sequence: 1,
+                snapshot: true,
+            }),
+        });
+        Ok(())
     }
 
     async fn handle_bbo(&mut self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
@@ -449,13 +446,11 @@ impl HyperliquidWs {
             });
         }
         if self.bbo_subscribed(&bbo.coin) && !events.is_empty() {
-            self.ev_tx
-                .send(PublishEvent::FeedBatch {
-                    symbol: bbo.coin.clone(),
-                    events,
-                    stream: None,
-                })
-                .map_err(|_| HyperliquidError::ConnectionInterrupted)?;
+            self.ev_tx.send(PublishEvent::FeedBatch {
+                symbol: bbo.coin.clone(),
+                events,
+                stream: None,
+            });
         }
         let symbol = bbo.coin.clone();
         self.bbo_books.insert(symbol.clone(), bbo);
@@ -512,26 +507,24 @@ impl HyperliquidWs {
         };
         let local_ts = Utc::now().timestamp_nanos_opt().unwrap();
         for trade in trades {
-            self.ev_tx
-                .send(PublishEvent::FeedBatch {
-                    symbol: trade.coin.clone(),
-                    events: vec![Event {
-                        ev: if trade_side_is_sell(&trade.side) {
-                            LOCAL_SELL_TRADE_EVENT
-                        } else {
-                            LOCAL_BUY_TRADE_EVENT
-                        },
-                        exch_ts: (trade.time * 1_000_000) as i64,
-                        local_ts,
-                        order_id: 0,
-                        px: trade.px.parse().unwrap_or(0.0),
-                        qty: trade.sz.parse().unwrap_or(0.0),
-                        ival: 0,
-                        fval: 0.0,
-                    }],
-                    stream: None,
-                })
-                .unwrap();
+            self.ev_tx.send(PublishEvent::FeedBatch {
+                symbol: trade.coin.clone(),
+                events: vec![Event {
+                    ev: if trade_side_is_sell(&trade.side) {
+                        LOCAL_SELL_TRADE_EVENT
+                    } else {
+                        LOCAL_BUY_TRADE_EVENT
+                    },
+                    exch_ts: (trade.time * 1_000_000) as i64,
+                    local_ts,
+                    order_id: 0,
+                    px: trade.px.parse().unwrap_or(0.0),
+                    qty: trade.sz.parse().unwrap_or(0.0),
+                    ival: 0,
+                    fval: 0.0,
+                }],
+                stream: None,
+            });
         }
         Ok(())
     }
@@ -557,14 +550,12 @@ impl HyperliquidWs {
                 update.status_timestamp,
             ) {
                 Ok(Some(order)) => {
-                    self.ev_tx
-                        .send_account(AccountPublication::Order {
-                            symbol,
-                            client_order_id: update.order.cloid.clone(),
-                            venue_order_id: Some(update.order.oid.to_string()),
-                            order,
-                        })
-                        .unwrap();
+                    self.ev_tx.send_account(AccountPublication::Order {
+                        symbol,
+                        client_order_id: update.order.cloid.clone(),
+                        venue_order_id: Some(update.order.oid.to_string()),
+                        order,
+                    });
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -602,13 +593,11 @@ impl HyperliquidWs {
                         *position
                     };
                     drop(positions);
-                    self.ev_tx
-                        .send_account(AccountPublication::Position {
-                            symbol: fill.coin.clone(),
-                            qty,
-                            exch_ts: (fill.time * 1_000_000) as i64,
-                        })
-                        .unwrap();
+                    self.ev_tx.send_account(AccountPublication::Position {
+                        symbol: fill.coin.clone(),
+                        qty,
+                        exch_ts: (fill.time * 1_000_000) as i64,
+                    });
                 }
             }
         }
@@ -820,7 +809,7 @@ impl HyperliquidWs {
                         self.clear_inactive_caches(&symbol);
                     }
                     Ok(MarketDataCommand::Snapshot { symbol }) => {
-                        let _ = self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                             symbol: symbol.clone(),
                         });
@@ -881,13 +870,11 @@ async fn get_position(
         }
         let qty: f64 = position.szi.parse().unwrap_or(0.0);
         positions.lock().unwrap().insert(symbol.clone(), qty);
-        ev_tx
-            .send_account(AccountPublication::Position {
-                symbol: position.coin,
-                qty,
-                exch_ts: (position.update_time * 1_000_000) as i64,
-            })
-            .unwrap();
+        ev_tx.send_account(AccountPublication::Position {
+            symbol: position.coin,
+            qty,
+            exch_ts: (position.update_time * 1_000_000) as i64,
+        });
     }
     Ok(())
 }

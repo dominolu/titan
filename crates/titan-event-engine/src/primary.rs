@@ -574,10 +574,6 @@ impl PrimaryAsyncLane {
         self.health.set_pending_depth(0);
     }
 
-    pub(crate) fn stop_and_join(&self) {
-        let _ = self.stop_and_join_until(Instant::now() + Duration::from_secs(30));
-    }
-
     pub(crate) fn stop_and_join_until(&self, deadline: Instant) -> Result<(), EngineError> {
         self.accepting.store(false, Ordering::Release);
         self.stopping.store(true, Ordering::Release);

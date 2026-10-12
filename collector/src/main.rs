@@ -1,9 +1,7 @@
 use anyhow::anyhow;
 use clap::Parser;
-use tokio::{self, select, signal, sync::mpsc::unbounded_channel};
-use tracing::{error, info};
-
-use crate::file::Writer;
+use tokio::{self, select, signal};
+use tracing::info;
 
 mod binance;
 mod binancefuturescm;
@@ -12,6 +10,7 @@ mod bybit;
 mod error;
 mod file;
 mod hyperliquid;
+mod pipeline;
 mod throttler;
 
 #[derive(Parser, Debug)]
@@ -33,7 +32,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     tracing_subscriber::fmt::init();
 
-    let (writer_tx, mut writer_rx) = unbounded_channel();
+    let (writer_tx, mut writer) = pipeline::start(args.path, 8192);
+    let finish = writer_tx.clone();
 
     let handle = match args.exchange.as_str() {
         "binancefutures" | "binancefuturesum" => {
@@ -108,26 +108,28 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    let mut writer = Writer::new(&args.path);
-    loop {
-        select! {
-            _ = signal::ctrl_c() => {
-                info!("ctrl-c received");
-                break;
+    let outcome = select! {
+            signal = shutdown_signal() => {
+                info!(signal = ?signal, "shutdown signal received");
+                signal.map_err(anyhow::Error::from)
             }
-            r = writer_rx.recv() => match r {
-                Some((recv_time, symbol, data)) => {
-                    if let Err(error) = writer.write(recv_time, symbol, data) {
-                        error!(?error, "write error");
-                        break;
-                    }
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-    }
+            result = &mut writer => { handle.abort(); let _ = handle.await; result??; return Ok(()); }
+    };
     handle.abort();
-    Ok(())
+    let _ = handle.await;
+    finish.finish().await?;
+    writer.await??;
+    outcome
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        select! { result = signal::ctrl_c() => result, _ = terminate.recv() => Ok(()) }
+    }
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await
+    }
 }

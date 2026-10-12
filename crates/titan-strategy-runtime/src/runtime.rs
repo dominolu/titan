@@ -91,6 +91,9 @@ pub trait StrategyStateSnapshotSink: Send + Sync {
     fn check_health(&self) -> LocalResult<()> {
         Ok(())
     }
+    fn flush(&self, _deadline: Instant) -> LocalResult<()> {
+        self.check_health()
+    }
     fn enabled(&self) -> bool {
         true
     }
@@ -142,6 +145,9 @@ pub trait StrategyRuntime: EventHandler + Send + Sync {
     fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
     fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
     fn fire_timer(&self, timer_id: u64) -> LocalResult<()>;
+    fn advance_lifecycle(&self) -> LocalResult<()> {
+        Ok(())
+    }
     fn execution_result(&self, result: ObservedExecutionResult) -> LocalResult<()>;
     fn prepare(&self) -> LocalResult<StrategyOperationId>;
     fn start(&self) -> LocalResult<StrategyOperationId>;

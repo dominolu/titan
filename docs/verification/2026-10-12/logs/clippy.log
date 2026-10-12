@@ -1,0 +1,1841 @@
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-core-types)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-event-engine)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-market-service)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-account-service)
+warning: this `if` statement can be collapsed
+   --> crates/titan-market-service/src/core.rs:379:9
+    |
+379 | /         if matches!(
+380 | |             old.lifecycle(),
+381 | |             ConnectorLifecycle::Running | ConnectorLifecycle::Starting
+382 | |         ) {
+...   |
+389 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+382 ~         )
+383 ~             && let Err(error) = old
+384 |                 .connector
+...
+387 |                 cleanup_failures.push(error.to_string());
+388 ~             }
+    |
+
+warning: the `Err`-variant returned from this function is very large
+  --> crates/titan-market-service/src/model.rs:87:10
+   |
+87 |     ) -> Result<(), CoreError>;
+   |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+   |
+   = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+   = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+  --> crates/titan-market-service/src/model.rs:94:10
+   |
+94 |     ) -> Result<(), CoreError>;
+   |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+   |
+   = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-market-service/src/model.rs:139:10
+    |
+139 |     ) -> Result<(), CoreError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: this function has too many arguments (8/7)
+   --> crates/titan-market-service/src/model.rs:180:5
+    |
+180 | /     pub fn publish_market_batch(
+181 | |         &self,
+182 | |         event_type: &str,
+183 | |         payload_length: usize,
+...   |
+188 | |         encode: impl FnOnce(&mut [u8]) -> Result<(), ConnectorError>,
+189 | |     ) -> Result<(), ConnectorError> {
+    | |___________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-market-service/src/model.rs:242:10
+    |
+242 |     ) -> Result<(), CoreError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/titan-event-engine/src/channel.rs:264:52
+    |
+264 |           let result = catch_unwind(AssertUnwindSafe(|| {
+    |  ____________________________________________________^
+265 | |             handler.handle(EventView {
+266 | |                 event_type: lease.event_type(),
+267 | |                 schema_version: lease.schema_version(),
+...   |
+279 | |             })
+280 | |         }));
+    | |_________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/channel.rs:361:10
+    |
+361 |     ) -> Result<(), TrackedDelivery> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 144 bytes
+    |
+    = help: try reducing the size of `channel::TrackedDelivery`, for example by boxing large elements or replacing it with `Box<channel::TrackedDelivery>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/channel.rs:381:72
+    |
+381 |     pub(crate) fn try_push_market(&self, delivery: TrackedDelivery) -> Result<(), TrackedDelivery> {
+    |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 144 bytes
+    |
+    = help: try reducing the size of `channel::TrackedDelivery`, for example by boxing large elements or replacing it with `Box<channel::TrackedDelivery>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: this `if` statement can be collapsed
+   --> crates/titan-event-engine/src/channel.rs:431:9
+    |
+431 | /         if self.queue.len() >= self.high_watermark
+432 | |             && self
+433 | |                 .health
+434 | |                 .transition(SubscriberState::Normal, SubscriberState::Lagging)
+...   |
+450 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+434 ~                 .transition(SubscriberState::Normal, SubscriberState::Lagging)
+435 ~             && self
+436 |                 .fault_signals
+...
+447 |                     .fetch_add(1, Ordering::Relaxed);
+448 ~             }
+    |
+
+warning: `titan-market-service` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p titan-market-service` to apply 1 suggestion)
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/control.rs:340:6
+    |
+340 | ) -> Result<SubscriptionCandidate, CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/control.rs:386:6
+    |
+386 | ) -> Result<(), CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/control.rs:399:6
+    |
+399 | ) -> Result<(), CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/control.rs:419:6
+    |
+419 | ) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-event-engine/src/control.rs:441:6
+    |
+441 | ) -> Result<Box<dyn EventPayloadReservation>, CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/titan-event-engine/src/engine.rs:42:16
+   |
+42 |         reply: Sender<Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError>>,
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> crates/titan-event-engine/src/engine.rs:84:23
+   |
+84 |     pub transactions: Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>,
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/titan-event-engine/src/engine.rs:277:60
+    |
+277 |                   let result = catch_unwind(AssertUnwindSafe(|| {
+    |  ____________________________________________________________^
+278 | |                     self.handler.handle(EventView {
+279 | |                         event_type: event.descriptor.event_type.as_ref(),
+280 | |                         schema_version: event.descriptor.schema_version,
+...   |
+292 | |                     })
+293 | |                 }));
+    | |_________________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/titan-event-engine/src/engine.rs:495:64
+    |
+495 |                       let result = catch_unwind(AssertUnwindSafe(|| {
+    |  ________________________________________________________________^
+496 | |                         handler.handle(EventView {
+497 | |                             event_type: descriptor.event_type.as_ref(),
+498 | |                             schema_version: descriptor.schema_version,
+...   |
+510 | |                         })
+511 | |                     }));
+    | |_____________________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-account-service/src/model.rs:288:10
+    |
+288 |     ) -> Result<(), CoreError>;
+    |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-account-service/src/model.rs:329:10
+    |
+329 |     ) -> Result<(), CoreError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: redundant closure
+   --> crates/titan-account-service/src/model.rs:337:58
+    |
+337 |             decode_account_event_header(payload).map_err(|message| publisher_error(message))?;
+    |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace the closure with the function itself: `publisher_error`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_closure
+    = note: `#[warn(clippy::redundant_closure)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/titan-event-engine/src/engine.rs:664:30
+    |
+664 |     pub(crate) transactions: Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>,
+    |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-account-service/src/model.rs:401:10
+    |
+401 |     ) -> Result<(), CoreError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-account-service/src/model.rs:459:64
+    |
+459 |     fn validate_header(&self, header: AccountEventHeaderV1) -> Result<(), CoreError> {
+    |                                                                ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: using `map_err` over `inspect_err`
+    --> crates/titan-event-engine/src/engine.rs:1313:14
+     |
+1313 |             .map_err(|error| {
+     |              ^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_inspect
+     = note: `#[warn(clippy::manual_inspect)]` on by default
+help: try
+     |
+1313 ~             .inspect_err(|error| {
+1314 |                 self.shared
+ ...
+1321 |                     detail: PoolKind::MarketBatch as u64,
+1322 ~                 });
+     |
+
+warning: using `map_err` over `inspect_err`
+    --> crates/titan-event-engine/src/engine.rs:1368:14
+     |
+1368 |             .map_err(|error| {
+     |              ^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_inspect
+help: try
+     |
+1368 ~             .inspect_err(|error| {
+1369 |                 self.shared.runtime_health.mark_arena_pressure(pool);
+ ...
+1374 |                     detail: pool as u64,
+1375 ~                 });
+     |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+    --> crates/titan-event-engine/src/engine.rs:1588:21
+     |
+1588 |     retire_waiters: BTreeMap<u64, Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>>,
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+    --> crates/titan-event-engine/src/engine.rs:1753:10
+     |
+1753 |     ) -> Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+
+warning: this `if` statement can be collapsed
+    --> crates/titan-event-engine/src/engine.rs:2484:17
+     |
+2484 | /                 if route.channel.health().state() == SubscriberState::Pending
+2485 | |                     && route.channel.below_recovery_watermark()
+2486 | |                 {
+2487 | |                     if route
+...    |
+2503 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+2485 ~                     && route.channel.below_recovery_watermark()
+2486 ~                     && route
+2487 |                         .channel
+ ...
+2500 |                         });
+2501 ~                     }
+     |
+
+warning: this `if` statement can be collapsed
+    --> crates/titan-event-engine/src/engine.rs:2571:13
+     |
+2571 | /             if route.pending.is_empty()
+2572 | |                 && route.channel.health().state() == SubscriberState::Pending
+2573 | |                 && route.channel.below_recovery_watermark()
+...    |
+2591 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+2573 ~                 && route.channel.below_recovery_watermark()
+2574 ~                 && route
+2575 |                     .channel
+ ...
+2588 |                     });
+2589 ~                 }
+     |
+
+warning: this `if` statement can be collapsed
+   --> crates/titan-account-service/src/registry.rs:232:9
+    |
+232 | /         if let crate::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } = &d.ownership {
+233 | |             if client_id_prefix.is_empty() {
+234 | |                 return Err(AccountError::new(
+235 | |                     AccountErrorKind::InvalidDefinition,
+...   |
+239 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+232 ~         if let crate::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } = &d.ownership
+233 ~             && client_id_prefix.is_empty() {
+234 |                 return Err(AccountError::new(
+...
+237 |                 ));
+238 ~             }
+    |
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/titan-event-engine/src/primary.rs:492:60
+    |
+492 |                   let result = catch_unwind(AssertUnwindSafe(|| {
+    |  ____________________________________________________________^
+493 | |                     self.handler.handle(EventView {
+494 | |                         event_type: event.descriptor.event_type.as_ref(),
+495 | |                         schema_version: event.descriptor.schema_version,
+...   |
+507 | |                     })
+508 | |                 }));
+    | |_________________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: `titan-account-service` (lib) generated 6 warnings (run `cargo clippy --fix --lib -p titan-account-service` to apply 2 suggestions)
+warning: field assignment outside of initializer for an instance created with Default::default()
+    --> crates/titan-event-engine/src/tests.rs:1469:5
+     |
+1469 | /     config.small_event = PoolConfig {
+1470 | |         slots: 1,
+1471 | |         block_bytes: 8,
+1472 | |         low_watermark: 0,
+1473 | |     };
+     | |______^
+     |
+note: consider initializing the variable with `config::ArenaConfig { small_event: PoolConfig {
+              slots: 1,
+              block_bytes: 8,
+              low_watermark: 0,
+          }, ..Default::default() }` and removing relevant reassignments
+    --> crates/titan-event-engine/src/tests.rs:1468:5
+     |
+1468 |     let mut config = ArenaConfig::default();
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#field_reassign_with_default
+     = note: `#[warn(clippy::field_reassign_with_default)]` on by default
+
+warning: the `Err`-variant returned from this closure is very large
+    --> crates/titan-event-engine/src/tests.rs:2625:36
+     |
+2625 |       let retirement = thread::spawn(move || {
+     |  ____________________________________^
+2626 | |         retiring_handle.retire_subscription(titan_core_types::SubscriptionToken(token))
+2627 | |     });
+     | |_____^ the `Err`-variant is at least 152 bytes
+     |
+     = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: `titan-event-engine` (lib) generated 21 warnings (run `cargo clippy --fix --lib -p titan-event-engine` to apply 5 suggestions)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+warning: `titan-event-engine` (lib test) generated 23 warnings (21 duplicates)
+warning: `titan-market-service` (lib test) generated 6 warnings (6 duplicates)
+warning: struct `StrategyArtifactCache` has a public `len` method, but no `is_empty` method
+   --> crates/titan-strategy-runtime/src/artifact.rs:176:5
+    |
+176 |     pub fn len(&self) -> usize {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#len_without_is_empty
+    = note: `#[warn(clippy::len_without_is_empty)]` on by default
+
+warning: this function has too many arguments (9/7)
+  --> crates/titan-strategy-runtime/src/offline_v13.rs:27:5
+   |
+27 | /     pub fn new(
+28 | |         artifact: Arc<StrategyArtifactV13>,
+29 | |         strategy_instance_id: u64,
+30 | |         generation: u64,
+...  |
+36 | |         active_orders: Vec<TitanActiveOrderView>,
+37 | |     ) -> Result<Self, V13LoadError> {
+   | |___________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+   = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: `titan-account-service` (lib test) generated 6 warnings (6 duplicates)
+warning: this OR pattern can be rewritten using a range
+   --> crates/titan-strategy-runtime/src/runtime_v13.rs:504:33
+    |
+504 |             if matches!(status, 6 | 7 | 8) {
+    |                                 ^^^^^^^^^ help: try: `6..=8`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_range_patterns
+    = note: `#[warn(clippy::manual_range_patterns)]` on by default
+
+warning: returning the result of a `let` binding from a block
+   --> crates/titan-strategy-runtime/src/runtime_v13.rs:603:13
+    |
+598 | /             let result =
+599 | |                 NativeV13Runtime::invoke(inner, core, V13EventKind::AccountState, 1, |ctx| {
+600 | |                     ctx.account_state_events_ptr = &view;
+601 | |                     ctx.account_state_events_len = 1;
+602 | |                 });
+    | |___________________- unnecessary `let` binding
+603 |               result
+    |               ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#let_and_return
+    = note: `#[warn(clippy::let_and_return)]` on by default
+help: return the expression directly
+    |
+598 ~             
+599 ~             NativeV13Runtime::invoke(inner, core, V13EventKind::AccountState, 1, |ctx| {
+600 +                     ctx.account_state_events_ptr = &view;
+601 +                     ctx.account_state_events_len = 1;
+602 +                 })
+    |
+
+warning: this operation has no effect
+   --> crates/titan-strategy-runtime/src/service_core.rs:105:17
+    |
+105 | /                 u64::MAX
+106 | |                     & !(StrategyCapabilities::READ_RISK.0
+107 | |                         | StrategyCapabilities::CHECKPOINT_STATE.0),
+    | |___________________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+    = note: `#[warn(clippy::identity_op)]` on by default
+help: consider reducing it to
+    |
+105 ~                 !(StrategyCapabilities::READ_RISK.0
+106 ~                         | StrategyCapabilities::CHECKPOINT_STATE.0),
+    |
+
+warning: the `Err`-variant returned from this closure is very large
+   --> crates/titan-strategy-runtime/src/service_core.rs:787:38
+    |
+787 |                   ClosureResource(Some(move || {
+    |  ______________________________________^
+788 | |                     events
+789 | |                         .unregister_primary_async_lane_before(
+790 | |                             token,
+...   |
+808 | |                         })
+809 | |                 })),
+    | |_________________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this closure is very large
+    --> crates/titan-strategy-runtime/src/service_core.rs:1069:42
+     |
+1069 |                       ClosureResource(Some(move || {
+     |  __________________________________________^
+1070 | |                         markets
+1071 | |                             .unsubscribe(source, market_subscription)
+1072 | |                             .map(|_| ())
+...    |
+1084 | |                             })
+1085 | |                     })),
+     | |_____________________^ the `Err`-variant is at least 152 bytes
+     |
+     = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: this `if` statement can be collapsed
+    --> crates/titan-strategy-runtime/src/service_core.rs:1720:17
+     |
+1720 | /                 if current.state == StrategyOperationState::Succeeded
+1721 | |                     && let Some(entry) = operation.cleanup.take()
+1722 | |                 {
+1723 | |                     if let Err(error) = entry.cleanup() {
+...    |
+1727 | |                 }
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+1721 ~                     && let Some(entry) = operation.cleanup.take()
+1722 ~                     && let Err(error) = entry.cleanup() {
+1723 |                         operation.snapshot.state = StrategyOperationState::Failed;
+1724 |                         operation.snapshot.detail = error.reason_code;
+1725 ~                     }
+     |
+
+warning: `titan-strategy-runtime` (lib) generated 8 warnings (run `cargo clippy --fix --lib -p titan-strategy-runtime` to apply 4 suggestions)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/hftbacktest)
+warning: `titan-strategy-runtime` (lib test) generated 8 warnings (8 duplicates)
+warning: this `if` statement can be collapsed
+  --> crates/titan-strategy-runtime/examples/v13_order_drain_smoke.rs:70:9
+   |
+70 | /         if matches!(
+71 | |             value.outcome,
+72 | |             account::ObservedExecutionOutcome::Rejected(_)
+73 | |         ) {
+...  |
+83 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+   = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+   |
+73 ~         )
+74 ~             && let Some(target) = self
+75 |                 .target
+...
+81 |                 let _ = target.execution_result(value);
+82 ~             }
+   |
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-strategy-runtime/examples/v13_order_drain_smoke.rs:117:6
+    |
+117 | ) -> Result<(), titan_core_types::CoreError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: `titan-strategy-runtime` (example "v13_order_drain_smoke") generated 2 warnings (run `cargo clippy --fix --example "v13_order_drain_smoke" -p titan-strategy-runtime` to apply 1 suggestion)
+warning: this function has too many arguments (9/7)
+   --> hftbacktest/src/backtest/bar.rs:277:5
+    |
+277 | /     fn record_audit(
+278 | |         &mut self,
+279 | |         timestamp: i64,
+280 | |         phase: EventPhase,
+...   |
+286 | |         value1: f64,
+287 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this function has too many arguments (8/7)
+  --> hftbacktest/src/backtest/proc/mod.rs:53:5
+   |
+53 | /     fn reject_order(
+54 | |         &mut self,
+55 | |         order_id: OrderId,
+56 | |         side: Side,
+...  |
+61 | |         current_timestamp: i64,
+62 | |     ) -> Result<Order, BacktestError>;
+   | |_____________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this `impl` can be derived
+  --> hftbacktest/src/backtest/result.rs:32:1
+   |
+32 | / impl Default for EndPolicy {
+33 | |     fn default() -> Self {
+34 | |         Self::DrainAll
+35 | |     }
+36 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute and mark the default variant
+   |
+26 + #[derive(Default)]
+27 | pub enum EndPolicy {
+28 ~     #[default]
+29 ~     DrainAll,
+   |
+
+warning: the loop variable `index` is only used to index `out`
+  --> hftbacktest/src/backtest/execution/conditional.rs:70:22
+   |
+70 |         for index in start..out.len() {
+   |                      ^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_range_loop
+   = note: `#[warn(clippy::needless_range_loop)]` on by default
+help: consider using an iterator
+   |
+70 -         for index in start..out.len() {
+70 +         for <item> in out.iter().skip(start) {
+   |
+
+warning: the loop variable `index` is only used to index `out`
+   --> hftbacktest/src/backtest/execution/conditional.rs:110:22
+    |
+110 |         for index in start..out.len() {
+    |                      ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_range_loop
+help: consider using an iterator
+    |
+110 -         for index in start..out.len() {
+110 +         for <item> in out.iter().skip(start) {
+    |
+
+warning: the loop variable `index` is only used to index `out`
+   --> hftbacktest/src/backtest/execution/conditional.rs:133:22
+    |
+133 |         for index in start..out.len() {
+    |                      ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_range_loop
+help: consider using an iterator
+    |
+133 -         for index in start..out.len() {
+133 +         for <item> in out.iter().skip(start) {
+    |
+
+warning: items after a test module
+   --> hftbacktest/src/backtest/proc/partialfillexchange.rs:810:1
+    |
+810 |   mod tests {
+    |   ^^^^^^^^^
+...
+948 | / impl<AT, LM, QM, MD, FM, O> Processor for PartialFillExchange<AT, LM, QM, MD, FM, O>
+949 | | where
+950 | |     AT: AssetType,
+951 | |     LM: LatencyModel,
+...   |
+954 | |     FM: FeeModel,
+955 | |     O: ExecutionObserver,
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#items_after_test_module
+    = note: `#[warn(clippy::items_after_test_module)]` on by default
+    = help: move the items to before the test module was defined
+
+warning: this function has too many arguments (9/7)
+   --> hftbacktest/src/backtest/mod.rs:909:5
+    |
+909 | /     fn record_audit(
+910 | |         &mut self,
+911 | |         timestamp: i64,
+912 | |         phase: EventPhase,
+...   |
+918 | |         value1: f64,
+919 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> hftbacktest/src/backtest/mod.rs:1654:5
+     |
+1654 | /     fn execution_request(
+1655 | |         &self,
+1656 | |         asset_no: usize,
+1657 | |         order_id: OrderId,
+...    |
+1662 | |         time_in_force: TimeInForce,
+1663 | |     ) -> Option<ExecutionOrderRequest> {
+     | |______________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+    --> hftbacktest/src/backtest/mod.rs:1771:5
+     |
+1771 | /     fn submit_with_local_risk(
+1772 | |         &mut self,
+1773 | |         asset_no: usize,
+1774 | |         order_id: OrderId,
+...    |
+1779 | |         time_in_force: TimeInForce,
+1780 | |     ) -> Result<bool, BacktestError> {
+     | |____________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: `hftbacktest` (lib) generated 9 warnings (run `cargo clippy --fix --lib -p hftbacktest` to apply 1 suggestion)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/collector)
+warning: unneeded cloning of iterator items
+   --> collector/src/binance/http.rs:139:17
+    |
+139 | /                 streams
+140 | |                     .iter()
+141 | |                     .cloned()
+142 | |                     .map(|stream| {
+...   |
+145 | |                             .to_string()
+146 | |                     })
+    | |______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_iter_cloned
+    = note: `#[warn(clippy::redundant_iter_cloned)]` on by default
+help: try
+    |
+140 ~                     .iter()
+141 +                     .map(|stream| {
+142 +                         stream
+143 +                             .replace("$symbol", pair.to_lowercase().as_str())
+144 +                             .to_string()
+145 +                     })
+    |
+
+warning: unneeded cloning of iterator items
+   --> collector/src/binancefuturescm/http.rs:140:17
+    |
+140 | /                 streams
+141 | |                     .iter()
+142 | |                     .cloned()
+143 | |                     .map(|stream| {
+...   |
+146 | |                             .to_string()
+147 | |                     })
+    | |______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_iter_cloned
+help: try
+    |
+141 ~                     .iter()
+142 +                     .map(|stream| {
+143 +                         stream
+144 +                             .replace("$symbol", pair.to_lowercase().as_str())
+145 +                             .to_string()
+146 +                     })
+    |
+
+warning: unneeded cloning of iterator items
+   --> collector/src/binancefuturesum/http.rs:140:17
+    |
+140 | /                 streams
+141 | |                     .iter()
+142 | |                     .cloned()
+143 | |                     .map(|stream| {
+...   |
+146 | |                             .to_string()
+147 | |                     })
+    | |______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_iter_cloned
+help: try
+    |
+141 ~                     .iter()
+142 +                     .map(|stream| {
+143 +                         stream
+144 +                             .replace("$symbol", pair.to_lowercase().as_str())
+145 +                             .to_string()
+146 +                     })
+    |
+
+warning: unneeded cloning of iterator items
+   --> collector/src/bybit/http.rs:114:17
+    |
+114 | /                 topics
+115 | |                     .iter()
+116 | |                     .cloned()
+117 | |                     .map(|stream| {
+...   |
+120 | |                             .to_string()
+121 | |                     })
+    | |______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_iter_cloned
+help: try
+    |
+115 ~                     .iter()
+116 +                     .map(|stream| {
+117 +                         stream
+118 +                             .replace("$symbol", pair.to_uppercase().as_str())
+119 +                             .to_string()
+120 +                     })
+    |
+
+warning: `collector` (bin "collector" test) generated 4 warnings (4 duplicates)
+warning: `collector` (bin "collector") generated 4 warnings
+warning: `hftbacktest` (lib test) generated 10 warnings (9 duplicates) (run `cargo clippy --fix --lib -p hftbacktest --tests` to apply 1 suggestion)
+warning: this `MutexGuard` is held across an await point
+   --> connector/src/account_runtime.rs:147:13
+    |
+147 |         let connector = self.connector.lock().unwrap_or_else(|p| p.into_inner());
+    |             ^^^^^^^^^
+    |
+    = help: consider using an async-aware `Mutex` type or ensuring the `MutexGuard` is dropped before calling `await`
+note: these are all the await points this lock is held through
+   --> connector/src/account_runtime.rs:148:30
+    |
+148 |         connector.shutdown().await
+    |                              ^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#await_holding_lock
+    = note: `#[warn(clippy::await_holding_lock)]` on by default
+
+warning: the `Err`-variant returned from this closure is very large
+   --> connector/src/account_runtime.rs:293:38
+    |
+293 |                 ClosureResource(Some(move || close_weak(&weak))),
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> connector/src/account_runtime.rs:327:47
+    |
+327 | fn close_weak(weak: &Weak<AccountRuntime>) -> Result<(), titan_core_types::CoreError> {
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: struct update has no effect, all the fields in the struct have already been specified
+    --> connector/src/account_runtime.rs:1512:23
+     |
+1512 |                     ..Default::default()
+     |                       ^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_update
+     = note: `#[warn(clippy::needless_update)]` on by default
+
+warning: calls to `push` immediately after creation
+    --> connector/src/account_runtime.rs:1972:5
+     |
+1972 | /     let mut values: Vec<Arc<dyn account::AccountConnectorFactory>> = Vec::new();
+1973 | |     #[cfg(feature = "binancefutures")]
+1974 | |     values.push(Arc::new(VenueAccountConnectorFactory::new(
+1975 | |         "binance-futures-account",
+...    |
+1986 | |         build_hyperliquid,
+1987 | |     )));
+     | |________^ help: consider using the `vec![]` macro: `let values: Vec<Arc<dyn account::AccountConnectorFactory>> = vec![..];`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#vec_init_then_push
+     = note: `#[warn(clippy::vec_init_then_push)]` on by default
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+  --> connector/src/api.rs:78:5
+   |
+78 | /     pub fn from_str(side: &str) -> Self {
+79 | |         match side.to_uppercase().as_str() {
+80 | |             "BUY" | "B" | "b" => ApiSide::Buy,
+81 | |             "SELL" | "S" | "s" => ApiSide::Sell,
+...  |
+84 | |     }
+   | |_____^
+   |
+   = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+   = note: `#[warn(clippy::should_implement_trait)]` on by default
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> connector/src/api.rs:110:5
+    |
+110 | /     pub fn from_str(t: &str) -> Self {
+111 | |         match t.to_uppercase().as_str() {
+112 | |             "LIMIT" | "L" => ApiOrderType::Limit,
+113 | |             "MARKET" | "M" | "IOC" => ApiOrderType::Market,
+...   |
+121 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> connector/src/api.rs:149:5
+    |
+149 | /     pub fn from_str(tif: &str) -> Self {
+150 | |         match tif.to_uppercase().as_str() {
+151 | |             "GTC" => ApiTimeInForce::GTC,
+152 | |             "IOC" => ApiTimeInForce::IOC,
+...   |
+157 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> connector/src/api.rs:186:5
+    |
+186 | /     pub fn from_str(s: &str) -> Self {
+187 | |         match s.to_uppercase().as_str() {
+188 | |             "NEW" | "LIVE" | "OPEN" | "PENDING_NEW" | "PLACED" => ApiOrderStatus::New,
+189 | |             "PARTIALLY_FILLED" | "PARTIALLYFILLED" => ApiOrderStatus::PartiallyFilled,
+...   |
+200 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> connector/src/api.rs:228:5
+    |
+228 | /     pub fn from_str(s: &str) -> Self {
+229 | |         match s.to_uppercase().as_str() {
+230 | |             "LONG" | "LONG_SIDE" | "BOTH" => {
+...   |
+238 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> connector/src/api.rs:270:5
+    |
+270 | /     pub fn from_str(s: &str) -> Self {
+271 | |         match s.to_uppercase().as_str() {
+272 | |             "ISOLATED" => ApiMarginType::Isolated,
+273 | |             "CROSS" | "CROSSED" => ApiMarginType::Cross,
+...   |
+276 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#should_implement_trait
+
+warning: enum `NativeDepthLevels` has a public `len` method, but no `is_empty` method
+  --> connector/src/connector.rs:76:5
+   |
+76 |     pub fn len(self) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#len_without_is_empty
+   = note: `#[warn(clippy::len_without_is_empty)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> connector/src/market_event.rs:298:5
+    |
+298 | /     fn publish_native_values(
+299 | |         &self,
+300 | |         symbol: &str,
+301 | |         event_type: &str,
+...   |
+306 | |         values: &[(f64, f64, u8)],
+307 | |     ) -> Result<(), ConnectorError> {
+    | |___________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+  --> connector/src/market_runtime.rs:82:22
+   |
+82 |     shutdown_result: Arc<Mutex<Option<Result<(), Arc<str>>>>>,
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+   = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: the `Err`-variant returned from this closure is very large
+   --> connector/src/market_runtime.rs:699:34
+    |
+699 |               ClosureResource(Some(move || {
+    |  __________________________________^
+700 | |                 if let Some(connector) = weak.upgrade() {
+701 | |                     let deadline = connector
+702 | |                         .runtime
+...   |
+718 | |                 Ok(())
+719 | |             })),
+    | |_____________^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: calls to `push` immediately after creation
+   --> connector/src/market_runtime.rs:800:5
+    |
+800 | /     let mut values: Vec<Arc<dyn MarketConnectorFactory>> = Vec::new();
+801 | |     #[cfg(feature = "binancefutures")]
+802 | |     values.push(Arc::new(BinanceFuturesMarketFactory));
+803 | |     #[cfg(feature = "okx")]
+804 | |     values.push(Arc::new(OkxMarketFactory));
+805 | |     #[cfg(feature = "hyperliquid")]
+806 | |     values.push(Arc::new(HyperliquidMarketFactory));
+    | |____________________________________________________^ help: consider using the `vec![]` macro: `let values: Vec<Arc<dyn MarketConnectorFactory>> = vec![..];`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#vec_init_then_push
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:268:9
+    |
+268 | /         if let Some(stream_name) = value.get("stream").and_then(Value::as_str) {
+269 | |             if stream_name.contains("markPrice") {
+270 | |                 if let Some(data) = value.get("data") {
+271 | |                     debug!(
+...   |
+291 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+268 ~         if let Some(stream_name) = value.get("stream").and_then(Value::as_str)
+269 ~             && stream_name.contains("markPrice") {
+270 |                 if let Some(data) = value.get("data") {
+...
+289 |                 }
+290 ~             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:269:13
+    |
+269 | /             if stream_name.contains("markPrice") {
+270 | |                 if let Some(data) = value.get("data") {
+271 | |                     debug!(
+272 | |                         stream = %stream_name,
+...   |
+290 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+269 ~             if stream_name.contains("markPrice")
+270 ~                 && let Some(data) = value.get("data") {
+271 |                     debug!(
+...
+288 |                     }
+289 ~                 }
+    |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:761:25
+    |
+761 | /                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+762 | |                             if self.maybe_process_mark_price_payload(&text, &value, ws_recv_ts) {
+763 | |                                 continue;
+764 | |                             }
+765 | |                         }
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+761 ~                         if let Ok(value) = serde_json::from_str::<Value>(&text)
+762 ~                             && self.maybe_process_mark_price_payload(&text, &value, ws_recv_ts) {
+763 |                                 continue;
+764 ~                             }
+    |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:789:33
+    |
+789 | / ...                   if let Some(raw_result) = result.result.as_ref() {
+790 | | ...                       if raw_result.is_array() {
+791 | | ...                           if let Some(streams) = raw_result.as_array() {
+792 | | ...                               let mark_price_streams: Vec<_> = streams
+...   |
+806 | | ...                   }
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+789 ~                                 if let Some(raw_result) = result.result.as_ref()
+790 ~                                     && raw_result.is_array() {
+791 |                                         if let Some(streams) = raw_result.as_array() {
+...
+804 |                                         }
+805 ~                                     }
+    |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:790:37
+    |
+790 | / ...                   if raw_result.is_array() {
+791 | | ...                       if let Some(streams) = raw_result.as_array() {
+792 | | ...                           let mark_price_streams: Vec<_> = streams
+793 | | ...                               .iter()
+...   |
+805 | | ...                   }
+    | |_______________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+790 ~                                     if raw_result.is_array()
+791 ~                                         && let Some(streams) = raw_result.as_array() {
+792 |                                             let mark_price_streams: Vec<_> = streams
+...
+803 |                                             }
+804 ~                                         }
+    |
+
+warning: large size difference between variants
+   --> connector/src/binancefutures/msg/rest.rs:492:1
+    |
+492 | / pub enum OrderResponseResult {
+493 | |     Ok(OrderResponse),
+    | |     ----------------- the largest variant contains at least 320 bytes
+494 | |     Err(ErrorResponse),
+    | |     ------------------ the second-largest variant contains at least 32 bytes
+495 | | }
+    | |_^ the entire enum is at least 320 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+493 -     Ok(OrderResponse),
+493 +     Ok(Box<OrderResponse>),
+    |
+
+warning: large size difference between variants
+  --> connector/src/binancefutures/msg/stream.rs:52:1
+   |
+52 | / pub enum Stream<'a> {
+53 | |     EventStream(#[serde(borrow)] EventStream<'a>),
+   | |     --------------------------------------------- the largest variant contains at least 4184 bytes
+54 | |     Result(StreamResult),
+   | |     -------------------- the second-largest variant contains at least 88 bytes
+55 | | }
+   | |_^ the entire enum is at least 4184 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+53 -     EventStream(#[serde(borrow)] EventStream<'a>),
+53 +     EventStream(#[serde(borrow)] Box<EventStream<'a>>),
+   |
+
+warning: large size difference between variants
+   --> connector/src/binancefutures/msg/stream.rs:88:1
+    |
+ 88 | / pub enum EventStream<'a> {
+ 89 | |     #[serde(rename = "depthUpdate")]
+ 90 | |     DepthUpdate(#[serde(borrow)] Depth<'a>),
+    | |     --------------------------------------- the largest variant contains at least 4184 bytes
+ 91 | |     #[serde(rename = "markPriceUpdate")]
+...   |
+100 | |     OrderTradeUpdate(OrderTradeUpdate),
+    | |     ---------------------------------- the second-largest variant contains at least 176 bytes
+...   |
+106 | |     ListenKeyExpired(ListenKeyStream),
+107 | | }
+    | |_^ the entire enum is at least 4184 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+ 90 -     DepthUpdate(#[serde(borrow)] Depth<'a>),
+ 90 +     DepthUpdate(#[serde(borrow)] Box<Depth<'a>>),
+    |
+
+warning: this `if` statement can be collapsed
+    --> connector/src/binancefutures/brokerapi.rs:1799:9
+     |
+1799 | /         if original_multi_assets {
+1800 | |             if let Err(error) = client.set_multi_assets_mode(false).await {
+1801 | |                 failures.push(format!("disable_multi_assets_for_margin_test: {error}"));
+1802 | |             }
+1803 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+1799 ~         if original_multi_assets
+1800 ~             && let Err(error) = client.set_multi_assets_mode(false).await {
+1801 |                 failures.push(format!("disable_multi_assets_for_margin_test: {error}"));
+1802 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> connector/src/binancefutures/brokerapi.rs:1810:9
+     |
+1810 | /         if original_multi_assets {
+1811 | |             if let Err(error) = client.set_multi_assets_mode(true).await {
+1812 | |                 panic!("failed to restore multi-assets mode after margin test: {error}");
+1813 | |             }
+1814 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1810 ~         if original_multi_assets
+1811 ~             && let Err(error) = client.set_multi_assets_mode(true).await {
+1812 |                 panic!("failed to restore multi-assets mode after margin test: {error}");
+1813 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/binancefutures/market_data_stream.rs:268:9
+    |
+268 | /         if let Some(stream_name) = value.get("stream").and_then(Value::as_str) {
+269 | |             if stream_name.contains("markPrice") {
+270 | |                 if let Some(data) = value.get("data") {
+271 | |                     debug!(
+...   |
+291 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+268 ~         if let Some(stream_name) = value.get("stream").and_then(Value::as_str)
+269 ~             && stream_name.contains("markPrice") {
+270 |                 if let Some(data) = value.get("data") {
+...
+289 |                 }
+290 ~             }
+    |
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> connector/src/binancefutures/rest.rs:242:17
+    |
+242 |         orders: Vec<(String, String, Side, f64, usize, f64, OrdType, TimeInForce)>,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+
+warning: this `if` statement can be collapsed
+    --> connector/src/hyperliquid/brokerapi.rs:1276:9
+     |
+1276 | /         if let Some(cloid) = existing.cloid.as_deref() {
+1277 | |             if let Ok(orders) = self.get_open_orders(user).await {
+1278 | |                 if let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
+1279 | |                     final_oid = live.oid;
+...    |
+1282 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1276 ~         if let Some(cloid) = existing.cloid.as_deref()
+1277 ~             && let Ok(orders) = self.get_open_orders(user).await {
+1278 |                 if let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
+1279 |                     final_oid = live.oid;
+1280 |                 }
+1281 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> connector/src/hyperliquid/brokerapi.rs:1277:13
+     |
+1277 | /             if let Ok(orders) = self.get_open_orders(user).await {
+1278 | |                 if let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
+1279 | |                     final_oid = live.oid;
+1280 | |                 }
+1281 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1277 ~             if let Ok(orders) = self.get_open_orders(user).await
+1278 ~                 && let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
+1279 |                     final_oid = live.oid;
+1280 ~                 }
+     |
+
+warning: this `.filter_map(..)` can be written more simply using `.map(..)`
+    --> connector/src/hyperliquid/brokerapi.rs:1577:14
+     |
+1577 |               .filter_map(|r| {
+     |  ______________^
+1578 | |                 let amount = r
+1579 | |                     .delta
+1580 | |                     .as_ref()
+...    |
+1591 | |                 })
+1592 | |             })
+     | |______________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_filter_map
+     = note: `#[warn(clippy::unnecessary_filter_map)]` on by default
+
+warning: this `if` statement can be collapsed
+    --> connector/src/hyperliquid/brokerapi.rs:1636:9
+     |
+1636 | /         if let Some(cloid) = client_order_id {
+1637 | |             if let Ok(resp) = self.get_order_status(None, Some(cloid)).await {
+1638 | |                 if let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
+1639 | |                     return Ok(oid);
+...    |
+1642 | |         }
+     | |_________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1636 ~         if let Some(cloid) = client_order_id
+1637 ~             && let Ok(resp) = self.get_order_status(None, Some(cloid)).await {
+1638 |                 if let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
+1639 |                     return Ok(oid);
+1640 |                 }
+1641 ~             }
+     |
+
+warning: this `if` statement can be collapsed
+    --> connector/src/hyperliquid/brokerapi.rs:1637:13
+     |
+1637 | /             if let Ok(resp) = self.get_order_status(None, Some(cloid)).await {
+1638 | |                 if let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
+1639 | |                     return Ok(oid);
+1640 | |                 }
+1641 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+1637 ~             if let Ok(resp) = self.get_order_status(None, Some(cloid)).await
+1638 ~                 && let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
+1639 |                     return Ok(oid);
+1640 ~                 }
+     |
+
+warning: this `if` statement can be collapsed
+   --> connector/src/hyperliquid/ws.rs:171:9
+    |
+171 | /         if let Some(book) = l2
+172 | |             && bbo_time.saturating_sub(book.time) <= COMPOSITE_L2_MAX_AGE_MS
+173 | |         {
+174 | |             if let Some(bids) = book.levels.first() {
+...   |
+182 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+172 ~             && bbo_time.saturating_sub(book.time) <= COMPOSITE_L2_MAX_AGE_MS
+173 ~             && let Some(bids) = book.levels.first() {
+174 |                 events.extend(bids.iter().filter_map(|level| {
+...
+179 |                 }));
+180 ~             }
+    |
+
+warning: this function has too many arguments (10/7)
+   --> connector/src/hyperliquid/ws.rs:258:5
+    |
+258 | /     pub fn new(
+259 | |         ev_tx: crate::connector::PublishSender,
+260 | |         order_manager: SharedOrderManager,
+261 | |         assets: SharedAssets,
+...   |
+269 | |         #[cfg(test)] reconnect_fault: Arc<AtomicU8>,
+270 | |     ) -> Self {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> connector/src/hyperliquid/ws.rs:592:36
+    |
+592 |                         apply_fill(&mut position, &fill.side, fill_qty);
+    |                                    ^^^^^^^^^^^^^ help: change this to: `position`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_borrow
+    = note: `#[warn(clippy::needless_borrow)]` on by default
+
+warning: enclosing `Ok` and `?` operator are unneeded
+   --> connector/src/okx/brokerapi.rs:287:9
+    |
+287 | /         Ok(resp
+288 | |             .data
+289 | |             .first()
+290 | |             .map(|t| i(&t.ts))
+291 | |             .ok_or(OkxError::InvalidArg("empty time response"))?)
+    | |_________________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_question_mark
+    = note: `#[warn(clippy::needless_question_mark)]` on by default
+help: remove the enclosing `Ok` and `?` operator
+    |
+287 ~         resp
+288 |             .data
+289 |             .first()
+290 |             .map(|t| i(&t.ts))
+291 ~             .ok_or(OkxError::InvalidArg("empty time response"))
+    |
+
+warning: this `.filter_map(..)` can be written more simply using `.map(..)`
+    --> connector/src/okx/brokerapi.rs:1305:14
+     |
+1305 |               .filter_map(|b| {
+     |  ______________^
+1306 | |                 let ts = b.get("ts").and_then(|v| v.as_str()).unwrap_or("0");
+1307 | |                 let bal_chg = b
+1308 | |                     .get("balChg")
+...    |
+1330 | |                 })
+1331 | |             })
+     | |______________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_filter_map
+
+warning: used `assert_eq!` with a literal bool
+    --> connector/src/hyperliquid/brokerapi.rs:1992:9
+     |
+1992 |         assert_eq!(side_to_hl(ApiSide::Buy).unwrap(), true);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#bool_assert_comparison
+     = note: `#[warn(clippy::bool_assert_comparison)]` on by default
+help: replace it with `assert!(..)`
+     |
+1992 -         assert_eq!(side_to_hl(ApiSide::Buy).unwrap(), true);
+1992 +         assert!(side_to_hl(ApiSide::Buy).unwrap());
+     |
+
+warning: used `assert_eq!` with a literal bool
+    --> connector/src/hyperliquid/brokerapi.rs:1993:9
+     |
+1993 |         assert_eq!(side_to_hl(ApiSide::Sell).unwrap(), false);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#bool_assert_comparison
+help: replace it with `assert!(..)`
+     |
+1993 -         assert_eq!(side_to_hl(ApiSide::Sell).unwrap(), false);
+1993 +         assert!(!side_to_hl(ApiSide::Sell).unwrap());
+     |
+
+warning: this function has too many arguments (11/7)
+   --> connector/src/hyperliquid/ws.rs:258:5
+    |
+258 | /     pub fn new(
+259 | |         ev_tx: crate::connector::PublishSender,
+260 | |         order_manager: SharedOrderManager,
+261 | |         assets: SharedAssets,
+...   |
+269 | |         #[cfg(test)] reconnect_fault: Arc<AtomicU8>,
+270 | |     ) -> Self {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (10/7)
+  --> connector/src/okx/private_stream.rs:47:5
+   |
+47 | /     pub fn new(
+48 | |         api_key: String,
+49 | |         secret: String,
+50 | |         passphrase: String,
+...  |
+57 | |         symbols: SharedSymbolSet,
+58 | |     ) -> Self {
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (9/7)
+   --> connector/src/okx/rest.rs:158:5
+    |
+158 | /     pub async fn submit_order(
+159 | |         &self,
+160 | |         inst_id: &str,
+161 | |         td_mode: &str,
+...   |
+167 | |         sz: &str,
+168 | |     ) -> Result<OrderResult, OkxError> {
+    | |______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: this function has too many arguments (8/7)
+   --> connector/src/okx/rest.rs:318:1
+    |
+318 | / pub(crate) fn build_submit_body(
+319 | |     inst_id: &str,
+320 | |     td_mode: &str,
+321 | |     pos_side: Option<&str>,
+...   |
+326 | |     sz: &str,
+327 | | ) -> String {
+    | |___________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: using `clone` on type `PriceLevel` which implements the `Copy` trait
+    --> connector/src/hyperliquid/mod.rs:1492:70
+     |
+1492 |                     break 'scan (symbol.clone(), instrument.clone(), ask.clone(), qty);
+     |                                                                      ^^^^^^^^^^^ help: try dereferencing it: `*ask`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#clone_on_copy
+     = note: `#[warn(clippy::clone_on_copy)]` on by default
+
+warning: items after a test module
+    --> connector/src/okx/brokerapi.rs:1444:1
+     |
+1444 | mod tests {
+     | ^^^^^^^^^
+...
+1905 | impl m::Fill {
+     | ^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#items_after_test_module
+     = note: `#[warn(clippy::items_after_test_module)]` on by default
+     = help: move the items to before the test module was defined
+
+warning: redundant pattern matching, consider using `is_ok()`
+  --> connector/src/okx/tests.rs:95:13
+   |
+95 |     assert!(matches!(Okx::build_from(&valid_config()), Ok(_)));
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `Okx::build_from(&valid_config()).is_ok()`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#redundant_pattern_matching
+   = note: `#[warn(clippy::redundant_pattern_matching)]` on by default
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> connector/src/okx/tests.rs:431:35
+    |
+431 |     let mut update = order_update(&cid, "partially_filled");
+    |                                   ^^^^ help: change this to: `cid`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_borrow
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+   --> connector/src/okx/tests.rs:457:34
+    |
+457 |     let mut stale = order_update(&cid, "canceled");
+    |                                  ^^^^ help: change this to: `cid`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_borrow
+
+warning: `connector` (lib) generated 38 warnings (run `cargo clippy --fix --lib -p connector` to apply 12 suggestions)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-cli)
+warning: doc list item without indentation
+ --> connector/examples/hyperliquid_live_roundtrip.rs:6:5
+  |
+6 | //! The WS fact may arrive before the REST response; the delta quantifies the push advantage.
+  |     ^
+  |
+  = help: if this is supposed to be its own paragraph, add a blank line
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+  = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+  |
+6 | //!     The WS fact may arrive before the REST response; the delta quantifies the push advantage.
+  |     ++++
+
+warning: this `impl` can be derived
+   --> crates/titan-cli/src/core_runtime.rs:117:1
+    |
+117 | / impl Default for StrategyServiceConfig {
+118 | |     fn default() -> Self {
+119 | |         Self {
+120 | |             allowed_artifact_roots: Vec::new(),
+...   |
+126 | | }
+    | |_^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#derivable_impls
+    = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute
+    |
+106 + #[derive(Default)]
+107 | pub struct StrategyServiceConfig {
+    |
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:355:55
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+355 |     pub fn start_from_toml(path: impl AsRef<Path>) -> Result<Self, ApplicationRuntimeError> {
+    |                                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `#[warn(clippy::result_large_err)]` on by default
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:359:51
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+359 |     pub fn start(config: AdaptedConfiguration) -> Result<Self, ApplicationRuntimeError> {
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:506:35
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+506 |     pub fn check_health(&self) -> Result<(), ApplicationRuntimeError> {
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:555:35
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+555 |     pub fn shutdown(&mut self) -> Result<(), ApplicationRuntimeError> {
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:608:10
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+608 |     ) -> Result<(), ApplicationRuntimeError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:673:6
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+673 | ) -> Result<(), ApplicationRuntimeError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:701:6
+    |
+311 |     CoreContract(#[from] CoreError),
+    |     ------------------------------- the largest variant contains at least 152 bytes
+...
+701 | ) -> Result<(), ApplicationRuntimeError> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `core_runtime::ApplicationRuntimeError`, for example by boxing large elements or replacing it with `Box<core_runtime::ApplicationRuntimeError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: the `Err`-variant returned from this function is very large
+   --> crates/titan-cli/src/core_runtime.rs:726:58
+    |
+726 | fn register_event_catalog(events: &EventEngineHandle) -> Result<(), CoreError> {
+    |                                                          ^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 152 bytes
+    |
+    = help: try reducing the size of `titan_core_types::CoreError`, for example by boxing large elements or replacing it with `Box<titan_core_types::CoreError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+warning: field assignment outside of initializer for an instance created with Default::default()
+   --> crates/titan-cli/src/core_runtime.rs:927:5
+    |
+927 | /     config.allowed_artifact_roots = allowed_roots
+928 | |         .iter()
+929 | |         .map(|root| Arc::from(root.to_string_lossy().as_ref()))
+930 | |         .collect::<Vec<_>>()
+931 | |         .into();
+    | |________________^
+    |
+note: consider initializing the variable with `titan_strategy_runtime::StrategyCoreConfig { allowed_artifact_roots: allowed_roots
+              .iter()
+              .map(|root| Arc::from(root.to_string_lossy().as_ref()))
+              .collect::<Vec<_>>()
+              .into(), checkpoint_root: checkpoint_root, require_artifact_signature: !bootstrap.allow_unsigned_artifacts, trusted_artifact_keys: bootstrap
+              .trusted_ed25519_keys
+              .into_iter()
+              .map(|(key_id, encoded)| {
+                  decode_ed25519_key(&encoded)
+                      .map(|key| (Arc::from(key_id), key))
+                      .map_err(|message| {
+                          ConfigurationError::Invalid(format!("invalid trusted Ed25519 key: {message}"))
+                      })
+              })
+              .collect::<Result<BTreeMap<_, _>, _>>()?, ..Default::default() }` and removing relevant reassignments
+   --> crates/titan-cli/src/core_runtime.rs:926:5
+    |
+926 |     let mut config = StrategyCoreConfig::default();
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#field_reassign_with_default
+    = note: `#[warn(clippy::field_reassign_with_default)]` on by default
+
+warning: `connector` (example "hyperliquid_live_roundtrip") generated 1 warning
+warning: `titan-cli` (lib test) generated 10 warnings (10 duplicates)
+warning: `titan-cli` (lib) generated 10 warnings (run `cargo clippy --fix --lib -p titan-cli` to apply 1 suggestion)
+warning: this function has too many arguments (12/7)
+   --> crates/titan-cli/src/registry.rs:167:5
+    |
+167 | /     pub fn create(
+168 | |         &self,
+169 | |         id: &str,
+170 | |         owner_token: &str,
+...   |
+179 | |         log_path: &Path,
+180 | |     ) -> rusqlite::Result<()> {
+    | |_____________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/titan-cli/src/registry.rs:272:21
+    |
+272 |         let active: Vec<(String, String, Option<u32>, Option<u64>, i64, i64)> = statement
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+warning: unneeded `return` statement
+   --> crates/titan-cli/src/registry.rs:462:9
+    |
+462 |         return fields.into_iter().nth(19)?.parse().ok();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_return
+    = note: `#[warn(clippy::needless_return)]` on by default
+help: remove `return`
+    |
+462 -         return fields.into_iter().nth(19)?.parse().ok();
+462 +         fields.into_iter().nth(19)?.parse().ok()
+    |
+
+warning: `connector` (lib test) generated 47 warnings (36 duplicates) (run `cargo clippy --fix --lib -p connector --tests` to apply 10 suggestions)
+warning: this function has too many arguments (9/7)
+   --> crates/titan-cli/src/main.rs:807:1
+    |
+807 | / fn compile_v13_strategy(
+808 | |     strategy: &Path,
+809 | |     parameters: &str,
+810 | |     target: Option<&str>,
+...   |
+816 | |     json: bool,
+817 | | ) -> Result<(), CliError> {
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+
+warning: `titan-cli` (bin "titan") generated 4 warnings (run `cargo clippy --fix --bin "titan" -p titan-cli` to apply 1 suggestion)
+warning: `titan-cli` (bin "titan" test) generated 4 warnings (4 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.12s

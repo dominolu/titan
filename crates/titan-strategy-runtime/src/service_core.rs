@@ -135,6 +135,7 @@ pub struct StrategyEntry {
     pub lane: PrimaryAsyncLaneHandle,
     pub activation: Arc<StrategyActivationGate>,
     resources: Mutex<Option<ResourceScope>>,
+    cleanup_deadline: Arc<Mutex<Option<Instant>>>,
 }
 
 struct DisabledSnapshotSink;
@@ -154,6 +155,7 @@ struct FileCheckpointStore {
     sender: Mutex<Option<mpsc::SyncSender<Option<StrategyPrivateStateSnapshot>>>>,
     writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     failed: Arc<AtomicBool>,
+    pending: Arc<std::sync::atomic::AtomicUsize>,
     generation_lock: Mutex<()>,
 }
 
@@ -164,6 +166,8 @@ impl FileCheckpointStore {
         let writer_root = root.clone();
         let failed = Arc::new(AtomicBool::new(false));
         let writer_failed = failed.clone();
+        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let writer_pending = pending.clone();
         let writer = std::thread::Builder::new()
             .name("strategy-checkpoint-writer".into())
             .spawn(move || {
@@ -175,6 +179,7 @@ impl FileCheckpointStore {
                             "strategy checkpoint write failed"
                         );
                     }
+                    writer_pending.fetch_sub(1, Ordering::AcqRel);
                 }
             })
             .map_err(|_| checkpoint_error("checkpoint_writer_start_failed"))?;
@@ -183,6 +188,7 @@ impl FileCheckpointStore {
             sender: Mutex::new(Some(sender)),
             writer: Mutex::new(Some(writer)),
             failed,
+            pending,
             generation_lock: Mutex::new(()),
         }))
     }
@@ -239,11 +245,28 @@ impl StrategyStateSnapshotSink for FileCheckpointStore {
     fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
         self.check_health()?;
         let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
-        sender
+        let sender = sender
             .as_ref()
-            .ok_or_else(|| checkpoint_error("checkpoint_writer_stopped"))?
+            .ok_or_else(|| checkpoint_error("checkpoint_writer_stopped"))?;
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        let result = sender
             .try_send(Some(snapshot))
-            .map_err(|_| checkpoint_error("checkpoint_queue_full"))
+            .map_err(|_| checkpoint_error("checkpoint_queue_full"));
+        if result.is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+        result
+    }
+
+    fn flush(&self, deadline: Instant) -> LocalResult<()> {
+        while self.pending.load(Ordering::Acquire) != 0 {
+            self.check_health()?;
+            if Instant::now() >= deadline {
+                return Err(checkpoint_error("checkpoint_flush_deadline_exceeded"));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.check_health()
     }
 
     fn check_health(&self) -> LocalResult<()> {
@@ -317,6 +340,13 @@ fn checkpoint_error(code: &'static str) -> StrategyError {
 }
 
 impl StrategyEntry {
+    fn cleanup_before(&self, deadline: Instant) -> LocalResult<()> {
+        *self
+            .cleanup_deadline
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(deadline);
+        self.cleanup()
+    }
     fn cleanup(&self) -> LocalResult<()> {
         if let Some(mut scope) = self
             .resources
@@ -364,9 +394,10 @@ pub struct StrategyServiceCore {
     registry: StrategyRegistry,
     accepting: AtomicBool,
     next_operation: AtomicU64,
-    operations: Mutex<BTreeMap<StrategyOperationId, GlobalOperation>>,
+    operations: Mutex<titan_core_types::OperationHistory<StrategyOperationId, GlobalOperation>>,
     cold_loads: Arc<ColdLoadLimiter>,
     checkpoints: Option<Arc<FileCheckpointStore>>,
+    scheduler: crate::scheduler::Scheduler,
 }
 
 struct ColdLoadLimiter {
@@ -437,13 +468,17 @@ impl StrategyServiceCore {
             registry: StrategyRegistry::default(),
             accepting: AtomicBool::new(true),
             next_operation: AtomicU64::new(1),
-            operations: Mutex::new(BTreeMap::new()),
+            operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
+                value.snapshot.state == StrategyOperationState::Pending
+            })),
             cold_loads: Arc::new(ColdLoadLimiter {
                 active: Mutex::new(0),
                 changed: Condvar::new(),
                 capacity: max_concurrent_loads,
             }),
             checkpoints,
+            scheduler: crate::scheduler::Scheduler::new()
+                .map_err(|_| checkpoint_error("scheduler_start_failed"))?,
         })
     }
 
@@ -461,10 +496,13 @@ impl StrategyServiceCore {
         let mut first_error = None;
         for entry in entries {
             let runtime_result = (|| {
+                if entry.runtime.state().lifecycle == StrategyLifecycle::Stopped {
+                    return Ok(());
+                }
                 let local = entry.runtime.stop(deadline)?;
                 wait_runtime(&entry.runtime, local, deadline)
             })();
-            let cleanup_result = entry.cleanup();
+            let cleanup_result = entry.cleanup_before(deadline);
             if first_error.is_none() {
                 first_error = runtime_result.err().or_else(|| cleanup_result.err());
             }
@@ -568,6 +606,32 @@ impl StrategyServiceCore {
                 audit_observer.clone(),
             )))
         };
+        let resources = ResourceScope::new(titan_core_types::ComponentIdentity::new(
+            "titan.strategy.runtime",
+            format!("{}-{}", definition.strategy_id.0, generation),
+        ));
+        for binding in &resolved_accounts {
+            let lease = self
+                .dependencies
+                .accounts
+                .pin_binding(binding.account)
+                .map_err(|_| dependency_error("account_binding_expired"))?;
+            resources
+                .handle()
+                .register("account_binding", lease)
+                .map_err(|_| dependency_error("account_binding_registration_failed"))?;
+        }
+        for binding in &resolved_markets {
+            let lease = self
+                .dependencies
+                .markets
+                .pin_binding(binding.source)
+                .map_err(|_| dependency_error("market_binding_expired"))?;
+            resources
+                .handle()
+                .register("market_binding", lease)
+                .map_err(|_| dependency_error("market_binding_registration_failed"))?;
+        }
         let direct_execution = resolved_accounts
             .iter()
             .map(|binding| {
@@ -597,10 +661,6 @@ impl StrategyServiceCore {
             })
             .collect::<LocalResult<Vec<_>>>()?;
         let activation = Arc::new(StrategyActivationGate::default());
-        let resources = ResourceScope::new(titan_core_types::ComponentIdentity::new(
-            "titan.strategy.runtime",
-            format!("{}-{}", definition.strategy_id.0, generation),
-        ));
         let context = StrategyRuntimeBuildContext {
             strategy: handle,
             artifact_id: artifact.id,
@@ -698,7 +758,7 @@ impl StrategyServiceCore {
                     critical_reserve: definition.runtime.critical_reserve,
                     reliable_pending_capacity: definition.runtime.reliable_pending_capacity,
                     snapshot_staging_capacity: definition.runtime.async_lane_capacity,
-                    control_capacity: 64,
+                    control_capacity: definition.runtime.timer_capacity.max(16),
                     runtime_mode: definition.runtime.worker_policy,
                     spin_iterations: 256,
                     idle_sleep: Duration::from_micros(10),
@@ -707,17 +767,19 @@ impl StrategyServiceCore {
                 },
                 runtime.clone(),
             )
-            .map_err(|_| {
+            .map_err(|error| {
                 StrategyError::new(
                     StrategyErrorKind::RouteFailed,
                     "create",
                     "primary_lane_failed",
-                    "PRIMARY async lane registration failed",
+                    format!("PRIMARY async lane registration failed: {error}"),
                 )
             })?;
         let events = self.dependencies.events.clone();
         let token = lane.token();
         let lane_stop_timeout = definition.runtime.stop_timeout;
+        let cleanup_deadline = Arc::new(Mutex::new(None::<Instant>));
+        let lane_deadline = cleanup_deadline.clone();
         resources
             .handle()
             .register(
@@ -726,7 +788,10 @@ impl StrategyServiceCore {
                     events
                         .unregister_primary_async_lane_before(
                             token,
-                            Instant::now() + lane_stop_timeout,
+                            lane_deadline
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .unwrap_or_else(|| Instant::now() + lane_stop_timeout),
                         )
                         .map(|_| ())
                         .map_err(|error| {
@@ -1097,19 +1162,12 @@ impl StrategyServiceCore {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        let supervisor_active = Arc::new(AtomicBool::new(true));
-        let supervisor_flag = supervisor_active.clone();
         let supervisor_lane = lane.clone();
         let supervisor_activation = activation.clone();
         let supervisor_runtime = runtime.clone();
         let invalidated_flag = Arc::new(AtomicBool::new(false));
-        let supervisor = std::thread::Builder::new()
-            .name(format!(
-                "strategy-supervisor-{}-{}",
-                handle.strategy_id.0, handle.generation
-            ))
-            .spawn(move || {
-                while supervisor_flag.load(Ordering::Acquire) {
+        let supervisor = self.scheduler.schedule(Duration::from_millis(1), move || {
+                    let _ = supervisor_runtime.advance_lifecycle();
                     let state = supervisor_lane.health().state;
                     if matches!(
                         state,
@@ -1134,87 +1192,32 @@ impl StrategyServiceCore {
                     } else if state == SubscriberState::Stopped {
                         supervisor_activation.close();
                     }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            })
-            .map_err(|_| {
-                StrategyError::new(
-                    StrategyErrorKind::Internal,
-                    "create",
-                    "supervisor_start_failed",
-                    "strategy supervisor could not be started",
-                )
-            })?;
+        });
         resources
             .handle()
-            .register(
-                "subscriber_supervisor",
-                StrategySupervisorResource {
-                    active: supervisor_active,
-                    join: Some(supervisor),
-                },
-            )
-            .map_err(|_| {
-                StrategyError::new(
-                    StrategyErrorKind::Internal,
-                    "create",
-                    "supervisor_registration_failed",
-                    "strategy supervisor cleanup could not be registered",
-                )
-            })?;
+            .register("subscriber_supervisor", supervisor)
+            .map_err(|_| checkpoint_error("supervisor_registration_failed"))?;
+
         if let Some(interval) = definition.runtime.timer_interval {
-            let timer_active = Arc::new(AtomicBool::new(true));
-            let timer_flag = timer_active.clone();
             let timer_runtime = runtime.clone();
-            let timer_thread = std::thread::Builder::new()
-                .name(format!(
-                    "strategy-timer-{}-{}",
-                    handle.strategy_id.0, handle.generation
-                ))
-                .spawn(move || {
-                    let mut timer_error_reported = false;
-                    while timer_flag.load(Ordering::Acquire) {
-                        std::thread::park_timeout(interval);
-                        if timer_flag.load(Ordering::Acquire) {
-                            match timer_runtime.fire_timer(1) {
-                                Ok(()) => timer_error_reported = false,
-                                Err(error) if !timer_error_reported => {
-                                    warn!(
-                                        reason_code = error.reason_code.as_ref(),
-                                        "strategy timer safe point could not be queued",
-                                    );
-                                    timer_error_reported = true;
-                                }
-                                Err(_) => {}
-                            }
+            let mut timer_error_reported = false;
+            let timer =
+                self.scheduler
+                    .schedule(interval, move || match timer_runtime.fire_timer(1) {
+                        Ok(()) => timer_error_reported = false,
+                        Err(error) if !timer_error_reported => {
+                            warn!(
+                                reason_code = error.reason_code.as_ref(),
+                                "strategy timer safe point could not be queued"
+                            );
+                            timer_error_reported = true;
                         }
-                    }
-                })
-                .map_err(|_| {
-                    StrategyError::new(
-                        StrategyErrorKind::Internal,
-                        "create",
-                        "timer_start_failed",
-                        "strategy timer worker could not be started",
-                    )
-                })?;
+                        Err(_) => {}
+                    });
             resources
                 .handle()
-                .register(
-                    "strategy_timer",
-                    StrategyTimerResource {
-                        active: timer_active,
-                        join: Some(timer_thread),
-                    },
-                )
-                .map_err(|_| {
-                    StrategyError::new(
-                        StrategyErrorKind::Internal,
-                        "create",
-                        "timer_registration_failed",
-                        "strategy timer cleanup could not be registered",
-                    )
-                })?;
+                .register("strategy_timer", timer)
+                .map_err(|_| checkpoint_error("timer_registration_failed"))?;
         }
         Ok(Arc::new(StrategyEntry {
             handle,
@@ -1225,6 +1228,7 @@ impl StrategyServiceCore {
             lane,
             activation,
             resources: Mutex::new(Some(resources)),
+            cleanup_deadline,
         }))
     }
 
@@ -1548,6 +1552,9 @@ impl StrategyAdminService for StrategyServiceCore {
         deadline: Instant,
     ) -> LocalResult<StrategyOperationId> {
         let entry = self.entry(strategy)?;
+        if entry.runtime.state().lifecycle == StrategyLifecycle::Stopped {
+            return Ok(self.completed_operation(Some(strategy), "already_stopped"));
+        }
         let local = entry.runtime.stop(deadline)?;
         Ok(self.register_runtime_operation(entry, local, true))
     }
@@ -1688,6 +1695,7 @@ impl StrategyAdminService for StrategyServiceCore {
                 definition_version: entry.definition.definition_version,
                 artifact_id: entry.artifact_id,
                 lifecycle: entry.runtime.state().lifecycle,
+                enabled: entry.definition.enabled,
             })
             .collect::<Vec<_>>()
             .into()
@@ -1802,6 +1810,10 @@ pub(crate) fn validate_definition(
         || runtime.reliable_pending_capacity == 0
         || runtime.reliable_pending_capacity > config.max_pending_capacity
         || runtime.timer_capacity == 0
+        || runtime.timer_capacity > config.max_pending_capacity
+        || runtime.max_commands_per_callback == 0
+        || runtime.max_commands_per_callback > config.max_pending_capacity
+        || runtime.checkpoint_interval.is_zero()
         || runtime
             .timer_interval
             .is_some_and(|interval| interval.is_zero())
@@ -2018,37 +2030,6 @@ impl StrategyClock for SystemStrategyClock {
 }
 struct NoopStrategyMetrics;
 impl StrategyMetrics for NoopStrategyMetrics {}
-
-struct StrategySupervisorResource {
-    active: Arc<AtomicBool>,
-    join: Option<std::thread::JoinHandle<()>>,
-}
-
-struct StrategyTimerResource {
-    active: Arc<AtomicBool>,
-    join: Option<std::thread::JoinHandle<()>>,
-}
-
-impl titan_core_types::Resource for StrategyTimerResource {
-    fn close(&mut self) -> Result<(), titan_core_types::CoreError> {
-        self.active.store(false, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            join.thread().unpark();
-            let _ = join.join();
-        }
-        Ok(())
-    }
-}
-
-impl titan_core_types::Resource for StrategySupervisorResource {
-    fn close(&mut self) -> Result<(), titan_core_types::CoreError> {
-        self.active.store(false, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
-        Ok(())
-    }
-}
 
 /// Canonical EventEngine facts that `CanonicalStrategyEventAdapter` can translate into typed
 /// Strategy ABI views today.

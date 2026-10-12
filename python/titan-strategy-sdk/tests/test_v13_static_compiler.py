@@ -67,27 +67,29 @@ class TestV13StaticCompiler(unittest.TestCase):
             self.assertEqual(len(manifest["signature"]["value"]), 64)
 
     def test_missing_public_view_returns_stable_callback_error(self):
-        source = Path(__file__).parent / "fixtures" / "v13_missing_view.py"
-        runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
-        with tempfile.TemporaryDirectory() as temporary:
-            result = compile_package(CompileRequest(
-                source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
-                Path(temporary) / "missing_view", runtime_abi,
-            ))
-            library = ctypes.CDLL(str(result.artifact.paths[0]))
-            callback = library.titan_strategy_on_tick
-            callback.argtypes = [ctypes.c_void_p]
-            callback.restype = ctypes.c_int32
-            context = __import__("numpy").zeros(1, dtype=abi_v13.runtime_context_dtype)
-            state = (ctypes.c_uint8 * result.strategy.state_layout.itemsize)()
-            context[0]["struct_size"] = abi_v13.runtime_context_dtype.itemsize
-            context[0]["abi_version"] = 13
-            context[0]["state_ptr"] = ctypes.addressof(state)
-            context[0]["state_len"] = result.strategy.state_layout.itemsize
-            context[0]["state_alignment"] = result.strategy.state_layout.alignment
-            context[0]["state_schema_version"] = 1
-            context[0]["state_schema_hash"] = list(result.strategy.schema_hash)
-            self.assertEqual(callback(context.ctypes.data), -4)
+        for fixture, expected in (("v13_missing_view.py", -4), ("v13_handler_error.py", -1)):
+            with self.subTest(fixture=fixture):
+                source = Path(__file__).parent / "fixtures" / fixture
+                runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
+                with tempfile.TemporaryDirectory() as temporary:
+                    result = compile_package(CompileRequest(
+                        source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
+                        Path(temporary) / "missing_view", runtime_abi,
+                    ))
+                    library = ctypes.CDLL(str(result.artifact.paths[0]))
+                    callback = library.titan_strategy_on_tick
+                    callback.argtypes = [ctypes.c_void_p]
+                    callback.restype = ctypes.c_int32
+                    context = __import__("numpy").zeros(1, dtype=abi_v13.runtime_context_dtype)
+                    state = (ctypes.c_uint8 * result.strategy.state_layout.itemsize)()
+                    context[0]["struct_size"] = abi_v13.runtime_context_dtype.itemsize
+                    context[0]["abi_version"] = 13
+                    context[0]["state_ptr"] = ctypes.addressof(state)
+                    context[0]["state_len"] = result.strategy.state_layout.itemsize
+                    context[0]["state_alignment"] = result.strategy.state_layout.alignment
+                    context[0]["state_schema_version"] = 1
+                    context[0]["state_schema_hash"] = list(result.strategy.schema_hash)
+                    self.assertEqual(callback(context.ctypes.data), expected)
 
     def test_pair_arb_full_state_machine_aot_compiles(self):
         root = Path(__file__).parents[3]

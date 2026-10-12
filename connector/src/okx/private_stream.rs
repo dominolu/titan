@@ -34,8 +34,7 @@ pub struct PrivateStream {
     api_key: String,
     secret: String,
     passphrase: String,
-    td_mode: String,
-    pos_side: Option<String>,
+
     ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
     client: OkxClient,
@@ -49,8 +48,8 @@ impl PrivateStream {
         api_key: String,
         secret: String,
         passphrase: String,
-        td_mode: String,
-        pos_side: Option<String>,
+        _td_mode: String,
+        _pos_side: Option<String>,
         ev_tx: crate::connector::PublishSender,
         order_manager: SharedOrderManager,
         client: OkxClient,
@@ -61,8 +60,7 @@ impl PrivateStream {
             api_key,
             secret,
             passphrase,
-            td_mode,
-            pos_side,
+
             ev_tx,
             order_manager,
             client,
@@ -76,8 +74,11 @@ impl PrivateStream {
         *self
             .pending_private_subscriptions
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            HashSet::from(["orders".to_string(), "positions".to_string()]);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = HashSet::from([
+            "orders".to_string(),
+            "positions".to_string(),
+            "account".to_string(),
+        ]);
     }
 
     fn acknowledge_private_subscription(&self, channel: Option<&str>) -> bool {
@@ -116,6 +117,11 @@ impl PrivateStream {
                                     inst_id: None,
                                     inst_type: Some("SWAP".to_string()),
                                 },
+                                WsArg {
+                                    channel: "account".to_string(),
+                                    inst_id: None,
+                                    inst_type: None,
+                                },
                             ],
                         };
                         let s = serde_json::to_string(&op).unwrap();
@@ -146,9 +152,7 @@ impl PrivateStream {
                     if self.acknowledge_private_subscription(
                         ack.arg.as_ref().map(|arg| arg.channel.as_str()),
                     ) {
-                        self.ev_tx
-                            .send(PublishEvent::PrivateStreamReady)
-                            .map_err(|_| OkxError::ConnectionInterrupted)?;
+                        self.ev_tx.send(PublishEvent::PrivateStreamReady);
                     }
                 }
             }
@@ -176,16 +180,14 @@ impl PrivateStream {
                     match order_manager.update_from_ws(&order_update) {
                         Ok(Some(order)) => {
                             let symbol = order_update.inst_id.clone();
-                            self.ev_tx
-                                .send_account(AccountPublication::Order {
-                                    symbol,
-                                    client_order_id: (!order_update.cl_ord_id.is_empty())
-                                        .then(|| order_update.cl_ord_id.clone()),
-                                    venue_order_id: (!order_update.ord_id.is_empty())
-                                        .then(|| order_update.ord_id.clone()),
-                                    order,
-                                })
-                                .unwrap();
+                            self.ev_tx.send_account(AccountPublication::Order {
+                                symbol,
+                                client_order_id: (!order_update.cl_ord_id.is_empty())
+                                    .then(|| order_update.cl_ord_id.clone()),
+                                venue_order_id: (!order_update.ord_id.is_empty())
+                                    .then(|| order_update.ord_id.clone()),
+                                order,
+                            });
                         }
                         Ok(None) => {}
                         Err(OkxError::PrefixUnmatched) => {
@@ -200,16 +202,41 @@ impl PrivateStream {
             "positions" => {
                 for value in &data.data {
                     let position: Position = serde_json::from_value(value.clone())?;
-                    self.ev_tx
-                        .send_account(AccountPublication::Position {
-                            symbol: position.inst_id.clone(),
-                            qty: position_qty(&position),
-                            exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
-                        })
-                        .unwrap();
+                    self.ev_tx.send_account(AccountPublication::Position {
+                        symbol: position.inst_id.clone(),
+                        qty: position_qty(&position),
+                        exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
+                    });
                 }
             }
-            "account" | "balance-and-position" | "orders-algo" | "algo-advance" => {
+            "account" => {
+                for value in &data.data {
+                    let account: crate::okx::msg::stream::AccountWs =
+                        serde_json::from_value(value.clone())?;
+                    for detail in account.details {
+                        let parse = |field: &str| {
+                            detail
+                                .get(field)
+                                .and_then(|value| value.as_str())
+                                .and_then(|value| value.parse::<f64>().ok())
+                        };
+                        if let (Some(currency), Some(wallet)) = (
+                            detail.get("ccy").and_then(|value| value.as_str()),
+                            parse("cashBal"),
+                        ) {
+                            self.ev_tx.send_account(AccountPublication::Balance {
+                                currency: currency.to_string(),
+                                wallet,
+                                available: parse("availBal"),
+                                margin: parse("eq"),
+                                unrealized_pnl: parse("upl"),
+                                exch_ts: account.u_time.parse::<i64>().unwrap_or(0) * 1_000_000,
+                            });
+                        }
+                    }
+                }
+            }
+            "balance-and-position" | "orders-algo" | "algo-advance" => {
                 debug!(
                     channel = %data.arg.channel,
                     count = data.data.len(),
@@ -225,22 +252,7 @@ impl PrivateStream {
 
     async fn init_symbol(&self, symbol: String) -> Result<(), OkxError> {
         let client = self.client.clone();
-        let td_mode = self.td_mode.clone();
-        let pos_side = self.pos_side.clone();
-        let order_manager = self.order_manager.clone();
         let ev_tx = self.ev_tx.clone();
-
-        // Cancel all orders in order to start with a clean state.
-        cancel_all(
-            client.clone(),
-            td_mode,
-            pos_side,
-            symbol.clone(),
-            order_manager,
-            ev_tx.clone(),
-        )
-        .await?;
-
         // Fetches the initial position.
         get_position(client, symbol, ev_tx).await
     }
@@ -345,41 +357,11 @@ pub async fn get_position(
 ) -> Result<(), OkxError> {
     let positions = client.get_positions(&symbol).await?;
     for position in positions {
-        ev_tx
-            .send_account(AccountPublication::Position {
-                symbol: position.inst_id.clone(),
-                qty: position_qty(&position),
-                exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
-            })
-            .unwrap();
-    }
-    Ok(())
-}
-
-pub async fn cancel_all(
-    client: OkxClient,
-    td_mode: String,
-    pos_side: Option<String>,
-    symbol: String,
-    order_manager: SharedOrderManager,
-    ev_tx: crate::connector::PublishSender,
-) -> Result<(), OkxError> {
-    client
-        .cancel_all_orders(&symbol, &td_mode, pos_side.as_deref())
-        .await?;
-    let orders = order_manager
-        .lock()
-        .unwrap()
-        .cancel_all(&symbol, pos_side.as_deref());
-    for order in orders {
-        ev_tx
-            .send_account(AccountPublication::Order {
-                symbol: symbol.clone(),
-                client_order_id: None,
-                venue_order_id: None,
-                order,
-            })
-            .unwrap();
+        ev_tx.send_account(AccountPublication::Position {
+            symbol: position.inst_id.clone(),
+            qty: position_qty(&position),
+            exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
+        });
     }
     Ok(())
 }
@@ -434,7 +416,9 @@ mod tests {
         assert!(!stream.acknowledge_private_subscription(Some("orders")));
         assert!(!stream.acknowledge_private_subscription(Some("orders")));
         assert!(!stream.acknowledge_private_subscription(Some("books")));
-        assert!(stream.acknowledge_private_subscription(Some("positions")));
         assert!(!stream.acknowledge_private_subscription(Some("positions")));
+        assert!(!stream.acknowledge_private_subscription(Some("positions")));
+        assert!(stream.acknowledge_private_subscription(Some("account")));
+        assert!(!stream.acknowledge_private_subscription(Some("account")));
     }
 }
