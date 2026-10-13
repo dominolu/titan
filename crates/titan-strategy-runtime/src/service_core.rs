@@ -102,9 +102,7 @@ impl Default for StrategyCoreConfig {
                 titan_event_engine::SubscriberRuntimeMode::Park,
             ],
             allowed_capabilities: StrategyCapabilities(
-                u64::MAX
-                    & !(StrategyCapabilities::READ_RISK.0
-                        | StrategyCapabilities::CHECKPOINT_STATE.0),
+                !(StrategyCapabilities::READ_RISK.0 | StrategyCapabilities::CHECKPOINT_STATE.0),
             ),
             max_lane_capacity: 1 << 20,
             max_pending_capacity: 1 << 18,
@@ -704,50 +702,7 @@ impl StrategyServiceCore {
         }) {
             subscription.routing_keys = market_keys.clone().into();
         }
-        if manifest
-            .subscriptions
-            .iter()
-            .any(|spec| spec.event_type.starts_with("titan.account."))
-        {
-            let account_keys: Arc<[u64]> = resolved_accounts
-                .iter()
-                .map(|binding| u64::from(binding.account.account_id.0))
-                .collect::<Vec<_>>()
-                .into();
-            for event_type in [
-                ORDER_CHANGED_EVENT,
-                FILL_EVENT,
-                POSITION_CHANGED_EVENT,
-                BALANCE_CHANGED_EVENT,
-                ACCOUNT_STREAM_STATE_CHANGED_EVENT,
-                ACCOUNT_STREAM_INVALIDATED_EVENT,
-            ] {
-                if let Some(spec) = subscriptions
-                    .iter_mut()
-                    .find(|spec| spec.event_type.as_ref() == event_type)
-                {
-                    let mut keys = spec.routing_keys.to_vec();
-                    for key in account_keys.iter().copied() {
-                        if !keys.contains(&key) {
-                            keys.push(key);
-                        }
-                    }
-                    keys.sort_unstable();
-                    spec.routing_keys = keys.into();
-                    continue;
-                }
-                subscriptions.push(PrimarySubscriptionSpec {
-                    event_type: Arc::from(event_type),
-                    schema_version: if event_type == FILL_EVENT {
-                        FILL_EVENT_SCHEMA_VERSION
-                    } else {
-                        ACCOUNT_EVENT_SCHEMA_VERSION
-                    },
-                    qos: titan_core_types::EventQos::ReliableOrdered,
-                    routing_keys: account_keys.clone(),
-                });
-            }
-        }
+        add_host_account_subscriptions(&mut subscriptions, &resolved_accounts);
         let lane = self
             .dependencies
             .events
@@ -887,28 +842,16 @@ impl StrategyServiceCore {
         let mut initial_accounts = Vec::new();
         let mut initial_active_orders = Vec::new();
         let mut initial_order_boundaries = Vec::new();
+        let mut initial_recovery_orders = Vec::new();
         for binding in resolved_accounts.iter() {
-            let orders = self
+            let captured = self
                 .dependencies
                 .accounts
-                .orders(
-                    binding.account,
-                    OrderFilter {
-                        asset_id: None,
-                        include_final: false,
-                    },
-                )
-                .map_err(|_| dependency_error("account_orders_snapshot_failed"))?;
-            let positions = self
-                .dependencies
-                .accounts
-                .positions(binding.account, PositionFilter::default())
-                .map_err(|_| dependency_error("account_positions_snapshot_failed"))?;
-            let balances = self
-                .dependencies
-                .accounts
-                .balances(binding.account)
-                .map_err(|_| dependency_error("account_balances_snapshot_failed"))?;
+                .recovery_snapshot(binding.account)
+                .map_err(|_| dependency_error("account_recovery_snapshot_unstable"))?;
+            let orders = captured.orders;
+            let positions = captured.positions;
+            let balances = captured.balances;
             if orders.state != AccountSnapshotState::Ready
                 || positions.state != AccountSnapshotState::Ready
                 || balances.state != AccountSnapshotState::Ready
@@ -938,6 +881,8 @@ impl StrategyServiceCore {
                     initial_positions.push(TitanPositionView {
                         asset_no: asset.local_asset_no,
                         account_no: binding.local_account_no,
+                        position_side: position.position_side,
+                        reserved: [0; 7],
                         qty_lots: position.quantity_lots,
                         average_price_ticks: position.entry_price_ticks,
                         realized_pnl_ticks: position.realized_pnl_units,
@@ -988,7 +933,7 @@ impl StrategyServiceCore {
                 if order_id == 0 {
                     continue;
                 }
-                initial_active_orders.push(TitanActiveOrderView {
+                let view = TitanActiveOrderView {
                     order_id,
                     asset_no: asset.local_asset_no,
                     account_no: binding.local_account_no,
@@ -1003,8 +948,13 @@ impl StrategyServiceCore {
                     time_in_force: account_tif_to_v13(order.time_in_force)?,
                     status: account_order_status_to_v13(order.status)?,
                     reduce_only: u8::from(order.reduce_only),
+                    position_side: order.position_side,
                     ..TitanActiveOrderView::default()
-                });
+                };
+                initial_recovery_orders.push(view);
+                if !matches!(view.status, 4 | 6 | 7 | 8) {
+                    initial_active_orders.push(view);
+                }
             }
             initial_order_boundaries.push((binding.local_account_no, order_version));
         }
@@ -1014,6 +964,7 @@ impl StrategyServiceCore {
             accounts: initial_accounts.into(),
             active_orders: initial_active_orders.into(),
             order_boundaries: initial_order_boundaries.into(),
+            recovery_orders: initial_recovery_orders.into(),
         })?;
         if let Some(checkpoint) = checkpoint {
             runtime.restore_state(checkpoint)?;
@@ -1719,11 +1670,10 @@ impl StrategyAdminService for StrategyServiceCore {
                 operation.runtime = None;
                 if current.state == StrategyOperationState::Succeeded
                     && let Some(entry) = operation.cleanup.take()
+                    && let Err(error) = entry.cleanup()
                 {
-                    if let Err(error) = entry.cleanup() {
-                        operation.snapshot.state = StrategyOperationState::Failed;
-                        operation.snapshot.detail = error.reason_code;
-                    }
+                    operation.snapshot.state = StrategyOperationState::Failed;
+                    operation.snapshot.detail = error.reason_code;
                 }
             }
         }
@@ -2100,6 +2050,7 @@ mod checkpoint_tests {
             orders_list_checksum: [10; 32],
             public_state_identity: [8; 32],
             checksum: [9; 32],
+            recovery: None,
         };
         let store = FileCheckpointStore::new(root.clone()).unwrap();
         store.submit(snapshot).unwrap();
@@ -2134,5 +2085,102 @@ mod checkpoint_tests {
         assert_eq!(store.reserve_generation(strategy_id, 8).unwrap(), 9);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+// Host accounting and epoch fencing is independent of strategy callback selection.
+fn add_host_account_subscriptions(
+    subscriptions: &mut Vec<PrimarySubscriptionSpec>,
+    accounts: &[ResolvedAccountBinding],
+) {
+    if !accounts.is_empty() {
+        let account_keys: Arc<[u64]> = accounts
+            .iter()
+            .map(|binding| u64::from(binding.account.account_id.0))
+            .collect::<Vec<_>>()
+            .into();
+        for event_type in [
+            ORDER_CHANGED_EVENT,
+            FILL_EVENT,
+            POSITION_CHANGED_EVENT,
+            BALANCE_CHANGED_EVENT,
+            ACCOUNT_STREAM_STATE_CHANGED_EVENT,
+            ACCOUNT_STREAM_INVALIDATED_EVENT,
+        ] {
+            if let Some(spec) = subscriptions
+                .iter_mut()
+                .find(|spec| spec.event_type.as_ref() == event_type)
+            {
+                let mut keys = spec.routing_keys.to_vec();
+                for key in account_keys.iter().copied() {
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+                keys.sort_unstable();
+                spec.routing_keys = keys.into();
+                continue;
+            }
+            subscriptions.push(PrimarySubscriptionSpec {
+                event_type: Arc::from(event_type),
+                schema_version: if event_type == FILL_EVENT {
+                    FILL_EVENT_SCHEMA_VERSION
+                } else {
+                    ACCOUNT_EVENT_SCHEMA_VERSION
+                },
+                qos: titan_core_types::EventQos::ReliableOrdered,
+                routing_keys: account_keys.clone(),
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_subscription_tests {
+    use super::*;
+    #[test]
+    fn bbo_only_strategy_receives_all_host_account_facts() {
+        let mut subscriptions = vec![PrimarySubscriptionSpec {
+            event_type: Arc::from(BBO_EVENT),
+            schema_version: 1,
+            qos: titan_core_types::EventQos::Latest,
+            routing_keys: Arc::from([42]),
+        }];
+        let bindings = [ResolvedAccountBinding {
+            local_account_no: 0,
+            account: titan_account_service::AccountHandle {
+                account_id: titan_account_service::AccountId(8),
+                generation: 1,
+            },
+            tradable_assets: Arc::from([]),
+        }];
+        add_host_account_subscriptions(&mut subscriptions, &bindings);
+        assert_eq!(subscriptions.len(), 7);
+        for event_type in [
+            ORDER_CHANGED_EVENT,
+            FILL_EVENT,
+            POSITION_CHANGED_EVENT,
+            BALANCE_CHANGED_EVENT,
+            ACCOUNT_STREAM_STATE_CHANGED_EVENT,
+            ACCOUNT_STREAM_INVALIDATED_EVENT,
+        ] {
+            let spec = subscriptions
+                .iter()
+                .find(|s| s.event_type.as_ref() == event_type)
+                .unwrap();
+            assert_eq!(spec.routing_keys.as_ref(), &[8]);
+            assert_eq!(spec.qos, titan_core_types::EventQos::ReliableOrdered);
+            assert_eq!(
+                spec.schema_version,
+                if event_type == FILL_EVENT {
+                    FILL_EVENT_SCHEMA_VERSION
+                } else {
+                    ACCOUNT_EVENT_SCHEMA_VERSION
+                }
+            );
+        }
+        add_host_account_subscriptions(&mut subscriptions, &bindings);
+        assert_eq!(subscriptions.len(), 7);
+        assert_eq!(subscriptions[0].routing_keys.as_ref(), &[42]);
     }
 }

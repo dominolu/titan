@@ -1,3 +1,4 @@
+use crate::backtest::result::AuditEvent;
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -274,17 +275,18 @@ impl BarExecutionState {
         &self.audit
     }
 
-    fn record_audit(
-        &mut self,
-        timestamp: i64,
-        phase: EventPhase,
-        asset_no: u32,
-        kind: AuditKind,
-        order_id: u64,
-        code: u32,
-        value0: f64,
-        value1: f64,
-    ) {
+    fn record_audit(&mut self, request: AuditEvent<u32>) {
+        let AuditEvent {
+            timestamp,
+            phase,
+            asset_no,
+            kind,
+            order_id,
+            code,
+            value0,
+            value1,
+        } = request;
+
         self.audit.record(AuditRecord {
             run_id: self.audit_run_id,
             schema_version: 1,
@@ -344,16 +346,16 @@ impl BarExecutionState {
         command: OrderCommand,
         local_submit_ts: i64,
     ) -> Result<RiskDecision, BarExecutionError> {
-        self.record_audit(
-            local_submit_ts,
-            EventPhase::StrategyCallback,
-            command.asset_no as u32,
-            AuditKind::Command,
-            command.order_id,
-            command.kind as u32,
-            command.price,
-            command.qty,
-        );
+        self.record_audit(AuditEvent {
+            timestamp: local_submit_ts,
+            phase: EventPhase::StrategyCallback,
+            asset_no: command.asset_no as u32,
+            kind: AuditKind::Command,
+            order_id: command.order_id,
+            code: command.kind as u32,
+            value0: command.price,
+            value1: command.qty,
+        });
         let request = self.request(command, local_submit_ts)?;
         let spec = self.coordinators[command.asset_no as usize].spec();
         let validation = match request.order_type {
@@ -369,16 +371,16 @@ impl BarExecutionState {
                 reason: risk_reason_from_spec(error),
             },
         };
-        self.record_audit(
-            local_submit_ts,
-            EventPhase::StrategyCallback,
-            command.asset_no as u32,
-            AuditKind::RiskDecision,
-            command.order_id,
-            u32::from(matches!(decision, RiskDecision::Reject { .. })),
-            0.0,
-            0.0,
-        );
+        self.record_audit(AuditEvent {
+            timestamp: local_submit_ts,
+            phase: EventPhase::StrategyCallback,
+            asset_no: command.asset_no as u32,
+            kind: AuditKind::RiskDecision,
+            order_id: command.order_id,
+            code: u32::from(matches!(decision, RiskDecision::Reject { .. })),
+            value0: 0.0,
+            value1: 0.0,
+        });
         Ok(decision)
     }
 
@@ -609,16 +611,16 @@ impl BarExecutionState {
             &mut self.report_scratch,
         );
         if result.is_err() {
-            self.record_audit(
-                delivery_ts,
-                EventPhase::ExchangeState,
-                asset_no as u32,
-                AuditKind::Diagnostic,
+            self.record_audit(AuditEvent {
+                timestamp: delivery_ts,
+                phase: EventPhase::ExchangeState,
+                asset_no: asset_no as u32,
+                kind: AuditKind::Diagnostic,
                 order_id,
-                1,
-                0.0,
-                0.0,
-            );
+                code: 1,
+                value0: 0.0,
+                value1: 0.0,
+            });
         }
         result?;
         self.collect_reports(asset_no);
@@ -628,26 +630,26 @@ impl BarExecutionState {
     fn collect_reports(&mut self, asset_no: usize) {
         for index in 0..self.report_scratch.len() {
             let report = self.report_scratch[index];
-            self.record_audit(
-                report.exchange_ts,
-                EventPhase::ExchangeState,
-                report.asset_no,
-                AuditKind::ExecutionReport,
-                report.order_id,
-                execution_report_code(report.kind),
-                report.exec_price,
-                report.exec_qty,
-            );
-            self.record_audit(
-                report.exchange_ts,
-                EventPhase::ExchangeState,
-                report.asset_no,
-                AuditKind::OrderTransition,
-                report.order_id,
-                report.status as u32,
-                report.order_qty,
-                report.exec_qty,
-            );
+            self.record_audit(AuditEvent {
+                timestamp: report.exchange_ts,
+                phase: EventPhase::ExchangeState,
+                asset_no: report.asset_no,
+                kind: AuditKind::ExecutionReport,
+                order_id: report.order_id,
+                code: execution_report_code(report.kind),
+                value0: report.exec_price,
+                value1: report.exec_qty,
+            });
+            self.record_audit(AuditEvent {
+                timestamp: report.exchange_ts,
+                phase: EventPhase::ExchangeState,
+                asset_no: report.asset_no,
+                kind: AuditKind::OrderTransition,
+                order_id: report.order_id,
+                code: report.status as u32,
+                value0: report.order_qty,
+                value1: report.exec_qty,
+            });
             if let Some(delta) = report.account_delta {
                 if let Some(risk) = self.venue_risk.get_mut(&report.venue_id) {
                     let before = self.risk_actions.as_slice().len();
@@ -657,41 +659,41 @@ impl BarExecutionState {
                     );
                     for index in before..self.risk_actions.as_slice().len() {
                         let action = self.risk_actions.as_slice()[index];
-                        self.record_audit(
-                            report.exchange_ts,
-                            EventPhase::PostTradeRisk,
-                            report.asset_no,
-                            match action {
+                        self.record_audit(AuditEvent {
+                            timestamp: report.exchange_ts,
+                            phase: EventPhase::PostTradeRisk,
+                            asset_no: report.asset_no,
+                            kind: match action {
                                 RiskAction::Liquidate { .. } => AuditKind::Liquidation,
                                 RiskAction::Cancel { .. } => AuditKind::RiskDecision,
                             },
-                            report.order_id,
-                            0,
-                            0.0,
-                            0.0,
-                        );
+                            order_id: report.order_id,
+                            code: 0,
+                            value0: 0.0,
+                            value1: 0.0,
+                        });
                     }
                 }
-                self.record_audit(
-                    report.exchange_ts,
-                    EventPhase::ExchangeState,
-                    report.asset_no,
-                    AuditKind::AccountDelta,
-                    report.order_id,
-                    0,
-                    delta.position_delta,
-                    delta.cash_delta - delta.fee + delta.funding,
-                );
-                self.record_audit(
-                    report.exchange_ts,
-                    EventPhase::Matching,
-                    report.asset_no,
-                    AuditKind::Fill,
-                    report.order_id,
-                    0,
-                    report.exec_price,
-                    report.exec_qty,
-                );
+                self.record_audit(AuditEvent {
+                    timestamp: report.exchange_ts,
+                    phase: EventPhase::ExchangeState,
+                    asset_no: report.asset_no,
+                    kind: AuditKind::AccountDelta,
+                    order_id: report.order_id,
+                    code: 0,
+                    value0: delta.position_delta,
+                    value1: delta.cash_delta - delta.fee + delta.funding,
+                });
+                self.record_audit(AuditEvent {
+                    timestamp: report.exchange_ts,
+                    phase: EventPhase::Matching,
+                    asset_no: report.asset_no,
+                    kind: AuditKind::Fill,
+                    order_id: report.order_id,
+                    code: 0,
+                    value0: report.exec_price,
+                    value1: report.exec_qty,
+                });
             }
             self.reports.push(report);
             self.deliveries.schedule(
@@ -787,16 +789,16 @@ impl BarExecutionState {
         )?;
         self.next_funding_sequence += 1;
         self.funding_reports.push(report);
-        self.record_audit(
-            report.event.settlement_ts,
-            EventPhase::ExchangeState,
-            scheduled.asset_no,
-            AuditKind::Funding,
-            0,
-            0,
-            report.event.rate,
-            report.amount,
-        );
+        self.record_audit(AuditEvent {
+            timestamp: report.event.settlement_ts,
+            phase: EventPhase::ExchangeState,
+            asset_no: scheduled.asset_no,
+            kind: AuditKind::Funding,
+            order_id: 0,
+            code: 0,
+            value0: report.event.rate,
+            value1: report.amount,
+        });
         self.deliveries.schedule(
             report.delivery_ts,
             response_delivery_phase(report.event.settlement_ts, report.delivery_ts),

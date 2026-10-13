@@ -17,7 +17,7 @@ POINTER_WIDTH: Final = 64
 MAX_ALIGNMENT: Final = 8
 CALLBACK_ORDER: Final = (
     "on_start", "on_tick", "on_bar", "on_depth", "on_fill", "on_order", "on_cancel",
-    "on_position", "on_balance", "on_account_state", "on_timer", "on_stop",
+    "on_position", "on_balance", "on_account_state", "on_timer", "on_stop", "on_recover",
 )
 CALLBACK_BITS: Final = {name: index for index, name in enumerate(CALLBACK_ORDER)}
 
@@ -54,7 +54,7 @@ order_event_dtype = _dtype([
     ("order_id", "<u8"), ("asset_no", "<u4"), ("account_no", "<u4"),
     ("price_ticks", "<i8"), ("qty_lots", "<i8"), ("cumulative_filled_lots", "<i8"),
     ("event_ts_ns", "<i8"), ("account_sequence", "<u8"), ("status", "u1"),
-    ("reason", "u1"), ("reserved", "u1", (6,)),
+    ("reason", "u1"), ("position_side", "u1"), ("reserved", "u1", (5,)),
 ])
 cancel_event_dtype = _dtype([
     ("order_id", "<u8"), ("asset_no", "<u4"), ("account_no", "<u4"),
@@ -65,6 +65,7 @@ position_event_dtype = _dtype([
     ("asset_no", "<u4"), ("account_no", "<u4"), ("qty_lots", "<i8"),
     ("average_price_ticks", "<i8"), ("realized_pnl_ticks", "<i8"),
     ("event_ts_ns", "<i8"), ("account_sequence", "<u8"),
+    ("position_side", "u1"), ("reserved", "u1", (7,)),
 ])
 balance_event_dtype = _dtype([
     ("account_no", "<u4"), ("currency_no", "<u4"), ("total_units", "<i8"),
@@ -87,7 +88,7 @@ market_dtype = _dtype([
 position_dtype = _dtype([
     ("asset_no", "<u4"), ("account_no", "<u4"), ("qty_lots", "<i8"),
     ("average_price_ticks", "<i8"), ("realized_pnl_ticks", "<i8"),
-    ("account_sequence", "<u8"),
+    ("account_sequence", "<u8"), ("position_side", "u1"), ("reserved", "u1", (7,)),
 ])
 balance_dtype = _dtype([
     ("account_no", "<u4"), ("currency_no", "<u4"), ("total_units", "<i8"),
@@ -103,13 +104,13 @@ active_order_dtype = _dtype([
     ("price_ticks", "<i8"), ("qty_lots", "<i8"), ("cumulative_filled_lots", "<i8"),
     ("created_ts_ns", "<i8"), ("updated_ts_ns", "<i8"), ("account_sequence", "<u8"),
     ("side", "u1"), ("order_type", "u1"), ("time_in_force", "u1"), ("status", "u1"),
-    ("reduce_only", "u1"), ("reserved", "u1", (3,)),
+    ("reduce_only", "u1"), ("position_side", "u1"), ("reserved", "u1", (2,)),
 ])
 submit_order_request_dtype = _dtype([
     ("asset_no", "<u4"), ("account_no", "<u4"), ("price_ticks", "<i8"),
     ("qty_lots", "<i8"), ("trigger_price_ticks", "<i8"), ("gtd_expiry_ns", "<i8"),
     ("side", "u1"), ("order_type", "u1"), ("time_in_force", "u1"),
-    ("reduce_only", "u1"), ("trigger_kind", "u1"), ("reserved", "u1", (3,)),
+    ("reduce_only", "u1"), ("trigger_kind", "u1"), ("position_side", "u1"), ("reserved", "u1", (2,)),
 ])
 cancel_order_request_dtype = _dtype([
     ("order_id", "<u8"), ("asset_no", "<u4"), ("account_no", "<u4"),

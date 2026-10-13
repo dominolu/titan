@@ -1,0 +1,32 @@
+test_both_accounts_must_be_ready (test_pair_arb.TestPairArbV3StateMachine.test_both_accounts_must_be_ready) ... ok
+test_capacity_respects_hedge_ratio (test_pair_arb.TestPairArbV3StateMachine.test_capacity_respects_hedge_ratio) ... ok
+test_draining_cancel_submits_confirmed_partial_gap (test_pair_arb.TestPairArbV3StateMachine.test_draining_cancel_submits_confirmed_partial_gap) ... ok
+test_full_maker_fill_submits_exact_hedge_gap (test_pair_arb.TestPairArbV3StateMachine.test_full_maker_fill_submits_exact_hedge_gap) ... ok
+test_next_slot_waits_for_position_projection (test_pair_arb.TestPairArbV3StateMachine.test_next_slot_waits_for_position_projection) ... ok
+test_partial_maker_fill_does_not_submit_hedge (test_pair_arb.TestPairArbV3StateMachine.test_partial_maker_fill_does_not_submit_hedge) ... ok
+test_private_state_contains_only_minimal_order_refs (test_pair_arb.TestPairArbV3StateMachine.test_private_state_contains_only_minimal_order_refs) ... ok
+test_rejected_and_expired_are_not_recorded_as_canceled (test_pair_arb.TestPairArbV3StateMachine.test_rejected_and_expired_are_not_recorded_as_canceled) ... ok
+test_restore_rejects_order_role_identity_mismatch (test_pair_arb.TestPairArbV3StateMachine.test_restore_rejects_order_role_identity_mismatch) ... ok
+test_restore_rejects_position_projection_mismatch (test_pair_arb.TestPairArbV3StateMachine.test_restore_rejects_position_projection_mismatch) ... ok
+test_start_rejects_unreconciled_position (test_pair_arb.TestPairArbV3StateMachine.test_start_rejects_unreconciled_position) ... ok
+test_stop_keeps_cancel_and_hedge_commands_enabled (test_pair_arb.TestPairArbV3StateMachine.test_stop_keeps_cancel_and_hedge_commands_enabled) ... ok
+test_taker_legs_accept_either_fill_order_without_false_halt (test_pair_arb.TestPairArbV3StateMachine.test_taker_legs_accept_either_fill_order_without_false_halt) ... ok
+test_taker_taker_stages_both_legs_in_one_callback (test_pair_arb.TestPairArbV3StateMachine.test_taker_taker_stages_both_legs_in_one_callback) ... ok
+test_unresolved_risk_gap_cannot_be_reported_as_successful_stop (test_pair_arb.TestPairArbV3StateMachine.test_unresolved_risk_gap_cannot_be_reported_as_successful_stop) ... ok
+test_context_and_descriptor_layout (test_v13_sdk.TestV13Abi.test_context_and_descriptor_layout) ... ok
+test_bar_profile_is_rejected_until_a_canonical_producer_exists (test_v13_sdk.TestV13Definition.test_bar_profile_is_rejected_until_a_canonical_producer_exists) ... ok
+test_parameters_schema_and_qos_contract (test_v13_sdk.TestV13Definition.test_parameters_schema_and_qos_contract) ... ok
+test_invalid_state_types_are_rejected (test_v13_sdk.TestV13State.test_invalid_state_types_are_rejected) ... ok
+test_nested_record_and_fixed_array_have_stable_schema (test_v13_sdk.TestV13State.test_nested_record_and_fixed_array_have_stable_schema) ... ok
+test_all_repository_v13_examples_aot_compile (test_v13_static_compiler.TestV13StaticCompiler.test_all_repository_v13_examples_aot_compile) ... ok
+test_bundle_can_be_signed_with_ed25519_key_id (test_v13_static_compiler.TestV13StaticCompiler.test_bundle_can_be_signed_with_ed25519_key_id) ... ok
+test_missing_public_view_returns_stable_callback_error (test_v13_static_compiler.TestV13StaticCompiler.test_missing_public_view_returns_stable_callback_error) ... ok
+test_pair_arb_full_state_machine_aot_compiles (test_v13_static_compiler.TestV13StaticCompiler.test_pair_arb_full_state_machine_aot_compiles) ... ok
+test_readonly_view_and_bad_signature_are_rejected (test_v13_static_compiler.TestV13StaticCompiler.test_readonly_view_and_bad_signature_are_rejected) ... ok
+test_smoke_strategy_builds_pair_and_bundle (test_v13_static_compiler.TestV13StaticCompiler.test_smoke_strategy_builds_pair_and_bundle) ... ok
+test_strategy_definition_load_runs_in_restricted_worker (test_v13_static_compiler.TestV13StaticCompiler.test_strategy_definition_load_runs_in_restricted_worker) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 13.149s
+
+OK

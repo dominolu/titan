@@ -402,7 +402,7 @@ def validate_strategy_definition(
     for subscription in definition.spec.subscriptions:
         if subscription.handler not in handler_names:
             raise StrategyCompileError(f"missing subscribed handler {subscription.handler!r}")
-    undeclared = handler_names - subscribed_handlers - {"on_start", "on_stop"}
+    undeclared = handler_names - subscribed_handlers - {"on_start", "on_stop", "on_recover"}
     if undeclared:
         raise StrategyCompileError(f"event handlers are missing subscriptions: {sorted(undeclared)!r}")
     if any(name in {"on_tick", "on_bar", "on_depth"} for name in handler_names):

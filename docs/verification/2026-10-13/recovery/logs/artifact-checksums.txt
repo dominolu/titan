@@ -1,0 +1,3 @@
+e5222c127b268479435ea8a73b0645bfc9b6360a29ec0b0dcdf428eafdd7b208  Cargo.lock
+4d19fb212b5d979313fa279299f597f8f481c32b2de1515d0cd0a802b2fa1155  /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/v13_smoke.titan
+180d5c7c238251b813d0728ff4193dd12183e15a337a609e51ed8ca5d95e5239  /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/pair_arb.titan

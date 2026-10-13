@@ -1,6 +1,6 @@
 use super::{
     execution::{CurrencyId, ExecutionReport, FundingReport, InstrumentId, VenueId},
-    scheduler::EventKey,
+    scheduler::{EventKey, EventPhase},
 };
 
 /// Monotonic CPU time consumed by the current process. Unsupported targets return zero while
@@ -22,17 +22,12 @@ pub fn process_cpu_time_ns() -> u64 {
     0
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum EndPolicy {
+    #[default]
     DrainAll,
     StopAtDataEnd,
     StopAtTime(i64),
-}
-
-impl Default for EndPolicy {
-    fn default() -> Self {
-        Self::DrainAll
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -593,6 +588,18 @@ where
     pub fn run_count(&self) -> u64 {
         self.run_count
     }
+}
+
+/// Common audit input; runtimes add their run identity and sequence.
+pub(crate) struct AuditEvent<A> {
+    pub timestamp: i64,
+    pub phase: EventPhase,
+    pub asset_no: A,
+    pub kind: AuditKind,
+    pub order_id: u64,
+    pub code: u32,
+    pub value0: f64,
+    pub value1: f64,
 }
 
 #[cfg(test)]

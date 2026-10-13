@@ -1,0 +1,10 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-review-20261013/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running `/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/examples/v13_review_timer_flush /tmp/titan-review-timer.titan`
+After timer command-intent flush failure: lifecycle=Running, gate_open=true
+
+thread 'main' (911919) panicked at crates/titan-strategy-runtime/examples/v13_review_timer_flush.rs:233:5:
+assertion `left == right` failed: timer command-intent flush failure must fail closed
+  left: Running
+ right: Failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

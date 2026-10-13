@@ -1,3 +1,4 @@
+use crate::backtest::result::AuditEvent;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Error as IoError,
@@ -44,6 +45,17 @@ use crate::{
     },
     types::{BuildError, ElapseResult, Event},
 };
+
+#[derive(Clone, Copy)]
+struct LocalOrderRequest {
+    asset_no: usize,
+    order_id: OrderId,
+    side: Side,
+    price: f64,
+    qty: f64,
+    order_type: OrdType,
+    time_in_force: TimeInForce,
+}
 
 /// Provides asset types.
 pub mod assettype;
@@ -906,17 +918,18 @@ where
         &self.audit
     }
 
-    fn record_audit(
-        &mut self,
-        timestamp: i64,
-        phase: EventPhase,
-        asset_no: usize,
-        kind: AuditKind,
-        order_id: u64,
-        code: u32,
-        value0: f64,
-        value1: f64,
-    ) {
+    fn record_audit(&mut self, request: AuditEvent<usize>) {
+        let AuditEvent {
+            timestamp,
+            phase,
+            asset_no,
+            kind,
+            order_id,
+            code,
+            value0,
+            value1,
+        } = request;
+
         let venue_no = self
             .shared_tick_coordinators
             .get(asset_no)
@@ -1235,16 +1248,16 @@ where
                 sequence,
             )
             .map_err(BacktestError::from)?;
-        self.record_audit(
-            report.event.settlement_ts,
-            EventPhase::ExchangeState,
+        self.record_audit(AuditEvent {
+            timestamp: report.event.settlement_ts,
+            phase: EventPhase::ExchangeState,
             asset_no,
-            AuditKind::Funding,
-            0,
-            0,
-            report.event.rate,
-            report.amount,
-        );
+            kind: AuditKind::Funding,
+            order_id: 0,
+            code: 0,
+            value0: report.event.rate,
+            value1: report.amount,
+        });
         Ok(report)
     }
 
@@ -1333,61 +1346,61 @@ where
                     &mut self.shared_report_scratch,
                 );
                 if apply_result.is_err() {
-                    self.record_audit(
-                        exchange_ts,
-                        EventPhase::ExchangeState,
+                    self.record_audit(AuditEvent {
+                        timestamp: exchange_ts,
+                        phase: EventPhase::ExchangeState,
                         asset_no,
-                        AuditKind::Diagnostic,
-                        outcome.order_id,
-                        1,
-                        0.0,
-                        0.0,
-                    );
+                        kind: AuditKind::Diagnostic,
+                        order_id: outcome.order_id,
+                        code: 1,
+                        value0: 0.0,
+                        value1: 0.0,
+                    });
                 }
                 apply_result?;
                 for index in 0..self.shared_report_scratch.len() {
                     let report = self.shared_report_scratch[index];
-                    self.record_audit(
-                        report.exchange_ts,
-                        EventPhase::ExchangeState,
+                    self.record_audit(AuditEvent {
+                        timestamp: report.exchange_ts,
+                        phase: EventPhase::ExchangeState,
                         asset_no,
-                        AuditKind::ExecutionReport,
-                        report.order_id,
-                        crate::backtest::execution::execution_reason_code(report.reason),
-                        report.exec_price,
-                        report.exec_qty,
-                    );
-                    self.record_audit(
-                        report.exchange_ts,
-                        EventPhase::ExchangeState,
+                        kind: AuditKind::ExecutionReport,
+                        order_id: report.order_id,
+                        code: crate::backtest::execution::execution_reason_code(report.reason),
+                        value0: report.exec_price,
+                        value1: report.exec_qty,
+                    });
+                    self.record_audit(AuditEvent {
+                        timestamp: report.exchange_ts,
+                        phase: EventPhase::ExchangeState,
                         asset_no,
-                        AuditKind::OrderTransition,
-                        report.order_id,
-                        report.status as u32,
-                        report.order_qty,
-                        report.exec_qty,
-                    );
+                        kind: AuditKind::OrderTransition,
+                        order_id: report.order_id,
+                        code: report.status as u32,
+                        value0: report.order_qty,
+                        value1: report.exec_qty,
+                    });
                     if let Some(delta) = report.account_delta {
-                        self.record_audit(
-                            report.exchange_ts,
-                            EventPhase::Matching,
+                        self.record_audit(AuditEvent {
+                            timestamp: report.exchange_ts,
+                            phase: EventPhase::Matching,
                             asset_no,
-                            AuditKind::Fill,
-                            report.order_id,
-                            0,
-                            report.exec_price,
-                            report.exec_qty,
-                        );
-                        self.record_audit(
-                            report.exchange_ts,
-                            EventPhase::ExchangeState,
+                            kind: AuditKind::Fill,
+                            order_id: report.order_id,
+                            code: 0,
+                            value0: report.exec_price,
+                            value1: report.exec_qty,
+                        });
+                        self.record_audit(AuditEvent {
+                            timestamp: report.exchange_ts,
+                            phase: EventPhase::ExchangeState,
                             asset_no,
-                            AuditKind::AccountDelta,
-                            report.order_id,
-                            0,
-                            delta.position_delta,
-                            delta.cash_delta - delta.fee + delta.funding,
-                        );
+                            kind: AuditKind::AccountDelta,
+                            order_id: report.order_id,
+                            code: 0,
+                            value0: delta.position_delta,
+                            value1: delta.cash_delta - delta.fee + delta.funding,
+                        });
                         if self
                             .shared_exchange_portfolio
                             .venue(report.venue_id)
@@ -1439,16 +1452,16 @@ where
                     ..
                 } => {
                     if let Some(action_asset) = self.asset_for_instrument(instrument_id) {
-                        self.record_audit(
-                            self.cur_ts,
-                            EventPhase::PostTradeRisk,
-                            action_asset,
-                            AuditKind::RiskDecision,
+                        self.record_audit(AuditEvent {
+                            timestamp: self.cur_ts,
+                            phase: EventPhase::PostTradeRisk,
+                            asset_no: action_asset,
+                            kind: AuditKind::RiskDecision,
                             order_id,
-                            0,
-                            0.0,
-                            0.0,
-                        );
+                            code: 0,
+                            value0: 0.0,
+                            value1: 0.0,
+                        });
                         self.exch[action_asset].cancel_from_risk(self.cur_ts, order_id)?;
                         self.evs.update_local_order(
                             action_asset,
@@ -1464,16 +1477,16 @@ where
                     let Some(action_asset) = self.asset_for_instrument(instrument_id) else {
                         continue;
                     };
-                    self.record_audit(
-                        self.cur_ts,
-                        EventPhase::PostTradeRisk,
-                        action_asset,
-                        AuditKind::Liquidation,
-                        0,
-                        0,
-                        0.0,
-                        0.0,
-                    );
+                    self.record_audit(AuditEvent {
+                        timestamp: self.cur_ts,
+                        phase: EventPhase::PostTradeRisk,
+                        asset_no: action_asset,
+                        kind: AuditKind::Liquidation,
+                        order_id: 0,
+                        code: 0,
+                        value0: 0.0,
+                        value1: 0.0,
+                    });
                     let qty = self
                         .shared_exchange_portfolio
                         .venue(venue_id)
@@ -1651,16 +1664,17 @@ impl<MD> Backtest<MD>
 where
     MD: MarketDepth,
 {
-    fn execution_request(
-        &self,
-        asset_no: usize,
-        order_id: OrderId,
-        side: Side,
-        price: f64,
-        qty: f64,
-        order_type: OrdType,
-        time_in_force: TimeInForce,
-    ) -> Option<ExecutionOrderRequest> {
+    fn execution_request(&self, request: LocalOrderRequest) -> Option<ExecutionOrderRequest> {
+        let LocalOrderRequest {
+            asset_no,
+            order_id,
+            side,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+        } = request;
+
         let coordinator = self
             .shared_tick_coordinators
             .get(asset_no)
@@ -1770,25 +1784,9 @@ where
 
     fn submit_with_local_risk(
         &mut self,
-        asset_no: usize,
-        order_id: OrderId,
-        side: Side,
-        price: f64,
-        qty: f64,
-        order_type: OrdType,
-        time_in_force: TimeInForce,
+        request: LocalOrderRequest,
     ) -> Result<bool, BacktestError> {
-        self.record_audit(
-            self.cur_ts,
-            EventPhase::StrategyCallback,
-            asset_no,
-            AuditKind::Command,
-            order_id,
-            1,
-            price,
-            qty,
-        );
-        let Some(request) = self.execution_request(
+        let LocalOrderRequest {
             asset_no,
             order_id,
             side,
@@ -1796,7 +1794,27 @@ where
             qty,
             order_type,
             time_in_force,
-        ) else {
+        } = request;
+
+        self.record_audit(AuditEvent {
+            timestamp: self.cur_ts,
+            phase: EventPhase::StrategyCallback,
+            asset_no,
+            kind: AuditKind::Command,
+            order_id,
+            code: 1,
+            value0: price,
+            value1: qty,
+        });
+        let Some(request) = self.execution_request(LocalOrderRequest {
+            asset_no,
+            order_id,
+            side,
+            price,
+            qty,
+            order_type,
+            time_in_force,
+        }) else {
             self.local[asset_no].submit_order(
                 order_id,
                 side,
@@ -1815,18 +1833,18 @@ where
             .order(order_id)
             .is_some()
         {
-            self.record_audit(
-                self.cur_ts,
-                EventPhase::StrategyCallback,
+            self.record_audit(AuditEvent {
+                timestamp: self.cur_ts,
+                phase: EventPhase::StrategyCallback,
                 asset_no,
-                AuditKind::RiskDecision,
+                kind: AuditKind::RiskDecision,
                 order_id,
-                crate::backtest::execution::execution_reason_code(
+                code: crate::backtest::execution::execution_reason_code(
                     ExecutionReason::DuplicateOrderId,
                 ),
-                0.0,
-                0.0,
-            );
+                value0: 0.0,
+                value1: 0.0,
+            });
             self.shared_tick_coordinators[asset_no]
                 .as_mut()
                 .unwrap()
@@ -1863,29 +1881,29 @@ where
             return Ok(true);
         }
         if let Some(reason) = self.local_rejection_reason(asset_no, &request) {
-            self.record_audit(
-                self.cur_ts,
-                EventPhase::StrategyCallback,
+            self.record_audit(AuditEvent {
+                timestamp: self.cur_ts,
+                phase: EventPhase::StrategyCallback,
                 asset_no,
-                AuditKind::RiskDecision,
+                kind: AuditKind::RiskDecision,
                 order_id,
-                crate::backtest::execution::execution_reason_code(reason),
-                0.0,
-                0.0,
-            );
+                code: crate::backtest::execution::execution_reason_code(reason),
+                value0: 0.0,
+                value1: 0.0,
+            });
             self.emit_local_rejection(asset_no, request, reason)?;
             return Ok(true);
         }
-        self.record_audit(
-            self.cur_ts,
-            EventPhase::StrategyCallback,
+        self.record_audit(AuditEvent {
+            timestamp: self.cur_ts,
+            phase: EventPhase::StrategyCallback,
             asset_no,
-            AuditKind::RiskDecision,
+            kind: AuditKind::RiskDecision,
             order_id,
-            0,
-            0.0,
-            0.0,
-        );
+            code: 0,
+            value0: 0.0,
+            value1: 0.0,
+        });
         self.local[asset_no].submit_order(
             order_id,
             side,
@@ -2296,15 +2314,15 @@ where
         order_type: OrdType,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let rejected = self.submit_with_local_risk(
+        let rejected = self.submit_with_local_risk(LocalOrderRequest {
             asset_no,
             order_id,
-            Side::Buy,
+            side: Side::Buy,
             price,
             qty,
             order_type,
             time_in_force,
-        )?;
+        })?;
         if rejected {
             return Ok(if wait {
                 ElapseResult::OrderResponse
@@ -2333,15 +2351,15 @@ where
         order_type: OrdType,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let rejected = self.submit_with_local_risk(
+        let rejected = self.submit_with_local_risk(LocalOrderRequest {
             asset_no,
             order_id,
-            Side::Sell,
+            side: Side::Sell,
             price,
             qty,
             order_type,
             time_in_force,
-        )?;
+        })?;
         if rejected {
             return Ok(if wait {
                 ElapseResult::OrderResponse
@@ -2365,15 +2383,15 @@ where
         order: OrderRequest,
         wait: bool,
     ) -> Result<ElapseResult, Self::Error> {
-        let rejected = self.submit_with_local_risk(
+        let rejected = self.submit_with_local_risk(LocalOrderRequest {
             asset_no,
-            order.order_id,
-            order.side,
-            order.price,
-            order.qty,
-            order.order_type,
-            order.time_in_force,
-        )?;
+            order_id: order.order_id,
+            side: order.side,
+            price: order.price,
+            qty: order.qty,
+            order_type: order.order_type,
+            time_in_force: order.time_in_force,
+        })?;
         if rejected {
             return Ok(if wait {
                 ElapseResult::OrderResponse

@@ -137,7 +137,7 @@ fn side_from_hl(s: &str) -> ApiSide {
     match s {
         "A" => ApiSide::Sell,
         "B" => ApiSide::Buy,
-        _ => ApiSide::from_str(s),
+        _ => ApiSide::from_venue_str(s),
     }
 }
 
@@ -169,7 +169,7 @@ fn status_from_hl(s: &str) -> ApiOrderStatus {
         "canceled" | "marginCanceled" => ApiOrderStatus::Canceled,
         "triggered" => ApiOrderStatus::Triggered,
         "rejected" => ApiOrderStatus::Rejected,
-        _ => ApiOrderStatus::from_str(s),
+        _ => ApiOrderStatus::from_venue_str(s),
     }
 }
 
@@ -186,7 +186,7 @@ fn order_info_from_historical(o: &m::HistoricalOrder, status_timestamp: Option<u
         order_id: o.oid.to_string(),
         client_order_id: o.cloid.clone().unwrap_or_default(),
         side: side_from_hl(&o.side),
-        order_type: ApiOrderType::from_str(&o.order_type),
+        order_type: ApiOrderType::from_venue_str(&o.order_type),
         status: if executed >= qty && qty > 0.0 {
             ApiOrderStatus::Filled
         } else if executed > 0.0 {
@@ -1005,12 +1005,25 @@ impl BrokerApi for HyperliquidClient {
     }
 
     async fn submit_order(&self, req: &UnifiedOrderRequest) -> Result<OrderInfo, ApiError> {
+        self.submit_order_fenced(req, None).await
+    }
+
+    async fn get_account_position_mode(&self) -> Result<crate::api::ApiPositionMode, ApiError> {
+        Ok(crate::api::ApiPositionMode::Net)
+    }
+
+    async fn submit_order_fenced(
+        &self,
+        req: &UnifiedOrderRequest,
+        guard: Option<crate::api::SubmitGuard>,
+    ) -> Result<OrderInfo, ApiError> {
         let wires = vec![build_wire(self, req).await?];
         let action = ApiOrderAction {
             type_: "order".to_string(),
             orders: wires,
             grouping: "na".to_string(),
         };
+        crate::api::check_submit_guard(&guard)?;
         let resp = self.sign_and_post(&action).await?;
         let mut info = self.parse_order_response(&resp)?;
         info.symbol = req.symbol.clone();
@@ -1273,12 +1286,11 @@ impl BrokerApi for HyperliquidClient {
             .and_then(|r| r.get("oid"))
             .and_then(|v| v.as_u64())
             .unwrap_or(oid);
-        if let Some(cloid) = existing.cloid.as_deref() {
-            if let Ok(orders) = self.get_open_orders(user).await {
-                if let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid)) {
-                    final_oid = live.oid;
-                }
-            }
+        if let Some(cloid) = existing.cloid.as_deref()
+            && let Ok(orders) = self.get_open_orders(user).await
+            && let Some(live) = orders.iter().find(|o| o.cloid.as_deref() == Some(cloid))
+        {
+            final_oid = live.oid;
         }
         Ok(OrderInfo {
             symbol: req.symbol.clone(),
@@ -1466,7 +1478,7 @@ impl BrokerApi for HyperliquidClient {
             .filter(|p| symbol.map(|s| p.position.coin == s).unwrap_or(true))
             .map(|p| PositionInfo {
                 symbol: p.position.coin.clone(),
-                position_side: ApiPositionSide::from_qty(f(&p.position.szi)),
+                position_side: ApiPositionSide::Net,
                 qty: f(&p.position.szi),
                 entry_price: f(&p.position.entry_px),
                 mark_price: 0.0,
@@ -1481,7 +1493,7 @@ impl BrokerApi for HyperliquidClient {
                     .position
                     .leverage
                     .as_ref()
-                    .map(|l| ApiMarginType::from_str(&l.type_))
+                    .map(|l| ApiMarginType::from_venue_str(&l.type_))
                     .unwrap_or(ApiMarginType::Unknown),
                 unrealized_pnl: f(&p.position.unrealized_pnl),
                 realized_pnl: 0.0,
@@ -1532,9 +1544,9 @@ impl BrokerApi for HyperliquidClient {
                     .position
                     .leverage
                     .as_ref()
-                    .map(|l| ApiMarginType::from_str(&l.type_))
+                    .map(|l| ApiMarginType::from_venue_str(&l.type_))
                     .unwrap_or(ApiMarginType::Unknown),
-                position_side: ApiPositionSide::from_qty(f(&p.position.szi)),
+                position_side: ApiPositionSide::Net,
             });
         }
         let meta = self.get_meta().await?;
@@ -1574,7 +1586,7 @@ impl BrokerApi for HyperliquidClient {
         let funding = self.get_user_funding(user, start, end).await?;
         let mut records: Vec<IncomeRecord> = funding
             .into_iter()
-            .filter_map(|r| {
+            .map(|r| {
                 let amount = r
                     .delta
                     .as_ref()
@@ -1582,13 +1594,13 @@ impl BrokerApi for HyperliquidClient {
                     .and_then(|a| a.as_str())
                     .map(f)
                     .unwrap_or(0.0);
-                Some(IncomeRecord {
+                IncomeRecord {
                     symbol: symbol.to_string(),
                     income_type: "FUNDING".to_string(),
                     income: amount,
                     asset: "USDC".to_string(),
                     timestamp: r.time as i64,
-                })
+                }
             })
             .collect();
         let ledger = self
@@ -1633,12 +1645,11 @@ impl HyperliquidClient {
         client_order_id: &Option<String>,
         user: &str,
     ) -> Result<u64, ApiError> {
-        if let Some(cloid) = client_order_id {
-            if let Ok(resp) = self.get_order_status(None, Some(cloid)).await {
-                if let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid) {
-                    return Ok(oid);
-                }
-            }
+        if let Some(cloid) = client_order_id
+            && let Ok(resp) = self.get_order_status(None, Some(cloid)).await
+            && let Some(oid) = resp.order.and_then(|e| e.order).map(|o| o.oid)
+        {
+            return Ok(oid);
         }
         let orders = self.get_open_orders(user).await?;
         let cloid = client_order_id.as_deref();
@@ -1748,6 +1759,16 @@ pub(crate) fn build_wire_with_index(
     asset: u32,
     req: &UnifiedOrderRequest,
 ) -> Result<ApiOrderWire, ApiError> {
+    if matches!(
+        req.position_side,
+        Some(ApiPositionSide::Long | ApiPositionSide::Short | ApiPositionSide::Unknown)
+    ) {
+        return Err(ApiError::new(
+            "hyperliquid",
+            "UNSUPPORTED_POSITION_SIDE",
+            "only net positions are supported by this venue adapter",
+        ));
+    }
     let is_buy = side_to_hl(req.side)?;
     let (p, t) = match req.order_type {
         ApiOrderType::Limit => {
@@ -1884,7 +1905,7 @@ mod tests {
             qty: 1.0,
             time_in_force: ApiTimeInForce::GTC,
             reduce_only: false,
-            position_side: Some(ApiPositionSide::Long),
+            position_side: Some(ApiPositionSide::Net),
             client_order_id: Some("c1".to_string()),
             stop_price: None,
         }
@@ -1989,8 +2010,8 @@ mod tests {
     fn test_side_mapping_hl() {
         assert_eq!(side_from_hl("A"), ApiSide::Sell);
         assert_eq!(side_from_hl("B"), ApiSide::Buy);
-        assert_eq!(side_to_hl(ApiSide::Buy).unwrap(), true);
-        assert_eq!(side_to_hl(ApiSide::Sell).unwrap(), false);
+        assert!(side_to_hl(ApiSide::Buy).unwrap());
+        assert!(!side_to_hl(ApiSide::Sell).unwrap());
     }
 
     #[test]

@@ -105,6 +105,15 @@ pub struct MarketEventPublisher {
     backend: MarketEventPublisherBackend,
 }
 
+pub struct MarketBatchPublication<'a> {
+    pub event_type: &'a str,
+    pub payload_length: usize,
+    pub asset_id: AssetId,
+    pub exchange_ts: i64,
+    pub receive_ts: i64,
+    pub trace: TraceContext,
+}
+
 impl MarketEventPublisher {
     pub(crate) fn new(
         inner: EventPublisher,
@@ -179,14 +188,18 @@ impl MarketEventPublisher {
     /// commits the source sequence only after publication succeeds.
     pub fn publish_market_batch(
         &self,
-        event_type: &str,
-        payload_length: usize,
-        asset_id: AssetId,
-        exchange_ts: i64,
-        receive_ts: i64,
-        trace: TraceContext,
+        publication: MarketBatchPublication<'_>,
         encode: impl FnOnce(&mut [u8]) -> Result<(), ConnectorError>,
     ) -> Result<(), ConnectorError> {
+        let MarketBatchPublication {
+            event_type,
+            payload_length,
+            asset_id,
+            exchange_ts,
+            receive_ts,
+            trace,
+        } = publication;
+
         if let MarketEventPublisherBackend::Direct(sink) = &self.backend {
             let mut payload = vec![0_u8; payload_length];
             encode(&mut payload)?;

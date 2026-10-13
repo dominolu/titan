@@ -11,6 +11,25 @@
 //! - 状态/方向/类型使用本模块定义的枚举，无法映射时落入 `Unknown` 变体。
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Venue-controlled position layout, independent of whether positions are empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiPositionMode {
+    Net,
+    Hedge,
+    Unknown,
+}
+
+/// Last admission check after asynchronous order preparation, immediately before transport.
+pub type SubmitGuard = Arc<dyn Fn() -> Result<(), ApiError> + Send + Sync>;
+pub fn check_submit_guard(guard: &Option<SubmitGuard>) -> Result<(), ApiError> {
+    if let Some(check) = guard {
+        check()?;
+    }
+    Ok(())
+}
+
 use thiserror::Error;
 
 /// 统一 API 错误。
@@ -75,7 +94,7 @@ pub enum ApiSide {
 }
 
 impl ApiSide {
-    pub fn from_str(side: &str) -> Self {
+    pub fn from_venue_str(side: &str) -> Self {
         match side.to_uppercase().as_str() {
             "BUY" | "B" | "b" => ApiSide::Buy,
             "SELL" | "S" | "s" => ApiSide::Sell,
@@ -107,7 +126,7 @@ pub enum ApiOrderType {
 }
 
 impl ApiOrderType {
-    pub fn from_str(t: &str) -> Self {
+    pub fn from_venue_str(t: &str) -> Self {
         match t.to_uppercase().as_str() {
             "LIMIT" | "L" => ApiOrderType::Limit,
             "MARKET" | "M" | "IOC" => ApiOrderType::Market,
@@ -146,7 +165,7 @@ pub enum ApiTimeInForce {
 }
 
 impl ApiTimeInForce {
-    pub fn from_str(tif: &str) -> Self {
+    pub fn from_venue_str(tif: &str) -> Self {
         match tif.to_uppercase().as_str() {
             "GTC" => ApiTimeInForce::GTC,
             "IOC" => ApiTimeInForce::IOC,
@@ -183,7 +202,7 @@ pub enum ApiOrderStatus {
 }
 
 impl ApiOrderStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_venue_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "NEW" | "LIVE" | "OPEN" | "PENDING_NEW" | "PLACED" => ApiOrderStatus::New,
             "PARTIALLY_FILLED" | "PARTIALLYFILLED" => ApiOrderStatus::PartiallyFilled,
@@ -225,12 +244,10 @@ pub enum ApiPositionSide {
 }
 
 impl ApiPositionSide {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_venue_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
-            "LONG" | "LONG_SIDE" | "BOTH" => {
-                // BOTH 是双向持仓模式下持仓量为正/负时由 qty 判定，此处先归 Long
-                ApiPositionSide::Long
-            }
+            "LONG" | "LONG_SIDE" => ApiPositionSide::Long,
+            "BOTH" => ApiPositionSide::Net,
             "SHORT" | "SHORT_SIDE" => ApiPositionSide::Short,
             "NET" => ApiPositionSide::Net,
             _ => ApiPositionSide::Unknown,
@@ -267,7 +284,7 @@ pub enum ApiMarginType {
 }
 
 impl ApiMarginType {
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_venue_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "ISOLATED" => ApiMarginType::Isolated,
             "CROSS" | "CROSSED" => ApiMarginType::Cross,
@@ -635,6 +652,19 @@ pub trait BrokerApi: Send + Sync {
     /// 下单。
     async fn submit_order(&self, req: &UnifiedOrderRequest) -> Result<OrderInfo, ApiError>;
 
+    async fn submit_order_fenced(
+        &self,
+        req: &UnifiedOrderRequest,
+        guard: Option<SubmitGuard>,
+    ) -> Result<OrderInfo, ApiError> {
+        check_submit_guard(&guard)?;
+        self.submit_order(req).await
+    }
+
+    async fn get_account_position_mode(&self) -> Result<ApiPositionMode, ApiError> {
+        Ok(ApiPositionMode::Unknown)
+    }
+
     /// 批量下单。
     async fn submit_orders(&self, reqs: &[UnifiedOrderRequest])
     -> Result<Vec<OrderInfo>, ApiError>;
@@ -713,82 +743,133 @@ pub trait BrokerApi: Send + Sync {
     ) -> Result<Vec<IncomeRecord>, ApiError>;
 }
 
+impl std::str::FromStr for ApiSide {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
+impl std::str::FromStr for ApiOrderType {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
+impl std::str::FromStr for ApiTimeInForce {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
+impl std::str::FromStr for ApiOrderStatus {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
+impl std::str::FromStr for ApiPositionSide {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
+impl std::str::FromStr for ApiMarginType {
+    type Err = std::convert::Infallible;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_venue_str(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_side_mapping() {
-        assert_eq!(ApiSide::from_str("BUY"), ApiSide::Buy);
-        assert_eq!(ApiSide::from_str("buy"), ApiSide::Buy);
-        assert_eq!(ApiSide::from_str("SELL"), ApiSide::Sell);
-        assert_eq!(ApiSide::from_str("B"), ApiSide::Buy);
-        assert_eq!(ApiSide::from_str("S"), ApiSide::Sell);
-        assert_eq!(ApiSide::from_str("xxx"), ApiSide::Unknown);
+        assert_eq!(ApiSide::from_venue_str("BUY"), ApiSide::Buy);
+        assert_eq!(ApiSide::from_venue_str("buy"), ApiSide::Buy);
+        assert_eq!(ApiSide::from_venue_str("SELL"), ApiSide::Sell);
+        assert_eq!(ApiSide::from_venue_str("B"), ApiSide::Buy);
+        assert_eq!(ApiSide::from_venue_str("S"), ApiSide::Sell);
+        assert_eq!(ApiSide::from_venue_str("xxx"), ApiSide::Unknown);
         assert_eq!(ApiSide::Buy.as_str(), "BUY");
         assert_eq!(ApiSide::Sell.as_str(), "SELL");
     }
 
     #[test]
     fn test_order_type_mapping() {
-        assert_eq!(ApiOrderType::from_str("LIMIT"), ApiOrderType::Limit);
-        assert_eq!(ApiOrderType::from_str("MARKET"), ApiOrderType::Market);
+        assert_eq!(ApiOrderType::from_venue_str("LIMIT"), ApiOrderType::Limit);
+        assert_eq!(ApiOrderType::from_venue_str("MARKET"), ApiOrderType::Market);
         assert_eq!(
-            ApiOrderType::from_str("STOP_MARKET"),
+            ApiOrderType::from_venue_str("STOP_MARKET"),
             ApiOrderType::StopMarket
         );
         assert_eq!(
-            ApiOrderType::from_str("stop_limit"),
+            ApiOrderType::from_venue_str("stop_limit"),
             ApiOrderType::StopLimit
         );
         assert_eq!(
-            ApiOrderType::from_str("TAKE_PROFIT_MARKET"),
+            ApiOrderType::from_venue_str("TAKE_PROFIT_MARKET"),
             ApiOrderType::TakeProfitMarket
         );
         assert_eq!(
-            ApiOrderType::from_str("TRAILING_STOP_MARKET"),
+            ApiOrderType::from_venue_str("TRAILING_STOP_MARKET"),
             ApiOrderType::TrailingStopMarket
         );
-        assert_eq!(ApiOrderType::from_str("???"), ApiOrderType::Unknown);
+        assert_eq!(ApiOrderType::from_venue_str("???"), ApiOrderType::Unknown);
     }
 
     #[test]
     fn test_tif_mapping() {
-        assert_eq!(ApiTimeInForce::from_str("GTC"), ApiTimeInForce::GTC);
-        assert_eq!(ApiTimeInForce::from_str("ioc"), ApiTimeInForce::IOC);
-        assert_eq!(ApiTimeInForce::from_str("FOK"), ApiTimeInForce::FOK);
-        assert_eq!(ApiTimeInForce::from_str("POST_ONLY"), ApiTimeInForce::GTX);
-        assert_eq!(ApiTimeInForce::from_str("GTX"), ApiTimeInForce::GTX);
+        assert_eq!(ApiTimeInForce::from_venue_str("GTC"), ApiTimeInForce::GTC);
+        assert_eq!(ApiTimeInForce::from_venue_str("ioc"), ApiTimeInForce::IOC);
+        assert_eq!(ApiTimeInForce::from_venue_str("FOK"), ApiTimeInForce::FOK);
+        assert_eq!(
+            ApiTimeInForce::from_venue_str("POST_ONLY"),
+            ApiTimeInForce::GTX
+        );
+        assert_eq!(ApiTimeInForce::from_venue_str("GTX"), ApiTimeInForce::GTX);
     }
 
     #[test]
     fn test_order_status_mapping() {
-        assert_eq!(ApiOrderStatus::from_str("NEW"), ApiOrderStatus::New);
-        assert_eq!(ApiOrderStatus::from_str("live"), ApiOrderStatus::New);
+        assert_eq!(ApiOrderStatus::from_venue_str("NEW"), ApiOrderStatus::New);
+        assert_eq!(ApiOrderStatus::from_venue_str("live"), ApiOrderStatus::New);
         assert_eq!(
-            ApiOrderStatus::from_str("PARTIALLY_FILLED"),
+            ApiOrderStatus::from_venue_str("PARTIALLY_FILLED"),
             ApiOrderStatus::PartiallyFilled
         );
-        assert_eq!(ApiOrderStatus::from_str("FILLED"), ApiOrderStatus::Filled);
         assert_eq!(
-            ApiOrderStatus::from_str("CANCELED"),
+            ApiOrderStatus::from_venue_str("FILLED"),
+            ApiOrderStatus::Filled
+        );
+        assert_eq!(
+            ApiOrderStatus::from_venue_str("CANCELED"),
             ApiOrderStatus::Canceled
         );
         assert_eq!(
-            ApiOrderStatus::from_str("cancelled"),
+            ApiOrderStatus::from_venue_str("cancelled"),
             ApiOrderStatus::Canceled
         );
         assert_eq!(
-            ApiOrderStatus::from_str("REJECTED"),
+            ApiOrderStatus::from_venue_str("REJECTED"),
             ApiOrderStatus::Rejected
         );
-        assert_eq!(ApiOrderStatus::from_str("EXPIRED"), ApiOrderStatus::Expired);
         assert_eq!(
-            ApiOrderStatus::from_str("UNTRIGGERED"),
+            ApiOrderStatus::from_venue_str("EXPIRED"),
+            ApiOrderStatus::Expired
+        );
+        assert_eq!(
+            ApiOrderStatus::from_venue_str("UNTRIGGERED"),
             ApiOrderStatus::Untriggered
         );
         assert_eq!(
-            ApiOrderStatus::from_str("TRIGGERED"),
+            ApiOrderStatus::from_venue_str("TRIGGERED"),
             ApiOrderStatus::Triggered
         );
     }
@@ -802,8 +883,11 @@ mod tests {
 
     #[test]
     fn test_margin_type_mapping() {
-        assert_eq!(ApiMarginType::from_str("ISOLATED"), ApiMarginType::Isolated);
-        assert_eq!(ApiMarginType::from_str("cross"), ApiMarginType::Cross);
+        assert_eq!(
+            ApiMarginType::from_venue_str("ISOLATED"),
+            ApiMarginType::Isolated
+        );
+        assert_eq!(ApiMarginType::from_venue_str("cross"), ApiMarginType::Cross);
     }
 
     #[test]

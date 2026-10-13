@@ -28,7 +28,13 @@ def on_tick(ctx):
     ctx.state["nested"]["value"] = ctx.submit_order(0, 0, 1, 1, 2, 100, 1)
 
 
+@njit
+def on_recover(ctx):
+    # Host restores typed bytes and verifies common account/order facts.
+    return 0
+
+
 def build(parameters):
     state = new_state(state_dtype)
     state[0]["counter"] = parameters["initial_counter"]
-    return StrategyDefinition(SPEC, state, {"on_tick": on_tick}, {})
+    return StrategyDefinition(SPEC, state, {"on_tick": on_tick, "on_recover": on_recover}, {})

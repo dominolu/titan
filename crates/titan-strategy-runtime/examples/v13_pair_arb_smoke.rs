@@ -136,5 +136,29 @@ fn main() {
         }
         command => panic!("expected hedge submit, got {command:?}"),
     }
+    // Native recovery callback is command-free and accepts a host-established new session.
+    let mut original = artifact.instantiate(92, 1).unwrap();
+    original.invoke(V13EventKind::Start, &mut context).unwrap();
+    let snapshot = original.freeze_state(1).unwrap();
+    let mut recovered = artifact.instantiate(92, 2).unwrap();
+    recovered.restore_state(&snapshot).unwrap();
+    let new_accounts = accounts.map(|mut account| {
+        account.account_epoch = 2;
+        account.account_sequence = 9;
+        account
+    });
+    context.accounts_ptr = new_accounts.as_ptr();
+    context.active_orders_ptr = std::ptr::null();
+    context.active_orders_len = 0;
+    let mut recovery_staging = CallbackCommandStagingV13::new(8, 92, 2).unwrap();
+    recovery_staging.begin_callback(false, &[]);
+    recovery_staging.bind_context(&mut context);
+    recovered
+        .invoke(V13EventKind::Recover, &mut context)
+        .unwrap();
+    assert!(recovery_staging.finish_callback(0).is_empty());
+    assert!(!recovered.command_gate_open());
+    recovered.complete_restore([0; 32], 2).unwrap();
+    recovered.invoke(V13EventKind::Start, &mut context).unwrap();
     println!("V13 pair-arb state-machine smoke passed");
 }

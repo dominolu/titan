@@ -806,145 +806,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        backtest::{
-            assettype::LinearAsset,
-            execution::{
-                BufferedExecutionObserver, CashFlowMode, CurrencyId,
-                HistoricalLiquidityConsumption, IdentityExecutionQuality,
-                InstrumentExecutionReality, InstrumentId, InstrumentSpec, InstrumentType, VenueId,
-            },
-            models::{CommonFees, ConstantLatency, RiskAdverseQueueModel, TradingValueFeeModel},
-            order::order_bus,
-        },
-        depth::HashMapMarketDepth,
-        types::{EXCH_ASK_DEPTH_EVENT, OrdType, TimeInForce},
-    };
-
-    #[test]
-    fn emits_fill_outcome_at_exchange_time() {
-        let latency = ConstantLatency::new(0, 20);
-        let (exchange_bus, mut local_bus) = order_bus(latency);
-        let mut exchange = PartialFillExchange::new_with_observer(
-            HashMapMarketDepth::new(1.0, 1.0),
-            State::new(
-                LinearAsset::new(1.0),
-                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
-            ),
-            RiskAdverseQueueModel::new(),
-            exchange_bus,
-            BufferedExecutionObserver::with_capacity(2),
-        );
-        exchange
-            .process(&Event {
-                ev: EXCH_ASK_DEPTH_EVENT,
-                exch_ts: 100,
-                local_ts: 105,
-                px: 101.0,
-                qty: 2.0,
-                order_id: 0,
-                ival: 0,
-                fval: 0.0,
-            })
-            .unwrap();
-        let mut order = Order::new(7, 0, 1.0, 1.0, Side::Buy, OrdType::Market, TimeInForce::IOC);
-        order.req = Status::New;
-        order.local_timestamp = 100;
-        local_bus.request(order, |_| unreachable!());
-        exchange.process_recv_order(100, None).unwrap();
-
-        let observed = exchange.observer().as_slice();
-        assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].order_id, 7);
-        assert_eq!(observed[0].order.unwrap().side, Side::Buy);
-        assert_eq!(
-            observed[0].outcome,
-            MatchOutcome::Fill(ProposedFill {
-                exchange_ts: 100,
-                price: 101.0,
-                qty: 1.0,
-                maker: false,
-            })
-        );
-    }
-
-    #[test]
-    fn configured_tick_reality_prevents_reusing_historical_depth() {
-        let latency = ConstantLatency::new(0, 0);
-        let (exchange_bus, mut local_bus) = order_bus(latency);
-        let mut exchange = PartialFillExchange::new_with_observer(
-            HashMapMarketDepth::new(1.0, 1.0),
-            State::new(
-                LinearAsset::new(1.0),
-                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
-            ),
-            RiskAdverseQueueModel::new(),
-            exchange_bus,
-            BufferedExecutionObserver::with_capacity(4),
-        );
-        exchange.set_execution_reality(Box::new(InstrumentExecutionReality::new(
-            InstrumentSpec {
-                instrument_id: InstrumentId(1),
-                asset_no: 0,
-                venue_id: VenueId(1),
-                tick_size: 1.0,
-                lot_size: 1.0,
-                min_qty: 1.0,
-                max_qty: 100.0,
-                min_notional: 0.0,
-                contract_size: 1.0,
-                price_currency: CurrencyId(1),
-                settlement_currency: CurrencyId(1),
-                margin_currency: CurrencyId(1),
-                instrument_type: InstrumentType::LinearPerpetual,
-                cash_flow_mode: CashFlowMode::DerivativePnl,
-                version: 1,
-            },
-            HistoricalLiquidityConsumption::default(),
-            IdentityExecutionQuality,
-        )));
-        exchange
-            .process(&Event {
-                ev: EXCH_ASK_DEPTH_EVENT,
-                exch_ts: 100,
-                local_ts: 100,
-                px: 101.0,
-                qty: 1.0,
-                order_id: 0,
-                ival: 0,
-                fval: 0.0,
-            })
-            .unwrap();
-        for order_id in [11, 12] {
-            let mut order = Order::new(
-                order_id,
-                0,
-                1.0,
-                1.0,
-                Side::Buy,
-                OrdType::Market,
-                TimeInForce::IOC,
-            );
-            order.req = Status::New;
-            local_bus.request(order, |_| unreachable!());
-        }
-        exchange.process_recv_order(0, None).unwrap();
-        exchange.process_recv_order(0, None).unwrap();
-
-        let observed = exchange.observer().as_slice();
-        assert!(observed.iter().any(|item| {
-            item.order_id == 11
-                && matches!(item.outcome, MatchOutcome::Fill(fill) if fill.qty == 1.0)
-        }));
-        assert!(observed.iter().any(|item| {
-            item.order_id == 12 && matches!(item.outcome, MatchOutcome::Expired { .. })
-        }));
-    }
-}
-
 impl<AT, LM, QM, MD, FM, O> Processor for PartialFillExchange<AT, LM, QM, MD, FM, O>
 where
     AT: AssetType,
@@ -1183,5 +1044,144 @@ where
         self.order_e2l
             .earliest_send_order_timestamp()
             .unwrap_or(i64::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backtest::{
+            assettype::LinearAsset,
+            execution::{
+                BufferedExecutionObserver, CashFlowMode, CurrencyId,
+                HistoricalLiquidityConsumption, IdentityExecutionQuality,
+                InstrumentExecutionReality, InstrumentId, InstrumentSpec, InstrumentType, VenueId,
+            },
+            models::{CommonFees, ConstantLatency, RiskAdverseQueueModel, TradingValueFeeModel},
+            order::order_bus,
+        },
+        depth::HashMapMarketDepth,
+        types::{EXCH_ASK_DEPTH_EVENT, OrdType, TimeInForce},
+    };
+
+    #[test]
+    fn emits_fill_outcome_at_exchange_time() {
+        let latency = ConstantLatency::new(0, 20);
+        let (exchange_bus, mut local_bus) = order_bus(latency);
+        let mut exchange = PartialFillExchange::new_with_observer(
+            HashMapMarketDepth::new(1.0, 1.0),
+            State::new(
+                LinearAsset::new(1.0),
+                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
+            ),
+            RiskAdverseQueueModel::new(),
+            exchange_bus,
+            BufferedExecutionObserver::with_capacity(2),
+        );
+        exchange
+            .process(&Event {
+                ev: EXCH_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 105,
+                px: 101.0,
+                qty: 2.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            })
+            .unwrap();
+        let mut order = Order::new(7, 0, 1.0, 1.0, Side::Buy, OrdType::Market, TimeInForce::IOC);
+        order.req = Status::New;
+        order.local_timestamp = 100;
+        local_bus.request(order, |_| unreachable!());
+        exchange.process_recv_order(100, None).unwrap();
+
+        let observed = exchange.observer().as_slice();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].order_id, 7);
+        assert_eq!(observed[0].order.unwrap().side, Side::Buy);
+        assert_eq!(
+            observed[0].outcome,
+            MatchOutcome::Fill(ProposedFill {
+                exchange_ts: 100,
+                price: 101.0,
+                qty: 1.0,
+                maker: false,
+            })
+        );
+    }
+
+    #[test]
+    fn configured_tick_reality_prevents_reusing_historical_depth() {
+        let latency = ConstantLatency::new(0, 0);
+        let (exchange_bus, mut local_bus) = order_bus(latency);
+        let mut exchange = PartialFillExchange::new_with_observer(
+            HashMapMarketDepth::new(1.0, 1.0),
+            State::new(
+                LinearAsset::new(1.0),
+                TradingValueFeeModel::new(CommonFees::new(0.0, 0.0)),
+            ),
+            RiskAdverseQueueModel::new(),
+            exchange_bus,
+            BufferedExecutionObserver::with_capacity(4),
+        );
+        exchange.set_execution_reality(Box::new(InstrumentExecutionReality::new(
+            InstrumentSpec {
+                instrument_id: InstrumentId(1),
+                asset_no: 0,
+                venue_id: VenueId(1),
+                tick_size: 1.0,
+                lot_size: 1.0,
+                min_qty: 1.0,
+                max_qty: 100.0,
+                min_notional: 0.0,
+                contract_size: 1.0,
+                price_currency: CurrencyId(1),
+                settlement_currency: CurrencyId(1),
+                margin_currency: CurrencyId(1),
+                instrument_type: InstrumentType::LinearPerpetual,
+                cash_flow_mode: CashFlowMode::DerivativePnl,
+                version: 1,
+            },
+            HistoricalLiquidityConsumption::default(),
+            IdentityExecutionQuality,
+        )));
+        exchange
+            .process(&Event {
+                ev: EXCH_ASK_DEPTH_EVENT,
+                exch_ts: 100,
+                local_ts: 100,
+                px: 101.0,
+                qty: 1.0,
+                order_id: 0,
+                ival: 0,
+                fval: 0.0,
+            })
+            .unwrap();
+        for order_id in [11, 12] {
+            let mut order = Order::new(
+                order_id,
+                0,
+                1.0,
+                1.0,
+                Side::Buy,
+                OrdType::Market,
+                TimeInForce::IOC,
+            );
+            order.req = Status::New;
+            local_bus.request(order, |_| unreachable!());
+        }
+        exchange.process_recv_order(0, None).unwrap();
+        exchange.process_recv_order(0, None).unwrap();
+
+        let observed = exchange.observer().as_slice();
+        assert!(observed.iter().any(|item| {
+            item.order_id == 11
+                && matches!(item.outcome, MatchOutcome::Fill(fill) if fill.qty == 1.0)
+        }));
+        assert!(observed.iter().any(|item| {
+            item.order_id == 12 && matches!(item.outcome, MatchOutcome::Expired { .. })
+        }));
     }
 }

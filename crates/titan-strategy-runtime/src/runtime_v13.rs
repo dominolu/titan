@@ -61,9 +61,10 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             max_handler_duration: definition.runtime.max_handler_duration,
         };
         let generation = context.strategy.generation;
-        let instance = artifact
+        let mut instance = artifact
             .instantiate_with_config(&config, generation)
             .map_err(|_| v13_runtime_error("v13_instantiate_failed"))?;
+        instance.bind_resolved_routes(&context.markets, &context.accounts);
         let mut markets = vec![
             TitanMarketView::default();
             context
@@ -84,7 +85,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             .iter()
             .map(|binding| TitanAccountView {
                 account_no: binding.local_account_no,
-                state: 4,
+                state: 0,
                 ..TitanAccountView::default()
             })
             .collect();
@@ -105,6 +106,8 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     balances: Vec::with_capacity(PUBLIC_CAPACITY),
                     accounts,
                     active_orders: Vec::with_capacity(PUBLIC_CAPACITY),
+                    recovery_orders: Vec::new(),
+                    recovered_identity: None,
                     orders_list: BTreeMap::new(),
                     ticks: Vec::with_capacity(PUBLIC_CAPACITY),
                     depth: Vec::with_capacity(PUBLIC_CAPACITY),
@@ -164,6 +167,8 @@ struct NativeV13Inner {
     balances: Vec<TitanBalanceView>,
     accounts: Vec<TitanAccountView>,
     active_orders: Vec<TitanActiveOrderView>,
+    recovery_orders: Vec<TitanActiveOrderView>,
+    recovered_identity: Option<[u8; 32]>,
     orders_list: BTreeMap<u64, StrategyOrderRecordV13>,
     ticks: Vec<TitanTickView>,
     depth: Vec<TitanDepthView>,
@@ -174,7 +179,7 @@ struct NativeV13Inner {
     checkpoint_dirty: bool,
     last_checkpoint_ns: i64,
     checkpoint_interval_ns: i64,
-    position_versions: BTreeMap<(u32, u32), u64>,
+    position_versions: BTreeMap<(u32, u32, u8), u64>,
     balance_versions: BTreeMap<(u32, u32), u64>,
     account_versions: BTreeMap<u32, u64>,
     callback_count: u64,
@@ -211,6 +216,7 @@ fn orders_list_checksum(orders: &[StrategyOrderRecordV13]) -> [u8; 32] {
             order.status,
             order.reduce_only,
             order.error_code,
+            order.position_side,
         ]);
         digest.update(order.reserved);
     }
@@ -246,6 +252,7 @@ fn merge_seeded_order_record(
     record.time_in_force = value.time_in_force;
     record.status = value.status;
     record.reduce_only = value.reduce_only;
+    record.position_side = value.position_side;
     Ok(())
 }
 
@@ -327,9 +334,16 @@ impl NativeV13Runtime {
                 return Err(v13_runtime_error("v13_callback_failed"));
             }
         };
-        commit_commands(core, inner, &commands)?;
-        if core.async_failure.load(Ordering::Acquire) {
-            return Err(v13_runtime_error("execution_result_queue_full"));
+        let committed = commit_commands(core, inner, &commands).and_then(|_| {
+            if core.async_failure.load(Ordering::Acquire) {
+                Err(v13_runtime_error("execution_result_queue_full"))
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = committed {
+            fail_runtime(core, inner, error.reason_code.clone());
+            return Err(error);
         }
         inner.staging.clear_committed();
         inner.callback_count = inner.callback_count.saturating_add(1);
@@ -399,6 +413,35 @@ fn dispatch_event(
     event: EventView<'_>,
     invoke_callbacks: bool,
 ) -> LocalResult<()> {
+    if titan_account_service::ACCOUNT_EVENT_TYPES.contains(&event.event_type) {
+        let header = titan_account_service::decode_account_event_header(event.payload)
+            .map_err(|_| v13_runtime_error("account_header_decode"))?;
+        let binding = core
+            .context
+            .accounts
+            .iter()
+            .find(|binding| binding.account.account_id.0 == header.account_id)
+            .ok_or_else(|| v13_runtime_error("account_not_bound"))?;
+        if header.account_generation < binding.account.generation {
+            return Ok(());
+        }
+        if header.account_generation != binding.account.generation {
+            return Err(v13_runtime_error("account_generation_requires_recovery"));
+        }
+        let account_no = local_account(core, header.account_id)?;
+        if let Some(current) = inner
+            .accounts
+            .iter()
+            .find(|value| value.account_no == account_no)
+            && current.account_epoch != 0
+            && current.account_epoch != header.account_epoch
+        {
+            if invoke_callbacks {
+                return Err(v13_runtime_error("account_epoch_requires_recovery"));
+            }
+            return Ok(());
+        }
+    }
     match (event.event_type, event.schema_version) {
         (titan_market_service::BBO_EVENT | titan_market_service::TRADE_BATCH_EVENT, 1) => {
             decode_market_batch(core, inner, event, false)?;
@@ -484,7 +527,19 @@ fn dispatch_event(
                 account_sequence: value.header.account_version,
                 status,
                 reason: 0,
-                reserved: [0; 6],
+                position_side: {
+                    let reported =
+                        titan_account_service::event_flags::position_side(value.header.flags);
+                    if reported == 0 {
+                        inner
+                            .orders_list
+                            .get(&order_id)
+                            .map_or(0, |v| v.position_side)
+                    } else {
+                        reported
+                    }
+                },
+                reserved: [0; 5],
             };
             update_active_order(
                 inner,
@@ -501,7 +556,7 @@ fn dispatch_event(
                 ctx.order_events_ptr = &view;
                 ctx.order_events_len = 1;
             })?;
-            if matches!(status, 6 | 7 | 8) {
+            if matches!(status, 6..=8) {
                 let cancel = TitanCancelEventView {
                     order_id,
                     asset_no,
@@ -527,6 +582,8 @@ fn dispatch_event(
             let view = TitanPositionEventView {
                 asset_no,
                 account_no,
+                position_side: value.position_side,
+                reserved: [0; 7],
                 qty_lots: value.quantity_lots,
                 average_price_ticks: value.entry_price_ticks,
                 realized_pnl_ticks: value.realized_pnl_units,
@@ -595,12 +652,11 @@ fn dispatch_event(
             if !invoke_callbacks {
                 return Ok(());
             }
-            let result =
-                NativeV13Runtime::invoke(inner, core, V13EventKind::AccountState, 1, |ctx| {
-                    ctx.account_state_events_ptr = &view;
-                    ctx.account_state_events_len = 1;
-                });
-            result
+
+            NativeV13Runtime::invoke(inner, core, V13EventKind::AccountState, 1, |ctx| {
+                ctx.account_state_events_ptr = &view;
+                ctx.account_state_events_len = 1;
+            })
         }
         _ => Err(v13_runtime_error("unsupported_v13_event")),
     }
@@ -708,6 +764,7 @@ fn commit_commands(
                 if !matches!(request.side, 1 | 2)
                     || !matches!(request.order_type, 1 | 2)
                     || request.qty_lots <= 0
+                    || request.position_side > 2
                 {
                     return Err(v13_runtime_error("invalid_order"));
                 }
@@ -735,6 +792,7 @@ fn commit_commands(
                     time_in_force: request.time_in_force,
                     status: 1,
                     reduce_only: request.reduce_only,
+                    position_side: request.position_side,
                     ..Default::default()
                 };
                 merge_seeded_order_record(&mut inner.orders_list, order)?;
@@ -756,11 +814,19 @@ fn commit_commands(
             }
         }
     }
+    if !commands.is_empty() && core.context.state_snapshot_sink.enabled() {
+        checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)?;
+        core.context
+            .state_snapshot_sink
+            .flush(Instant::now() + std::time::Duration::from_secs(5))
+            .map_err(|_| v13_runtime_error("command_intent_flush_failed"))?;
+    }
     for command in commands {
         match *command {
             StagedCommandV13::Submit { order_id, request } => {
                 let binding = execution_binding(core, request.account_no, request.asset_no)?;
                 let _ = binding.handle.submit(DirectNewOrderRequest {
+                    position_side: request.position_side,
                     asset_id: AssetId(*binding.assets.get(&u64::from(request.asset_no)).unwrap()),
                     side: if request.side == 1 { 1 } else { -1 },
                     order_type: u8::from(request.order_type == 2),
@@ -907,6 +973,22 @@ fn update_active_order(
     tif: u8,
     reduce_only: u8,
 ) -> LocalResult<()> {
+    let position_side = if value.position_side == 0 {
+        inner
+            .orders_list
+            .get(&value.order_id)
+            .map_or(0, |record| record.position_side)
+    } else {
+        value.position_side
+    };
+    if position_side > 2
+        || inner
+            .orders_list
+            .get(&value.order_id)
+            .is_some_and(|record| record.position_side != position_side)
+    {
+        return Err(v13_runtime_error("order_position_side_changed"));
+    }
     let key = (value.account_no, value.order_id);
     if value.cumulative_filled_lots > inner.settled_fills.get(&key).copied().unwrap_or(0) {
         inner
@@ -937,6 +1019,7 @@ fn update_active_order(
         order.order_type = order_type;
         order.time_in_force = tif;
         order.reduce_only |= reduce_only;
+        order.position_side = position_side;
     } else if value.order_id != 0 && value.status < 4 {
         if inner.active_orders.len() >= PUBLIC_CAPACITY {
             return Err(v13_runtime_error("active_order_capacity"));
@@ -956,6 +1039,7 @@ fn update_active_order(
             time_in_force: tif,
             status: value.status,
             reduce_only,
+            position_side,
             ..TitanActiveOrderView::default()
         });
     }
@@ -975,6 +1059,7 @@ fn update_active_order(
             reduce_only,
             ..StrategyOrderRecordV13::default()
         });
+    record.position_side = position_side;
     record.price_ticks = value.price_ticks;
     record.qty_lots = value.qty_lots;
     record.cumulative_filled_lots = value.cumulative_filled_lots;
@@ -1034,22 +1119,36 @@ pub(crate) fn account_order_status_to_v13(value: u8) -> LocalResult<u8> {
     }
 }
 fn upsert_position(inner: &mut NativeV13Inner, event: TitanPositionEventView) -> LocalResult<()> {
-    inner
-        .position_versions
-        .insert((event.account_no, event.asset_no), event.account_sequence);
+    if event.position_side > 2
+        || (event.position_side == 1 && event.qty_lots < 0)
+        || (event.position_side == 2 && event.qty_lots > 0)
+        || inner.positions.iter().any(|v| {
+            v.account_no == event.account_no
+                && v.asset_no == event.asset_no
+                && (v.position_side == 0) != (event.position_side == 0)
+        })
+    {
+        return Err(v13_runtime_error("position_mode_changed_requires_recovery"));
+    }
+    inner.position_versions.insert(
+        (event.account_no, event.asset_no, event.position_side),
+        event.account_sequence,
+    );
     let value = TitanPositionView {
         asset_no: event.asset_no,
         account_no: event.account_no,
+        position_side: event.position_side,
+        reserved: [0; 7],
         qty_lots: event.qty_lots,
         average_price_ticks: event.average_price_ticks,
         realized_pnl_ticks: event.realized_pnl_ticks,
         account_sequence: event.account_sequence,
     };
-    if let Some(current) = inner
-        .positions
-        .iter_mut()
-        .find(|item| item.account_no == value.account_no && item.asset_no == value.asset_no)
-    {
+    if let Some(current) = inner.positions.iter_mut().find(|item| {
+        item.account_no == value.account_no
+            && item.asset_no == value.asset_no
+            && item.position_side == value.position_side
+    }) {
         *current = value;
     } else {
         if inner.positions.len() >= PUBLIC_CAPACITY {
@@ -1163,7 +1262,8 @@ fn dispatch_execution_result(
                 account_sequence: existing.account_sequence,
                 status,
                 reason: if status == 7 { 1 } else { 2 },
-                reserved: [0; 6],
+                position_side: existing.position_side,
+                reserved: [0; 5],
             };
             update_active_order(
                 inner,
@@ -1261,6 +1361,22 @@ fn checkpoint_state(
         .collect::<Vec<_>>()
         .into();
     let orders_list_checksum = orders_list_checksum(&orders_list);
+    let recovery = RecoveryBaseline::capture(
+        recovery_seed(
+            &inner.accounts,
+            &inner.positions,
+            &inner.balances,
+            &inner.active_orders,
+            &[],
+        ),
+        snapshot.checksum,
+        orders_list_checksum,
+    )
+    .with_pending_execution(
+        !inner.awaiting_fills.is_empty() || !inner.pending_fills.is_empty(),
+        snapshot.checksum,
+        orders_list_checksum,
+    );
     let result = core
         .context
         .state_snapshot_sink
@@ -1283,6 +1399,7 @@ fn checkpoint_state(
             orders_list_checksum,
             public_state_identity: snapshot.public_state_identity,
             checksum: snapshot.checksum,
+            recovery: Some(recovery),
         });
     if result.is_err() {
         core.context.activation.close();
@@ -1403,8 +1520,23 @@ impl StrategyRuntime for NativeV13Runtime {
         {
             return Err(v13_runtime_error("public_state_capacity"));
         }
+        let mut position_keys = std::collections::BTreeSet::new();
+        for value in seed.positions.iter() {
+            if value.position_side > 2
+                || (value.position_side == 1 && value.qty_lots < 0)
+                || (value.position_side == 2 && value.qty_lots > 0)
+                || !position_keys.insert((value.account_no, value.asset_no, value.position_side))
+                || seed.positions.iter().any(|v| {
+                    v.account_no == value.account_no
+                        && v.asset_no == value.asset_no
+                        && (v.position_side == 0) != (value.position_side == 0)
+                })
+            {
+                return Err(v13_runtime_error("invalid_position_seed"));
+            }
+        }
         for value in seed.positions.iter().copied() {
-            let key = (value.account_no, value.asset_no);
+            let key = (value.account_no, value.asset_no, value.position_side);
             if inner
                 .position_versions
                 .get(&key)
@@ -1416,7 +1548,7 @@ impl StrategyRuntime for NativeV13Runtime {
             if let Some(current) = inner
                 .positions
                 .iter_mut()
-                .find(|item| (item.account_no, item.asset_no) == key)
+                .find(|item| (item.account_no, item.asset_no, item.position_side) == key)
             {
                 *current = value;
             } else {
@@ -1534,57 +1666,110 @@ impl StrategyRuntime for NativeV13Runtime {
             .collect();
         inner.settled_fills.extend(settled);
         inner.awaiting_fills.clear();
+        inner.recovery_orders = seed.recovery_orders.to_vec();
         Ok(())
     }
     fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if inner.lifecycle != StrategyLifecycle::Defined {
-            return Err(v13_runtime_error("restore_after_prepare"));
-        }
-        let expected_orders_checksum = orders_list_checksum(&snapshot.orders_list);
-        let legacy_empty_orders =
-            snapshot.orders_list.is_empty() && snapshot.orders_list_checksum == [0; 32];
-        if !legacy_empty_orders && snapshot.orders_list_checksum != expected_orders_checksum {
-            return Err(v13_runtime_error("orders_list_checksum_mismatch"));
-        }
-        let mut restored_orders = BTreeMap::new();
-        for order in snapshot.orders_list.iter().copied() {
-            if order.order_id == 0 || restored_orders.insert(order.order_id, order).is_some() {
-                return Err(v13_runtime_error("orders_list_invalid_identity"));
+        let result = (|| {
+            if inner.lifecycle != StrategyLifecycle::Defined {
+                return Err(v13_runtime_error("restore_after_prepare"));
             }
+            let expected_orders_checksum = orders_list_checksum(&snapshot.orders_list);
+            let legacy_empty_orders =
+                snapshot.orders_list.is_empty() && snapshot.orders_list_checksum == [0; 32];
+            if !legacy_empty_orders && snapshot.orders_list_checksum != expected_orders_checksum {
+                return Err(v13_runtime_error("orders_list_checksum_mismatch"));
+            }
+            let mut restored_orders = BTreeMap::new();
+            for order in snapshot.orders_list.iter().copied() {
+                if order.order_id == 0 || restored_orders.insert(order.order_id, order).is_some() {
+                    return Err(v13_runtime_error("orders_list_invalid_identity"));
+                }
+            }
+            let recovery = snapshot.recovery.clone();
+            if let Some(baseline) = &recovery {
+                baseline
+                    .validate(
+                        snapshot.checksum,
+                        snapshot.orders_list_checksum,
+                        snapshot.public_state_identity,
+                    )
+                    .map_err(v13_runtime_error)?;
+                if !inner.pending_fills.is_empty() || !inner.awaiting_fills.is_empty() {
+                    return Err(v13_runtime_error("recovery_pending_fill_requires_history"));
+                }
+                let current = recovery_seed(
+                    &inner.accounts,
+                    &inner.positions,
+                    &inner.balances,
+                    &inner.active_orders,
+                    &inner.recovery_orders,
+                );
+                // Callback opt-in preserves strict behavior for existing artifacts.
+                if inner.instance.has_callback(V13EventKind::Recover) {
+                    reconcile_recovery(baseline, &current, &mut restored_orders)
+                        .map_err(v13_runtime_error)?;
+                }
+            }
+            let restored = StrategyStateSnapshotV13 {
+                checkpoint_id: snapshot.checkpoint_id,
+                strategy_instance_id: snapshot.strategy_instance_id,
+                generation: snapshot.generation,
+                event_committed_sequence: snapshot.event_committed_sequence,
+                strategy_id: snapshot.strategy_id,
+                strategy_version: snapshot.strategy_version,
+                artifact_digest: snapshot.artifact_digest,
+                binding_digest: snapshot.binding_digest,
+                abi_version: snapshot.abi_version,
+                state_schema_version: snapshot.state_schema_version,
+                state_schema_hash: snapshot.state_schema_hash,
+                state_alignment: snapshot.state_alignment,
+                state_bytes: snapshot.state_bytes,
+                public_state_identity: snapshot.public_state_identity,
+                checksum: snapshot.checksum,
+            };
+            inner
+                .instance
+                .restore_state(&restored)
+                .map_err(|_| v13_runtime_error("snapshot_restore_failed"))?;
+            inner.orders_list = restored_orders;
+            let identity = public_state_identity_v13(
+                &inner.accounts,
+                &inner.active_orders,
+                &inner.positions,
+                &inner.balances,
+            );
+            let reconciled =
+                recovery.is_some() && inner.instance.has_callback(V13EventKind::Recover);
+            if reconciled {
+                NativeV13Runtime::invoke(&mut inner, &self.core, V13EventKind::Recover, 1, |_| {})?;
+                inner
+                    .instance
+                    .complete_reconciled_restore(identity, self.core.context.strategy.generation)
+                    .map_err(|_| v13_runtime_error("snapshot_reconcile_failed"))?;
+            } else {
+                inner
+                    .instance
+                    .complete_restore(identity, self.core.context.strategy.generation)
+                    .map_err(|_| v13_runtime_error("snapshot_reconcile_failed"))?;
+            }
+            inner.recovered_identity = Some(identity);
+            checkpoint_state(
+                &self.core,
+                &mut inner,
+                self.core.context.clock.now_ns().max(1) as u64,
+            )?;
+            self.core
+                .context
+                .state_snapshot_sink
+                .flush(Instant::now() + std::time::Duration::from_secs(5))
+                .map_err(|_| v13_runtime_error("recovery_checkpoint_flush_failed"))
+        })();
+        if let Err(error) = &result {
+            fail_runtime(&self.core, &mut inner, error.reason_code.clone());
         }
-        let restored = StrategyStateSnapshotV13 {
-            checkpoint_id: snapshot.checkpoint_id,
-            strategy_instance_id: snapshot.strategy_instance_id,
-            generation: snapshot.generation,
-            event_committed_sequence: snapshot.event_committed_sequence,
-            strategy_id: snapshot.strategy_id,
-            strategy_version: snapshot.strategy_version,
-            artifact_digest: snapshot.artifact_digest,
-            binding_digest: snapshot.binding_digest,
-            abi_version: snapshot.abi_version,
-            state_schema_version: snapshot.state_schema_version,
-            state_schema_hash: snapshot.state_schema_hash,
-            state_alignment: snapshot.state_alignment,
-            state_bytes: snapshot.state_bytes,
-            public_state_identity: snapshot.public_state_identity,
-            checksum: snapshot.checksum,
-        };
-        inner
-            .instance
-            .restore_state(&restored)
-            .map_err(|_| v13_runtime_error("snapshot_restore_failed"))?;
-        inner.orders_list = restored_orders;
-        let identity = public_state_identity_v13(
-            &inner.accounts,
-            &inner.active_orders,
-            &inner.positions,
-            &inner.balances,
-        );
-        inner
-            .instance
-            .complete_restore(identity, self.core.context.strategy.generation)
-            .map_err(|_| v13_runtime_error("snapshot_reconcile_failed"))
+        result
     }
     fn fire_timer(&self, timer_id: u64) -> LocalResult<()> {
         let lane = self
@@ -1606,25 +1791,33 @@ impl StrategyRuntime for NativeV13Runtime {
                 scheduled_ts_ns: core.context.clock.now_ns(),
                 fired_ts_ns: core.context.clock.now_ns(),
             };
-            NativeV13Runtime::invoke(&mut inner, &core, V13EventKind::Timer, 1, |ctx| {
-                ctx.timer_ptr = &timer;
-                ctx.timer_len = 1;
-            })
-            .and_then(|_| {
-                if inner.checkpoint_dirty
-                    && timer.fired_ts_ns.saturating_sub(inner.last_checkpoint_ns)
-                        >= inner.checkpoint_interval_ns
-                {
-                    checkpoint_state(&core, &mut inner, timer.fired_ts_ns as u64)
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| finish_stop_if_drained(&core, &mut inner))
-            .map_err(|_| EngineError::SafePointPanicked)
+            let result =
+                NativeV13Runtime::invoke(&mut inner, &core, V13EventKind::Timer, 1, |ctx| {
+                    ctx.timer_ptr = &timer;
+                    ctx.timer_len = 1;
+                })
+                .and_then(|_| {
+                    if inner.checkpoint_dirty
+                        && timer.fired_ts_ns.saturating_sub(inner.last_checkpoint_ns)
+                            >= inner.checkpoint_interval_ns
+                    {
+                        checkpoint_state(&core, &mut inner, timer.fired_ts_ns as u64)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .and_then(|_| finish_stop_if_drained(&core, &mut inner));
+            if let Err(error) = &result {
+                fail_runtime(&core, &mut inner, error.reason_code.clone());
+            }
+            result.map_err(|_| EngineError::SafePointPanicked)
         })
         .map(|_| ())
-        .map_err(|_| v13_runtime_error("timer_queue_full"))
+        .map_err(|_| {
+            let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            fail_runtime(&self.core, &mut inner, Arc::from("timer_queue_full"));
+            v13_runtime_error("timer_queue_full")
+        })
     }
     fn advance_lifecycle(&self) -> LocalResult<()> {
         if self
@@ -1704,8 +1897,30 @@ impl StrategyRuntime for NativeV13Runtime {
             if inner.lifecycle != StrategyLifecycle::Ready {
                 return Err(v13_runtime_error("invalid_start_state"));
             }
-            if inner.accounts.iter().any(|account| account.state != 4) {
+            if inner
+                .accounts
+                .iter()
+                .any(|account| account.state != 4 || account.account_epoch == 0)
+            {
                 return Err(v13_runtime_error("account_not_ready"));
+            }
+            if let Some(identity) = inner.recovered_identity
+                && public_state_identity_v13(
+                    &inner.accounts,
+                    &inner.active_orders,
+                    &inner.positions,
+                    &inner.balances,
+                ) != identity
+            {
+                return Err(v13_runtime_error("recovery_state_changed_before_start"));
+            }
+            if inner.active_orders.iter().any(|order| {
+                order.qty_lots <= 0
+                    || order.cumulative_filled_lots < 0
+                    || order.cumulative_filled_lots > order.qty_lots
+                    || !matches!(order.status, 1 | 2 | 3 | 5)
+            }) {
+                return Err(v13_runtime_error("active_order_state_invalid"));
             }
             NativeV13Runtime::invoke(&mut inner, core, V13EventKind::Start, 1, |_| {})?;
             inner
@@ -1741,7 +1956,11 @@ impl StrategyRuntime for NativeV13Runtime {
             if inner.lifecycle != StrategyLifecycle::Paused {
                 return Err(v13_runtime_error("invalid_resume_state"));
             }
-            if inner.accounts.iter().any(|account| account.state != 4) {
+            if inner
+                .accounts
+                .iter()
+                .any(|account| account.state != 4 || account.account_epoch == 0)
+            {
                 return Err(v13_runtime_error("account_not_ready"));
             }
             core.context.activation.open();

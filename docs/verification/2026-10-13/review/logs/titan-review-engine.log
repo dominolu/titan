@@ -1,0 +1,22 @@
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-review-20261013/crates/titan-event-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.96s
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/deps/titan_event_engine-829d0a44ffc45d39)
+
+running 1 test
+Concurrent cross-source inline publications completed: 0/2
+
+thread 'engine::publication_tests::review_cross_source_inline_publication_must_not_deadlock' (912381) panicked at crates/titan-event-engine/src/engine/publication_tests.rs:161:5:
+assertion `left == right` failed: cross-source lock inversion deadlocks both publisher threads
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test engine::publication_tests::review_cross_source_inline_publication_must_not_deadlock ... FAILED
+
+failures:
+
+failures:
+    engine::publication_tests::review_cross_source_inline_publication_must_not_deadlock
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.64s
+
+error: test failed, to rerun pass `-p titan-event-engine --lib`

@@ -1,0 +1,4 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.71s
+     Running `target/debug/examples/v13_common_recovery_smoke /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/v13_smoke.titan`
+V13 common recovery: session/balance rebase, durable checkpoint failure, startup drift, generation/epoch isolation passed

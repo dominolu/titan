@@ -1,0 +1,27 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-review-20261013/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-review-20261013/hftbacktest)
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-review-20261013/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.38s
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/deps/connector-6596d45f14a4044d)
+
+running 2 tests
+
+thread 'account_projection::review_probes::review_missing_rest_position_must_not_force_net_mode' (909680) panicked at connector/src/account_projection.rs:448:9:
+synthetic NET zero forbids the first real LONG update
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Stable committed real projection: orders=1, positions=2, balances=3
+
+thread 'account_projection::review_probes::review_stable_real_projection_must_be_recoverable' (909681) panicked at connector/src/account_projection.rs:442:9:
+stable real projection is incorrectly rejected
+test account_projection::review_probes::review_missing_rest_position_must_not_force_net_mode ... FAILED
+test account_projection::review_probes::review_stable_real_projection_must_be_recoverable ... FAILED
+
+failures:
+
+failures:
+    account_projection::review_probes::review_missing_rest_position_must_not_force_net_mode
+    account_projection::review_probes::review_stable_real_projection_must_be_recoverable
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p connector --lib`

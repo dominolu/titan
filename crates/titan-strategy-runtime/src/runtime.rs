@@ -58,6 +58,8 @@ pub struct StrategyPrivateStateSnapshot {
     pub orders_list_checksum: [u8; 32],
     pub public_state_identity: [u8; 32],
     pub checksum: [u8; 32],
+    #[serde(default)]
+    pub recovery: Option<crate::RecoveryBaseline>,
 }
 
 /// Runtime-owned order lifecycle history for Strategy ABI V13. Each order ID owns one record
@@ -83,7 +85,8 @@ pub struct StrategyOrderRecordV13 {
     pub status: u8,
     pub reduce_only: u8,
     pub error_code: u8,
-    pub reserved: [u8; 2],
+    pub position_side: u8,
+    pub reserved: [u8; 1],
 }
 
 pub trait StrategyStateSnapshotSink: Send + Sync {
@@ -99,7 +102,7 @@ pub trait StrategyStateSnapshotSink: Send + Sync {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct StrategyPublicStateSeedV13 {
     pub positions: Arc<[TitanPositionView]>,
     pub balances: Arc<[TitanBalanceView]>,
@@ -108,6 +111,8 @@ pub struct StrategyPublicStateSeedV13 {
     /// Per-account committed version of the open-order projection. This lets the runtime
     /// distinguish an order absent from the snapshot from one created after the snapshot.
     pub order_boundaries: Arc<[(u32, u64)]>,
+    #[serde(default)]
+    pub recovery_orders: Arc<[TitanActiveOrderView]>,
 }
 
 pub struct StrategyRuntimeBuildContext {

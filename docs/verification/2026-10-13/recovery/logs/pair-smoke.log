@@ -1,0 +1,4 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running `target/debug/examples/v13_pair_arb_smoke /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/pair_arb.titan /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/cache`
+V13 pair-arb state-machine smoke passed

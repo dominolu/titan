@@ -676,17 +676,17 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             signing_key,
             key_id,
             json,
-        } => compile_v13_strategy(
-            &strategy,
-            &parameters,
-            target.as_deref(),
-            &cpu_baseline,
-            &artifact_format,
-            output.as_deref(),
-            signing_key.as_deref(),
-            key_id.as_deref(),
+        } => compile_v13_strategy(CompileV13Request {
+            strategy: &strategy,
+            parameters: &parameters,
+            target: target.as_deref(),
+            cpu_baseline: &cpu_baseline,
+            artifact_format: &artifact_format,
+            output: output.as_deref(),
+            signing_key: signing_key.as_deref(),
+            key_id: key_id.as_deref(),
             json,
-        ),
+        }),
     }
 }
 
@@ -804,17 +804,31 @@ fn hex_digest(value: &[u8; 32]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn compile_v13_strategy(
-    strategy: &Path,
-    parameters: &str,
-    target: Option<&str>,
-    cpu_baseline: &str,
-    artifact_format: &str,
-    output: Option<&Path>,
-    signing_key: Option<&Path>,
-    key_id: Option<&str>,
+struct CompileV13Request<'a> {
+    strategy: &'a Path,
+    parameters: &'a str,
+    target: Option<&'a str>,
+    cpu_baseline: &'a str,
+    artifact_format: &'a str,
+    output: Option<&'a Path>,
+    signing_key: Option<&'a Path>,
+    key_id: Option<&'a str>,
     json: bool,
-) -> Result<(), CliError> {
+}
+
+fn compile_v13_strategy(request: CompileV13Request<'_>) -> Result<(), CliError> {
+    let CompileV13Request {
+        strategy,
+        parameters,
+        target,
+        cpu_baseline,
+        artifact_format,
+        output,
+        signing_key,
+        key_id,
+        json,
+    } = request;
+
     let output = output.ok_or_else(|| {
         CliError::Engine("ABI V13 compile requires --output <artifact-path>".into())
     })?;
@@ -1179,19 +1193,19 @@ fn controller(
     atomic_write(&spec_path, &spec_json)?;
     let result_path = run_dir.join("result.json");
     let log_path = run_dir.join("worker.log");
-    registry.create(
-        &run_id,
-        &owner_token,
-        &spec.strategy.strategy_id,
-        &spec.strategy.strategy_version,
-        spec.environment.as_str(),
-        spec.event_mode.as_str(),
-        &spec_path,
-        &spec.config_path,
-        &spec.config_sha256,
-        &result_path,
-        &log_path,
-    )?;
+    registry.create(crate::registry::NewRun {
+        id: &run_id,
+        owner_token: &owner_token,
+        strategy_id: &spec.strategy.strategy_id,
+        strategy_version: &spec.strategy.strategy_version,
+        environment: spec.environment.as_str(),
+        event_mode: spec.event_mode.as_str(),
+        spec_path: &spec_path,
+        config_path: &spec.config_path,
+        config_sha256: &spec.config_sha256,
+        result_path: &result_path,
+        log_path: &log_path,
+    })?;
     let executable = std::env::current_exe().map_err(CliError::Spawn)?;
     let mut command = Command::new(executable);
     command
@@ -1392,17 +1406,17 @@ fn v13_backtest_worker(
         ));
     }
     let initial = trace.initial;
-    let mut adapter = OfflineV13Adapter::new(
-        Arc::new(artifact),
-        1,
-        1,
-        *command_capacity,
-        initial.markets,
-        initial.positions,
-        initial.balances,
-        initial.accounts,
-        initial.active_orders,
-    )
+    let mut adapter = OfflineV13Adapter::new(titan_strategy_runtime::OfflineV13Config {
+        artifact: Arc::new(artifact),
+        strategy_instance_id: 1,
+        generation: 1,
+        command_capacity: *command_capacity,
+        markets: initial.markets,
+        positions: initial.positions,
+        balances: initial.balances,
+        accounts: initial.accounts,
+        active_orders: initial.active_orders,
+    })
     .map_err(|error| CliError::Engine(error.to_string()))?;
     adapter
         .start(initial.now_ns)

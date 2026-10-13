@@ -379,13 +379,11 @@ impl MarketAdminService for MarketServiceCore {
         if matches!(
             old.lifecycle(),
             ConnectorLifecycle::Running | ConnectorLifecycle::Starting
-        ) {
-            if let Err(error) = old
-                .connector
-                .stop(Instant::now() + self.config.stop_timeout)
-            {
-                cleanup_failures.push(error.to_string());
-            }
+        ) && let Err(error) = old
+            .connector
+            .stop(Instant::now() + self.config.stop_timeout)
+        {
+            cleanup_failures.push(error.to_string());
         }
         if let Err(error) = old.close_resources() {
             cleanup_failures.push(error.to_string());

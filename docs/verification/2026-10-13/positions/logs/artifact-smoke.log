@@ -1,0 +1,9 @@
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-core-types)
+   Compiling titan-domain-types v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-domain-types)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-event-engine)
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-market-service)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.61s
+     Running `target/debug/examples/v13_artifact_smoke /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/v13_smoke.titan /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/cache`
+V13 native artifact smoke passed: [5, 77, 0, 0, 3, 0]

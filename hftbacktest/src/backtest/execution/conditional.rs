@@ -67,8 +67,8 @@ impl ConditionalOrderBook {
                 }
             }
         }
-        for index in start..out.len() {
-            let order_id = match out[index] {
+        for action in &out[start..] {
+            let order_id = match *action {
                 ConditionalAction::Trigger { order_id, .. }
                 | ConditionalAction::Expire { order_id } => order_id,
             };
@@ -107,8 +107,8 @@ impl ConditionalOrderBook {
                 }
             }
         }
-        for index in start..out.len() {
-            let order_id = match out[index] {
+        for action in &out[start..] {
+            let order_id = match *action {
                 ConditionalAction::Trigger { order_id, .. }
                 | ConditionalAction::Expire { order_id } => order_id,
             };
@@ -130,8 +130,8 @@ impl ConditionalOrderBook {
                 out.push(ConditionalAction::Expire { order_id: *id });
             }
         }
-        for index in start..out.len() {
-            let ConditionalAction::Expire { order_id } = out[index] else {
+        for action in &out[start..] {
+            let ConditionalAction::Expire { order_id } = *action else {
                 continue;
             };
             self.orders.remove(&order_id);

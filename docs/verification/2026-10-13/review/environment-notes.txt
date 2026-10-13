@@ -1,0 +1,13 @@
+Review base: 741d2de5; includes committed 586f0f47 and current uncommitted follow-up fixes.
+Original source manifest: ../positions/source-files.sha256 (280 files).
+Original source was verified unchanged before and after review probes.
+Build/test host: 192.168.3.88.
+Independent reproduction workspace: /home/dominolu/dev/titan-review-20261013.
+Existing build cache was reused; validated source directory was not patched.
+No live credentials, exchange interfaces, real orders or deployments were used.
+Two connector projection negative tests exited 101 and reproduced stable snapshot rejection and synthetic NET mode rejection.
+Timer submit failure positive control exited 0 with Failed/closed.
+Native timer command-intent flush negative probe exited 101 with Running/open.
+Bounded concurrent cross-source inline publication negative probe exited 101, 0/2 publishers completed.
+Negative probe failures confirm defects, not failures of the unchanged previously validated production test suite.
+Detailed findings and repair order are in docs/system_refactor_checklist.md, review section.

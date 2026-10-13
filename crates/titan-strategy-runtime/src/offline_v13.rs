@@ -23,18 +23,32 @@ pub struct OfflineV13Adapter {
     active_orders: Vec<TitanActiveOrderView>,
 }
 
+pub struct OfflineV13Config {
+    pub artifact: Arc<StrategyArtifactV13>,
+    pub strategy_instance_id: u64,
+    pub generation: u64,
+    pub command_capacity: usize,
+    pub markets: Vec<TitanMarketView>,
+    pub positions: Vec<TitanPositionView>,
+    pub balances: Vec<TitanBalanceView>,
+    pub accounts: Vec<TitanAccountView>,
+    pub active_orders: Vec<TitanActiveOrderView>,
+}
+
 impl OfflineV13Adapter {
-    pub fn new(
-        artifact: Arc<StrategyArtifactV13>,
-        strategy_instance_id: u64,
-        generation: u64,
-        command_capacity: usize,
-        markets: Vec<TitanMarketView>,
-        positions: Vec<TitanPositionView>,
-        balances: Vec<TitanBalanceView>,
-        accounts: Vec<TitanAccountView>,
-        active_orders: Vec<TitanActiveOrderView>,
-    ) -> Result<Self, V13LoadError> {
+    pub fn new(config: OfflineV13Config) -> Result<Self, V13LoadError> {
+        let OfflineV13Config {
+            artifact,
+            strategy_instance_id,
+            generation,
+            command_capacity,
+            markets,
+            positions,
+            balances,
+            accounts,
+            active_orders,
+        } = config;
+
         Ok(Self {
             instance: artifact.instantiate(strategy_instance_id, generation)?,
             staging: CallbackCommandStagingV13::new(

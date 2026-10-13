@@ -414,19 +414,22 @@ impl Connector for BinanceFutures {
         Some(Arc::new(self.client.clone()))
     }
 
-    async fn shutdown(&self) -> Result<(), String> {
+    fn shutdown(&self) -> crate::connector::ShutdownFuture {
+        let client = self.client.clone();
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
-        let mut errors = Vec::new();
-        for symbol in symbols {
-            if let Err(error) = self.client.cancel_all_orders(&symbol).await {
-                errors.push(format!("{symbol}: {error}"));
+        Box::pin(async move {
+            let mut errors = Vec::new();
+            for symbol in symbols {
+                if let Err(error) = client.cancel_all_orders(&symbol).await {
+                    errors.push(format!("{symbol}: {error}"));
+                }
             }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        })
     }
 }
 

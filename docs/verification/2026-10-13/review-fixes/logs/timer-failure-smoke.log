@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running `target/debug/examples/v13_timer_failure_smoke /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/timer-submit.titan`
+After timer command-intent flush failure: lifecycle=Failed, gate_open=false

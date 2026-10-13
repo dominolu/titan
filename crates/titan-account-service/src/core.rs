@@ -476,6 +476,24 @@ impl AccountService for AccountServiceCore {
             .balances()
             .map_err(|x| connector_error("balances", x))
     }
+    fn recovery_snapshot(&self, h: AccountHandle) -> LocalResult<AccountRecoverySnapshot> {
+        let snapshot = self
+            .registry
+            .get(h)?
+            .connector
+            .recovery_snapshot()
+            .map_err(|error| connector_error("recovery_snapshot", error))?;
+        if snapshot.orders.account != h
+            || snapshot.positions.account != h
+            || snapshot.balances.account != h
+        {
+            return Err(AccountError::new(
+                AccountErrorKind::NotReady,
+                "recovery account identity mismatch",
+            ));
+        }
+        Ok(snapshot)
+    }
     fn health(&self, h: AccountHandle) -> LocalResult<AccountConnectorHealthSnapshot> {
         Ok(self.registry.get(h)?.connector.health())
     }

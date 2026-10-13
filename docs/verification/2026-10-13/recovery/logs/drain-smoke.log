@@ -1,0 +1,7 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running `target/debug/examples/v13_order_drain_smoke /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/v13_smoke.titan`
+V13 REST -> Stop -> Order -> Fill drain regression passed, fail_flush=false
+V13 REST -> Stop -> Order -> Fill drain regression passed, fail_flush=true
+V13 synchronous local rejection with a full result queue fails without deadlock
+V13 failed intent durability prevents external dispatch

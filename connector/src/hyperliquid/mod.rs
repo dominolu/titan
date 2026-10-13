@@ -219,20 +219,21 @@ impl Hyperliquid {
                     Ok(())
                 })
                 .retry(|| async {
-                    let mut stream = ws::HyperliquidWs::new(
-                        ev_tx.clone(),
-                        order_manager.clone(),
-                        assets.clone(),
-                        symbols.clone(),
-                        account_address.clone(),
-                        client.clone(),
-                        market_tx.subscribe(),
-                        market_subscriptions.clone(),
-                        l2_fast,
-                        private_channels,
-                        #[cfg(test)]
-                        reconnect_fault.clone(),
-                    );
+                    let mut stream =
+                        ws::HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+                            ev_tx: ev_tx.clone(),
+                            order_manager: order_manager.clone(),
+                            assets: assets.clone(),
+                            symbols: symbols.clone(),
+                            account_address: account_address.clone(),
+                            client: client.clone(),
+                            command_rx: market_tx.subscribe(),
+                            market_subscriptions: market_subscriptions.clone(),
+                            l2_fast,
+                            private_channels,
+                            #[cfg(test)]
+                            reconnect_fault: reconnect_fault.clone(),
+                        });
                     if let Err(error) = stream.connect(&ws_url).await {
                         error!(?error, "A connection error occurred.");
                         publish_stream_error(
@@ -484,37 +485,42 @@ impl Connector for Hyperliquid {
         Some(Arc::new(self.client.clone()))
     }
 
-    async fn shutdown(&self) -> Result<(), String> {
-        // Public market-data connectors are intentionally built without a signer and have no
-        // account orders or scheduled-cancel heartbeat to clear.
-        if self.private_key == [0; 32] {
-            return Ok(());
-        }
-        if let Err(error) = BrokerApi::cancel_all_after(&self.client, 0).await {
-            if is_schedule_cancel_unavailable(&error.to_string()) {
-                warn!(
-                    ?error,
-                    "scheduled-cancel safety net unavailable during shutdown"
-                );
-            } else {
-                tracing::warn!(
-                    ?error,
-                    "failed to clear scheduled cancellation during shutdown"
-                );
-            }
-        }
+    fn shutdown(&self) -> crate::connector::ShutdownFuture {
+        let client = self.client.clone();
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
-        let mut errors = Vec::new();
-        for symbol in symbols {
-            if let Err(error) = BrokerApi::cancel_all_orders(&self.client, &symbol).await {
-                errors.push(format!("{symbol}: {error}"));
+        let private_key = self.private_key;
+        Box::pin(async move {
+            // Public market-data connectors are intentionally built without a signer and have no
+            // account orders or scheduled-cancel heartbeat to clear.
+            if private_key == [0; 32] {
+                return Ok(());
             }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+            if let Err(error) = BrokerApi::cancel_all_after(&client, 0).await {
+                if is_schedule_cancel_unavailable(&error.to_string()) {
+                    warn!(
+                        ?error,
+                        "scheduled-cancel safety net unavailable during shutdown"
+                    );
+                } else {
+                    tracing::warn!(
+                        ?error,
+                        "failed to clear scheduled cancellation during shutdown"
+                    );
+                }
+            }
+
+            let mut errors = Vec::new();
+            for symbol in symbols {
+                if let Err(error) = BrokerApi::cancel_all_orders(&client, &symbol).await {
+                    errors.push(format!("{symbol}: {error}"));
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        })
     }
 }
 
@@ -1489,7 +1495,7 @@ mod live_ws_tests {
                     ((max_usd / ask.price) / instrument.lot_size).floor() * instrument.lot_size;
                 let top_ask_notional = ask.price * ask.qty;
                 if top_ask_notional >= 10.0 && ask.qty + instrument.lot_size <= qty {
-                    break 'scan (symbol.clone(), instrument.clone(), ask.clone(), qty);
+                    break 'scan (symbol.clone(), instrument.clone(), *ask, qty);
                 }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;

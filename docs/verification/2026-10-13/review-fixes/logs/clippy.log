@@ -1,0 +1,4 @@
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/connector)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.33s

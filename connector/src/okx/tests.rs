@@ -7,7 +7,7 @@ use crate::okx::{
     msg::rest::{Books, CancelResult, Instrument, Position},
     msg::stream::{OrderUpdate, StreamMsg},
     ordermanager::OrderManager,
-    rest::{OkxClient, build_submit_body, check_cancel_result},
+    rest::{OkxClient, SubmitOrderParams, build_submit_body, check_cancel_result},
 };
 use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
 
@@ -92,7 +92,7 @@ fn test_build_from_rejects_order_prefix_too_long() {
 #[test]
 fn test_build_from_rejects_order_prefix_invalid_chars() {
     // OKX clOrdId only allows ASCII alphanumerics; a dash would corrupt every client order id.
-    assert!(matches!(Okx::build_from(&valid_config()), Ok(_)));
+    assert!(Okx::build_from(&valid_config()).is_ok());
     let config = valid_config().replace("titan", "titan-");
     assert!(matches!(
         Okx::build_from(&config),
@@ -355,16 +355,16 @@ fn test_timestamp_format() {
 
 #[test]
 fn test_build_submit_body_fields() {
-    let body: serde_json::Value = serde_json::from_str(&build_submit_body(
-        "BTC-USDT-SWAP",
-        "cross",
-        None,
-        "c1",
-        "buy",
-        "limit",
-        Some("30000.0"),
-        "0.001",
-    ))
+    let body: serde_json::Value = serde_json::from_str(&build_submit_body(SubmitOrderParams {
+        inst_id: "BTC-USDT-SWAP",
+        td_mode: "cross",
+        pos_side: None,
+        cl_ord_id: "c1",
+        side: "buy",
+        ord_type: "limit",
+        px: Some("30000.0"),
+        sz: "0.001",
+    }))
     .unwrap();
     assert_eq!(body["instId"], "BTC-USDT-SWAP");
     assert_eq!(body["tdMode"], "cross");
@@ -378,16 +378,16 @@ fn test_build_submit_body_fields() {
 
 #[test]
 fn test_build_submit_body_market_omits_px() {
-    let body: serde_json::Value = serde_json::from_str(&build_submit_body(
-        "BTC-USDT-SWAP",
-        "cross",
-        None,
-        "c1",
-        "sell",
-        "market",
-        None,
-        "0.001",
-    ))
+    let body: serde_json::Value = serde_json::from_str(&build_submit_body(SubmitOrderParams {
+        inst_id: "BTC-USDT-SWAP",
+        td_mode: "cross",
+        pos_side: None,
+        cl_ord_id: "c1",
+        side: "sell",
+        ord_type: "market",
+        px: None,
+        sz: "0.001",
+    }))
     .unwrap();
     assert_eq!(body["ordType"], "market");
     assert!(body.get("px").is_none());
@@ -395,16 +395,16 @@ fn test_build_submit_body_market_omits_px() {
 
 #[test]
 fn test_build_submit_body_pos_side() {
-    let body: serde_json::Value = serde_json::from_str(&build_submit_body(
-        "BTC-USDT-SWAP",
-        "cross",
-        Some("long"),
-        "c1",
-        "buy",
-        "limit",
-        Some("30000.0"),
-        "0.001",
-    ))
+    let body: serde_json::Value = serde_json::from_str(&build_submit_body(SubmitOrderParams {
+        inst_id: "BTC-USDT-SWAP",
+        td_mode: "cross",
+        pos_side: Some("long"),
+        cl_ord_id: "c1",
+        side: "buy",
+        ord_type: "limit",
+        px: Some("30000.0"),
+        sz: "0.001",
+    }))
     .unwrap();
     assert_eq!(body["posSide"], "long");
 }
@@ -428,7 +428,7 @@ fn test_ws_partial_fill() {
     let mut order = test_order(1);
     order.status = Status::New;
     assert!(manager.track_managed_order("BTC-USDT-SWAP", cid, order));
-    let mut update = order_update(&cid, "partially_filled");
+    let mut update = order_update(cid, "partially_filled");
     update.acc_fill_sz = "0.5".to_string();
     let order = manager.update_from_ws(&update).unwrap().unwrap();
     assert_eq!(order.status, Status::PartiallyFilled);
@@ -454,7 +454,7 @@ fn test_gc_removes_stale_orders() {
     let mut stale_order = test_order(1);
     stale_order.status = Status::New;
     assert!(manager.track_managed_order("BTC-USDT-SWAP", cid, stale_order));
-    let mut stale = order_update(&cid, "canceled");
+    let mut stale = order_update(cid, "canceled");
     stale.u_time = "0".to_string();
     manager.update_from_ws(&stale).unwrap();
 

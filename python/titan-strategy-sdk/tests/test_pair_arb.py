@@ -107,6 +107,28 @@ def active_order(order_id, *, role=strategy.INITIATOR, status=strategy.ACCEPTED_
 
 
 class TestPairArbV3StateMachine(unittest.TestCase):
+    def test_recovery_rebuilds_terminal_slot_references_without_commands(self):
+        state = fresh_state()
+        state["slot"]["id"], state["slot"]["target_lots"] = 1, 2
+        state["slot"]["initiator_order_id"] = 7
+        state["slot"]["initiator_fill_sequence"] = 500
+
+        strategy.bind_ref.py_func(state, 7, strategy.INITIATOR)
+        context = Context(state)
+        with patch.object(strategy, "on_start", strategy.on_start.py_func):
+            strategy.on_recover.py_func(context)
+        self.assertEqual(int(state["slot"]["initiator_order_id"]), 0)
+        self.assertEqual(int(state["slot"]["initiator_fill_sequence"]), 0)
+        self.assertEqual(context.submits, [])
+        self.assertEqual(context.cancels, [])
+
+    def test_recovery_still_rejects_inconsistent_business_positions(self):
+        state = fresh_state()
+        state["slot"]["id"] = 1
+        state["pair"]["expected_left_position_lots"] = 2
+        with patch.object(strategy, "on_start", strategy.on_start.py_func):
+            self.assertEqual(strategy.on_recover.py_func(Context(state)), -1)
+
     def test_unresolved_risk_gap_cannot_be_reported_as_successful_stop(self):
         state = fresh_state()
         state["slot"]["id"], state["slot"]["target_lots"] = 1, 2
@@ -153,8 +175,6 @@ class TestPairArbV3StateMachine(unittest.TestCase):
 
     def test_both_accounts_must_be_ready(self):
         state = fresh_state()
-        state["pair"]["left_account_epoch"] = 1
-        state["pair"]["right_account_epoch"] = 1
         state["pair"]["ready_mask"] = strategy.READY_ALL
         context = Context(state)
         context._accounts[1]["state"] = 5
@@ -213,7 +233,7 @@ class TestPairArbV3StateMachine(unittest.TestCase):
         state = fresh_state(mode="TAKER_TAKER")
         p = state["pair"]
         p["status"], p["posture"], p["ready_mask"] = strategy.RUNNING, strategy.NORMAL, strategy.READY_ALL
-        p["left_account_epoch"], p["right_account_epoch"] = 1, 1
+
         p["left_market_ts_ns"], p["right_market_ts_ns"] = 1_000, 1_000
         context = Context(state, now=1_000)
         with (

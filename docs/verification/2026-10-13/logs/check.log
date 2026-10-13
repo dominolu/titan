@@ -1,0 +1,10 @@
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-core-types)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-event-engine)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-market-service)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-refactor-20261012-741d2de5/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.48s

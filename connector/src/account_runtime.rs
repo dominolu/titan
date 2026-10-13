@@ -57,6 +57,37 @@ impl ReadinessFence {
         self.current.load(Ordering::Acquire) == self.committed.load(Ordering::Acquire)
     }
 }
+struct SubmitSession {
+    ready: Arc<AtomicBool>,
+    active: Arc<AtomicBool>,
+    committed: Arc<AtomicBool>,
+    fence: Arc<ReadinessFence>,
+    epoch: Arc<AtomicU64>,
+    publisher: account::AccountEventPublisher,
+}
+impl SubmitSession {
+    fn capture(self) -> crate::api::SubmitGuard {
+        let revision = self.fence.current.load(Ordering::Acquire);
+        let epoch = self.epoch.load(Ordering::Acquire);
+        Arc::new(move || {
+            if !self.ready.load(Ordering::Acquire)
+                || !self.active.load(Ordering::Acquire)
+                || !self.committed.load(Ordering::Acquire)
+                || !self.publisher.is_open()
+                || !self.fence.matches()
+                || self.fence.current.load(Ordering::Acquire) != revision
+                || self.epoch.load(Ordering::Acquire) != epoch
+            {
+                return Err(crate::api::ApiError::new(
+                    "runtime",
+                    "STALE_ACCOUNT_SESSION",
+                    "account session changed before order transport admission",
+                ));
+            }
+            Ok(())
+        })
+    }
+}
 struct PendingAccountFacts {
     values: Vec<AccountPublication>,
     capacity: usize,
@@ -102,6 +133,7 @@ trait AccountBootstrapApi: Send + Sync {
     async fn validate(&self) -> Result<(), crate::api::ApiError>;
     async fn open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError>;
     async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError>;
+    async fn position_mode(&self) -> Result<crate::api::ApiPositionMode, crate::api::ApiError>;
     async fn account(&self) -> Result<AccountInfo, crate::api::ApiError>;
     async fn order(
         &self,
@@ -112,6 +144,9 @@ trait AccountBootstrapApi: Send + Sync {
 
 #[async_trait::async_trait]
 impl<T: BrokerApi + ?Sized> AccountBootstrapApi for T {
+    async fn position_mode(&self) -> Result<crate::api::ApiPositionMode, crate::api::ApiError> {
+        self.get_account_position_mode().await
+    }
     async fn validate(&self) -> Result<(), crate::api::ApiError> {
         self.validate_account_configuration().await
     }
@@ -144,8 +179,7 @@ struct VenueShutdownActions {
 #[async_trait::async_trait(?Send)]
 impl ShutdownActions for VenueShutdownActions {
     async fn cancel_all(&self) -> Result<(), String> {
-        let connector = self.connector.lock().unwrap_or_else(|p| p.into_inner());
-        connector.shutdown().await
+        crate::connector::shutdown_connector(&self.connector).await
     }
 
     async fn cancel_all_after(&self, timeout_ms: u64) -> Result<(), String> {
@@ -246,7 +280,7 @@ struct AccountRuntime {
     api: Arc<dyn BrokerApi>,
     running: Mutex<Option<Running>>,
     started: AtomicBool,
-    active: AtomicBool,
+    active: Arc<AtomicBool>,
     ready: Arc<AtomicBool>,
     readiness_fence: Arc<ReadinessFence>,
     committed: Arc<AtomicBool>,
@@ -273,7 +307,7 @@ impl AccountRuntime {
             api,
             running: Mutex::new(None),
             started: AtomicBool::new(false),
-            active: AtomicBool::new(false),
+            active: Arc::new(AtomicBool::new(false)),
             ready: Arc::new(AtomicBool::new(false)),
             readiness_fence: Arc::new(ReadinessFence::default()),
             committed: Arc::new(AtomicBool::new(committed)),
@@ -646,6 +680,31 @@ impl account::AccountConnector for AccountRuntime {
         let (version, items) = image.balances();
         Ok(self.snapshot(image.epoch, version, items))
     }
+    fn recovery_snapshot(
+        &self,
+    ) -> Result<account::AccountRecoverySnapshot, account::AccountConnectorError> {
+        let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+        let epoch = image.epoch;
+        let version = image.committed_version;
+        account::AccountRecoverySnapshot::coherent(
+            self.snapshot(
+                epoch,
+                version,
+                image
+                    .orders(account::OrderFilter {
+                        asset_id: None,
+                        include_final: true,
+                    })
+                    .1,
+            ),
+            self.snapshot(
+                epoch,
+                version,
+                image.positions(account::PositionFilter::default()).1,
+            ),
+            self.snapshot(epoch, version, image.balances().1),
+        )
+    }
     fn health(&self) -> account::AccountConnectorHealthSnapshot {
         let ready = self.ready.load(Ordering::Acquire) && self.readiness_fence.matches();
         let startup_error = self
@@ -704,6 +763,15 @@ impl account::AccountConnector for AccountRuntime {
                 ))
             });
         }
+        let guard = SubmitSession {
+            ready: self.ready.clone(),
+            active: self.active.clone(),
+            committed: self.committed.clone(),
+            fence: self.readiness_fence.clone(),
+            epoch: self.epoch.clone(),
+            publisher: self.context.event_publisher.clone(),
+        }
+        .capture();
         let api = self.api.clone();
         let connector = self.connector.clone();
         let binding = self
@@ -713,6 +781,7 @@ impl account::AccountConnector for AccountRuntime {
             .find(|binding| binding.asset_id == request.asset_id)
             .cloned();
         Box::pin(async move {
+            guard().map_err(direct_api_error)?;
             let binding = binding.ok_or_else(|| {
                 direct_rejected("ASSET_NOT_BOUND", "asset is not bound to account")
             })?;
@@ -742,6 +811,32 @@ impl account::AccountConnector for AccountRuntime {
                     "invalid time in force or quantity",
                 ));
             }
+            let position_side = match request.position_side {
+                0 => ApiPositionSide::Net,
+                1 => ApiPositionSide::Long,
+                2 => ApiPositionSide::Short,
+                _ => {
+                    return Err(direct_rejected(
+                        "INVALID_POSITION_SIDE",
+                        "invalid position side",
+                    ));
+                }
+            };
+            if request.reduce_only
+                && matches!(
+                    position_side,
+                    ApiPositionSide::Long | ApiPositionSide::Short
+                )
+                && !matches!(
+                    (position_side, side),
+                    (ApiPositionSide::Long, ApiSide::Sell) | (ApiPositionSide::Short, ApiSide::Buy)
+                )
+            {
+                return Err(direct_rejected(
+                    "INVALID_POSITION_SIDE",
+                    "reduce-only order must close the specified side",
+                ));
+            }
             let client_order_id = id_text(request.client_order_id);
             let tracked = managed_account_order(&request, &binding)
                 .map_err(|error| direct_rejected("INVALID_ORDER", error.message.to_string()))?;
@@ -757,12 +852,13 @@ impl account::AccountConnector for AccountRuntime {
                     .then(|| from_units(request.price_ticks, binding.price_tick)),
                 qty: from_units(request.quantity_lots, binding.quantity_lot),
                 time_in_force: api_tif(request.time_in_force),
-                reduce_only: request.reduce_only,
-                position_side: None,
+                reduce_only: request.reduce_only
+                    || account::is_hedge_close(request.position_side, request.side),
+                position_side: Some(position_side),
                 client_order_id: Some(client_order_id.clone()),
                 stop_price: None,
             };
-            let result = api.submit_order(&wire).await;
+            let result = api.submit_order_fenced(&wire, Some(guard)).await;
             if result.as_ref().is_err_and(|error| !error.outcome_unknown()) {
                 connector
                     .lock()
@@ -957,6 +1053,10 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
         }
     }
 
+    let mode = api
+        .position_mode()
+        .await
+        .map_err(|error| rejected(error.to_string()))?;
     let mut positions = Vec::new();
     let values = api
         .positions()
@@ -968,27 +1068,56 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
         .ok_or_else(|| rejected("position margin currency binding missing"))?
         .currency_id;
     for binding in context.instruments.iter() {
-        let mut matched = false;
+        let mut sides = std::collections::BTreeSet::new();
         for value in values
             .iter()
             .filter(|value| value.symbol.eq_ignore_ascii_case(&binding.native_symbol))
         {
-            if matched {
+            let side = account_position_side(value.position_side)?;
+            if matches!(
+                (mode, side),
+                (crate::api::ApiPositionMode::Net, 1 | 2) | (crate::api::ApiPositionMode::Hedge, 0)
+            ) {
+                return Err(rejected("position side contradicts venue account mode"));
+            }
+            if !sides.insert(side) {
+                return Err(rejected("duplicate position side for one asset"));
+            }
+            if sides.len() > 1 && sides.contains(&ACCOUNT_POSITION_SIDE_NET) {
                 return Err(rejected(
-                    "multiple position sides for one asset cannot be committed to the net-position projection",
+                    "mixed net and hedge position records for one asset",
                 ));
             }
-            matched = true;
             positions.push((
                 position_snapshot(value, binding, context)?,
                 value.update_time.saturating_mul(1_000_000),
             ));
         }
-        if !matched {
+        let required: &[u8] = match mode {
+            crate::api::ApiPositionMode::Net => &[ACCOUNT_POSITION_SIDE_NET],
+            crate::api::ApiPositionMode::Hedge => {
+                &[ACCOUNT_POSITION_SIDE_LONG, ACCOUNT_POSITION_SIDE_SHORT]
+            }
+            crate::api::ApiPositionMode::Unknown if sides.is_empty() => {
+                return Err(rejected(
+                    "empty positions require a known venue position mode",
+                ));
+            }
+            crate::api::ApiPositionMode::Unknown if sides.contains(&ACCOUNT_POSITION_SIDE_NET) => {
+                &[ACCOUNT_POSITION_SIDE_NET]
+            }
+            crate::api::ApiPositionMode::Unknown => {
+                &[ACCOUNT_POSITION_SIDE_LONG, ACCOUNT_POSITION_SIDE_SHORT]
+            }
+        };
+        for &side in required {
+            if sides.contains(&side) {
+                continue;
+            }
             positions.push((
                 account::PositionSnapshot {
                     asset_id: binding.asset_id,
-                    position_side: ACCOUNT_POSITION_SIDE_NET,
+                    position_side: side,
                     margin_type: 2,
                     quantity_lots: 0,
                     entry_price_ticks: 0,
@@ -997,7 +1126,7 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
                     unrealized_pnl_units: 0,
                     margin_currency_id,
                 },
-                now_ns(),
+                0,
             ));
         }
     }
@@ -1078,6 +1207,7 @@ fn seed_managed_orders(
             .ok_or_else(|| rejected("seed order asset is not bound"))?;
         let mut order = managed_account_order(
             &account::DirectNewOrderRequest {
+                position_side: value.position_side,
                 asset_id: value.asset_id,
                 side: if value.side == ACCOUNT_SIDE_BUY {
                     1
@@ -1147,6 +1277,10 @@ impl AccountEventEncoder {
             reason_code: 0,
         });
         self.emit(&event)?;
+        self.projection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .commit(event.0.header);
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -1300,6 +1434,7 @@ impl AccountEventEncoder {
         let _publication = self.publication.lock().unwrap_or_else(|p| p.into_inner());
         match event {
             AccountPublication::Order {
+                position_side,
                 symbol,
                 client_order_id,
                 venue_order_id,
@@ -1358,6 +1493,15 @@ impl AccountEventEncoder {
                             account::event_flags::UPSERT
                         } else {
                             account::event_flags::FINAL
+                        } | account::event_flags::position_flags(account_position_side(
+                            *position_side,
+                        )?) | if account::is_hedge_close(
+                            account_position_side(*position_side)?,
+                            if order.side == Side::Buy { 1 } else { -1 },
+                        ) {
+                            account::event_flags::REDUCE_ONLY
+                        } else {
+                            0
                         },
                         order.exch_timestamp,
                     ),
@@ -1394,6 +1538,10 @@ impl AccountEventEncoder {
                         ..Default::default()
                     };
                     self.emit(&fill)?;
+                    self.projection
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .commit(fill.header);
                     tracing::info!(
                         account_id = fill.header.account_id,
                         asset_id = fill.asset_id,
@@ -1406,6 +1554,10 @@ impl AccountEventEncoder {
                 Ok(())
             }
             AccountPublication::Position {
+                entry_price,
+                unrealized_pnl,
+                liquidation_price,
+                position_side,
                 symbol,
                 qty,
                 exch_ts,
@@ -1421,12 +1573,16 @@ impl AccountEventEncoder {
                     account::event_flags::UPSERT,
                     *exch_ts,
                 );
-                let previous = self
-                    .projection
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .position_image(b.asset_id.0)
-                    .cloned();
+                let side = account_position_side(*position_side)?;
+                let previous = {
+                    let image = self.projection.lock().unwrap_or_else(|p| p.into_inner());
+                    if !image.position_mode_matches(b.asset_id.0, side) {
+                        return Err(rejected(
+                            "position mode changed; account reconciliation required",
+                        ));
+                    }
+                    image.position_image(b.asset_id.0, side).cloned()
+                };
                 let mut event = previous
                     .as_ref()
                     .map(|value| position_event(header, value))
@@ -1435,19 +1591,27 @@ impl AccountEventEncoder {
                         asset_id: b.asset_id.0,
                         ..Default::default()
                     });
-                event.position_side = if previous
-                    .as_ref()
-                    .is_some_and(|value| value.position_side == ACCOUNT_POSITION_SIDE_NET)
-                {
-                    ACCOUNT_POSITION_SIDE_NET
-                } else if *qty > 0.0 {
-                    ACCOUNT_POSITION_SIDE_LONG
-                } else if *qty < 0.0 {
-                    ACCOUNT_POSITION_SIDE_SHORT
-                } else {
-                    ACCOUNT_POSITION_SIDE_NET
-                };
+                event.position_side = account_position_side(*position_side)?;
                 event.quantity_lots = to_units(*qty, b.quantity_lot)?;
+                if (event.position_side == 1 && event.quantity_lots < 0)
+                    || (event.position_side == 2 && event.quantity_lots > 0)
+                {
+                    return Err(rejected("position quantity contradicts position side"));
+                }
+                if let Some(price) = entry_price {
+                    event.entry_price_ticks = to_observation_units(*price, b.price_tick)?;
+                }
+                if let Some(price) = liquidation_price {
+                    event.liquidation_price_ticks = to_observation_units(*price, b.price_tick)?;
+                }
+                if let Some(pnl) = unrealized_pnl {
+                    let currency = self
+                        .context
+                        .currencies
+                        .first()
+                        .ok_or_else(|| rejected("position margin currency binding missing"))?;
+                    event.unrealized_pnl_units = to_observation_units(*pnl, currency.amount_unit)?;
+                }
                 if event.quantity_lots == 0 {
                     event.entry_price_ticks = 0;
                     event.liquidation_price_ticks = 0;
@@ -1457,7 +1621,11 @@ impl AccountEventEncoder {
                     .projection
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .position_is_stale(event.asset_id, event.header.exchange_ts)
+                    .position_is_stale(
+                        event.asset_id,
+                        event.position_side,
+                        event.header.exchange_ts,
+                    )
                 {
                     return Ok(());
                 }
@@ -1509,7 +1677,6 @@ impl AccountEventEncoder {
                                 .as_ref()
                                 .map_or(0, |value| value.unrealized_pnl_units)
                         }),
-                    ..Default::default()
                 };
                 let stale = image.balance_is_stale(event.currency_id, event.header.exchange_ts);
                 drop(image);
@@ -1634,6 +1801,10 @@ fn order_snapshot(
 ) -> Result<account::OrderSnapshot, account::AccountConnectorError> {
     let mut ids = ids.lock().unwrap_or_else(|p| p.into_inner());
     Ok(account::OrderSnapshot {
+        position_side: match value.position_side {
+            ApiPositionSide::Unknown => 0,
+            side => account_position_side(side)?,
+        },
         asset_id: binding.asset_id,
         side: match value.side {
             ApiSide::Buy => ACCOUNT_SIDE_BUY,
@@ -1652,11 +1823,28 @@ fn order_snapshot(
         price_ticks: to_units(value.price, binding.price_tick)?,
         quantity_lots: to_units(value.qty, binding.quantity_lot)?,
         filled_quantity_lots: to_units(value.executed_qty, binding.quantity_lot)?,
-        reduce_only: value.reduce_only,
+        reduce_only: value.reduce_only
+            || account::is_hedge_close(
+                match value.position_side {
+                    ApiPositionSide::Long => 1,
+                    ApiPositionSide::Short => 2,
+                    _ => 0,
+                },
+                if value.side == ApiSide::Buy { 1 } else { -1 },
+            ),
         client_order_id: ids.intern(&value.client_order_id),
         venue_order_id: ids.intern(&value.order_id),
         command_id: account::Id128::default(),
     })
+}
+
+fn account_position_side(side: ApiPositionSide) -> Result<u8, account::AccountConnectorError> {
+    match side {
+        ApiPositionSide::Net => Ok(ACCOUNT_POSITION_SIDE_NET),
+        ApiPositionSide::Long => Ok(ACCOUNT_POSITION_SIDE_LONG),
+        ApiPositionSide::Short => Ok(ACCOUNT_POSITION_SIDE_SHORT),
+        ApiPositionSide::Unknown => Err(rejected("unknown position side")),
+    }
 }
 
 fn position_snapshot(
@@ -1668,13 +1856,14 @@ fn position_snapshot(
         .currencies
         .first()
         .ok_or_else(|| rejected("position margin currency binding missing"))?;
+    if (value.position_side == ApiPositionSide::Long && value.qty < 0.0)
+        || (value.position_side == ApiPositionSide::Short && value.qty > 0.0)
+    {
+        return Err(rejected("position quantity contradicts position side"));
+    }
     Ok(account::PositionSnapshot {
         asset_id: binding.asset_id,
-        position_side: match value.position_side {
-            ApiPositionSide::Long => ACCOUNT_POSITION_SIDE_LONG,
-            ApiPositionSide::Short => ACCOUNT_POSITION_SIDE_SHORT,
-            ApiPositionSide::Net | ApiPositionSide::Unknown => ACCOUNT_POSITION_SIDE_NET,
-        },
+        position_side: account_position_side(value.position_side)?,
         margin_type: if value.margin_type == ApiMarginType::Isolated {
             1
         } else {
@@ -1706,6 +1895,7 @@ fn order_event(
     mut header: account::AccountEventHeaderV1,
     value: &account::OrderSnapshot,
 ) -> account::OrderChangedV1 {
+    header.flags |= account::event_flags::position_flags(value.position_side);
     if value.reduce_only {
         header.flags |= account::event_flags::REDUCE_ONLY;
     }
@@ -1969,22 +2159,20 @@ fn build_hyperliquid(config: &str) -> Result<Box<dyn Connector>, String> {
 }
 
 pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory>> {
-    let mut values: Vec<Arc<dyn account::AccountConnectorFactory>> = Vec::new();
-    #[cfg(feature = "binancefutures")]
-    values.push(Arc::new(VenueAccountConnectorFactory::new(
-        "binance-futures-account",
-        build_binance,
-    )));
-    #[cfg(feature = "okx")]
-    values.push(Arc::new(VenueAccountConnectorFactory::new(
-        "okx-account",
-        build_okx,
-    )));
-    #[cfg(feature = "hyperliquid")]
-    values.push(Arc::new(VenueAccountConnectorFactory::new(
-        "hyperliquid-account",
-        build_hyperliquid,
-    )));
+    let values: Vec<Arc<dyn account::AccountConnectorFactory>> = vec![
+        #[cfg(feature = "binancefutures")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "binance-futures-account",
+            build_binance,
+        )),
+        #[cfg(feature = "okx")]
+        Arc::new(VenueAccountConnectorFactory::new("okx-account", build_okx)),
+        #[cfg(feature = "hyperliquid")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "hyperliquid-account",
+            build_hyperliquid,
+        )),
+    ];
     values
 }
 
@@ -2026,10 +2214,19 @@ mod tests {
     #[derive(Default)]
     struct FakeBootstrapApi {
         duplicate_positions: bool,
+        hedge: Option<(f64, f64)>,
+        empty_positions: bool,
     }
 
     #[async_trait::async_trait]
     impl AccountBootstrapApi for FakeBootstrapApi {
+        async fn position_mode(&self) -> Result<crate::api::ApiPositionMode, crate::api::ApiError> {
+            Ok(if self.hedge.is_some() {
+                crate::api::ApiPositionMode::Hedge
+            } else {
+                crate::api::ApiPositionMode::Net
+            })
+        }
         async fn validate(&self) -> Result<(), crate::api::ApiError> {
             Ok(())
         }
@@ -2057,6 +2254,9 @@ mod tests {
         }
 
         async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError> {
+            if self.empty_positions {
+                return Ok(Vec::new());
+            }
             let mut values = vec![PositionInfo {
                 symbol: "BTCUSDT".into(),
                 position_side: ApiPositionSide::Net,
@@ -2071,6 +2271,15 @@ mod tests {
                 notional: 126.25,
                 update_time: 12,
             }];
+            if let Some((long, short)) = self.hedge {
+                values[0].position_side = ApiPositionSide::Long;
+                values[0].qty = long;
+                let mut second = values[0].clone();
+                second.position_side = ApiPositionSide::Short;
+                second.qty = short;
+                second.entry_price = 110.0;
+                values.push(second);
+            }
             if self.duplicate_positions {
                 values.push(values[0].clone());
             }
@@ -2152,6 +2361,10 @@ mod tests {
 
         encoder
             .publish(&AccountPublication::Position {
+                entry_price: None,
+                unrealized_pnl: None,
+                liquidation_price: None,
+                position_side: crate::api::ApiPositionSide::Net,
                 symbol: "btcusdt".to_owned(),
                 qty: -1.25,
                 exch_ts: 123,
@@ -2169,7 +2382,7 @@ mod tests {
         assert_eq!(position.header.account_generation, 3);
         assert_eq!(position.header.account_epoch, 5);
         assert_eq!(position.asset_id, 42);
-        assert_eq!(position.position_side, ACCOUNT_POSITION_SIDE_SHORT);
+        assert_eq!(position.position_side, ACCOUNT_POSITION_SIDE_NET);
         assert_eq!(position.quantity_lots, -125);
         let (_, cached) = encoder
             .projection
@@ -2189,6 +2402,10 @@ mod tests {
         assert!(
             encoder
                 .publish(&AccountPublication::Position {
+                    entry_price: None,
+                    unrealized_pnl: None,
+                    liquidation_price: None,
+                    position_side: crate::api::ApiPositionSide::Net,
                     symbol: "BTCUSDT".into(),
                     qty: -2.0,
                     exch_ts: 124
@@ -2218,6 +2435,7 @@ mod tests {
             let mut id = [9_u8; 16];
             id[8..].copy_from_slice(&sequence.to_le_bytes());
             let request = account::DirectNewOrderRequest {
+                position_side: 0,
                 asset_id: binding.asset_id,
                 side: 1,
                 order_type: 0,
@@ -2303,6 +2521,69 @@ mod tests {
                 Arc::new(account::UnavailableSecretProvider),
             ),
         };
+        for (hedge, expected_sides) in [(None, vec![0]), (Some((0.0, 0.0)), vec![1, 2])] {
+            let snapshot = load_account_bootstrap(
+                &context,
+                &FakeBootstrapApi {
+                    hedge,
+                    empty_positions: true,
+                    ..Default::default()
+                },
+                &Mutex::new(IdInterner::default()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                snapshot
+                    .positions
+                    .iter()
+                    .map(|(p, _)| p.position_side)
+                    .collect::<Vec<_>>(),
+                expected_sides
+            );
+            assert!(
+                snapshot
+                    .positions
+                    .iter()
+                    .all(|(p, time)| p.quantity_lots == 0 && *time == 0)
+            );
+        }
+        let ready = Arc::new(AtomicBool::new(true));
+        let active = Arc::new(AtomicBool::new(true));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let fence = Arc::new(ReadinessFence::default());
+        let capture = || {
+            SubmitSession {
+                ready: ready.clone(),
+                active: active.clone(),
+                committed: Arc::new(AtomicBool::new(true)),
+                fence: fence.clone(),
+                epoch: epoch.clone(),
+                publisher: context.event_publisher.clone(),
+            }
+            .capture()
+        };
+        let old = capture();
+        old().unwrap();
+        // A future made while Ready cannot dispatch after stop or a complete reconnect.
+        active.store(false, Ordering::Release);
+        assert_eq!(old().unwrap_err().code, "STALE_ACCOUNT_SESSION");
+        active.store(true, Ordering::Release);
+        let revision = fence.changed();
+        fence.commit(revision);
+        assert!(old().is_err());
+        let old_epoch = capture();
+        epoch.fetch_add(1, Ordering::AcqRel);
+        assert!(old_epoch().is_err());
+        // The same guard is carried across asynchronous venue preparation.
+        let prepared = capture();
+        let preparation = async {
+            tokio::task::yield_now().await;
+            crate::api::check_submit_guard(&Some(prepared))
+        };
+        ready.store(false, Ordering::Release);
+        assert_eq!(preparation.await.unwrap_err().code, "STALE_ACCOUNT_SESSION");
+
         let encoder = AccountEventEncoder {
             context: context.clone(),
             epoch: Arc::new(AtomicU64::new(1)),
@@ -2376,6 +2657,78 @@ mod tests {
                 account::STREAM_STATE_CHANGED_EVENT
             );
         }
+        #[cfg(feature = "hyperliquid")]
+        {
+            struct NoNetworkConnector;
+            #[async_trait::async_trait]
+            impl Connector for NoNetworkConnector {
+                fn register(&mut self, _: String) {}
+                fn order_manager(
+                    &self,
+                ) -> Arc<Mutex<dyn crate::connector::GetOrders + Send + 'static>> {
+                    panic!("unused")
+                }
+                fn run(&mut self, _: crate::connector::PublishSender) {
+                    panic!("no network allowed")
+                }
+                fn shutdown(&self) -> crate::connector::ShutdownFuture {
+                    Box::pin(async { Ok(()) })
+                }
+            }
+            let runtime = AccountRuntime::new(
+                Box::new(NoNetworkConnector),
+                Arc::new(crate::hyperliquid::client::HyperliquidClient::new(
+                    "http://localhost",
+                    "http://localhost",
+                )),
+                account::ShutdownOrderPolicy::LeaveOpen,
+                context.clone(),
+            );
+            *runtime.projection.lock().unwrap() = encoder.projection.lock().unwrap().clone();
+            runtime.ready.store(true, Ordering::Release);
+            {
+                let projection = runtime.projection.lock().unwrap();
+                assert_ne!(
+                    projection.orders(account::OrderFilter::default()).0,
+                    projection.positions(account::PositionFilter::default()).0
+                );
+            }
+
+            let snapshot = account::AccountConnector::recovery_snapshot(runtime.as_ref()).unwrap();
+            assert_eq!(
+                snapshot.orders.committed_version,
+                snapshot.positions.committed_version
+            );
+            assert_eq!(
+                snapshot.orders.committed_version,
+                snapshot.balances.committed_version
+            );
+            assert!(!snapshot.orders.items.is_empty());
+            assert!(!snapshot.positions.items.is_empty());
+            assert!(!snapshot.balances.items.is_empty());
+            runtime.active.store(true, Ordering::Release);
+            runtime.epoch.store(1, Ordering::Release);
+            let request = account::DirectNewOrderRequest {
+                asset_id: account::AssetId(42),
+                side: 1,
+                order_type: 0,
+                time_in_force: 0,
+                price_ticks: 1000,
+                quantity_lots: 1,
+                reduce_only: false,
+                position_side: 0,
+                client_order_id: account::Id128([7; 16]),
+            };
+            let deferred =
+                account::AccountConnector::direct_submit(runtime.as_ref(), request.clone());
+            runtime.active.store(false, Ordering::Release);
+            assert_eq!(deferred.await.unwrap_err().code, "STALE_ACCOUNT_SESSION");
+            runtime.active.store(true, Ordering::Release);
+            let deferred = account::AccountConnector::direct_submit(runtime.as_ref(), request);
+            let revision = runtime.readiness_fence.changed();
+            runtime.readiness_fence.commit(revision);
+            assert_eq!(deferred.await.unwrap_err().code, "STALE_ACCOUNT_SESSION");
+        }
         let previous_available = encoder.projection.lock().unwrap().balances().1[0].available_units;
         encoder
             .publish(&AccountPublication::Balance {
@@ -2392,6 +2745,10 @@ mod tests {
         assert_eq!(balances[0].available_units, previous_available);
         encoder
             .publish(&AccountPublication::Position {
+                entry_price: None,
+                unrealized_pnl: None,
+                liquidation_price: None,
+                position_side: crate::api::ApiPositionSide::Net,
                 symbol: "BTCUSDT".into(),
                 qty: 2.0,
                 exch_ts: now_ns(),
@@ -2412,13 +2769,99 @@ mod tests {
             load_account_bootstrap(
                 &context,
                 &FakeBootstrapApi {
-                    duplicate_positions: true
+                    duplicate_positions: true,
+                    ..Default::default()
                 },
                 &encoder.ids
             )
             .await
             .is_err()
         );
+
+        for quantities in [(2.0, -1.0), (0.0, 0.0), (2.0, 0.0)] {
+            let snapshot = load_account_bootstrap(
+                &context,
+                &FakeBootstrapApi {
+                    hedge: Some(quantities),
+                    ..Default::default()
+                },
+                &encoder.ids,
+            )
+            .await
+            .unwrap();
+            assert_eq!(snapshot.positions.len(), 2);
+            assert_eq!(snapshot.positions[0].0.position_side, 1);
+            assert_eq!(snapshot.positions[1].0.position_side, 2);
+            assert_eq!(
+                snapshot.positions[0].0.quantity_lots,
+                (quantities.0 * 100.0) as i64
+            );
+            assert_eq!(
+                snapshot.positions[1].0.quantity_lots,
+                (quantities.1 * 100.0) as i64
+            );
+            assert_eq!(snapshot.positions[1].0.entry_price_ticks, 1100);
+            encoder.install_bootstrap(snapshot).unwrap();
+            encoder
+                .publish(&AccountPublication::Position {
+                    position_side: ApiPositionSide::Long,
+                    entry_price: Some(101.0),
+                    unrealized_pnl: Some(0.0),
+                    liquidation_price: None,
+                    symbol: "BTCUSDT".into(),
+                    qty: 0.0,
+                    exch_ts: now_ns(),
+                })
+                .unwrap();
+            let image = encoder.projection.lock().unwrap();
+            let (_, positions) = image.positions(account::PositionFilter::default());
+            assert_eq!(positions.len(), 2);
+            assert_eq!(positions[0].quantity_lots, 0);
+            assert_eq!(positions[1].quantity_lots, (quantities.1 * 100.0) as i64);
+            assert_eq!(positions[1].entry_price_ticks, 1100);
+        }
+
+        // An empty REST hedge image must accept buffered facts with genuine older
+        // exchange times; a locally fabricated bootstrap timestamp would drop them.
+        encoder
+            .install_bootstrap(
+                load_account_bootstrap(
+                    &context,
+                    &FakeBootstrapApi {
+                        hedge: Some((0.0, 0.0)),
+                        empty_positions: true,
+                        ..Default::default()
+                    },
+                    &encoder.ids,
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+        for (position_side, qty) in [(ApiPositionSide::Long, 2.0), (ApiPositionSide::Short, -1.0)] {
+            encoder
+                .publish(&AccountPublication::Position {
+                    position_side,
+                    entry_price: Some(100.0),
+                    unrealized_pnl: Some(0.0),
+                    liquidation_price: Some(0.0),
+                    symbol: "BTCUSDT".into(),
+                    qty,
+                    exch_ts: 1,
+                })
+                .unwrap();
+        }
+        {
+            let image = encoder.projection.lock().unwrap();
+            let (_, positions) = image.positions(account::PositionFilter::default());
+            assert_eq!(
+                positions
+                    .iter()
+                    .map(|p| p.quantity_lots)
+                    .collect::<Vec<_>>(),
+                vec![200, -100]
+            );
+        }
 
         // Candidate preparation must not require external publication to be open.
         context.event_publisher.close();
@@ -2441,12 +2884,20 @@ mod tests {
         let mut pending = PendingAccountFacts::new(2);
         for qty in [1.0, 2.0] {
             assert!(pending.push(AccountPublication::Position {
+                entry_price: None,
+                unrealized_pnl: None,
+                liquidation_price: None,
+                position_side: crate::api::ApiPositionSide::Net,
                 symbol: "BTC".into(),
                 qty,
                 exch_ts: 0
             }));
         }
         assert!(!pending.push(AccountPublication::Position {
+            entry_price: None,
+            unrealized_pnl: None,
+            liquidation_price: None,
+            position_side: crate::api::ApiPositionSide::Net,
             symbol: "BTC".into(),
             qty: 3.0,
             exch_ts: 0
@@ -2460,6 +2911,10 @@ mod tests {
             .collect();
         assert_eq!(quantities, [1.0, 2.0]);
         assert!(pending.push(AccountPublication::Position {
+            entry_price: None,
+            unrealized_pnl: None,
+            liquidation_price: None,
+            position_side: crate::api::ApiPositionSide::Net,
             symbol: "BTC".into(),
             qty: 4.0,
             exch_ts: 0

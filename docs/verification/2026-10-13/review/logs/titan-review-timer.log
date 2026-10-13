@@ -1,0 +1,19 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-review-20261013/crates/titan-strategy-runtime)
+warning: unused import: `AccountEventPayload`
+ --> crates/titan-strategy-runtime/examples/v13_review_timer_failure.rs:8:46
+  |
+8 | use titan_account_service::{self as account, AccountEventPayload};
+  |                                              ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `EventView`
+ --> crates/titan-strategy-runtime/examples/v13_review_timer_failure.rs:9:43
+  |
+9 | use titan_core_types::{ComponentIdentity, EventView, ResourceScope};
+  |                                           ^^^^^^^^^
+
+warning: `titan-strategy-runtime` (example "v13_review_timer_failure") generated 2 warnings (run `cargo fix --example "v13_review_timer_failure" -p titan-strategy-runtime` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running `/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/examples/v13_review_timer_failure /home/dominolu/dev/titan-refactor-20261012-741d2de5/verification-artifacts/final/v13_smoke.titan`
+After timer checkpoint failure: lifecycle=Failed, gate_open=false

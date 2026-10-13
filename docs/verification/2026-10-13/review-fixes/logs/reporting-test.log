@@ -1,0 +1,9 @@
+test_quantstats_renders_truthful_no_data_page_for_empty_canonical_returns (test_bundle.BundleTest.test_quantstats_renders_truthful_no_data_page_for_empty_canonical_returns) ... ok
+test_rejects_duplicate_file_descriptors (test_bundle.BundleTest.test_rejects_duplicate_file_descriptors) ... ok
+test_rejects_unknown_schema_without_partial_fallback (test_bundle.BundleTest.test_rejects_unknown_schema_without_partial_fallback) ... ok
+test_verifies_digest_and_renders_without_recomputation (test_bundle.BundleTest.test_verifies_digest_and_renders_without_recomputation) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK

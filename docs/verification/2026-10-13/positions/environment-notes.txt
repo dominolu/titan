@@ -1,0 +1,12 @@
+Build and non-live verification host: 192.168.3.88
+Isolated workspace: /home/dominolu/dev/titan-refactor-20261012-741d2de5
+Local workspace: /Users/dominolu/dev/titan
+All formatting, compilation, Clippy and tests ran on the build server.
+Only source and verification evidence were copied back; no artifacts were deployed.
+The initial broad directory sync was stopped and replaced with a source-file allowlist.
+Newly copied .secrets, .titan and target-hlverify directories were removed from the isolated workspace.
+No live account interfaces were called; 12 live tests remained ignored.
+Full verification passed before the final cfg(test)-only staging case was added.
+Formatting, strict workspace Clippy and full Rust tests passed again after that case.
+Final results: Rust 444 passed / 0 failed / 12 ignored; doctests 2 passed / 1 ignored;
+Python SDK 31 passed; reporting 4 passed; native recovery/drain and CLI integration passed.

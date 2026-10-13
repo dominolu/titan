@@ -10,6 +10,12 @@ use std::{
 
 use crate::{AccountConnector, AccountHandle, AssetId, ClientOrderId, Id128};
 
+/// Hedge BUY/SELL expresses opening or closing the explicitly selected side.
+/// Direct execution uses +1 buy and -1 sell; NET has no implicit close direction.
+pub const fn is_hedge_close(position_side: u8, side: i8) -> bool {
+    matches!((position_side, side), (1, -1) | (2, 1))
+}
+
 pub type ExecutionTaskId = u64;
 const LATENCY_BUCKETS: usize = 64;
 pub type ExecutionFuture =
@@ -25,6 +31,7 @@ pub struct DirectNewOrderRequest {
     pub price_ticks: i64,
     pub quantity_lots: i64,
     pub reduce_only: bool,
+    pub position_side: u8,
     pub client_order_id: ClientOrderId,
 }
 
@@ -579,6 +586,7 @@ mod tests {
 
     fn order() -> DirectNewOrderRequest {
         DirectNewOrderRequest {
+            position_side: 0,
             asset_id: AssetId(9),
             side: 1,
             order_type: 0,

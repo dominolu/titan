@@ -11,6 +11,8 @@ use sysinfo::{Pid, System};
 const STARTUP_GRACE_NS: i64 = 30_000_000_000;
 const HEARTBEAT_TIMEOUT_NS: i64 = 3_000_000_000;
 
+type ActiveRunRow = (String, String, Option<u32>, Option<u64>, i64, i64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkerProcess {
     pub pid: u32,
@@ -53,6 +55,20 @@ pub struct RunRecord {
 
 pub struct Registry {
     connection: Connection,
+}
+
+pub struct NewRun<'a> {
+    pub id: &'a str,
+    pub owner_token: &'a str,
+    pub strategy_id: &'a str,
+    pub strategy_version: &'a str,
+    pub environment: &'a str,
+    pub event_mode: &'a str,
+    pub spec_path: &'a Path,
+    pub config_path: &'a Path,
+    pub config_sha256: &'a str,
+    pub result_path: &'a Path,
+    pub log_path: &'a Path,
 }
 
 impl Registry {
@@ -164,20 +180,21 @@ impl Registry {
         Ok(Self { connection })
     }
 
-    pub fn create(
-        &self,
-        id: &str,
-        owner_token: &str,
-        strategy_id: &str,
-        strategy_version: &str,
-        environment: &str,
-        event_mode: &str,
-        spec_path: &Path,
-        config_path: &Path,
-        config_sha256: &str,
-        result_path: &Path,
-        log_path: &Path,
-    ) -> rusqlite::Result<()> {
+    pub fn create(&self, request: NewRun<'_>) -> rusqlite::Result<()> {
+        let NewRun {
+            id,
+            owner_token,
+            strategy_id,
+            strategy_version,
+            environment,
+            event_mode,
+            spec_path,
+            config_path,
+            config_sha256,
+            result_path,
+            log_path,
+        } = request;
+
         let now = now_ns();
         self.connection.execute(
             "INSERT INTO runs(id, owner_token, strategy_id, strategy_version, environment,
@@ -269,7 +286,7 @@ impl Registry {
             "SELECT id,state,pid,process_start_time,started_at_ns,heartbeat_ns FROM runs
              WHERE state IN ('STARTING','LOADING','COMPILING','READY','RUNNING','STOP_REQUESTED')",
         )?;
-        let active: Vec<(String, String, Option<u32>, Option<u64>, i64, i64)> = statement
+        let active: Vec<ActiveRunRow> = statement
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,
@@ -459,7 +476,7 @@ pub fn process_start_time(pid: u32) -> Option<u64> {
         // After the closing command parenthesis, index 0 is field 3 (`state`); field 22 is the
         // kernel start tick. Unlike wall-clock seconds, this token cannot collide for a reused
         // PID during the same second.
-        return fields.into_iter().nth(19)?.parse().ok();
+        fields.into_iter().nth(19)?.parse().ok()
     }
     #[cfg(target_os = "macos")]
     {
@@ -522,19 +539,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create(
-                "run",
-                "correct",
-                "strategy",
-                "1.0.0",
-                "backtest",
-                "bar",
-                Path::new("spec.json"),
-                Path::new("config.toml"),
-                "digest",
-                &artifact,
-                &artifact,
-            )
+            .create(crate::registry::NewRun {
+                id: "run",
+                owner_token: "correct",
+                strategy_id: "strategy",
+                strategy_version: "1.0.0",
+                environment: "backtest",
+                event_mode: "bar",
+                spec_path: Path::new("spec.json"),
+                config_path: Path::new("config.toml"),
+                config_sha256: "digest",
+                result_path: &artifact,
+                log_path: &artifact,
+            })
             .unwrap();
         assert!(!registry.running("run", "wrong", u32::MAX).unwrap());
         assert!(!registry.running("run", "correct", u32::MAX).unwrap());
@@ -561,19 +578,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create(
-                "run",
-                "owner",
-                "strategy",
-                "1.0.0",
-                "backtest",
-                "bar",
-                Path::new("spec.json"),
-                Path::new("config.toml"),
-                "digest",
-                &artifact,
-                &artifact,
-            )
+            .create(crate::registry::NewRun {
+                id: "run",
+                owner_token: "owner",
+                strategy_id: "strategy",
+                strategy_version: "1.0.0",
+                environment: "backtest",
+                event_mode: "bar",
+                spec_path: Path::new("spec.json"),
+                config_path: Path::new("config.toml"),
+                config_sha256: "digest",
+                result_path: &artifact,
+                log_path: &artifact,
+            })
             .unwrap();
         assert!(
             registry
@@ -604,19 +621,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create(
-                "run",
-                "owner",
-                "strategy",
-                "1.0.0",
-                "backtest",
-                "bar",
-                Path::new("spec.json"),
-                Path::new("config.toml"),
-                "digest",
-                &artifact,
-                &artifact,
-            )
+            .create(crate::registry::NewRun {
+                id: "run",
+                owner_token: "owner",
+                strategy_id: "strategy",
+                strategy_version: "1.0.0",
+                environment: "backtest",
+                event_mode: "bar",
+                spec_path: Path::new("spec.json"),
+                config_path: Path::new("config.toml"),
+                config_sha256: "digest",
+                result_path: &artifact,
+                log_path: &artifact,
+            })
             .unwrap();
         registry.reconcile().unwrap();
         assert_eq!(registry.get("run").unwrap().unwrap().state, "STARTING");
@@ -637,19 +654,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create(
-                "run",
-                "owner",
-                "strategy",
-                "1.0.0",
-                "backtest",
-                "bar",
-                Path::new("spec.json"),
-                Path::new("config.toml"),
-                "digest",
-                &artifact,
-                &artifact,
-            )
+            .create(crate::registry::NewRun {
+                id: "run",
+                owner_token: "owner",
+                strategy_id: "strategy",
+                strategy_version: "1.0.0",
+                environment: "backtest",
+                event_mode: "bar",
+                spec_path: Path::new("spec.json"),
+                config_path: Path::new("config.toml"),
+                config_sha256: "digest",
+                result_path: &artifact,
+                log_path: &artifact,
+            })
             .unwrap();
         registry
             .connection
@@ -717,19 +734,19 @@ mod tests {
         let registry = Registry::open(&path).unwrap();
         let artifact = path.with_extension("json");
         registry
-            .create(
-                "run",
-                "owner",
-                "strategy",
-                "1.0.0",
-                "backtest",
-                "bar",
-                Path::new("spec.json"),
-                Path::new("config.toml"),
-                "digest",
-                &artifact,
-                &artifact,
-            )
+            .create(crate::registry::NewRun {
+                id: "run",
+                owner_token: "owner",
+                strategy_id: "strategy",
+                strategy_version: "1.0.0",
+                environment: "backtest",
+                event_mode: "bar",
+                spec_path: Path::new("spec.json"),
+                config_path: Path::new("config.toml"),
+                config_sha256: "digest",
+                result_path: &artifact,
+                log_path: &artifact,
+            })
             .unwrap();
         assert_eq!(
             registry.request_stop("run").unwrap(),
