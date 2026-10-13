@@ -22,6 +22,7 @@ class EventKind(IntEnum):
     ACCOUNT_STATE = 9
     TIMER = 10
     STOP = 11
+    RECOVER = 12
 
 
 class EventQos(IntEnum):
@@ -33,6 +34,12 @@ class EventQos(IntEnum):
 class Side(IntEnum):
     BUY = 1
     SELL = 2
+
+
+class PositionSide(IntEnum):
+    NET = 0
+    LONG = 1
+    SHORT = 2
 
 
 class OrderType(IntEnum):

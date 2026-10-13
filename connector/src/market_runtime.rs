@@ -75,11 +75,13 @@ impl OperationStore {
     }
 }
 
+type ShutdownResult = Arc<Mutex<Option<Result<(), Arc<str>>>>>;
+
 struct RunningRuntime {
     stop: Option<oneshot::Sender<Instant>>,
     command: mpsc::Sender<RuntimeCommand>,
     thread: Option<JoinHandle<()>>,
-    shutdown_result: Arc<Mutex<Option<Result<(), Arc<str>>>>>,
+    shutdown_result: ShutdownResult,
     requested_deadline: Option<Instant>,
 }
 
@@ -797,13 +799,14 @@ impl MarketConnectorFactory for HyperliquidMarketFactory {
 /// Static venue catalog used by TradingRuntime. The returned factories are ordinary in-process
 /// implementations; no manifest, shared library or JSON ABI participates in construction.
 pub fn venue_market_factories() -> Vec<Arc<dyn MarketConnectorFactory>> {
-    let mut values: Vec<Arc<dyn MarketConnectorFactory>> = Vec::new();
-    #[cfg(feature = "binancefutures")]
-    values.push(Arc::new(BinanceFuturesMarketFactory));
-    #[cfg(feature = "okx")]
-    values.push(Arc::new(OkxMarketFactory));
-    #[cfg(feature = "hyperliquid")]
-    values.push(Arc::new(HyperliquidMarketFactory));
+    let values: Vec<Arc<dyn MarketConnectorFactory>> = vec![
+        #[cfg(feature = "binancefutures")]
+        Arc::new(BinanceFuturesMarketFactory),
+        #[cfg(feature = "okx")]
+        Arc::new(OkxMarketFactory),
+        #[cfg(feature = "hyperliquid")]
+        Arc::new(HyperliquidMarketFactory),
+    ];
     values
 }
 
@@ -811,6 +814,29 @@ pub fn venue_market_factories() -> Vec<Arc<dyn MarketConnectorFactory>> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn shutdown_releases_connector_mutex_while_future_is_pending() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let connector: Mutex<Box<dyn Connector>> = Mutex::new(Box::new(RuntimeProbeConnector {
+            calls: calls.clone(),
+            shutdown_error: None,
+            shutdown_delay: Duration::ZERO,
+            publish_on_run: false,
+            snapshot_delay: Duration::ZERO,
+        }));
+        let mut shutdown = Box::pin(crate::connector::shutdown_connector(&connector));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(
+            std::future::Future::poll(shutdown.as_mut(), &mut context),
+            std::task::Poll::Pending
+        ));
+        assert!(
+            connector.try_lock().is_ok(),
+            "network shutdown must not own the connector mutex"
+        );
+        shutdown.await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["shutdown"]);
+    }
     struct EmptyOrders;
     impl crate::connector::GetOrders for EmptyOrders {
         fn orders(&self, _: Option<String>) -> Vec<hftbacktest::types::Order> {
@@ -872,15 +898,21 @@ mod tests {
                 );
             }
         }
-        async fn shutdown(&self) -> Result<(), String> {
-            self.calls.lock().unwrap().push("shutdown".to_owned());
-            // Deliberately model a non-cooperative third-party shutdown call. The adapter's
-            // outer thread deadline still has to return promptly and retain the JoinHandle for
-            // a later reap even when Tokio cannot pre-empt the future.
-            if !self.shutdown_delay.is_zero() {
-                std::thread::sleep(self.shutdown_delay);
-            }
-            self.shutdown_error.clone().map_or(Ok(()), Err)
+        fn shutdown(&self) -> crate::connector::ShutdownFuture {
+            let calls = self.calls.clone();
+            let delay = self.shutdown_delay;
+            let error = self.shutdown_error.clone();
+            Box::pin(async move {
+                tokio::task::yield_now().await;
+                calls.lock().unwrap().push("shutdown".to_owned());
+                // Deliberately model a non-cooperative third-party shutdown call. The adapter's
+                // outer thread deadline still has to return promptly and retain the JoinHandle for
+                // a later reap even when Tokio cannot pre-empt the future.
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                error.map_or(Ok(()), Err)
+            })
         }
     }
 

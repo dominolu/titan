@@ -79,6 +79,12 @@ impl UserDataStream {
                 }
                 for position in data.account.position {
                     self.ev_tx.send_account(AccountPublication::Position {
+                        entry_price: Some(position.entry_price),
+                        unrealized_pnl: position.unrealized_pnl.parse().ok(),
+                        liquidation_price: None,
+                        position_side: crate::api::ApiPositionSide::from_venue_str(
+                            &position.position_side,
+                        ),
                         symbol: position.symbol,
                         qty: position.position_amount,
                         exch_ts: data.transaction_time * 1_000_000,
@@ -100,6 +106,9 @@ impl UserDataStream {
                             "binance execution report published"
                         );
                         self.ev_tx.send_account(AccountPublication::Order {
+                            position_side: crate::api::ApiPositionSide::from_venue_str(
+                                &data.order.position_side,
+                            ),
                             symbol: data.order.symbol,
                             client_order_id: Some(data.order.client_order_id.clone()),
                             venue_order_id: Some(data.order.order_id.to_string()),
@@ -241,17 +250,28 @@ pub async fn get_position_information(
 ) -> Result<(), BinanceFuturesError> {
     // todo: rate-limit throttling.
     let position_information = client.get_position_information().await?;
+    let mut observed = HashSet::new();
     position_information.into_iter().for_each(|position| {
-        if symbols.remove(&position.symbol) {
+        if symbols.contains(&position.symbol) {
+            observed.insert(position.symbol.clone());
             ev_tx.send_account(AccountPublication::Position {
+                entry_price: Some(position.entry_price),
+                unrealized_pnl: position.unrealized_pnl.parse().ok(),
+                liquidation_price: Some(position.liquidation_price),
+                position_side: crate::api::ApiPositionSide::from_venue_str(&position.position_side),
                 symbol: position.symbol,
                 qty: position.position_amount,
                 exch_ts: position.update_time * 1_000_000,
             });
         }
     });
+    symbols.retain(|symbol| !observed.contains(symbol));
     for symbol in symbols {
         ev_tx.send_account(AccountPublication::Position {
+            entry_price: None,
+            unrealized_pnl: None,
+            liquidation_price: None,
+            position_side: crate::api::ApiPositionSide::Net,
             symbol,
             qty: 0.0,
             exch_ts: 0,

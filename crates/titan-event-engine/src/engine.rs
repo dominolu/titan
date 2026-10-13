@@ -39,11 +39,11 @@ pub(crate) enum ControlCommand {
     Commit {
         base_version: u64,
         staged: Vec<StagedSubscription>,
-        reply: Sender<Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError>>,
+        reply: Sender<Result<RouteCommit, EngineError>>,
     },
     Retire {
         token: u64,
-        reply: Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>,
+        reply: RouteReply,
     },
     Recover {
         token: u64,
@@ -59,6 +59,11 @@ pub(crate) enum ControlCommand {
         reply: Sender<Result<(), EngineError>>,
     },
 }
+
+type RouteCommit = (u64, Vec<(u64, u64, Arc<SubscriberChannel>)>);
+type RetiredRoute = (Arc<SubscriberChannel>, bool);
+type RouteReply = Sender<Result<RetiredRoute, EngineError>>;
+type SubscriptionTransactions = Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>;
 
 type Catalog = HashMap<Arc<str>, HashMap<u32, Arc<EventDescriptor>>>;
 
@@ -81,7 +86,7 @@ pub(crate) struct EngineShared {
     source_sequences: Vec<Mutex<u64>>,
     pub clock: EngineClock,
     pub health_registry: RwLock<BTreeMap<u64, Arc<SubscriberHealth>>>,
-    pub transactions: Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>,
+    pub transactions: SubscriptionTransactions,
     pub timer_signals: ArrayQueue<TimerSignal>,
     pub runtime_health: RuntimeHealth,
     pub channel_registry: RwLock<BTreeMap<u64, Arc<SubscriberChannel>>>,
@@ -628,7 +633,10 @@ impl SourcePublicationGuard {
         let key = (engine, source);
         PUBLISHING_SOURCES.with(|sources| {
             let mut sources = sources.borrow_mut();
-            if sources.contains(&key) {
+            // Synchronous callbacks cannot acquire another source lock while one is held.
+            // Reject cross-source/cross-engine nesting too, otherwise publisher threads can
+            // invert lock order. Unsequenced publication remains supported.
+            if !sources.is_empty() {
                 return Err(PublishError::ReentrantSource);
             }
             sources.push(key);
@@ -661,7 +669,7 @@ pub struct EventEngine {
 #[derive(Clone)]
 pub struct EventEngineHandle {
     pub(crate) shared: Arc<EngineShared>,
-    pub(crate) transactions: Arc<Mutex<BTreeMap<u64, (u64, Vec<StagedSubscription>)>>>,
+    pub(crate) transactions: SubscriptionTransactions,
 }
 
 impl EventEngine {
@@ -1310,7 +1318,7 @@ impl EventEngineHandle {
             .shared
             .arena
             .reserve(PoolKind::MarketBatch, request.payload_length)
-            .map_err(|error| {
+            .inspect_err(|_error| {
                 self.shared
                     .runtime_health
                     .mark_arena_pressure(PoolKind::MarketBatch);
@@ -1320,7 +1328,6 @@ impl EventEngineHandle {
                     sequence: request.source_sequence,
                     detail: PoolKind::MarketBatch as u64,
                 });
-                error
             })?;
         Ok(MarketBatchReservation {
             shared: self.shared.clone(),
@@ -1365,7 +1372,7 @@ impl EventEngineHandle {
             .shared
             .arena
             .reserve(pool, request.payload_length)
-            .map_err(|error| {
+            .inspect_err(|_error| {
                 self.shared.runtime_health.mark_arena_pressure(pool);
                 self.shared.signal(FaultSignal {
                     kind: FaultKind::ArenaPressure,
@@ -1373,7 +1380,6 @@ impl EventEngineHandle {
                     sequence: request.source_sequence,
                     detail: pool as u64,
                 });
-                error
             })?;
         Ok(MarketBatchReservation {
             shared: self.shared.clone(),
@@ -1585,7 +1591,7 @@ struct EventLoop {
     control_rx: Receiver<ControlCommand>,
     routes: BTreeMap<u64, SubscriberRoute>,
     route_index: BTreeMap<u32, std::collections::BTreeSet<u64>>,
-    retire_waiters: BTreeMap<u64, Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>>,
+    retire_waiters: BTreeMap<u64, RouteReply>,
     next_token: u64,
     local_sequence: u64,
     global_pending: usize,
@@ -1750,7 +1756,7 @@ impl EventLoop {
         &mut self,
         base_version: u64,
         staged: Vec<StagedSubscription>,
-    ) -> Result<(u64, Vec<(u64, u64, Arc<SubscriberChannel>)>), EngineError> {
+    ) -> Result<RouteCommit, EngineError> {
         if base_version != self.shared.route_version.load(Ordering::Acquire) {
             return Err(EngineError::StaleRouteVersion);
         }
@@ -1899,11 +1905,7 @@ impl EventLoop {
         Ok((version, tokens))
     }
 
-    fn begin_retire_route(
-        &mut self,
-        token: u64,
-        reply: Sender<Result<(Arc<SubscriberChannel>, bool), EngineError>>,
-    ) -> Result<(), EngineError> {
+    fn begin_retire_route(&mut self, token: u64, reply: RouteReply) -> Result<(), EngineError> {
         if !self.routes.contains_key(&token) || self.retire_waiters.contains_key(&token) {
             return Err(EngineError::UnknownSubscription(token));
         }
@@ -2483,23 +2485,21 @@ impl EventLoop {
             let Some(front) = route.pending.front() else {
                 if route.channel.health().state() == SubscriberState::Pending
                     && route.channel.below_recovery_watermark()
-                {
-                    if route
+                    && route
                         .channel
                         .health()
                         .transition(SubscriberState::Pending, SubscriberState::Recovering)
-                        && route
-                            .channel
-                            .health()
-                            .transition(SubscriberState::Recovering, SubscriberState::Normal)
-                    {
-                        self.shared.signal(FaultSignal {
-                            kind: FaultKind::SubscriberRecovered,
-                            subscriber_id: route.id,
-                            sequence: 0,
-                            detail: 0,
-                        });
-                    }
+                    && route
+                        .channel
+                        .health()
+                        .transition(SubscriberState::Recovering, SubscriberState::Normal)
+                {
+                    self.shared.signal(FaultSignal {
+                        kind: FaultKind::SubscriberRecovered,
+                        subscriber_id: route.id,
+                        sequence: 0,
+                        detail: 0,
+                    });
                 }
                 visited_without_attempt += 1;
                 continue;
@@ -2571,23 +2571,21 @@ impl EventLoop {
             if route.pending.is_empty()
                 && route.channel.health().state() == SubscriberState::Pending
                 && route.channel.below_recovery_watermark()
-            {
-                if route
+                && route
                     .channel
                     .health()
                     .transition(SubscriberState::Pending, SubscriberState::Recovering)
-                    && route
-                        .channel
-                        .health()
-                        .transition(SubscriberState::Recovering, SubscriberState::Normal)
-                {
-                    self.shared.signal(FaultSignal {
-                        kind: FaultKind::SubscriberRecovered,
-                        subscriber_id: route.id,
-                        sequence: 0,
-                        detail: 0,
-                    });
-                }
+                && route
+                    .channel
+                    .health()
+                    .transition(SubscriberState::Recovering, SubscriberState::Normal)
+            {
+                self.shared.signal(FaultSignal {
+                    kind: FaultKind::SubscriberRecovered,
+                    subscriber_id: route.id,
+                    sequence: 0,
+                    detail: 0,
+                });
             }
         }
         processed

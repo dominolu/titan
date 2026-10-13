@@ -56,6 +56,12 @@ class TestV13Definition(unittest.TestCase):
         with self.assertRaises(ValueError):
             EventSubscription(EventKind.FILL, "on_fill", 1, EventQos.BEST_EFFORT)
 
+    def test_recovery_is_a_lifecycle_callback_without_subscription(self):
+        with self.assertRaisesRegex(ValueError, "lifecycle handlers"):
+            StrategySpec(strategy_id="recover_sample", strategy_version="1.0.0", state_schema_version=1,
+                         subscriptions=(EventSubscription(EventKind.RECOVER, "on_recover", 1, EventQos.RELIABLE_ORDERED),))
+        self.assertEqual(abi_v13.callback_mask(("on_recover",)), 1 << 12)
+
     def test_bar_profile_is_rejected_until_a_canonical_producer_exists(self):
         with self.assertRaisesRegex(ValueError, "Bar/Hybrid is unavailable"):
             StrategySpec(

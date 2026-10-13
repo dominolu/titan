@@ -333,8 +333,7 @@ impl AccountEventPublisher {
         if !ACCOUNT_EVENT_TYPES.contains(&event_type) {
             return Err(publisher_error("account event type is not authorized"));
         }
-        let header =
-            decode_account_event_header(payload).map_err(|message| publisher_error(message))?;
+        let header = decode_account_event_header(payload).map_err(publisher_error)?;
         self.validate_header(header)?;
         // The v1 dynamic connector callback predates an explicit schema-version argument.
         // Account payload layouts are fixed and authorized, so retain ABI compatibility by
@@ -595,6 +594,8 @@ pub struct PositionFilter {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OrderSnapshot {
+    #[serde(default)]
+    pub position_side: u8,
     pub asset_id: AssetId,
     pub side: u8,
     pub order_type: u8,
@@ -656,6 +657,23 @@ pub trait AccountConnector: Send + Sync + 'static {
         filter: PositionFilter,
     ) -> Result<AccountStateSnapshot<PositionSnapshot>, AccountConnectorError>;
     fn balances(&self) -> Result<AccountStateSnapshot<BalanceSnapshot>, AccountConnectorError>;
+    fn recovery_snapshot(&self) -> Result<AccountRecoverySnapshot, AccountConnectorError> {
+        for _ in 0..8 {
+            let orders = self.orders(OrderFilter {
+                asset_id: None,
+                include_final: true,
+            })?;
+            let positions = self.positions(PositionFilter::default())?;
+            let balances = self.balances()?;
+            if let Ok(snapshot) = AccountRecoverySnapshot::coherent(orders, positions, balances) {
+                return Ok(snapshot);
+            }
+        }
+        Err(AccountConnectorError::new(
+            AccountErrorKind::NotReady,
+            "recovery account boundary is unstable",
+        ))
+    }
     fn health(&self) -> AccountConnectorHealthSnapshot;
     fn diagnostics(&self) -> AccountConnectorDiagnosticSnapshot;
     fn operation(&self, id: OperationId) -> AccountConnectorOperationSnapshot;
@@ -681,6 +699,43 @@ pub trait AccountConnector: Send + Sync + 'static {
                 message: "connector does not expose direct execution".into(),
                 outcome_unknown: false,
             })
+        })
+    }
+}
+
+/// Immutable account images captured at one committed session/version boundary.
+pub struct AccountRecoverySnapshot {
+    pub orders: AccountStateSnapshot<OrderSnapshot>,
+    pub positions: AccountStateSnapshot<PositionSnapshot>,
+    pub balances: AccountStateSnapshot<BalanceSnapshot>,
+}
+
+impl AccountRecoverySnapshot {
+    pub fn coherent(
+        orders: AccountStateSnapshot<OrderSnapshot>,
+        positions: AccountStateSnapshot<PositionSnapshot>,
+        balances: AccountStateSnapshot<BalanceSnapshot>,
+    ) -> Result<Self, AccountConnectorError> {
+        let boundary = (orders.committed_epoch, orders.committed_version);
+        if orders.account != positions.account
+            || orders.account != balances.account
+            || orders.state != AccountSnapshotState::Ready
+            || positions.state != AccountSnapshotState::Ready
+            || balances.state != AccountSnapshotState::Ready
+            || boundary.0.is_none_or(|epoch| epoch == 0)
+            || boundary.1.is_none()
+            || boundary != (positions.committed_epoch, positions.committed_version)
+            || boundary != (balances.committed_epoch, balances.committed_version)
+        {
+            return Err(AccountConnectorError::new(
+                AccountErrorKind::NotReady,
+                "recovery account boundary is unstable",
+            ));
+        }
+        Ok(Self {
+            orders,
+            positions,
+            balances,
         })
     }
 }

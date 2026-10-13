@@ -24,14 +24,14 @@ class Capability(IntFlag):
 
 _HANDLERS = (
     "on_start", "on_tick", "on_bar", "on_depth", "on_fill", "on_order", "on_cancel",
-    "on_position", "on_balance", "on_account_state", "on_timer", "on_stop",
+    "on_position", "on_balance", "on_account_state", "on_timer", "on_stop", "on_recover",
 )
 _EVENT_HANDLER = {
     EventKind.START: "on_start", EventKind.BBO: "on_tick", EventKind.BAR: "on_bar",
     EventKind.DEPTH: "on_depth", EventKind.FILL: "on_fill", EventKind.ORDER: "on_order",
     EventKind.CANCEL: "on_cancel", EventKind.POSITION: "on_position",
     EventKind.BALANCE: "on_balance", EventKind.ACCOUNT_STATE: "on_account_state",
-    EventKind.TIMER: "on_timer", EventKind.STOP: "on_stop",
+    EventKind.TIMER: "on_timer", EventKind.STOP: "on_stop", EventKind.RECOVER: "on_recover",
 }
 _RELIABLE = {
     EventKind.FILL, EventKind.ORDER, EventKind.CANCEL, EventKind.POSITION,
@@ -84,7 +84,7 @@ class StrategySpec:
             raise ValueError("parameter names must be unique")
         if len({subscription.event_kind for subscription in subscriptions}) != len(subscriptions):
             raise ValueError("event subscriptions must be unique")
-        if any(subscription.event_kind in (EventKind.START, EventKind.STOP) for subscription in subscriptions):
+        if any(subscription.event_kind in (EventKind.START, EventKind.STOP, EventKind.RECOVER) for subscription in subscriptions):
             raise ValueError("lifecycle handlers are declared by handlers, not subscriptions")
         if any(subscription.event_kind == EventKind.BAR for subscription in subscriptions):
             raise ValueError("ABI V13 Bar/Hybrid is unavailable until the canonical producer and backtest adapter exist")

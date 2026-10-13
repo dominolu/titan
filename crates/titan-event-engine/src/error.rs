@@ -37,7 +37,7 @@ pub enum ConfigError {
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum PublishError {
-    #[error("recursive publication on the same sequenced source is not allowed")]
+    #[error("nested sequenced publication from a synchronous callback is not allowed")]
     ReentrantSource,
     #[error("event type or schema is not registered")]
     InvalidEvent,

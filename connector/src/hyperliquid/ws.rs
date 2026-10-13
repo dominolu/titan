@@ -1,8 +1,10 @@
 #[cfg(test)]
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU8, Ordering},
+};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -45,6 +47,7 @@ enum MarketChannel {
     Trades,
     OrderUpdates,
     User,
+    ClearinghouseState,
     Other,
 }
 
@@ -57,6 +60,8 @@ fn classify_channel(channel: &str) -> MarketChannel {
         MarketChannel::Trades
     } else if channel == "orderUpdates" {
         MarketChannel::OrderUpdates
+    } else if channel == "clearinghouseState" {
+        MarketChannel::ClearinghouseState
     } else if channel == "user" {
         MarketChannel::User
     } else {
@@ -70,6 +75,7 @@ fn trade_side_is_sell(side: &str) -> bool {
 }
 
 /// Applies a fill to a locally tracked position: "B" increases it, everything else decreases it.
+#[cfg(test)]
 fn apply_fill(position: &mut f64, side: &str, sz: f64) {
     if side == "B" {
         *position += sz;
@@ -170,15 +176,14 @@ fn composite_depth_events(
         )];
         if let Some(book) = l2
             && bbo_time.saturating_sub(book.time) <= COMPOSITE_L2_MAX_AGE_MS
+            && let Some(bids) = book.levels.first()
         {
-            if let Some(bids) = book.levels.first() {
-                events.extend(bids.iter().filter_map(|level| {
-                    let (px, qty) = valid_level(&level.px, &level.sz)?;
-                    (px < bid.0).then(|| {
-                        depth_event(LOCAL_BID_DEPTH_SNAPSHOT_EVENT, exch_ts, local_ts, px, qty)
-                    })
-                }));
-            }
+            events.extend(bids.iter().filter_map(|level| {
+                let (px, qty) = valid_level(&level.px, &level.sz)?;
+                (px < bid.0).then(|| {
+                    depth_event(LOCAL_BID_DEPTH_SNAPSHOT_EVENT, exch_ts, local_ts, px, qty)
+                })
+            }));
         }
         events.push(depth_event(
             LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
@@ -236,15 +241,14 @@ fn composite_depth_events(
 pub struct HyperliquidWs {
     ev_tx: crate::connector::PublishSender,
     order_manager: SharedOrderManager,
-    assets: SharedAssets,
+    _assets: SharedAssets,
     symbols: SharedSymbolSet,
-    positions: Arc<Mutex<HashMap<String, f64>>>,
     stream_epochs: HashMap<String, u64>,
     l2_books: HashMap<String, L2BookData>,
     bbo_books: HashMap<String, BboData>,
     wire_channels: HashMap<String, HashSet<&'static str>>,
     account_address: String,
-    client: HyperliquidClient,
+    _client: HyperliquidClient,
     command_rx: Receiver<MarketDataCommand>,
     market_subscriptions: SharedMarketSubscriptions,
     l2_fast: bool,
@@ -254,32 +258,49 @@ pub struct HyperliquidWs {
     reconnect_fault: Arc<AtomicU8>,
 }
 
+pub struct HyperliquidWsConfig {
+    pub ev_tx: crate::connector::PublishSender,
+    pub order_manager: SharedOrderManager,
+    pub assets: SharedAssets,
+    pub symbols: SharedSymbolSet,
+    pub account_address: String,
+    pub client: HyperliquidClient,
+    pub command_rx: Receiver<MarketDataCommand>,
+    pub market_subscriptions: SharedMarketSubscriptions,
+    pub l2_fast: bool,
+    pub private_channels: bool,
+    #[cfg(test)]
+    pub reconnect_fault: Arc<AtomicU8>,
+}
+
 impl HyperliquidWs {
-    pub fn new(
-        ev_tx: crate::connector::PublishSender,
-        order_manager: SharedOrderManager,
-        assets: SharedAssets,
-        symbols: SharedSymbolSet,
-        account_address: String,
-        client: HyperliquidClient,
-        command_rx: Receiver<MarketDataCommand>,
-        market_subscriptions: SharedMarketSubscriptions,
-        l2_fast: bool,
-        private_channels: bool,
-        #[cfg(test)] reconnect_fault: Arc<AtomicU8>,
-    ) -> Self {
-        Self {
+    pub fn new(config: HyperliquidWsConfig) -> Self {
+        let HyperliquidWsConfig {
             ev_tx,
             order_manager,
             assets,
             symbols,
-            positions: Default::default(),
+            account_address,
+            client,
+            command_rx,
+            market_subscriptions,
+            l2_fast,
+            private_channels,
+            #[cfg(test)]
+            reconnect_fault,
+        } = config;
+
+        Self {
+            ev_tx,
+            order_manager,
+            _assets: assets,
+            symbols,
             stream_epochs: Default::default(),
             l2_books: Default::default(),
             bbo_books: Default::default(),
             wire_channels: Default::default(),
             account_address,
-            client,
+            _client: client,
             command_rx,
             market_subscriptions,
             l2_fast,
@@ -291,8 +312,11 @@ impl HyperliquidWs {
     }
 
     fn reset_private_subscriptions(&mut self) {
-        self.pending_private_subscriptions =
-            HashSet::from(["orderUpdates".to_string(), "userEvents".to_string()]);
+        self.pending_private_subscriptions = HashSet::from([
+            "orderUpdates".to_string(),
+            "userEvents".to_string(),
+            "clearinghouseState".to_string(),
+        ]);
     }
 
     fn subscription_response_type(msg: &WsMsg) -> Option<&str> {
@@ -346,6 +370,7 @@ impl HyperliquidWs {
             MarketChannel::Trades => self.handle_trades(data).await?,
             MarketChannel::OrderUpdates => self.handle_order_updates(data).await?,
             MarketChannel::User => self.handle_user_events(data).await?,
+            MarketChannel::ClearinghouseState => self.handle_clearinghouse_state(data)?,
             MarketChannel::Other => {
                 self.handle_extra(&channel, data).await?;
             }
@@ -551,6 +576,7 @@ impl HyperliquidWs {
             ) {
                 Ok(Some(order)) => {
                     self.ev_tx.send_account(AccountPublication::Order {
+                        position_side: crate::api::ApiPositionSide::Net,
                         symbol,
                         client_order_id: update.order.cloid.clone(),
                         venue_order_id: Some(update.order.oid.to_string()),
@@ -577,45 +603,85 @@ impl HyperliquidWs {
                 .collect::<Result<_, _>>()?,
             _ => vec![serde_json::from_value(data.clone())?],
         };
-        for event in events {
-            if let Some(fills) = event.fills {
-                for fill in fills {
-                    let mut positions = self.positions.lock().unwrap();
-                    let fill_qty = fill.sz.parse().unwrap_or(0.0);
-                    let qty = if let Ok(start_position) = fill.start_position.parse::<f64>() {
-                        let mut position = start_position;
-                        apply_fill(&mut position, &fill.side, fill_qty);
-                        positions.insert(fill.coin.clone(), position);
-                        position
-                    } else {
-                        let mut position = positions.entry(fill.coin.clone()).or_insert(0.0);
-                        apply_fill(&mut position, &fill.side, fill_qty);
-                        *position
-                    };
-                    drop(positions);
-                    self.ev_tx.send_account(AccountPublication::Position {
-                        symbol: fill.coin.clone(),
-                        qty,
-                        exch_ts: (fill.time * 1_000_000) as i64,
-                    });
-                }
-            }
-        }
+        // Fills are not full position facts: averaging prices from this stream loses
+        // funding/PnL/liquidation state and can disagree with REST during recovery.
+        // OrderUpdates supplies executions; clearinghouseState supplies position images.
+        let _ = events;
         Ok(())
     }
 
-    /// Seeds the local position map from the REST clearinghouse state before private-events replay,
-    /// then every user fill is applied as an incremental delta.
-    async fn seed_positions(&self) -> Result<(), HyperliquidError> {
-        let state = self
-            .client
-            .get_clearinghouse_state(&self.account_address)
-            .await?;
-        let mut positions = self.positions.lock().unwrap();
-        positions.clear();
-        for asset_position in state.asset_positions {
-            let qty: f64 = asset_position.position.szi.parse().unwrap_or(0.0);
-            positions.insert(asset_position.position.coin, qty);
+    fn handle_clearinghouse_state(&self, data: &serde_json::Value) -> Result<(), HyperliquidError> {
+        if data.get("user").and_then(|v| v.as_str()) != Some(self.account_address.as_str()) {
+            return Err(HyperliquidError::InvalidArg(
+                "clearinghouseState user mismatch",
+            ));
+        }
+        // This connector binds the primary perpetual DEX only.
+        if data
+            .get("dex")
+            .and_then(|v| v.as_str())
+            .is_some_and(|dex| !dex.is_empty())
+        {
+            return Err(HyperliquidError::InvalidArg(
+                "unexpected clearinghouseState dex",
+            ));
+        }
+        let state = data
+            .get("clearinghouseState")
+            .ok_or(HyperliquidError::InvalidArg("missing clearinghouseState"))?;
+        let rows = state
+            .get("assetPositions")
+            .and_then(|v| v.as_array())
+            .ok_or(HyperliquidError::InvalidArg("missing assetPositions image"))?;
+        let time = state.get("time").and_then(|v| v.as_u64()).unwrap_or(0);
+        let number = |value: Option<&serde_json::Value>| -> Result<f64, HyperliquidError> {
+            let parsed = value
+                .and_then(|v| v.as_str())
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite());
+            parsed.ok_or(HyperliquidError::InvalidArg("invalid full position number"))
+        };
+        let mut image = HashMap::new();
+        for row in rows {
+            let position = row
+                .get("position")
+                .ok_or(HyperliquidError::InvalidArg("missing position"))?;
+            let coin = position
+                .get("coin")
+                .and_then(|v| v.as_str())
+                .ok_or(HyperliquidError::InvalidArg("missing position coin"))?;
+            let qty = number(position.get("szi"))?;
+            let entry = if qty == 0.0 {
+                0.0
+            } else {
+                number(position.get("entryPx"))?
+            };
+            let pnl = number(position.get("unrealizedPnl"))?;
+            let liquidation = match position.get("liquidationPx") {
+                Some(serde_json::Value::Null) | None => 0.0,
+                value => number(value)?,
+            };
+            if image
+                .insert(coin.to_owned(), (qty, entry, pnl, liquidation))
+                .is_some()
+            {
+                return Err(HyperliquidError::InvalidArg("duplicate position coin"));
+            }
+        }
+        // Validate the entire image before publishing any row. Omitted bound coins
+        // are authoritative flat positions, including clearing the previous price/PnL.
+        let symbols: Vec<_> = self.symbols.lock().unwrap().iter().cloned().collect();
+        for symbol in symbols {
+            let (qty, entry, pnl, liquidation) = image.get(&symbol).copied().unwrap_or_default();
+            self.ev_tx.send_account(AccountPublication::Position {
+                entry_price: Some(entry),
+                unrealized_pnl: Some(pnl),
+                liquidation_price: Some(liquidation),
+                position_side: crate::api::ApiPositionSide::Net,
+                symbol,
+                qty,
+                exch_ts: (time.min(i64::MAX as u64 / 1_000_000) as i64) * 1_000_000,
+            });
         }
         Ok(())
     }
@@ -727,23 +793,6 @@ impl HyperliquidWs {
         Ok(())
     }
 
-    async fn init_symbol(&self, symbol: String) {
-        let client = self.client.clone();
-        let account_address = self.account_address.clone();
-        let ev_tx = self.ev_tx.clone();
-        let assets = self.assets.clone();
-        let positions = self.positions.clone();
-
-        tokio::spawn(async move {
-            // Fetches the initial position.
-            if let Err(error) =
-                get_position(client, account_address, symbol, ev_tx, positions, assets).await
-            {
-                error!(?error, "Couldn't get the position information.");
-            }
-        });
-    }
-
     pub async fn connect(&mut self, url: &str) -> Result<(), HyperliquidError> {
         let request = url.into_client_request()?;
         let (ws_stream, _) = connect_async(request).await?;
@@ -754,13 +803,9 @@ impl HyperliquidWs {
         self.l2_books.clear();
         self.bbo_books.clear();
 
-        // Seed the local positions before any fill event can arrive.
         if self.private_channels {
             self.reset_private_subscriptions();
-            if let Err(error) = self.seed_positions().await {
-                error!(?error, "Couldn't seed the initial positions.");
-            }
-            for channel in ["orderUpdates", "userEvents"] {
+            for channel in ["orderUpdates", "userEvents", "clearinghouseState"] {
                 let subscribe = WsSubscribe {
                     method: "subscribe".to_string(),
                     subscription: serde_json::json!({
@@ -786,13 +831,6 @@ impl HyperliquidWs {
         for (symbol, kinds) in subscriptions {
             self.subscribe_symbol(&mut write, symbol, &kinds).await?;
         }
-        if self.private_channels {
-            let trading_symbols: Vec<_> = self.symbols.lock().unwrap().iter().cloned().collect();
-            for symbol in trading_symbols {
-                self.init_symbol(symbol).await;
-            }
-        }
-
         loop {
             select! {
                 _ = interval.tick() => {
@@ -816,7 +854,7 @@ impl HyperliquidWs {
                         self.l2_books.remove(&symbol);
                         self.resubscribe_book(&mut write, symbol).await?;
                     }
-                    Ok(MarketDataCommand::InitializeTrading { symbol }) if self.private_channels => self.init_symbol(symbol).await,
+                    Ok(MarketDataCommand::InitializeTrading { .. }) if self.private_channels => {},
                     Ok(MarketDataCommand::InitializeTrading { .. }) => {}
                     Err(RecvError::Closed) => {
                         return Ok(());
@@ -852,31 +890,6 @@ impl HyperliquidWs {
             }
         }
     }
-}
-
-async fn get_position(
-    client: HyperliquidClient,
-    account_address: String,
-    symbol: String,
-    ev_tx: crate::connector::PublishSender,
-    positions: Arc<Mutex<HashMap<String, f64>>>,
-    _assets: SharedAssets,
-) -> Result<(), HyperliquidError> {
-    let state = client.get_clearinghouse_state(&account_address).await?;
-    for asset_position in state.asset_positions {
-        let position = asset_position.position;
-        if position.coin != symbol {
-            continue;
-        }
-        let qty: f64 = position.szi.parse().unwrap_or(0.0);
-        positions.lock().unwrap().insert(symbol.clone(), qty);
-        ev_tx.send_account(AccountPublication::Position {
-            symbol: position.coin,
-            qty,
-            exch_ts: (position.update_time * 1_000_000) as i64,
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -937,24 +950,25 @@ mod tests {
     async fn l2_book_images_are_snapshots_with_monotonic_epochs() {
         let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Arc::new(Mutex::new(
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Arc::new(Mutex::new(
                 crate::hyperliquid::ordermanager::OrderManager::default(),
             )),
-            Arc::new(Mutex::new(HashMap::new())),
-            Arc::new(Mutex::new(HashSet::from(["BTC".to_owned()]))),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+            assets: Arc::new(Mutex::new(HashMap::new())),
+            symbols: Arc::new(Mutex::new(HashSet::from(["BTC".to_owned()]))),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Arc::new(Mutex::new(HashMap::from([(
+            market_subscriptions: Arc::new(Mutex::new(HashMap::from([(
                 "BTC".to_owned(),
                 HashSet::from([MarketDataKind::Depth]),
             )]))),
-            false,
-            false,
-            Arc::new(AtomicU8::new(0)),
-        );
+            l2_fast: false,
+            private_channels: false,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         let image = serde_json::json!({
             "coin": "BTC",
             "time": 1,
@@ -989,22 +1003,23 @@ mod tests {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Default::default(),
+            assets: Default::default(),
+            symbols: Default::default(),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Arc::new(Mutex::new(HashMap::from([(
+            market_subscriptions: Arc::new(Mutex::new(HashMap::from([(
                 "BTC".to_owned(),
                 HashSet::from([MarketDataKind::Bbo]),
             )]))),
-            false,
-            false,
-            Arc::new(AtomicU8::new(0)),
-        );
+            l2_fast: false,
+            private_channels: false,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         let message = serde_json::json!({
             "channel": "bbo",
             "data": {
@@ -1044,19 +1059,20 @@ mod tests {
             "BTC".to_owned(),
             HashSet::from([MarketDataKind::Depth]),
         )])));
-        let mut ws = HyperliquidWs::new(
-            events,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Default::default(),
+            assets: Default::default(),
+            symbols: Default::default(),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            subscriptions,
-            false,
-            false,
-            Arc::new(AtomicU8::new(0)),
-        );
+            market_subscriptions: subscriptions,
+            l2_fast: false,
+            private_channels: false,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         let l2 = serde_json::json!({
             "coin": "BTC",
             "time": 1_700_000_000_000_u64,
@@ -1152,24 +1168,25 @@ mod tests {
     async fn private_ready_ignores_public_and_duplicate_subscription_responses() {
         let (events, mut receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Arc::new(Mutex::new(
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Arc::new(Mutex::new(
                 crate::hyperliquid::ordermanager::OrderManager::default(),
             )),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+            assets: Default::default(),
+            symbols: Default::default(),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Default::default(),
-            false,
-            true,
-            Arc::new(AtomicU8::new(0)),
-        );
+            market_subscriptions: Default::default(),
+            l2_fast: false,
+            private_channels: true,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         ws.reset_private_subscriptions();
 
-        for kind in ["l2Book", "orderUpdates", "orderUpdates"] {
+        for kind in ["l2Book", "orderUpdates", "orderUpdates", "userEvents"] {
             let message = serde_json::json!({
                 "channel": "subscriptionResponse",
                 "data": {"subscription": {"type": kind}}
@@ -1184,7 +1201,7 @@ mod tests {
 
         let final_ack = serde_json::json!({
             "channel": "subscriptionResponse",
-            "data": {"subscription": {"type": "userEvents"}}
+            "data": {"subscription": {"type": "clearinghouseState"}}
         });
         ws.handle_msg(&final_ack.to_string()).await.unwrap();
         assert!(matches!(
@@ -1204,19 +1221,20 @@ mod tests {
     async fn websocket_error_invalidates_the_connection() {
         let (events, _receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Default::default(),
+            assets: Default::default(),
+            symbols: Default::default(),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Default::default(),
-            false,
-            true,
-            Arc::new(AtomicU8::new(0)),
-        );
+            market_subscriptions: Default::default(),
+            l2_fast: false,
+            private_channels: true,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         let error = ws
             .handle_msg(r#"{"channel":"error","error":"bad subscription"}"#)
             .await
@@ -1228,19 +1246,20 @@ mod tests {
     async fn websocket_unparseable_message_is_reported_as_connection_error() {
         let (events, _receiver) = crate::connector::test_publish_channel();
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Default::default(),
+            assets: Default::default(),
+            symbols: Default::default(),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Default::default(),
-            false,
-            true,
-            Arc::new(AtomicU8::new(0)),
-        );
+            market_subscriptions: Default::default(),
+            l2_fast: false,
+            private_channels: true,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
         let error = ws.handle_msg("not-json").await.unwrap_err();
         match error {
             HyperliquidError::OrderError(msg) => {
@@ -1289,84 +1308,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn user_events_update_position_from_start_position_baseline() {
+    async fn full_position_images_replace_prices_and_clear_flat_positions() {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let (events, _receiver) = crate::connector::test_publish_channel();
+        let facts = Arc::new(Mutex::new(Vec::new()));
+        let captured = facts.clone();
+        let events = crate::connector::direct_publish_sender(move |publication| {
+            if let crate::connector::DirectPublication::Account(fact) = publication {
+                captured.lock().unwrap().push(fact.clone());
+            }
+        });
         let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
-        let mut ws = HyperliquidWs::new(
-            events,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            String::new(),
-            HyperliquidClient::new("http://localhost", "http://localhost"),
+        let mut ws = HyperliquidWs::new(crate::hyperliquid::ws::HyperliquidWsConfig {
+            ev_tx: events,
+            order_manager: Default::default(),
+            assets: Default::default(),
+            symbols: Arc::new(Mutex::new(HashSet::from(["BTC".to_owned()]))),
+            account_address: String::new(),
+            client: HyperliquidClient::new("http://localhost", "http://localhost"),
             command_rx,
-            Default::default(),
-            false,
-            true,
-            Arc::new(AtomicU8::new(0)),
-        );
-        let event = serde_json::json!([{
-            "fills": [{
-                "coin": "BTC",
-                "px": "50000.0",
-                "sz": "0.100",
-                "side": "B",
-                "time": 1_700_000_000_001u64,
-                "startPosition": "0.500"
-            }]
-        }]);
-        ws.handle_user_events(&event).await.unwrap();
-        assert_eq!(
-            *ws.positions
-                .lock()
-                .unwrap()
-                .get("BTC")
-                .expect("position must be cached"),
-            0.6
-        );
-        let duplicated = serde_json::json!([{
-            "fills": [{
-                "coin": "BTC",
-                "px": "50000.0",
-                "sz": "0.100",
-                "side": "B",
-                "time": 1_700_000_000_001u64,
-                "startPosition": "0.500"
-            }]
-        }]);
-        ws.handle_user_events(&duplicated).await.unwrap();
-        assert_eq!(
-            *ws.positions
-                .lock()
-                .unwrap()
-                .get("BTC")
-                .expect("position must be cached"),
-            0.6
-        );
-        let next = serde_json::json!([{
-            "fills": [{
-                "coin": "BTC",
-                "px": "50000.0",
-                "sz": "0.050",
-                "side": "A",
-                "time": 1_700_000_000_002u64,
-                "startPosition": "0.600"
-            }]
-        }]);
-        ws.handle_user_events(&next).await.unwrap();
+            market_subscriptions: Default::default(),
+            l2_fast: false,
+            private_channels: true,
+            #[cfg(test)]
+            reconnect_fault: Arc::new(AtomicU8::new(0)),
+        });
+        let image = serde_json::json!({"user":"", "dex":"", "clearinghouseState":{
+            "time":12, "assetPositions":[{"position":{"coin":"BTC", "szi":"2", "entryPx":"100", "unrealizedPnl":"4", "liquidationPx":"50"}}]
+        }});
+        ws.handle_msg(
+            &serde_json::json!({"channel":"clearinghouseState","data":image}).to_string(),
+        )
+        .await
+        .unwrap();
+        match facts.lock().unwrap().pop().unwrap() {
+            AccountPublication::Position {
+                qty,
+                entry_price,
+                unrealized_pnl,
+                liquidation_price,
+                exch_ts,
+                ..
+            } => {
+                assert_eq!(
+                    (qty, entry_price, unrealized_pnl, liquidation_price, exch_ts),
+                    (2.0, Some(100.0), Some(4.0), Some(50.0), 12_000_000)
+                );
+            }
+            other => panic!("expected full position, got {other:?}"),
+        }
+        // Quantity-only fills cannot replace full price/PnL facts.
+        ws.handle_user_events(&serde_json::json!({"fills":[{"coin":"BTC","px":"103","sz":"1","side":"B","time":13,"startPosition":"2"}]})).await.unwrap();
+        assert!(facts.lock().unwrap().is_empty());
+        ws.handle_clearinghouse_state(&serde_json::json!({"user":"","dex":"","clearinghouseState":{"time":14,"assetPositions":[{"position":{"coin":"BTC","szi":"3","entryPx":"101","unrealizedPnl":"6","liquidationPx":null}}]}})).unwrap();
+        match facts.lock().unwrap().pop().unwrap() {
+            AccountPublication::Position {
+                qty,
+                entry_price,
+                unrealized_pnl,
+                liquidation_price,
+                ..
+            } => assert_eq!(
+                (qty, entry_price, unrealized_pnl, liquidation_price),
+                (3.0, Some(101.0), Some(6.0), Some(0.0))
+            ),
+            other => panic!("expected complete refreshed position, got {other:?}"),
+        }
+        ws.handle_clearinghouse_state(
+            &serde_json::json!({"user":"", "clearinghouseState":{"assetPositions":[]}}),
+        )
+        .unwrap();
+        match facts.lock().unwrap().pop().unwrap() {
+            AccountPublication::Position {
+                qty,
+                entry_price,
+                unrealized_pnl,
+                liquidation_price,
+                exch_ts,
+                ..
+            } => assert_eq!(
+                (qty, entry_price, unrealized_pnl, liquidation_price, exch_ts),
+                (0.0, Some(0.0), Some(0.0), Some(0.0), 0)
+            ),
+            other => panic!("expected flat position, got {other:?}"),
+        }
         assert!(
-            (*ws.positions
-                .lock()
-                .unwrap()
-                .get("BTC")
-                .expect("position must be cached")
-                - 0.55)
-                .abs()
-                < 1e-9
+            ws.handle_clearinghouse_state(&serde_json::json!({"user":"","clearinghouseState":{}}))
+                .is_err()
+        );
+        assert!(
+            ws.handle_clearinghouse_state(
+                &serde_json::json!({"user":"other","clearinghouseState":{"assetPositions":[]}})
+            )
+            .is_err()
         );
     }
-
     #[test]
     fn test_parse_user_fundings_snapshot() {
         // 官方 WsUserFundings 格式：快照 + 每小时结算推送

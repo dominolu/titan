@@ -166,22 +166,22 @@ fn order_info_from(o: &m::Order) -> OrderInfo {
     let pos_side = match o.position_side.to_uppercase().as_str() {
         "LONG" => ApiPositionSide::Long,
         "SHORT" => ApiPositionSide::Short,
-        "BOTH" => ApiPositionSide::from_qty(qty),
+        "BOTH" => ApiPositionSide::Net,
         _ => ApiPositionSide::Unknown,
     };
     OrderInfo {
         symbol: o.symbol.to_lowercase(),
         order_id: o.order_id.to_string(),
         client_order_id: o.client_order_id.clone(),
-        side: ApiSide::from_str(&o.side),
-        order_type: ApiOrderType::from_str(&o.orig_type),
-        status: ApiOrderStatus::from_str(&o.status),
+        side: ApiSide::from_venue_str(&o.side),
+        order_type: ApiOrderType::from_venue_str(&o.orig_type),
+        status: ApiOrderStatus::from_venue_str(&o.status),
         price: o.price,
         qty,
         executed_qty: executed,
         avg_price: f64_or_zero(&o.avg_price),
         leaves_qty: leaves,
-        time_in_force: ApiTimeInForce::from_str(&o.time_in_force),
+        time_in_force: ApiTimeInForce::from_venue_str(&o.time_in_force),
         reduce_only: o.reduce_only,
         position_side: pos_side,
         create_time: o.time,
@@ -198,7 +198,7 @@ fn order_info_from_response(o: &m::OrderResponse) -> OrderInfo {
     let pos_side = match o.position_side.to_uppercase().as_str() {
         "LONG" => ApiPositionSide::Long,
         "SHORT" => ApiPositionSide::Short,
-        "BOTH" => ApiPositionSide::from_qty(o.orig_qty),
+        "BOTH" => ApiPositionSide::Net,
         _ => ApiPositionSide::Unknown,
     };
     OrderInfo {
@@ -227,13 +227,7 @@ fn order_info_from_response(o: &m::OrderResponse) -> OrderInfo {
 }
 
 fn position_from(o: &m::PositionInformationV2) -> PositionInfo {
-    let side = if o.position_amount > 0.0 {
-        ApiPositionSide::Long
-    } else if o.position_amount < 0.0 {
-        ApiPositionSide::Short
-    } else {
-        ApiPositionSide::from_str(&o.position_side)
-    };
+    let side = ApiPositionSide::from_venue_str(&o.position_side);
     PositionInfo {
         symbol: o.symbol.to_lowercase(),
         position_side: side,
@@ -242,7 +236,7 @@ fn position_from(o: &m::PositionInformationV2) -> PositionInfo {
         mark_price: o.mark_price,
         liquidation_price: o.liquidation_price,
         leverage: o.leverage,
-        margin_type: ApiMarginType::from_str(&o.margin_type),
+        margin_type: ApiMarginType::from_venue_str(&o.margin_type),
         unrealized_pnl: o.unrealized_pnl.parse().unwrap_or(0.0),
         realized_pnl: 0.0,
         notional: o.notional,
@@ -275,15 +269,12 @@ fn validate_account_modes(
     dual_side_position: bool,
     multi_assets_margin: bool,
 ) -> Result<(), ApiError> {
-    if dual_side_position {
-        return Err(ApiError::new(
-            "binance",
-            "INCOMPATIBLE_POSITION_MODE",
-            "Binance USD-M account is in Hedge Mode; Titan account commands currently require One-way Mode",
-        ));
-    }
     tracing::info!(
-        position_mode = "one_way",
+        position_mode = if dual_side_position {
+            "hedge"
+        } else {
+            "one_way"
+        },
         margin_mode = if multi_assets_margin {
             "multi_asset"
         } else {
@@ -1061,7 +1052,25 @@ impl BrokerApi for BinanceFuturesClient {
     }
 
     async fn submit_order(&self, req: &UnifiedOrderRequest) -> Result<OrderInfo, ApiError> {
+        self.submit_order_fenced(req, None).await
+    }
+
+    async fn get_account_position_mode(&self) -> Result<crate::api::ApiPositionMode, ApiError> {
+        Ok(if self.get_position_mode().await? {
+            crate::api::ApiPositionMode::Hedge
+        } else {
+            crate::api::ApiPositionMode::Net
+        })
+    }
+
+    async fn submit_order_fenced(
+        &self,
+        req: &UnifiedOrderRequest,
+        guard: Option<crate::api::SubmitGuard>,
+    ) -> Result<OrderInfo, ApiError> {
+        validate_position_request(req)?;
         let body = build_submit_body(req);
+        crate::api::check_submit_guard(&guard)?;
         let resp: m::OrderResponseResult = self.post("/fapi/v1/order", body).await?;
         match resp {
             m::OrderResponseResult::Ok(o) => Ok(order_info_from_response(&o)),
@@ -1081,6 +1090,9 @@ impl BrokerApi for BinanceFuturesClient {
                 "INVALID",
                 "batch orders limited to 5",
             ));
+        }
+        for req in reqs {
+            validate_position_request(req)?;
         }
         let body = build_batch_submit_body(reqs);
         let resp: Vec<m::OrderResponseResult> = self.post("/fapi/v1/batchOrders", body).await?;
@@ -1268,7 +1280,7 @@ impl BrokerApi for BinanceFuturesClient {
                 client_order_id: String::new(),
                 price: t.price,
                 qty: t.qty,
-                side: ApiSide::from_str(t.side.as_ref()),
+                side: ApiSide::from_venue_str(t.side.as_ref()),
                 fee: t.commission,
                 fee_asset: t.commission_asset.clone(),
                 realized_pnl: t.realized_pnl,
@@ -1315,7 +1327,7 @@ impl BrokerApi for BinanceFuturesClient {
         let margin_type = resp
             .get("marginType")
             .and_then(|v| v.as_str())
-            .map(ApiMarginType::from_str)
+            .map(ApiMarginType::from_venue_str)
             .unwrap_or(ApiMarginType::Unknown);
         Ok(LeverageInfo {
             symbol: symbol.to_lowercase(),
@@ -1387,6 +1399,41 @@ fn decimal_param(value: f64) -> String {
     }
 }
 
+fn binance_position_side(side: ApiPositionSide) -> &'static str {
+    match side {
+        ApiPositionSide::Net => "BOTH",
+        side => side.as_str(),
+    }
+}
+
+fn validate_position_request(req: &UnifiedOrderRequest) -> Result<(), ApiError> {
+    if req.position_side == Some(ApiPositionSide::Unknown) {
+        return Err(ApiError::new(
+            "binance",
+            "INVALID_POSITION_SIDE",
+            "unknown position side",
+        ));
+    }
+    if req.reduce_only
+        && matches!(
+            req.position_side,
+            Some(ApiPositionSide::Long | ApiPositionSide::Short)
+        )
+        && !matches!(
+            (req.position_side, req.side),
+            (Some(ApiPositionSide::Long), ApiSide::Sell)
+                | (Some(ApiPositionSide::Short), ApiSide::Buy)
+        )
+    {
+        return Err(ApiError::new(
+            "binance",
+            "INVALID_POSITION_SIDE",
+            "reduce-only hedge order must close the specified side",
+        ));
+    }
+    Ok(())
+}
+
 /// 构建 POST /fapi/v1/order 的 body。
 pub(crate) fn build_submit_body(req: &UnifiedOrderRequest) -> String {
     let mut body = format!(
@@ -1405,11 +1452,16 @@ pub(crate) fn build_submit_body(req: &UnifiedOrderRequest) -> String {
     if req.order_type == ApiOrderType::Limit {
         body.push_str(&format!("&timeInForce={}", req.time_in_force.as_str()));
     }
-    if req.reduce_only {
+    if req.reduce_only
+        && !matches!(
+            req.position_side,
+            Some(ApiPositionSide::Long | ApiPositionSide::Short)
+        )
+    {
         body.push_str("&reduceOnly=true");
     }
     if let Some(side) = req.position_side {
-        body.push_str(&format!("&positionSide={}", side.as_str()));
+        body.push_str(&format!("&positionSide={}", binance_position_side(side)));
     }
     if let Some(sp) = req.stop_price {
         body.push_str(&format!("&stopPrice={}", decimal_param(sp)));
@@ -1441,11 +1493,19 @@ pub(crate) fn build_batch_submit_body(reqs: &[UnifiedOrderRequest]) -> String {
                     req.time_in_force.as_str()
                 ));
             }
-            if req.reduce_only {
+            if req.reduce_only
+                && !matches!(
+                    req.position_side,
+                    Some(ApiPositionSide::Long | ApiPositionSide::Short)
+                )
+            {
                 inner.push_str(",\"reduceOnly\":\"true\"");
             }
             if let Some(side) = req.position_side {
-                inner.push_str(&format!(",\"positionSide\":\"{}\"", side.as_str()));
+                inner.push_str(&format!(
+                    ",\"positionSide\":\"{}\"",
+                    binance_position_side(side)
+                ));
             }
             if let Some(sp) = req.stop_price {
                 inner.push_str(&format!(",\"stopPrice\":\"{}\"", decimal_param(sp)));
@@ -1528,6 +1588,20 @@ use hftbacktest::types::Status;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn net_and_hedge_position_wire_semantics() {
+        let mut req = limit_req();
+        req.position_side = Some(ApiPositionSide::Net);
+        assert!(build_submit_body(&req).contains("positionSide=BOTH"));
+        req.position_side = Some(ApiPositionSide::Short);
+        req.side = ApiSide::Buy;
+        req.reduce_only = true;
+        assert!(validate_position_request(&req).is_ok());
+        assert!(!build_submit_body(&req).contains("reduceOnly"));
+        assert!(build_batch_submit_body(&[req.clone()]).contains("SHORT"));
+        req.side = ApiSide::Sell;
+        assert!(validate_position_request(&req).is_err());
+    }
     use super::*;
     use crate::api::{
         AlgoOrderRequest, AmendOrderRequest, ApiOrderStatus, ApiOrderType, ApiPositionSide,
@@ -1796,10 +1870,8 @@ mod tests {
         } else {
             "ISOLATED"
         };
-        if original_multi_assets {
-            if let Err(error) = client.set_multi_assets_mode(false).await {
-                failures.push(format!("disable_multi_assets_for_margin_test: {error}"));
-            }
+        if original_multi_assets && let Err(error) = client.set_multi_assets_mode(false).await {
+            failures.push(format!("disable_multi_assets_for_margin_test: {error}"));
         }
         if let Err(error) = client.set_margin_type(&symbol, alternate_margin).await {
             failures.push(format!("set_margin_type: {error}"));
@@ -1807,10 +1879,8 @@ mod tests {
         if let Err(error) = client.set_margin_type(&symbol, &original_margin).await {
             panic!("failed to restore margin type: {error}");
         }
-        if original_multi_assets {
-            if let Err(error) = client.set_multi_assets_mode(true).await {
-                panic!("failed to restore multi-assets mode after margin test: {error}");
-            }
+        if original_multi_assets && let Err(error) = client.set_multi_assets_mode(true).await {
+            panic!("failed to restore multi-assets mode after margin test: {error}");
         }
         println!("PASS set_margin_type_restore");
 
@@ -2166,6 +2236,7 @@ mod tests {
         let mut req = limit_req();
         req.order_type = ApiOrderType::StopMarket;
         req.stop_price = Some(49000.0);
+        req.position_side = Some(ApiPositionSide::Net);
         req.reduce_only = true;
         let body = build_submit_body(&req);
         assert!(body.contains("stopPrice=49000"));
@@ -2306,7 +2377,7 @@ mod tests {
         assert_eq!(info.executed_qty, 0.5);
         assert_eq!(info.leaves_qty, 1.5);
         assert_eq!(info.avg_price, 49990.0);
-        assert_eq!(info.position_side, ApiPositionSide::Long);
+        assert_eq!(info.position_side, ApiPositionSide::Net);
     }
 
     #[test]
@@ -2334,7 +2405,7 @@ mod tests {
         let info = position_from(&pos);
         assert_eq!(info.symbol, "btcusdt");
         assert_eq!(info.qty, 1.5);
-        assert_eq!(info.position_side, ApiPositionSide::Long);
+        assert_eq!(info.position_side, ApiPositionSide::Net);
         assert_eq!(info.entry_price, 50000.0);
         assert_eq!(info.liquidation_price, 45000.0);
         assert_eq!(info.leverage, 10.0);
@@ -2375,10 +2446,9 @@ mod tests {
     }
 
     #[test]
-    fn account_mode_validation_rejects_hedge_mode() {
-        let error = validate_account_modes(true, false).unwrap_err();
-        assert_eq!(error.code, "INCOMPATIBLE_POSITION_MODE");
-        assert!(error.message.contains("One-way Mode"));
+    fn account_mode_validation_accepts_hedge_mode() {
+        validate_account_modes(true, false).unwrap();
+        validate_account_modes(true, true).unwrap();
     }
 
     #[test]
@@ -2409,7 +2479,7 @@ mod tests {
             client_order_id: String::new(),
             price: trades[0].price,
             qty: trades[0].qty,
-            side: ApiSide::from_str(trades[0].side.as_ref()),
+            side: ApiSide::from_venue_str(trades[0].side.as_ref()),
             fee: trades[0].commission,
             fee_asset: trades[0].commission_asset.clone(),
             realized_pnl: trades[0].realized_pnl,

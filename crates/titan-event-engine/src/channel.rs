@@ -355,6 +355,8 @@ impl SubscriberChannel {
         }
     }
 
+    // Return ownership on queue pressure without a heap allocation in the event hot path.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn try_push_critical(
         &self,
         delivery: TrackedDelivery,
@@ -378,6 +380,8 @@ impl SubscriberChannel {
         result
     }
 
+    // Same allocation-free ownership return as the critical queue.
+    #[allow(clippy::result_large_err)]
     pub(crate) fn try_push_market(&self, delivery: TrackedDelivery) -> Result<(), TrackedDelivery> {
         if !self.begin_push() {
             return Err(delivery);
@@ -432,8 +436,7 @@ impl SubscriberChannel {
             && self
                 .health
                 .transition(SubscriberState::Normal, SubscriberState::Lagging)
-        {
-            if self
+            && self
                 .fault_signals
                 .push(FaultSignal {
                     kind: FaultKind::SubscriberLagging,
@@ -442,11 +445,10 @@ impl SubscriberChannel {
                     detail: self.queue.len() as u64,
                 })
                 .is_err()
-            {
-                self.metrics
-                    .fault_signal_drop_total
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+        {
+            self.metrics
+                .fault_signal_drop_total
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 

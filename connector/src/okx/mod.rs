@@ -232,8 +232,6 @@ impl Okx {
         let api_key = self.config.api_key.clone();
         let secret = self.config.secret.clone();
         let passphrase = self.config.passphrase.clone();
-        let td_mode = self.config.td_mode.clone();
-        let pos_side = self.config.pos_side.clone();
         let order_manager = self.order_manager.clone();
         let client = self.client.clone();
         let symbol_tx = self.symbol_tx.clone();
@@ -254,16 +252,17 @@ impl Okx {
                 })
                 .retry(|| async {
                     let mut stream = private_stream::PrivateStream::new(
-                        api_key.clone(),
-                        secret.clone(),
-                        passphrase.clone(),
-                        td_mode.clone(),
-                        pos_side.clone(),
-                        ev_tx.clone(),
-                        order_manager.clone(),
-                        client.clone(),
-                        symbol_tx.subscribe(),
-                        symbols.clone(),
+                        crate::okx::private_stream::PrivateStreamConfig {
+                            api_key: api_key.clone(),
+                            secret: secret.clone(),
+                            passphrase: passphrase.clone(),
+
+                            ev_tx: ev_tx.clone(),
+                            order_manager: order_manager.clone(),
+                            client: client.clone(),
+                            symbol_rx: symbol_tx.subscribe(),
+                            symbols: symbols.clone(),
+                        },
                     );
                     stream.connect(&private_url).await?;
                     Ok(())
@@ -437,27 +436,27 @@ impl Connector for Okx {
         Some(Arc::new(self.client.clone()))
     }
 
-    async fn shutdown(&self) -> Result<(), String> {
+    fn shutdown(&self) -> crate::connector::ShutdownFuture {
+        let client = self.client.clone();
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
-        let mut errors = Vec::new();
-        for symbol in symbols {
-            if let Err(error) = self
-                .client
-                .cancel_all_orders(
-                    &symbol,
-                    &self.config.td_mode,
-                    self.config.pos_side.as_deref(),
-                )
-                .await
-            {
-                errors.push(format!("{symbol}: {error}"));
+        let td_mode = self.config.td_mode.clone();
+        let pos_side = self.config.pos_side.clone();
+        Box::pin(async move {
+            let mut errors = Vec::new();
+            for symbol in symbols {
+                if let Err(error) = client
+                    .cancel_all_orders(&symbol, &td_mode, pos_side.as_deref())
+                    .await
+                {
+                    errors.push(format!("{symbol}: {error}"));
+                }
             }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
+        })
     }
 }
 

@@ -1465,11 +1465,13 @@ fn event_control_market_reservation_publishes_without_copy_api() {
 #[test]
 fn arena_is_bounded_reuses_generation_and_reclaims_last_reference() {
     let metrics = Arc::new(EngineMetrics::default());
-    let mut config = ArenaConfig::default();
-    config.small_event = PoolConfig {
-        slots: 1,
-        block_bytes: 8,
-        low_watermark: 0,
+    let config = ArenaConfig {
+        small_event: PoolConfig {
+            slots: 1,
+            block_bytes: 8,
+            low_watermark: 0,
+        },
+        ..ArenaConfig::default()
     };
     let arena = EventArena::new(&config, metrics);
     let mut reservation = arena.reserve(PoolKind::SmallEvent, 4).unwrap();

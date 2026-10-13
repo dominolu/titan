@@ -13,10 +13,10 @@ use libloading::Library;
 use sha2::{Digest, Sha256};
 
 pub const STRATEGY_ABI_V13: u32 = 13;
-pub const V13_CALLBACK_COUNT: usize = 12;
+pub const V13_CALLBACK_COUNT: usize = 13;
 pub const V13_ABI_FINGERPRINT: [u8; 32] = [
-    0x5d, 0xfa, 0xa5, 0x07, 0x3d, 0x7e, 0xb2, 0x27, 0xb1, 0xdd, 0x3b, 0xf4, 0xf1, 0x61, 0x7a, 0x76,
-    0xf5, 0xe3, 0x09, 0xf6, 0xfe, 0xab, 0x33, 0xe0, 0x8f, 0xf3, 0xc8, 0x07, 0x55, 0x18, 0x88, 0xd0,
+    0x78, 0x64, 0xd0, 0xbe, 0x8e, 0x1b, 0x83, 0xb0, 0x68, 0x37, 0x47, 0xbf, 0x4f, 0xdf, 0xd4, 0xcc,
+    0xe1, 0xf8, 0x73, 0x77, 0xcb, 0x3f, 0xdb, 0x97, 0xc5, 0x6a, 0x9a, 0x27, 0x0c, 0x7a, 0x50, 0xed,
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +73,7 @@ pub enum V13EventKind {
     AccountState = 9,
     Timer = 10,
     Stop = 11,
+    Recover = 12,
 }
 
 impl V13EventKind {
@@ -254,7 +255,8 @@ v13_view!(TitanOrderEventView {
     account_sequence: u64,
     status: u8,
     reason: u8,
-    reserved: [u8; 6]
+    position_side: u8,
+    reserved: [u8; 5]
 });
 v13_view!(TitanCancelEventView {
     order_id: u64,
@@ -273,7 +275,9 @@ v13_view!(TitanPositionEventView {
     average_price_ticks: i64,
     realized_pnl_ticks: i64,
     event_ts_ns: i64,
-    account_sequence: u64
+    account_sequence: u64,
+    position_side: u8,
+    reserved: [u8; 7]
 });
 v13_view!(TitanBalanceEventView {
     account_no: u32,
@@ -315,7 +319,9 @@ v13_view!(TitanPositionView {
     qty_lots: i64,
     average_price_ticks: i64,
     realized_pnl_ticks: i64,
-    account_sequence: u64
+    account_sequence: u64,
+    position_side: u8,
+    reserved: [u8; 7]
 });
 v13_view!(TitanBalanceView {
     account_no: u32,
@@ -348,7 +354,8 @@ v13_view!(TitanActiveOrderView {
     time_in_force: u8,
     status: u8,
     reduce_only: u8,
-    reserved: [u8; 3]
+    position_side: u8,
+    reserved: [u8; 2]
 });
 v13_view!(TitanSubmitOrderRequest {
     asset_no: u32,
@@ -362,7 +369,8 @@ v13_view!(TitanSubmitOrderRequest {
     time_in_force: u8,
     reduce_only: u8,
     trigger_kind: u8,
-    reserved: [u8; 3]
+    position_side: u8,
+    reserved: [u8; 2]
 });
 v13_view!(TitanCancelOrderRequest {
     order_id: u64,
@@ -476,7 +484,7 @@ unsafe extern "C" fn stage_submit_order_v13(
         return -1;
     }
     let staging = unsafe { &mut *context.cast::<CallbackCommandStagingV13>() };
-    let request = unsafe { *request };
+    let mut request = unsafe { *request };
     if !staging.gate_open
         || staging.commands.len() >= staging.capacity
         || request.qty_lots <= 0
@@ -484,11 +492,22 @@ unsafe extern "C" fn stage_submit_order_v13(
         || !matches!(request.order_type, 1 | 2)
         || !matches!(request.time_in_force, 1..=4)
         || !matches!(request.reduce_only, 0 | 1)
+        || request.position_side > 2
         || request.trigger_kind != 0
         || request.trigger_price_ticks != 0
         || request.gtd_expiry_ns != 0
     {
         return -2;
+    }
+    let closes_side = titan_account_service::is_hedge_close(
+        request.position_side,
+        if request.side == 1 { 1 } else { -1 },
+    );
+    if request.reduce_only == 1 && request.position_side != 0 && !closes_side {
+        return -2;
+    }
+    if closes_side {
+        request.reduce_only = 1;
     }
     let order_id = staging.next_order_id;
     staging.next_order_id = staging.next_order_id.checked_add(1).unwrap_or(0);
@@ -856,6 +875,7 @@ impl StrategyInstanceV13 {
         context: &mut StrategyRuntimeContextV13,
     ) -> Result<(), V13LoadError> {
         let allowed = match event {
+            V13EventKind::Recover => self.lifecycle == StrategyInstanceLifecycleV13::Restoring,
             V13EventKind::Start => self.lifecycle == StrategyInstanceLifecycleV13::Ready,
             V13EventKind::Stop => matches!(
                 self.lifecycle,
@@ -978,6 +998,31 @@ impl StrategyInstanceV13 {
         Ok(())
     }
 
+    pub(crate) fn bind_resolved_routes(
+        &mut self,
+        markets: &[crate::ResolvedMarketBinding],
+        accounts: &[crate::ResolvedAccountBinding],
+    ) {
+        self.binding_digest = resolved_route_digest(self.binding_digest, markets, accounts);
+    }
+    pub(crate) fn has_callback(&self, event: V13EventKind) -> bool {
+        self.callbacks.callbacks[event.index()].is_some()
+    }
+    /// Only the host reconciler calls this after generic and strategy validation succeeded.
+    pub(crate) fn complete_reconciled_restore(
+        &mut self,
+        identity: [u8; 32],
+        generation: u64,
+    ) -> Result<(), V13LoadError> {
+        if self.lifecycle != StrategyInstanceLifecycleV13::Restoring
+            || generation <= self.generation
+        {
+            return Err(V13LoadError::Contract("invalid reconciliation boundary"));
+        }
+        self.public_state_identity = identity;
+        self.event_committed_sequence = 0;
+        self.complete_restore(identity, generation)
+    }
     pub fn complete_restore(
         &mut self,
         rebuilt_public_state_identity: [u8; 32],
@@ -1054,6 +1099,64 @@ fn binding_digest(config: &StrategyInstanceConfigV13) -> [u8; 32] {
     digest.finalize().into()
 }
 
+fn resolved_route_digest(
+    seed: [u8; 32],
+    markets: &[crate::ResolvedMarketBinding],
+    accounts: &[crate::ResolvedAccountBinding],
+) -> [u8; 32] {
+    let mut market_routes: Vec<_> = markets
+        .iter()
+        .map(|binding| {
+            let (mode, timeframe) = match binding.data_mode {
+                crate::StrategyDataMode::Tick => (0, 0),
+                crate::StrategyDataMode::Bar { timeframe_ns } => (1, timeframe_ns),
+                crate::StrategyDataMode::Hybrid {
+                    signal_timeframe_ns,
+                } => (2, signal_timeframe_ns),
+            };
+            [
+                i64::from(binding.local_market_no),
+                i64::from(binding.local_asset_no),
+                i64::from(binding.source.source_id.0),
+                i64::from(binding.asset_id),
+                mode,
+                timeframe,
+            ]
+        })
+        .collect();
+    let mut account_routes: Vec<_> = accounts
+        .iter()
+        .flat_map(|binding| {
+            binding.tradable_assets.iter().map(move |asset| {
+                [
+                    binding.local_account_no,
+                    binding.account.account_id.0,
+                    asset.local_asset_no,
+                    asset.asset_id,
+                ]
+            })
+        })
+        .collect();
+    market_routes.sort_unstable();
+    account_routes.sort_unstable();
+    let mut digest = Sha256::new();
+    digest.update(b"titan.strategy.resolved-routes.v13.1");
+    digest.update(seed);
+    digest.update((market_routes.len() as u64).to_le_bytes());
+    for route in market_routes {
+        for value in route {
+            digest.update(value.to_le_bytes());
+        }
+    }
+    digest.update((account_routes.len() as u64).to_le_bytes());
+    for route in account_routes {
+        for value in route {
+            digest.update(value.to_le_bytes());
+        }
+    }
+    digest.finalize().into()
+}
+
 fn snapshot_checksum(snapshot: &StrategyStateSnapshotV13) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"titan.strategy.snapshot.v13");
@@ -1092,7 +1195,7 @@ pub fn public_state_identity_v13(
     let mut active_orders = active_orders.to_vec();
     active_orders.sort_by_key(|value| (value.account_no, value.order_id));
     let mut positions = positions.to_vec();
-    positions.sort_by_key(|value| (value.account_no, value.asset_no));
+    positions.sort_by_key(|value| (value.account_no, value.asset_no, value.position_side));
     let mut balances = balances.to_vec();
     balances.sort_by_key(|value| (value.account_no, value.currency_no));
     let mut digest = Sha256::new();
@@ -1122,10 +1225,12 @@ pub fn public_state_identity_v13(
             value.time_in_force,
             value.status,
             value.reduce_only,
+            value.position_side,
         ]);
     }
     digest.update((positions.len() as u64).to_le_bytes());
     for value in positions {
+        digest.update([value.position_side]);
         digest.update(value.account_no.to_le_bytes());
         digest.update(value.asset_no.to_le_bytes());
         digest.update(value.qty_lots.to_le_bytes());
@@ -1344,6 +1449,7 @@ const CALLBACK_NAMES: [&str; V13_CALLBACK_COUNT] = [
     "on_account_state",
     "on_timer",
     "on_stop",
+    "on_recover",
 ];
 
 fn validate_descriptor(
@@ -1831,6 +1937,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recovery_bindings_cover_execution_asset_routes_and_ignore_session_generations() {
+        let mut account = crate::ResolvedAccountBinding {
+            local_account_no: 0,
+            account: titan_account_service::AccountHandle {
+                account_id: titan_account_service::AccountId(8),
+                generation: 1,
+            },
+            tradable_assets: std::sync::Arc::from([crate::StrategyTradableAsset {
+                local_asset_no: 0,
+                asset_id: 10,
+            }]),
+        };
+        let original = resolved_route_digest([0; 32], &[], &[account.clone()]);
+        account.account.generation = 2;
+        assert_eq!(
+            original,
+            resolved_route_digest([0; 32], &[], &[account.clone()])
+        );
+        account.tradable_assets = std::sync::Arc::from([crate::StrategyTradableAsset {
+            local_asset_no: 0,
+            asset_id: 11,
+        }]);
+        assert_ne!(original, resolved_route_digest([0; 32], &[], &[account]));
+    }
+
+    #[test]
     fn aligned_state_is_independent_and_hides_tail_padding() {
         let schema = StateSchemaIdentityV13 {
             version: 1,
@@ -1845,6 +1977,47 @@ mod tests {
         let mut clone = state.clone_for_instance();
         clone.as_bytes_mut()[0] = 99;
         assert_eq!(state.as_bytes()[0], 0);
+    }
+
+    #[test]
+    fn hedge_staging_preserves_side_and_normalizes_closing_semantics() {
+        let mut staging = CallbackCommandStagingV13::new(2, 5, 1).unwrap();
+        let mut context = StrategyRuntimeContextV13::default();
+        staging.begin_callback(true, &[]);
+        staging.bind_context(&mut context);
+        let mut request = TitanSubmitOrderRequest {
+            qty_lots: 1,
+            side: 1,
+            position_side: 2,
+            order_type: 1,
+            time_in_force: 1,
+            ..Default::default()
+        };
+        let mut order_id = 0;
+        assert_eq!(
+            unsafe {
+                context.submit_order.unwrap()(context.command_context, &request, &mut order_id)
+            },
+            0
+        );
+        let commands = staging.finish_callback(0);
+        match commands[0] {
+            StagedCommandV13::Submit { request, .. } => {
+                assert_eq!(request.position_side, 2);
+                assert_eq!(request.reduce_only, 1);
+            }
+            _ => panic!("expected submit"),
+        }
+        staging.begin_callback(true, &[]);
+        request.position_side = 1;
+        request.reduce_only = 1;
+        assert_eq!(
+            unsafe {
+                context.submit_order.unwrap()(context.command_context, &request, &mut order_id)
+            },
+            -2
+        );
+        assert!(staging.finish_callback(0).is_empty());
     }
 
     #[test]

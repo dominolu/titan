@@ -37,8 +37,6 @@ pair_dtype = record(
     fill_count=uint64, cancel_count=uint64, reject_count=uint64, unknown_count=uint64,
     slot_start_count=uint64, posture_change_count=uint64, last_error=uint32,
     left_market_ts_ns=int64, right_market_ts_ns=int64, next_quote_ts_ns=int64,
-    left_account_epoch=uint64, right_account_epoch=uint64,
-    left_account_sequence=uint64, right_account_sequence=uint64,
     expected_left_position_lots=int64, expected_right_position_lots=int64,
 )
 slot_dtype = record(
@@ -54,7 +52,7 @@ state_dtype = record(pair=pair_dtype, slot=slot_dtype,
                      order_refs=array(order_ref_dtype, MAX_ORDER_REFS))
 
 SPEC = StrategySpec(
-    strategy_id="pair_arb", strategy_version="3.0.1", state_schema_version=3,
+    strategy_id="pair_arb", strategy_version="3.1.0", state_schema_version=4,
     parameters=(
         IntParam("left_asset_no", required=False, default=0, minimum=0),
         IntParam("right_asset_no", required=False, default=1, minimum=0),
@@ -192,9 +190,7 @@ def refresh_readiness(ctx):
     accounts_ready = (left_account["account_no"] == p["left_account_no"]
                       and right_account["account_no"] == p["right_account_no"]
                       and left_account["state"] == ACCOUNT_READY
-                      and right_account["state"] == ACCOUNT_READY
-                      and left_account["account_epoch"] == p["left_account_epoch"]
-                      and right_account["account_epoch"] == p["right_account_epoch"])
+                      and right_account["state"] == ACCOUNT_READY)
     p["ready_mask"] = ((p["ready_mask"] | READY_ACCOUNTS) if accounts_ready
                        else (p["ready_mask"] & 0xFD))
     left_position = ctx.position(p["left_account_no"], p["left_asset_no"])
@@ -243,11 +239,6 @@ def positions_caught_up(ctx):
 @njit
 def restored_order_valid(s, order, ref):
     p, sl = s["pair"], s["slot"]
-    if (order["qty_lots"] <= 0 or order["cumulative_filled_lots"] < 0
-            or order["cumulative_filled_lots"] > order["qty_lots"]
-            or order["status"] not in (PENDING_STATUS, ACCEPTED_STATUS,
-                                       PARTIAL_STATUS, CANCEL_PENDING_STATUS, UNKNOWN_STATUS)):
-        return False
     if ref["role"] == INITIATOR:
         expected_side = BUY if p["direction"] == LONG_SPREAD else SELL
         return (sl["initiator_order_id"] == order["order_id"]
@@ -474,6 +465,29 @@ def drive(ctx):
         submit_role(ctx, INITIATOR, sl["target_lots"] - sl["initiator_filled_lots"], 0)
 
 @njit
+def on_recover(ctx):
+    s, p, sl = ctx.state, ctx.state["pair"], ctx.state["slot"]
+    active = ctx.active_orders()
+    for i in range(MAX_ORDER_REFS):
+        ref = s["order_refs"][i]
+        if ref["order_id"] and active_index(active, ref["order_id"]) < 0:
+            role, order_id = ref["role"], ref["order_id"]
+            clear_ref(s, order_id)
+            if role == INITIATOR:
+                sl["initiator_order_id"] = 0
+            else:
+                sl["hedge_order_id"] = 0
+    # Fill sequence fences belong to the old session; confirmed lot counts remain business state.
+    sl["initiator_fill_sequence"], sl["hedge_fill_sequence"] = 0, 0
+    on_start(ctx)
+    if p["status"] in (ERROR, RECONCILING):
+        return -1
+    if p["status"] == STOPPED:
+        p["drain_requested"], p["status"] = 0, WARMING_UP
+    return 0
+
+
+@njit
 def on_start(ctx):
     s, p, sl = ctx.state, ctx.state["pair"], ctx.state["slot"]
     left_account, right_account = ctx.account(p["left_account_no"]), ctx.account(p["right_account_no"])
@@ -482,13 +496,6 @@ def on_start(ctx):
             or left_account["state"] != ACCOUNT_READY or right_account["state"] != ACCOUNT_READY):
         fail_closed(s, 301)
         return -1
-    if ((p["left_account_epoch"] and p["left_account_epoch"] != left_account["account_epoch"])
-            or (p["right_account_epoch"] and p["right_account_epoch"] != right_account["account_epoch"])):
-        fail_closed(s, 302)
-        return -1
-    p["left_account_epoch"], p["right_account_epoch"] = left_account["account_epoch"], right_account["account_epoch"]
-    p["left_account_sequence"] = left_account["account_sequence"]
-    p["right_account_sequence"] = right_account["account_sequence"]
     left_position = ctx.position(p["left_account_no"], p["left_asset_no"])
     right_position = ctx.position(p["right_account_no"], p["right_asset_no"])
     if (left_position["account_no"] != p["left_account_no"]
@@ -689,23 +696,6 @@ def on_balance(ctx):
 @njit
 def on_account_state(ctx):
     s, p = ctx.state, ctx.state["pair"]
-    for event in ctx.account_state_events():
-        if event["account_no"] == p["left_account_no"]:
-            if p["left_account_epoch"] and event["account_epoch"] != p["left_account_epoch"]:
-                require_reconcile(s, 701)
-                return -1
-            p["left_account_sequence"] = event["account_sequence"]
-        elif event["account_no"] == p["right_account_no"]:
-            if p["right_account_epoch"] and event["account_epoch"] != p["right_account_epoch"]:
-                require_reconcile(s, 702)
-                return -1
-            p["right_account_sequence"] = event["account_sequence"]
-        if (event["account_no"] in (p["left_account_no"], p["right_account_no"])
-                and event["state"] != ACCOUNT_READY):
-            p["ready_mask"] &= 0xFD
-            p["reconcile_required"], p["status"] = 1, RECONCILING
-            set_posture(s, RESTRICTED)
-            return
     risk_check(ctx)
     if ctx.state["pair"]["status"] in (ERROR, RECONCILING):
         return -1
@@ -747,7 +737,7 @@ def build(parameters):
     p["max_unhedged_soft"] = parameters["max_unhedged_lots_soft"]
     p["max_unhedged_hard"] = parameters["max_unhedged_lots_hard"]
     p["max_gross_notional_ticks"] = parameters["max_gross_notional_ticks"]
-    handlers = {"on_start": on_start, "on_tick": on_tick, "on_fill": on_fill,
+    handlers = {"on_start": on_start, "on_recover": on_recover, "on_tick": on_tick, "on_fill": on_fill,
                 "on_order": on_order, "on_cancel": on_cancel, "on_position": on_position,
                 "on_balance": on_balance, "on_account_state": on_account_state,
                 "on_timer": on_timer, "on_stop": on_stop}

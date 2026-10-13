@@ -50,6 +50,8 @@ where
     ) -> Result<(), BacktestError>;
 
     /// Materializes an immediate local rejection without entering the request transport.
+    // Keep the public processor order API consistent with submit_order.
+    #[allow(clippy::too_many_arguments)]
     fn reject_order(
         &mut self,
         order_id: OrderId,

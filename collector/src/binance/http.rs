@@ -138,7 +138,6 @@ pub async fn keep_connection(
             .flat_map(|pair| {
                 streams
                     .iter()
-                    .cloned()
                     .map(|stream| {
                         stream
                             .replace("$symbol", pair.to_lowercase().as_str())

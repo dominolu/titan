@@ -49,6 +49,8 @@ mod tests {
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
+// Keep borrowed depth decoding allocation-free on the market-data hot path.
+#[allow(clippy::large_enum_variant)]
 pub enum Stream<'a> {
     EventStream(#[serde(borrow)] EventStream<'a>),
     Result(StreamResult),
@@ -85,6 +87,8 @@ where
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "e")]
+// Depth uses a bounded inline buffer; boxing would allocate on every depth update.
+#[allow(clippy::large_enum_variant)]
 pub enum EventStream<'a> {
     #[serde(rename = "depthUpdate")]
     DepthUpdate(#[serde(borrow)] Depth<'a>),
@@ -378,8 +382,8 @@ pub struct Order {
     // pub stop_price_working_type: String,
     // #[serde(rename = "ot")]
     // pub original_order_type: String,
-    // #[serde(rename = "ps")]
-    // pub position_side: String,
+    #[serde(rename = "ps", default)]
+    pub position_side: String,
     // #[serde(rename = "cp")]
     // pub close_all: Option<String>,
     // #[serde(rename = "AP")]

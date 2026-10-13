@@ -265,27 +265,26 @@ impl MarketDataStream {
             return false;
         }
 
-        if let Some(stream_name) = value.get("stream").and_then(Value::as_str) {
-            if stream_name.contains("markPrice") {
-                if let Some(data) = value.get("data") {
-                    debug!(
+        if let Some(stream_name) = value.get("stream").and_then(Value::as_str)
+            && stream_name.contains("markPrice")
+            && let Some(data) = value.get("data")
+        {
+            debug!(
+                stream = %stream_name,
+                "received wrapped markPrice stream payload for fallback parsing"
+            );
+            match serde_json::from_value::<stream::MarkPriceUpdate>(data.clone()) {
+                Ok(stream) => {
+                    self.process_message(EventStream::MarkPriceUpdate(stream), ws_recv_ts);
+                    return true;
+                }
+                Err(error) => {
+                    warn!(
+                        ?error,
                         stream = %stream_name,
-                        "received wrapped markPrice stream payload for fallback parsing"
+                        data = ?data,
+                        "wrapped markPrice payload failed to parse"
                     );
-                    match serde_json::from_value::<stream::MarkPriceUpdate>(data.clone()) {
-                        Ok(stream) => {
-                            self.process_message(EventStream::MarkPriceUpdate(stream), ws_recv_ts);
-                            return true;
-                        }
-                        Err(error) => {
-                            warn!(
-                                ?error,
-                                stream = %stream_name,
-                                data = ?data,
-                                "wrapped markPrice payload failed to parse"
-                            );
-                        }
-                    }
                 }
             }
         }
@@ -758,11 +757,10 @@ impl MarketDataStream {
                             }
                             continue;
                         }
-                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                            if self.maybe_process_mark_price_payload(&text, &value, ws_recv_ts) {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text)
+                            && self.maybe_process_mark_price_payload(&text, &value, ws_recv_ts) {
                                 continue;
                             }
-                        }
                         match serde_json::from_str::<Stream>(&text) {
                             Ok(Stream::EventStream(stream)) => {
                                 self.process_message(stream, ws_recv_ts);
@@ -786,9 +784,9 @@ impl MarketDataStream {
                                         "subscription response error"
                                     );
                                 }
-                                if let Some(raw_result) = result.result.as_ref() {
-                                    if raw_result.is_array() {
-                                        if let Some(streams) = raw_result.as_array() {
+                                if let Some(raw_result) = result.result.as_ref()
+                                    && raw_result.is_array()
+                                        && let Some(streams) = raw_result.as_array() {
                                             let mark_price_streams: Vec<_> = streams
                                                 .iter()
                                                 .filter_map(|item| item.as_str())
@@ -802,8 +800,6 @@ impl MarketDataStream {
                                                 );
                                             }
                                         }
-                                    }
-                                }
                             }
                             Err(error) => {
                                 if text_contains_mark {

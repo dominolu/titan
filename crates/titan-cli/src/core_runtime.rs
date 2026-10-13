@@ -103,6 +103,7 @@ impl Default for AccountServiceConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct StrategyServiceConfig {
     #[serde(default)]
     pub allowed_artifact_roots: Vec<PathBuf>,
@@ -112,17 +113,6 @@ pub struct StrategyServiceConfig {
     pub allow_unsigned_artifacts: bool,
     #[serde(default)]
     pub trusted_ed25519_keys: BTreeMap<String, String>,
-}
-
-impl Default for StrategyServiceConfig {
-    fn default() -> Self {
-        Self {
-            allowed_artifact_roots: Vec::new(),
-            checkpoint_root: None,
-            allow_unsigned_artifacts: false,
-            trusted_ed25519_keys: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -923,25 +913,29 @@ fn adapt_strategies(
         }
         definition.package.uri = Arc::from(format!("file://{}", package_root.display()));
     }
-    let mut config = StrategyCoreConfig::default();
-    config.allowed_artifact_roots = allowed_roots
-        .iter()
-        .map(|root| Arc::from(root.to_string_lossy().as_ref()))
-        .collect::<Vec<_>>()
-        .into();
-    config.checkpoint_root = checkpoint_root;
-    config.require_artifact_signature = !bootstrap.allow_unsigned_artifacts;
-    config.trusted_artifact_keys = bootstrap
-        .trusted_ed25519_keys
-        .into_iter()
-        .map(|(key_id, encoded)| {
-            decode_ed25519_key(&encoded)
-                .map(|key| (Arc::from(key_id), key))
-                .map_err(|message| {
-                    ConfigurationError::Invalid(format!("invalid trusted Ed25519 key: {message}"))
-                })
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let config = StrategyCoreConfig {
+        allowed_artifact_roots: allowed_roots
+            .iter()
+            .map(|root| Arc::from(root.to_string_lossy().as_ref()))
+            .collect::<Vec<_>>()
+            .into(),
+        checkpoint_root,
+        require_artifact_signature: !bootstrap.allow_unsigned_artifacts,
+        trusted_artifact_keys: bootstrap
+            .trusted_ed25519_keys
+            .into_iter()
+            .map(|(key_id, encoded)| {
+                decode_ed25519_key(&encoded)
+                    .map(|key| (Arc::from(key_id), key))
+                    .map_err(|message| {
+                        ConfigurationError::Invalid(format!(
+                            "invalid trusted Ed25519 key: {message}"
+                        ))
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        ..StrategyCoreConfig::default()
+    };
     Ok(Some(StrategyBootstrap { config }))
 }
 

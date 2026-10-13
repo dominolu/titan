@@ -229,13 +229,13 @@ impl AccountRegistry {
                 ));
             }
         }
-        if let crate::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } = &d.ownership {
-            if client_id_prefix.is_empty() {
-                return Err(AccountError::new(
-                    AccountErrorKind::InvalidDefinition,
-                    "managed ownership requires a client id prefix",
-                ));
-            }
+        if let crate::OrderOwnershipPolicy::ManagedOnly { client_id_prefix } = &d.ownership
+            && client_id_prefix.is_empty()
+        {
+            return Err(AccountError::new(
+                AccountErrorKind::InvalidDefinition,
+                "managed ownership requires a client id prefix",
+            ));
         }
         let s = self.state.read().unwrap_or_else(|p| p.into_inner());
         if replacing.is_none() && s.by_id.len() >= max_accounts {

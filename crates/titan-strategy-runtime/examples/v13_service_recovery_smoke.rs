@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use titan_account_service::{AccountCoreConfig, AccountServiceCore};
+use titan_account_service::{self as account, AccountEventPayload};
 use titan_event_engine::{EventClass, EventEngine, EventEngineConfig, PoolKind};
 use titan_market_service::*;
 use titan_strategy_runtime::*;
@@ -71,6 +71,88 @@ impl MarketService for MockMarket {
     }
 }
 
+// BBO-only artifact with a bound account: host facts must be routed even without
+// strategy account callbacks. No connector can contact an exchange in this test.
+struct MockAccounts;
+impl MockAccounts {
+    fn handle() -> account::AccountHandle {
+        account::AccountHandle {
+            account_id: account::AccountId(8),
+            generation: 1,
+        }
+    }
+    fn snapshot<T>() -> account::AccountStateSnapshot<T> {
+        account::AccountStateSnapshot {
+            account: Self::handle(),
+            state: account::AccountSnapshotState::Ready,
+            committed_epoch: Some(1),
+            committed_version: Some(1),
+            captured_at: 1,
+            items: Arc::from([]),
+        }
+    }
+}
+impl account::AccountService for MockAccounts {
+    fn resolve(&self, _: &str) -> account::LocalResult<account::AccountHandle> {
+        Ok(Self::handle())
+    }
+    fn orders(
+        &self,
+        _: account::AccountHandle,
+        _: account::OrderFilter,
+    ) -> account::LocalResult<account::AccountStateSnapshot<account::OrderSnapshot>> {
+        Ok(Self::snapshot())
+    }
+    fn positions(
+        &self,
+        _: account::AccountHandle,
+        _: account::PositionFilter,
+    ) -> account::LocalResult<account::AccountStateSnapshot<account::PositionSnapshot>> {
+        Ok(Self::snapshot())
+    }
+    fn balances(
+        &self,
+        _: account::AccountHandle,
+    ) -> account::LocalResult<account::AccountStateSnapshot<account::BalanceSnapshot>> {
+        Ok(Self::snapshot())
+    }
+    fn health(
+        &self,
+        _: account::AccountHandle,
+    ) -> account::LocalResult<account::AccountConnectorHealthSnapshot> {
+        Ok(account::AccountConnectorHealthSnapshot {
+            state: account::AccountLifecycle::Ready,
+            message: Arc::from("offline"),
+            observed_at: std::time::SystemTime::now(),
+        })
+    }
+    fn diagnostics(
+        &self,
+        _: account::AccountHandle,
+    ) -> account::LocalResult<account::AccountConnectorDiagnosticSnapshot> {
+        unreachable!()
+    }
+    fn execution_connector(
+        &self,
+        _: account::AccountHandle,
+    ) -> account::LocalResult<Arc<dyn account::DirectExecutionConnector>> {
+        Ok(Arc::new(MockBroker))
+    }
+}
+struct MockBroker;
+impl account::DirectExecutionConnector for MockBroker {
+    fn submit(&self, _: account::DirectNewOrderRequest) -> account::ExecutionFuture {
+        panic!("unexpected submission")
+    }
+    fn cancel(&self, _: account::DirectCancelOrderRequest) -> account::ExecutionFuture {
+        panic!("unexpected cancellation")
+    }
+}
+struct Observer;
+impl account::ExecutionObserver for Observer {
+    fn observe(&self, _: account::ObservedExecutionResult) {}
+}
+
 fn wait(service: &StrategyServiceCore, operation: StrategyOperationId) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -100,6 +182,29 @@ fn main() {
         .handle()
         .register_event(BBO_EVENT, 1, EventClass::Market, PoolKind::MarketBatch)
         .unwrap();
+    for event_type in [
+        account::ORDER_CHANGED_EVENT,
+        account::FILL_EVENT,
+        account::POSITION_CHANGED_EVENT,
+        account::BALANCE_CHANGED_EVENT,
+        account::STREAM_STATE_CHANGED_EVENT,
+        account::STREAM_INVALIDATED_EVENT,
+    ] {
+        engine
+            .handle()
+            .register_event(
+                event_type,
+                if event_type == account::FILL_EVENT {
+                    account::FILL_EVENT_SCHEMA_VERSION
+                } else {
+                    account::ACCOUNT_EVENT_SCHEMA_VERSION
+                },
+                EventClass::Critical,
+                PoolKind::SmallEvent,
+            )
+            .unwrap();
+    }
+    let execution = account::ExecutionRuntime::new(1, 16).unwrap();
     engine.start().unwrap();
     let mut generation = 0;
     for recovery in [
@@ -125,9 +230,9 @@ fn main() {
             StrategyServiceDependencies {
                 events: engine.handle(),
                 markets: Arc::new(MockMarket),
-                accounts: AccountServiceCore::new(AccountCoreConfig::default()),
-                execution_dispatcher: None,
-                execution_observer: None,
+                accounts: Arc::new(MockAccounts),
+                execution_dispatcher: Some(execution.dispatcher()),
+                execution_observer: Some(Arc::new(Observer)),
             },
             loaders,
             runtimes,
@@ -150,7 +255,14 @@ fn main() {
                     asset_id: 1,
                     data_mode: StrategyDataMode::Tick,
                 }]),
-                accounts: Arc::from([]),
+                accounts: Arc::from([StrategyAccountBinding {
+                    local_account_no: 0,
+                    account_key: Arc::from("offline"),
+                    tradable_assets: Arc::from([StrategyTradableAsset {
+                        local_asset_no: 0,
+                        asset_id: 1,
+                    }]),
+                }]),
                 risk_scope: RiskScopeRef(Arc::from("offline")),
                 runtime: StrategyRuntimeSpec {
                     async_lane_capacity: 64,
@@ -168,6 +280,42 @@ fn main() {
         generation = strategy.generation;
         wait(&service, service.prepare(strategy).unwrap());
         wait(&service, service.start(strategy).unwrap());
+        if recovery == StrategyRecoveryPolicy::RequireCheckpoint {
+            let invalidated = account::StreamInvalidatedV1(account::StreamStateV1 {
+                header: account::AccountEventHeaderV1 {
+                    account_id: 8,
+                    account_generation: 1,
+                    account_epoch: 1,
+                    account_version: 2,
+                    ..Default::default()
+                },
+                state: account::AccountLifecycle::Invalidated as u8,
+                reason_code: 1,
+            });
+            let mut bytes = vec![0; account::StreamInvalidatedV1::ENCODED_LEN];
+            invalidated.encode_into(&mut bytes).unwrap();
+            let mut request = titan_event_engine::PublishRequest::new(
+                account::STREAM_INVALIDATED_EVENT,
+                1,
+                &bytes,
+            );
+            request.routing_key = 8;
+            engine.handle().try_publish(request).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while service.state(strategy).unwrap().lifecycle != StrategyLifecycle::Paused
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let state = service.state(strategy).unwrap();
+            assert_eq!(
+                state.lifecycle,
+                StrategyLifecycle::Paused,
+                "BBO-only service strategy missed host invalidation"
+            );
+            assert!(!state.activation_gate_open);
+        }
+
         wait(
             &service,
             service

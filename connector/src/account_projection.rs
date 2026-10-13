@@ -6,22 +6,28 @@ use titan_account_service as account;
 
 const TERMINAL_ORDER_HISTORY: usize = 1024;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct AccountProjection {
     pub epoch: u64,
+    pub committed_version: u64,
     orders_version: u64,
     positions_version: u64,
     balances_version: u64,
     orders: BTreeMap<(u32, [u8; 16]), account::OrderSnapshot>,
-    positions: BTreeMap<u32, account::PositionSnapshot>,
+    positions: BTreeMap<(u32, u8), account::PositionSnapshot>,
     balances: BTreeMap<u32, account::BalanceSnapshot>,
     terminal_orders: VecDeque<(u32, [u8; 16])>,
     order_times: BTreeMap<(u32, [u8; 16]), i64>,
-    position_times: BTreeMap<u32, i64>,
+    position_times: BTreeMap<(u32, u8), i64>,
     balance_times: BTreeMap<u32, i64>,
 }
 
 impl AccountProjection {
+    pub fn commit(&mut self, header: account::AccountEventHeaderV1) {
+        self.epoch = header.account_epoch;
+        self.committed_version = header.account_version;
+    }
+
     pub fn cumulative(&self, asset_id: u32, venue_order_id: account::Id128) -> i64 {
         self.orders
             .get(&(asset_id, venue_order_id.0))
@@ -31,8 +37,23 @@ impl AccountProjection {
     pub fn balance_image(&self, currency_id: u32) -> Option<&account::BalanceSnapshot> {
         self.balances.get(&currency_id)
     }
-    pub fn position_image(&self, asset_id: u32) -> Option<&account::PositionSnapshot> {
-        self.positions.get(&asset_id)
+    pub fn position_image(
+        &self,
+        asset_id: u32,
+        position_side: u8,
+    ) -> Option<&account::PositionSnapshot> {
+        self.positions.get(&(asset_id, position_side))
+    }
+    pub fn position_mode_matches(&self, asset_id: u32, side: u8) -> bool {
+        side <= 2
+            && if side == 0 {
+                self.positions
+                    .range((asset_id, 1)..=(asset_id, 2))
+                    .next()
+                    .is_none()
+            } else {
+                !self.positions.contains_key(&(asset_id, 0))
+            }
     }
     pub fn retained_ids(&self) -> std::collections::HashSet<account::Id128> {
         self.orders
@@ -40,9 +61,9 @@ impl AccountProjection {
             .flat_map(|order| [order.client_order_id, order.venue_order_id])
             .collect()
     }
-    pub fn position_is_stale(&self, asset: u32, ts: i64) -> bool {
+    pub fn position_is_stale(&self, asset: u32, position_side: u8, ts: i64) -> bool {
         self.position_times
-            .get(&asset)
+            .get(&(asset, position_side))
             .is_some_and(|previous| ts > 0 && ts < *previous)
     }
     pub fn balance_is_stale(&self, currency: u32, ts: i64) -> bool {
@@ -72,7 +93,7 @@ impl AccountProjection {
     }
     pub fn position_time(&self, value: &account::PositionSnapshot) -> i64 {
         self.position_times
-            .get(&value.asset_id.0)
+            .get(&(value.asset_id.0, value.position_side))
             .copied()
             .unwrap_or(0)
     }
@@ -88,6 +109,12 @@ impl AccountProjection {
         self.order_times.insert(key, event.header.exchange_ts);
         let reduce_only = event.header.flags & account::event_flags::REDUCE_ONLY != 0
             || self.orders.get(&key).is_some_and(|value| value.reduce_only);
+        let reported_side = account::event_flags::position_side(event.header.flags);
+        let position_side = if reported_side == 0 {
+            self.orders.get(&key).map_or(0, |v| v.position_side)
+        } else {
+            reported_side
+        };
         let was_terminal = self
             .orders
             .get(&key)
@@ -96,6 +123,7 @@ impl AccountProjection {
             key,
             account::OrderSnapshot {
                 asset_id: account::AssetId(event.asset_id),
+                position_side,
                 side: event.side,
                 order_type: event.order_type,
                 time_in_force: event.time_in_force,
@@ -123,18 +151,24 @@ impl AccountProjection {
                 self.order_times.remove(&key);
             }
         }
-        self.epoch = event.header.account_epoch;
+        self.commit(event.header);
         self.orders_version = event.header.account_version;
     }
 
     pub fn position(&mut self, event: &account::PositionChangedV1) -> bool {
-        if self.position_is_stale(event.asset_id, event.header.exchange_ts) {
+        if self.position_is_stale(
+            event.asset_id,
+            event.position_side,
+            event.header.exchange_ts,
+        ) {
             return false;
         }
-        self.position_times
-            .insert(event.asset_id, event.header.exchange_ts);
+        self.position_times.insert(
+            (event.asset_id, event.position_side),
+            event.header.exchange_ts,
+        );
         self.positions.insert(
-            event.asset_id,
+            (event.asset_id, event.position_side),
             account::PositionSnapshot {
                 asset_id: account::AssetId(event.asset_id),
                 position_side: event.position_side,
@@ -147,7 +181,7 @@ impl AccountProjection {
                 margin_currency_id: account::CurrencyId(event.margin_currency_id),
             },
         );
-        self.epoch = event.header.account_epoch;
+        self.commit(event.header);
         self.positions_version = event.header.account_version;
         true
     }
@@ -168,7 +202,7 @@ impl AccountProjection {
                 unrealized_pnl_units: event.unrealized_pnl_units,
             },
         );
-        self.epoch = event.header.account_epoch;
+        self.commit(event.header);
         self.balances_version = event.header.account_version;
         true
     }
@@ -255,9 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn signed_position_updates_replace_the_asset_image() {
+    fn position_updates_keep_both_sides_independent() {
         let mut image = AccountProjection::default();
-        for (side, qty) in [(1, 5), (2, -3), (0, 0)] {
+        for (side, qty) in [(1, 5), (2, -3), (1, 0)] {
             image.position(&account::PositionChangedV1 {
                 asset_id: 7,
                 position_side: side,
@@ -266,8 +300,30 @@ mod tests {
             });
         }
         let (_, positions) = image.positions(account::PositionFilter::default());
-        assert_eq!(positions.len(), 1);
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions[0].position_side, 1);
         assert_eq!(positions[0].quantity_lots, 0);
+        assert_eq!(positions[1].position_side, 2);
+        assert_eq!(positions[1].quantity_lots, -3);
+    }
+
+    #[test]
+    fn position_timestamps_are_scoped_to_side() {
+        let mut image = AccountProjection::default();
+        for (side, qty, ts) in [(1, 5, 200), (2, -3, 100), (1, 0, 150), (2, 0, 101)] {
+            image.position(&account::PositionChangedV1 {
+                header: account::AccountEventHeaderV1 {
+                    exchange_ts: ts,
+                    ..Default::default()
+                },
+                asset_id: 7,
+                position_side: side,
+                quantity_lots: qty,
+                ..Default::default()
+            });
+        }
+        assert_eq!(image.position_image(7, 1).unwrap().quantity_lots, 5);
+        assert_eq!(image.position_image(7, 2).unwrap().quantity_lots, 0);
     }
 
     #[test]

@@ -73,6 +73,10 @@ pub enum NativeDepthLevels<'a> {
 }
 
 impl NativeDepthLevels<'_> {
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(self) -> usize {
         match self {
             Self::Owned(levels) => levels.len(),
@@ -104,6 +108,7 @@ pub enum DirectPublication<'a> {
 #[derive(Clone, Debug)]
 pub enum AccountPublication {
     Order {
+        position_side: crate::api::ApiPositionSide,
         symbol: String,
         /// Venue client order id when the private stream can associate one. REST-submitted
         /// AccountService orders carry the deterministic 32-hex owner id; legacy connector orders
@@ -118,6 +123,10 @@ pub enum AccountPublication {
         order: Order,
     },
     Position {
+        entry_price: Option<f64>,
+        unrealized_pnl: Option<f64>,
+        liquidation_price: Option<f64>,
+        position_side: crate::api::ApiPositionSide,
         symbol: String,
         qty: f64,
         exch_ts: i64,
@@ -328,9 +337,13 @@ pub trait Connector: Send + Sync {
     }
 
     /// Cancels every open order managed by this connector before process shutdown.
-    /// Implementations must wait for the exchange response before returning.
-    async fn shutdown(&self) -> Result<(), String>;
+    /// Capture owned request state synchronously; the returned future waits for exchange responses.
+    fn shutdown(&self) -> ShutdownFuture;
 }
+
+/// An owned shutdown operation that can be awaited after releasing the connector lock.
+pub type ShutdownFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'static>>;
 
 /// Provides `orders` method to get the current working orders.
 pub trait GetOrders {
@@ -393,6 +406,17 @@ pub(crate) async fn reconnecting_websocket_server(
     (format!("ws://{address}"), receiver, task)
 }
 
+/// Await network shutdown only after releasing the synchronous connector mutex.
+pub(crate) async fn shutdown_connector(
+    connector: &Mutex<Box<dyn Connector>>,
+) -> Result<(), String> {
+    let shutdown = {
+        let connector = connector.lock().unwrap_or_else(|p| p.into_inner());
+        connector.shutdown()
+    };
+    shutdown.await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +453,10 @@ mod tests {
         let capture = observed.clone();
         let sender = direct_publish_sender(move |publication| {
             if let DirectPublication::Account(AccountPublication::Position {
+                entry_price: _,
+                unrealized_pnl: _,
+                liquidation_price: _,
+                position_side: _,
                 symbol,
                 qty,
                 exch_ts,
@@ -441,6 +469,10 @@ mod tests {
             }
         });
         sender.send_account(AccountPublication::Position {
+            entry_price: None,
+            unrealized_pnl: None,
+            liquidation_price: None,
+            position_side: crate::api::ApiPositionSide::Net,
             symbol: "BTC".to_owned(),
             qty: -2.0,
             exch_ts: 99,

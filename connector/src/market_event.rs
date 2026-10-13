@@ -117,6 +117,16 @@ pub(crate) struct MarketEventBridge {
     active_kinds: Arc<Mutex<HashMap<AssetId, HashSet<MarketDataKind>>>>,
 }
 
+struct NativeValues<'a> {
+    symbol: &'a str,
+    event_type: &'a str,
+    requested_kind: MarketDataKind,
+    kind: u16,
+    exchange_ts: i64,
+    receive_ts: i64,
+    values: &'a [(f64, f64, u8)],
+}
+
 impl MarketEventBridge {
     pub(crate) fn new(
         context: MarketConnectorContext,
@@ -176,15 +186,15 @@ impl MarketEventBridge {
                 sell,
                 exchange_ts,
                 receive_ts,
-            } => self.publish_native_values(
+            } => self.publish_native_values(NativeValues {
                 symbol,
-                TRADE_BATCH_EVENT,
-                MarketDataKind::Trades,
-                3,
+                event_type: TRADE_BATCH_EVENT,
+                requested_kind: MarketDataKind::Trades,
+                kind: 3,
                 exchange_ts,
                 receive_ts,
-                &[(price, quantity, if sell { 2 } else { 1 })],
-            ),
+                values: &[(price, quantity, if sell { 2 } else { 1 })],
+            }),
             NativeMarketBatch::Bbo {
                 symbol,
                 bid_price,
@@ -204,15 +214,15 @@ impl MarketEventBridge {
                     values[count] = (ask_price, ask_quantity, 2);
                     count += 1;
                 }
-                self.publish_native_values(
+                self.publish_native_values(NativeValues {
                     symbol,
-                    BBO_EVENT,
-                    MarketDataKind::Bbo,
-                    4,
+                    event_type: BBO_EVENT,
+                    requested_kind: MarketDataKind::Bbo,
+                    kind: 4,
                     exchange_ts,
                     receive_ts,
-                    &values[..count],
-                )
+                    values: &values[..count],
+                })
             }
         }
     }
@@ -295,16 +305,17 @@ impl MarketEventBridge {
         })
     }
 
-    fn publish_native_values(
-        &self,
-        symbol: &str,
-        event_type: &str,
-        requested_kind: MarketDataKind,
-        kind: u16,
-        exchange_ts: i64,
-        receive_ts: i64,
-        values: &[(f64, f64, u8)],
-    ) -> Result<(), ConnectorError> {
+    fn publish_native_values(&self, request: NativeValues<'_>) -> Result<(), ConnectorError> {
+        let NativeValues {
+            symbol,
+            event_type,
+            requested_kind,
+            kind,
+            exchange_ts,
+            receive_ts,
+            values,
+        } = request;
+
         if values.is_empty() {
             return Ok(());
         }
@@ -520,12 +531,14 @@ fn publish_batch(
         .checked_add(usize::from(header.item_count) * DepthItemV1::ENCODED_LEN)
         .ok_or_else(|| ConnectorError::new("market batch payload overflow"))?;
     context.event_publisher.publish_market_batch(
-        event_type,
-        length,
-        AssetId(header.asset_id),
-        header.exchange_ts,
-        header.receive_ts,
-        TraceContext::default(),
+        titan_market_service::MarketBatchPublication {
+            event_type,
+            payload_length: length,
+            asset_id: AssetId(header.asset_id),
+            exchange_ts: header.exchange_ts,
+            receive_ts: header.receive_ts,
+            trace: TraceContext::default(),
+        },
         |payload| {
             header
                 .encode_into_slice(payload)

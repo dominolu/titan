@@ -25,6 +25,17 @@ pub struct OkxClient {
 }
 
 #[allow(dead_code)]
+pub struct SubmitOrderParams<'a> {
+    pub inst_id: &'a str,
+    pub td_mode: &'a str,
+    pub pos_side: Option<&'a str>,
+    pub cl_ord_id: &'a str,
+    pub side: &'a str,
+    pub ord_type: &'a str,
+    pub px: Option<&'a str>,
+    pub sz: &'a str,
+}
+
 impl OkxClient {
     pub fn new(url: &str, api_key: &str, secret: &str, passphrase: &str) -> Self {
         Self::with_options(
@@ -157,18 +168,29 @@ impl OkxClient {
 
     pub async fn submit_order(
         &self,
-        inst_id: &str,
-        td_mode: &str,
-        pos_side: Option<&str>,
-        cl_ord_id: &str,
-        side: &str,
-        ord_type: &str,
-        px: Option<&str>,
-        sz: &str,
+        request: SubmitOrderParams<'_>,
     ) -> Result<OrderResult, OkxError> {
-        let body = build_submit_body(
-            inst_id, td_mode, pos_side, cl_ord_id, side, ord_type, px, sz,
-        );
+        let SubmitOrderParams {
+            inst_id,
+            td_mode,
+            pos_side,
+            cl_ord_id,
+            side,
+            ord_type,
+            px,
+            sz,
+        } = request;
+
+        let body = build_submit_body(SubmitOrderParams {
+            inst_id,
+            td_mode,
+            pos_side,
+            cl_ord_id,
+            side,
+            ord_type,
+            px,
+            sz,
+        });
 
         let resp: OrderResponse = self.post("/api/v5/trade/order", body).await?;
         if resp.code != "0" {
@@ -315,16 +337,18 @@ pub(crate) fn simulated_header(simulated: bool) -> Option<(&'static str, &'stati
 }
 
 /// Builds the JSON body of `POST /api/v5/trade/order`. Market orders omit `px`.
-pub(crate) fn build_submit_body(
-    inst_id: &str,
-    td_mode: &str,
-    pos_side: Option<&str>,
-    cl_ord_id: &str,
-    side: &str,
-    ord_type: &str,
-    px: Option<&str>,
-    sz: &str,
-) -> String {
+pub(crate) fn build_submit_body(request: SubmitOrderParams<'_>) -> String {
+    let SubmitOrderParams {
+        inst_id,
+        td_mode,
+        pos_side,
+        cl_ord_id,
+        side,
+        ord_type,
+        px,
+        sz,
+    } = request;
+
     let mut body = serde_json::Map::new();
     body.insert(
         "instId".to_string(),

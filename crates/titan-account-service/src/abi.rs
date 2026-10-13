@@ -85,6 +85,24 @@ pub mod event_flags {
     pub const SYNTHETIC: u16 = 1 << 5;
     /// The order is constrained to reduce an existing position.
     pub const REDUCE_ONLY: u16 = 1 << 6;
+    pub const POSITION_LONG: u16 = 1 << 7;
+    pub const POSITION_SHORT: u16 = 1 << 8;
+
+    pub fn position_side(flags: u16) -> u8 {
+        match flags & (POSITION_LONG | POSITION_SHORT) {
+            POSITION_LONG => 1,
+            POSITION_SHORT => 2,
+            0 => 0,
+            _ => 255,
+        }
+    }
+    pub fn position_flags(side: u8) -> u16 {
+        match side {
+            1 => POSITION_LONG,
+            2 => POSITION_SHORT,
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

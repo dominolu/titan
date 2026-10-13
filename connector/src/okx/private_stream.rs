@@ -43,19 +43,32 @@ pub struct PrivateStream {
     pending_private_subscriptions: Mutex<HashSet<String>>,
 }
 
+pub struct PrivateStreamConfig {
+    pub api_key: String,
+    pub secret: String,
+    pub passphrase: String,
+
+    pub ev_tx: crate::connector::PublishSender,
+    pub order_manager: SharedOrderManager,
+    pub client: OkxClient,
+    pub symbol_rx: Receiver<String>,
+    pub symbols: SharedSymbolSet,
+}
+
 impl PrivateStream {
-    pub fn new(
-        api_key: String,
-        secret: String,
-        passphrase: String,
-        _td_mode: String,
-        _pos_side: Option<String>,
-        ev_tx: crate::connector::PublishSender,
-        order_manager: SharedOrderManager,
-        client: OkxClient,
-        symbol_rx: Receiver<String>,
-        symbols: SharedSymbolSet,
-    ) -> Self {
+    pub fn new(config: PrivateStreamConfig) -> Self {
+        let PrivateStreamConfig {
+            api_key,
+            secret,
+            passphrase,
+
+            ev_tx,
+            order_manager,
+            client,
+            symbol_rx,
+            symbols,
+        } = config;
+
         Self {
             api_key,
             secret,
@@ -181,6 +194,9 @@ impl PrivateStream {
                         Ok(Some(order)) => {
                             let symbol = order_update.inst_id.clone();
                             self.ev_tx.send_account(AccountPublication::Order {
+                                position_side: crate::api::ApiPositionSide::from_venue_str(
+                                    &order_update.pos_side,
+                                ),
                                 symbol,
                                 client_order_id: (!order_update.cl_ord_id.is_empty())
                                     .then(|| order_update.cl_ord_id.clone()),
@@ -203,6 +219,12 @@ impl PrivateStream {
                 for value in &data.data {
                     let position: Position = serde_json::from_value(value.clone())?;
                     self.ev_tx.send_account(AccountPublication::Position {
+                        entry_price: position.avg_px.parse().ok(),
+                        unrealized_pnl: position.upl.parse().ok(),
+                        liquidation_price: position.liq_px.parse().ok(),
+                        position_side: crate::api::ApiPositionSide::from_venue_str(
+                            &position.pos_side,
+                        ),
                         symbol: position.inst_id.clone(),
                         qty: position_qty(&position),
                         exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
@@ -358,6 +380,10 @@ pub async fn get_position(
     let positions = client.get_positions(&symbol).await?;
     for position in positions {
         ev_tx.send_account(AccountPublication::Position {
+            entry_price: position.avg_px.parse().ok(),
+            unrealized_pnl: position.upl.parse().ok(),
+            liquidation_price: position.liq_px.parse().ok(),
+            position_side: crate::api::ApiPositionSide::from_venue_str(&position.pos_side),
             symbol: position.inst_id.clone(),
             qty: position_qty(&position),
             exch_ts: position.u_time.parse().unwrap_or(0) * 1_000_000,
@@ -397,20 +423,19 @@ mod tests {
     fn private_ready_requires_each_distinct_private_channel() {
         let (events, _receiver) = crate::connector::test_publish_channel();
         let (_symbols, symbol_rx) = tokio::sync::broadcast::channel(4);
-        let stream = PrivateStream::new(
-            String::new(),
-            String::new(),
-            String::new(),
-            "cross".to_string(),
-            None,
-            events,
-            std::sync::Arc::new(std::sync::Mutex::new(
+        let stream = PrivateStream::new(crate::okx::private_stream::PrivateStreamConfig {
+            api_key: String::new(),
+            secret: String::new(),
+            passphrase: String::new(),
+
+            ev_tx: events,
+            order_manager: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::okx::ordermanager::OrderManager::new(""),
             )),
-            OkxClient::new("http://localhost", "", "", ""),
+            client: OkxClient::new("http://localhost", "", "", ""),
             symbol_rx,
-            Default::default(),
-        );
+            symbols: Default::default(),
+        });
 
         stream.reset_private_subscriptions();
         assert!(!stream.acknowledge_private_subscription(Some("orders")));

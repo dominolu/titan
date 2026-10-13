@@ -19,6 +19,8 @@ use crate::{
     utils::sign_hmac_sha256,
 };
 
+pub type BatchOrder = (String, String, Side, f64, usize, f64, OrdType, TimeInForce);
+
 #[derive(Clone)]
 pub struct BinanceFuturesClient {
     client: reqwest::Client,
@@ -229,7 +231,7 @@ impl BinanceFuturesClient {
 
         let resp: OrderResponseResult = self.post("/fapi/v1/order", body).await?;
         match resp {
-            OrderResponseResult::Ok(resp) => Ok(resp),
+            OrderResponseResult::Ok(resp) => Ok(*resp),
             OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError {
                 code: resp.code,
                 msg: resp.msg,
@@ -239,7 +241,7 @@ impl BinanceFuturesClient {
 
     pub async fn submit_orders(
         &self,
-        orders: Vec<(String, String, Side, f64, usize, f64, OrdType, TimeInForce)>,
+        orders: Vec<BatchOrder>,
     ) -> Result<Vec<Result<OrderResponse, BinanceFuturesError>>, BinanceFuturesError> {
         if orders.len() > 5 {
             return Err(BinanceFuturesError::InvalidRequest);
@@ -272,7 +274,7 @@ impl BinanceFuturesClient {
         Ok(resp
             .into_iter()
             .map(|resp| match resp {
-                OrderResponseResult::Ok(resp) => Ok(resp),
+                OrderResponseResult::Ok(resp) => Ok(*resp),
                 OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError {
                     code: resp.code,
                     msg: resp.msg,
@@ -304,7 +306,7 @@ impl BinanceFuturesClient {
 
         let resp: OrderResponseResult = self.put("/fapi/v1/order", body).await?;
         match resp {
-            OrderResponseResult::Ok(resp) => Ok(resp),
+            OrderResponseResult::Ok(resp) => Ok(*resp),
             OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError {
                 code: resp.code,
                 msg: resp.msg,
@@ -325,7 +327,7 @@ impl BinanceFuturesClient {
 
         let resp: OrderResponseResult = self.delete("/fapi/v1/order", body).await?;
         match resp {
-            OrderResponseResult::Ok(resp) => Ok(resp),
+            OrderResponseResult::Ok(resp) => Ok(*resp),
             OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError {
                 code: resp.code,
                 msg: resp.msg,
@@ -358,7 +360,7 @@ impl BinanceFuturesClient {
         Ok(resp
             .into_iter()
             .map(|resp| match resp {
-                OrderResponseResult::Ok(resp) => Ok(resp),
+                OrderResponseResult::Ok(resp) => Ok(*resp),
                 OrderResponseResult::Err(resp) => Err(BinanceFuturesError::OrderError {
                     code: resp.code,
                     msg: resp.msg,

@@ -3,6 +3,7 @@
 //! Measures, for resting-GTC submit/cancel and market open/close, both:
 //!   - REST ack latency (submit start -> HTTP response with result)
 //!   - WS fact latency (submit start -> orderUpdates fact pushed, timestamped at publish)
+//!
 //! The WS fact may arrive before the REST response; the delta quantifies the push advantage.
 //!
 //! Env: HL_PRIVATE_KEY (agent key), HL_ACCOUNT_ADDRESS (main wallet).

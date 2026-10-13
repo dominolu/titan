@@ -99,7 +99,7 @@ fn order_info_from(o: &m::Order) -> OrderInfo {
         client_order_id: o.cl_ord_id.clone(),
         side: okx_side(&o.side),
         order_type: okx_ord_type(&o.ord_type),
-        status: ApiOrderStatus::from_str(&o.state),
+        status: ApiOrderStatus::from_venue_str(&o.state),
         price: f(&o.px),
         qty,
         executed_qty: executed,
@@ -119,12 +119,16 @@ fn position_from(p: &m::Position) -> PositionInfo {
     PositionInfo {
         symbol: p.inst_id.clone(),
         position_side: okx_pos_side(&p.pos_side),
-        qty: pos,
+        qty: if p.pos_side == "short" {
+            -pos.abs()
+        } else {
+            pos
+        },
         entry_price: f(&p.avg_px),
         mark_price: f(&p.mark_px),
         liquidation_price: f(&p.liq_px),
         leverage: f(&p.lever),
-        margin_type: ApiMarginType::from_str(&p.mgn_mode),
+        margin_type: ApiMarginType::from_venue_str(&p.mgn_mode),
         unrealized_pnl: f(&p.upl),
         realized_pnl: f(&p.realized_pnl),
         notional: f(&p.notional_usd),
@@ -179,12 +183,12 @@ fn validate_account_mode(config: &m::AccountConfig, td_mode: &str) -> Result<(),
                     ),
                 ));
             }
-            if config.pos_mode != "net_mode" {
+            if !matches!(config.pos_mode.as_str(), "net_mode" | "long_short_mode") {
                 return Err(ApiError::new(
                     "okx",
                     "INCOMPATIBLE_POSITION_MODE",
                     format!(
-                        "OKX account is in {}; Titan account commands currently require net_mode",
+                        "OKX account is in {}; unsupported position mode",
                         config.pos_mode
                     ),
                 ));
@@ -284,11 +288,10 @@ impl OkxClient {
     pub async fn get_system_time(&self) -> Result<i64, OkxError> {
         let resp: m::OkxResponse<m::SystemTime> = self.get_noauth("/api/v5/public/time").await?;
         Self::check_code(&resp.code, &resp.msg)?;
-        Ok(resp
-            .data
+        resp.data
             .first()
             .map(|t| i(&t.ts))
-            .ok_or(OkxError::InvalidArg("empty time response"))?)
+            .ok_or(OkxError::InvalidArg("empty time response"))
     }
 
     pub async fn get_system_status(&self) -> Result<Vec<m::SystemStatus>, OkxError> {
@@ -953,7 +956,32 @@ impl BrokerApi for OkxClient {
     }
 
     async fn submit_order(&self, req: &UnifiedOrderRequest) -> Result<OrderInfo, ApiError> {
+        self.submit_order_fenced(req, None).await
+    }
+
+    async fn get_account_position_mode(&self) -> Result<crate::api::ApiPositionMode, ApiError> {
+        if self.td_mode() == "cash" {
+            return Ok(crate::api::ApiPositionMode::Net);
+        }
+        let config = self.get_account_config().await?;
+        match config.pos_mode.as_str() {
+            "net_mode" => Ok(crate::api::ApiPositionMode::Net),
+            "long_short_mode" => Ok(crate::api::ApiPositionMode::Hedge),
+            _ => Err(ApiError::new(
+                "okx",
+                "UNKNOWN_POSITION_MODE",
+                config.pos_mode,
+            )),
+        }
+    }
+
+    async fn submit_order_fenced(
+        &self,
+        req: &UnifiedOrderRequest,
+        guard: Option<crate::api::SubmitGuard>,
+    ) -> Result<OrderInfo, ApiError> {
         let body = build_okx_order_body(req, self.td_mode());
+        crate::api::check_submit_guard(&guard)?;
         let resp: m::OrderResponse = self.post("/api/v5/trade/order", body).await?;
         if resp.code != "0" {
             return Err(ApiError::new("okx", resp.code, resp.msg));
@@ -1265,7 +1293,7 @@ impl BrokerApi for OkxClient {
         Ok(LeverageInfo {
             symbol: first.inst_id.clone(),
             leverage: f(&first.lever),
-            margin_type: ApiMarginType::from_str(&first.mgn_mode),
+            margin_type: ApiMarginType::from_venue_str(&first.mgn_mode),
             position_side: okx_pos_side(&first.pos_side),
         })
     }
@@ -1279,7 +1307,7 @@ impl BrokerApi for OkxClient {
         Ok(LeverageInfo {
             symbol: first.inst_id.clone(),
             leverage: f(&first.lever),
-            margin_type: ApiMarginType::from_str(&first.mgn_mode),
+            margin_type: ApiMarginType::from_venue_str(&first.mgn_mode),
             position_side: okx_pos_side(&first.pos_side),
         })
     }
@@ -1302,14 +1330,14 @@ impl BrokerApi for OkxClient {
         let bills = self.get_bills(Some(symbol), limit.min(100)).await?;
         Ok(bills
             .iter()
-            .filter_map(|b| {
+            .map(|b| {
                 let ts = b.get("ts").and_then(|v| v.as_str()).unwrap_or("0");
                 let bal_chg = b
                     .get("balChg")
                     .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                Some(IncomeRecord {
+                IncomeRecord {
                     symbol: b
                         .get("instId")
                         .and_then(|v| v.as_str())
@@ -1327,7 +1355,7 @@ impl BrokerApi for OkxClient {
                         .unwrap_or("")
                         .to_string(),
                     timestamp: ts.parse().unwrap_or(0),
-                })
+                }
             })
             .collect())
     }
@@ -1438,6 +1466,16 @@ pub(crate) fn build_okx_algo_body(req: &AlgoOrderRequest) -> String {
         body.insert("clOrdId".to_string(), serde_json::Value::String(id.clone()));
     }
     serde_json::Value::Object(body).to_string()
+}
+
+impl m::Fill {
+    fn symbol(&self) -> &str {
+        &self.inst_id
+    }
+
+    fn price(&self) -> f64 {
+        f(&self.fill_px)
+    }
 }
 
 #[cfg(test)]
@@ -1585,14 +1623,15 @@ mod tests {
     }
 
     #[test]
-    fn account_mode_validation_rejects_spot_and_long_short_for_derivatives() {
+    fn account_mode_validation_rejects_spot_and_unknown_mode_for_derivatives() {
         let spot =
             validate_account_mode(&account_config("1", "net_mode", false), "cross").unwrap_err();
         assert_eq!(spot.code, "INCOMPATIBLE_ACCOUNT_MODE");
 
-        let hedge = validate_account_mode(&account_config("3", "long_short_mode", false), "cross")
-            .unwrap_err();
-        assert_eq!(hedge.code, "INCOMPATIBLE_POSITION_MODE");
+        validate_account_mode(&account_config("3", "long_short_mode", false), "cross").unwrap();
+        let unknown =
+            validate_account_mode(&account_config("3", "unknown", false), "cross").unwrap_err();
+        assert_eq!(unknown.code, "INCOMPATIBLE_POSITION_MODE");
     }
 
     #[test]
@@ -1899,15 +1938,5 @@ mod tests {
         assert!(usdt.wallet_balance > 0.0);
         assert!(usdt.available_balance > 0.0);
         assert!(usdt.margin_balance > 0.0);
-    }
-}
-
-impl m::Fill {
-    fn symbol(&self) -> &str {
-        &self.inst_id
-    }
-
-    fn price(&self) -> f64 {
-        f(&self.fill_px)
     }
 }

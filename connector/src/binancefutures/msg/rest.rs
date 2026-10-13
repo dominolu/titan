@@ -490,7 +490,7 @@ pub struct AsyncDownloadLink {
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum OrderResponseResult {
-    Ok(OrderResponse),
+    Ok(Box<OrderResponse>),
     Err(ErrorResponse),
 }
 

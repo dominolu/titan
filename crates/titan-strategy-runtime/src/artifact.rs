@@ -173,6 +173,10 @@ impl StrategyArtifactCache {
         );
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> usize {
         self.state
             .lock()
@@ -272,9 +276,10 @@ fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManif
             V13EventKind::Position => titan_account_service::POSITION_CHANGED_EVENT,
             V13EventKind::Balance => titan_account_service::BALANCE_CHANGED_EVENT,
             V13EventKind::AccountState => titan_account_service::STREAM_STATE_CHANGED_EVENT,
-            V13EventKind::Timer | V13EventKind::Start | V13EventKind::Stop => {
-                "titan.strategy.Timer"
-            }
+            V13EventKind::Timer
+            | V13EventKind::Start
+            | V13EventKind::Stop
+            | V13EventKind::Recover => "titan.strategy.Timer",
         });
         if event_type.as_ref() == "titan.strategy.Timer" {
             continue;

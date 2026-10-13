@@ -25,7 +25,7 @@ impl StrategyMetrics for Metrics {}
 #[derive(Default)]
 struct Sink {
     snapshots: Mutex<Vec<StrategyPrivateStateSnapshot>>,
-    fail_flush: bool,
+    fail_flush: std::sync::atomic::AtomicBool,
 }
 impl StrategyStateSnapshotSink for Sink {
     fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
@@ -33,7 +33,7 @@ impl StrategyStateSnapshotSink for Sink {
         Ok(())
     }
     fn flush(&self, _: Instant) -> LocalResult<()> {
-        if self.fail_flush {
+        if self.fail_flush.load(std::sync::atomic::Ordering::Acquire) {
             Err(StrategyError::new(
                 StrategyErrorKind::Internal,
                 "checkpoint",
@@ -70,16 +70,14 @@ impl account::ExecutionObserver for Observer {
         if matches!(
             value.outcome,
             account::ObservedExecutionOutcome::Rejected(_)
-        ) {
-            if let Some(target) = self
-                .target
-                .lock()
-                .unwrap()
-                .as_ref()
-                .and_then(std::sync::Weak::upgrade)
-            {
-                let _ = target.execution_result(value);
-            }
+        ) && let Some(target) = self
+            .target
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            let _ = target.execution_result(value);
         }
     }
 }
@@ -129,11 +127,12 @@ fn main() {
     let artifact =
         std::fs::canonicalize(PathBuf::from(std::env::args_os().nth(1).expect("artifact")))
             .unwrap();
-    run(artifact.clone(), false, false);
-    run(artifact.clone(), true, false);
-    run(artifact, false, true);
+    run(artifact.clone(), false, false, false);
+    run(artifact.clone(), true, false, false);
+    run(artifact.clone(), false, true, false);
+    run(artifact, false, false, true);
 }
-fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
+fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure: bool) {
     let manifest = NativeArtifactLoaderV13::new(
         std::env::temp_dir().join("titan-drain-inspect"),
         V13TrustPolicy::default(),
@@ -194,6 +193,7 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
         execution
             .bind(account, Arc::new(PendingBroker), observer.clone())
             .submit(account::DirectNewOrderRequest {
+                position_side: 0,
                 asset_id: account::AssetId(1),
                 side: 1,
                 order_type: 0,
@@ -207,7 +207,7 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
     }
     let sink = Arc::new(Sink {
         snapshots: Mutex::new(Vec::new()),
-        fail_flush,
+        fail_flush: std::sync::atomic::AtomicBool::new(intent_failure),
     });
     let scope = ResourceScope::new(ComponentIdentity::new("strategy", "drain-smoke"));
     let runtime = NativeV13RuntimeFactory
@@ -247,6 +247,19 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
                 activation: Arc::new(StrategyActivationGate::default()),
             },
         )
+        .unwrap();
+    runtime
+        .seed_public_state(StrategyPublicStateSeedV13 {
+            accounts: Arc::from([TitanAccountView {
+                state: 4,
+                account_epoch: 1,
+                account_sequence: 1,
+                ..Default::default()
+            }]),
+            positions: Arc::from([TitanPositionView::default()]),
+            order_boundaries: Arc::from([(0, 1)]),
+            ..Default::default()
+        })
         .unwrap();
     *observer.target.lock().unwrap() = Some(Arc::downgrade(&runtime));
     let engine = EventEngine::new(EventEngineConfig::default()).unwrap();
@@ -330,6 +343,19 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
         },
         trace: Default::default(),
     });
+    if intent_failure {
+        assert!(tick_result.is_err());
+        assert_eq!(runtime.state().lifecycle, StrategyLifecycle::Failed);
+        assert!(
+            rx.try_recv().is_err(),
+            "no order may escape before durable intent flush"
+        );
+        assert_eq!(execution.active_tasks(), 0);
+        engine.stop().unwrap();
+        execution.shutdown(Instant::now()).unwrap();
+        println!("V13 failed intent durability prevents external dispatch");
+        return;
+    }
     if queue_overload {
         assert!(tick_result.is_err());
         assert_eq!(runtime.state().lifecycle, StrategyLifecycle::Failed);
@@ -388,6 +414,8 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool) {
         StrategyLifecycle::Stopping,
         "Order must not discard the following Fill"
     );
+    sink.fail_flush
+        .store(fail_flush, std::sync::atomic::Ordering::Release);
     let filled = fact(
         &runtime,
         account::FILL_EVENT,

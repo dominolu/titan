@@ -114,12 +114,12 @@ def make_context_from_pointer(context_type: StrategyContextType):
 
 @intrinsic
 def _submit_order(typingctx, context_value, account_no, asset_no, side, order_type, qty_lots,
-                  price_ticks, time_in_force, reduce_only, trigger_price_ticks, gtd_expiry_ns):
+                  price_ticks, time_in_force, reduce_only, trigger_price_ticks, gtd_expiry_ns, position_side):
     if not isinstance(context_value, StrategyContextType):
         return None
     signature = types.uint64(
         context_value, account_no, asset_no, side, order_type, qty_lots, price_ticks,
-        time_in_force, reduce_only, trigger_price_ticks, gtd_expiry_ns,
+        time_in_force, reduce_only, trigger_price_ticks, gtd_expiry_ns, position_side,
     )
 
     def codegen(context, builder, sig, args):
@@ -139,6 +139,7 @@ def _submit_order(typingctx, context_value, account_no, asset_no, side, order_ty
             ("reduce_only", args[8], ir.IntType(8), False),
             ("trigger_price_ticks", args[9], ir.IntType(64), True),
             ("gtd_expiry_ns", args[10], ir.IntType(64), True),
+            ("position_side", args[11], ir.IntType(8), False),
         )
         for name, value, llvm_type, signed in names:
             _store_request_field(builder, request_bytes, abi_v13.submit_order_request_dtype,
@@ -212,14 +213,14 @@ def _cancel_order(typingctx, context_value, account_no, asset_no, order_id):
 
 @overload_method(StrategyContextType, "submit_order", inline="always")
 def overload_submit_order(context_value, account_no, asset_no, side, order_type, qty_lots,
-                          price_ticks, time_in_force, reduce_only=False):
+                          price_ticks, time_in_force, reduce_only=False, position_side=0):
     if not isinstance(context_value, StrategyContextType):
         return None
 
     def implementation(context_value, account_no, asset_no, side, order_type, qty_lots,
-                       price_ticks, time_in_force, reduce_only=False):
+                       price_ticks, time_in_force, reduce_only=False, position_side=0):
         return _submit_order(context_value, account_no, asset_no, side, order_type, qty_lots,
-                             price_ticks, time_in_force, reduce_only, 0, 0)
+                             price_ticks, time_in_force, reduce_only, 0, 0, position_side)
 
     return implementation
 
@@ -380,14 +381,14 @@ def overload_market(context_value, asset_no):
 
 
 @overload_method(StrategyContextType, "position", inline="always")
-def overload_position(context_value, account_no, asset_no):
+def overload_position(context_value, account_no, asset_no, position_side=0):
     if not isinstance(context_value, StrategyContextType):
         return None
 
-    def implementation(context_value, account_no, asset_no):
+    def implementation(context_value, account_no, asset_no, position_side=0):
         values = _borrow_positions(context_value)
         for index in range(len(values)):
-            if values[index]["account_no"] == account_no and values[index]["asset_no"] == asset_no:
+            if values[index]["account_no"] == account_no and values[index]["asset_no"] == asset_no and values[index]["position_side"] == position_side:
                 return values[index]
         return _missing_position(context_value)
 
