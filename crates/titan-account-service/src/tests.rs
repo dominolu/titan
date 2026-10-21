@@ -70,3 +70,19 @@ fn directory_secret_provider_is_scoped_bounded_and_requires_private_permissions(
     std::fs::remove_file(secret_path).unwrap();
     std::fs::remove_dir(root).unwrap();
 }
+
+#[test]
+fn position_event_currency_does_not_overwrite_high_pnl_bytes() {
+    for pnl in [0, 30, -30, i64::MIN, i64::MAX] {
+        let value = PositionChangedV1 {
+            unrealized_pnl_units: pnl,
+            margin_currency_id: 10,
+            ..Default::default()
+        };
+        let mut bytes = vec![0; PositionChangedV1::ENCODED_LEN];
+        value.encode_into(&mut bytes).unwrap();
+        assert_eq!(&bytes[88..96], &pnl.to_le_bytes());
+        assert_eq!(&bytes[96..100], &10_u32.to_le_bytes());
+        assert_eq!(PositionChangedV1::decode(&bytes).unwrap(), value);
+    }
+}

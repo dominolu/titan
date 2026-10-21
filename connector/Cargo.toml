@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "okx", "hyperliquid"]
+default = ["binancefutures", "okx", "hyperliquid", "gatecrossex"]
 binancefutures = []
 okx = []
 hyperliquid = []
+gatecrossex = []
 
 [dependencies]
 hftbacktest = { path = "../hftbacktest" }
@@ -55,5 +56,6 @@ smallvec = { version = "1", features = ["serde"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 [dev-dependencies]
+titan-strategy-runtime = { path = "../crates/titan-strategy-runtime" }
 semver = "1"
 titan-event-engine = { path = "../crates/titan-event-engine" }

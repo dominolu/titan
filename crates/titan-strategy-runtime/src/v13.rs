@@ -12,6 +12,9 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use libloading::Library;
 use sha2::{Digest, Sha256};
 
+mod compiler;
+pub use compiler::*;
+
 pub const STRATEGY_ABI_V13: u32 = 13;
 pub const V13_CALLBACK_COUNT: usize = 13;
 pub const V13_ABI_FINGERPRINT: [u8; 32] = [
