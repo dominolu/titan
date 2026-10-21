@@ -415,6 +415,10 @@ impl Connector for BinanceFutures {
     }
 
     fn shutdown(&self) -> crate::connector::ShutdownFuture {
+        // A public-only runtime has no authority or need to send account cancellation requests.
+        if self.config.api_key.is_empty() || self.config.secret.is_empty() {
+            return Box::pin(async { Ok(()) });
+        }
         let client = self.client.clone();
         let symbols: Vec<String> = self.symbols.lock().unwrap().iter().cloned().collect();
         Box::pin(async move {
@@ -505,5 +509,22 @@ mod reconnect_tests {
             assert!(subscription.contains("btcusdt@trade"));
         }
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod public_shutdown_test {
+    use super::*;
+    #[tokio::test]
+    async fn credentialless_market_shutdown_never_calls_private_rest() {
+        let connector = BinanceFutures::build_from(
+            r#"stream_url = "wss://example.invalid/ws"
+api_url = "http://127.0.0.1:9"
+safety_timeout_ms = 0
+"#,
+        )
+        .unwrap();
+        connector.symbols.lock().unwrap().insert("btcusdt".into());
+        connector.shutdown().await.unwrap();
     }
 }

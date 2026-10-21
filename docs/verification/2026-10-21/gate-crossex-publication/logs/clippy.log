@@ -1,0 +1,12 @@
+    Checking titan-domain-types v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-domain-types)
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-core-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/hftbacktest-derive)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-event-engine)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-account-service)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-market-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-gatecrossex-publish-20261021-f4ba03a6/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.67s

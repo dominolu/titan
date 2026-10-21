@@ -1,0 +1,8 @@
+{
+  "host": "43.130.234.54",
+  "machine": "x86_64",
+  "system": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+  "ntp_synchronized": "yes",
+  "binary_sha256": "833eaf293c3dadb11398bc8130f8fc08a3dafb8361393c82a652ccfe79f8021f",
+  "postflight_exit": 0
+}

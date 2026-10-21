@@ -1,0 +1,11 @@
+{
+  "symbol": "GATE_FUTURE_BTC_USDT",
+  "client_order_id": "titanlive-86229355f87dcdb7",
+  "quantity": 0.0001,
+  "price": 81159.90000000001,
+  "amended_price": 81077.1,
+  "tick": 0.1,
+  "reference_ask": 82816.4,
+  "max_notional_usdt": 10.0,
+  "created_ms": 1792564411171
+}

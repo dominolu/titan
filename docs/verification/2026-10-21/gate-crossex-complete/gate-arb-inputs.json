@@ -1,0 +1,34 @@
+{
+  "git_head": "756d2db3b20afc249b2b9a9f527a449bbe015512",
+  "adapters_are_untracked": true,
+  "files": [
+    {
+      "file": "app/adapters/crossex_rest.py",
+      "sha256": "539151d240d3c03daab57e9ef4d36eefd98b3f05cd31965d2bd1fcbe83e8b8d7"
+    },
+    {
+      "file": "app/adapters/crossex_ws.py",
+      "sha256": "58cd5439495b2ba69eb79df30b615d135c656029c52b630f7661dceab4d7d0a3"
+    },
+    {
+      "file": "app/services/account_service.py",
+      "sha256": "cdeba3fbcd4a36c44b57bc02c7260ef375975eeb9b96830bb92c070f7c44147e"
+    },
+    {
+      "file": "app/services/private_ws_service.py",
+      "sha256": "c268c1374d17c7a6fbff5377e1d9291158500ecaa5bf4b516476b75007e3bc82"
+    },
+    {
+      "file": "app/services/execution_service.py",
+      "sha256": "16ce1beddb70cab88687211f45a90e52e349863bd6018ee3a3e9fd09c14f0449"
+    },
+    {
+      "file": "app/services/transfer_service.py",
+      "sha256": "beaf6779e5fcddcbcb0ad46ef6bc5bc578cd6b920af9f1132f1ec9dd0b527737"
+    },
+    {
+      "file": "app/services/market_data_service.py",
+      "sha256": "542cd68494c56f735433cba6aa47aef866eb1d7eb97571cddc5ab27dde7e795b"
+    }
+  ]
+}

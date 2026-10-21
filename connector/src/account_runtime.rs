@@ -134,6 +134,15 @@ trait AccountBootstrapApi: Send + Sync {
     async fn open_orders(&self, symbol: &str) -> Result<Vec<OrderInfo>, crate::api::ApiError>;
     async fn positions(&self) -> Result<Vec<PositionInfo>, crate::api::ApiError>;
     async fn position_mode(&self) -> Result<crate::api::ApiPositionMode, crate::api::ApiError>;
+    async fn instrument_position_mode(
+        &self,
+        _symbol: &str,
+    ) -> Result<crate::api::ApiPositionMode, crate::api::ApiError> {
+        self.position_mode().await
+    }
+    fn position_currency(&self, _symbol: &str) -> Option<String> {
+        None
+    }
     async fn account(&self) -> Result<AccountInfo, crate::api::ApiError>;
     async fn order(
         &self,
@@ -144,8 +153,17 @@ trait AccountBootstrapApi: Send + Sync {
 
 #[async_trait::async_trait]
 impl<T: BrokerApi + ?Sized> AccountBootstrapApi for T {
+    fn position_currency(&self, symbol: &str) -> Option<String> {
+        BrokerApi::position_currency(self, symbol)
+    }
     async fn position_mode(&self) -> Result<crate::api::ApiPositionMode, crate::api::ApiError> {
         self.get_account_position_mode().await
+    }
+    async fn instrument_position_mode(
+        &self,
+        symbol: &str,
+    ) -> Result<crate::api::ApiPositionMode, crate::api::ApiError> {
+        self.get_instrument_position_mode(symbol).await
     }
     async fn validate(&self) -> Result<(), crate::api::ApiError> {
         self.validate_account_configuration().await
@@ -1053,21 +1071,19 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
         }
     }
 
-    let mode = api
-        .position_mode()
-        .await
-        .map_err(|error| rejected(error.to_string()))?;
     let mut positions = Vec::new();
     let values = api
         .positions()
         .await
         .map_err(|error| rejected(error.to_string()))?;
-    let margin_currency_id = context
-        .currencies
-        .first()
-        .ok_or_else(|| rejected("position margin currency binding missing"))?
-        .currency_id;
     for binding in context.instruments.iter() {
+        let native_currency = api.position_currency(&binding.native_symbol);
+        let currency = position_currency_binding(context, native_currency.as_deref())?;
+        let margin_currency_id = currency.currency_id;
+        let mode = api
+            .instrument_position_mode(&binding.native_symbol)
+            .await
+            .map_err(|error| rejected(error.to_string()))?;
         let mut sides = std::collections::BTreeSet::new();
         for value in values
             .iter()
@@ -1089,7 +1105,7 @@ async fn load_account_bootstrap<A: AccountBootstrapApi + ?Sized>(
                 ));
             }
             positions.push((
-                position_snapshot(value, binding, context)?,
+                position_snapshot(value, binding, currency)?,
                 value.update_time.saturating_mul(1_000_000),
             ));
         }
@@ -1439,6 +1455,14 @@ impl AccountEventEncoder {
                 client_order_id,
                 venue_order_id,
                 order,
+            }
+            | AccountPublication::OrderWithExecution {
+                position_side,
+                symbol,
+                client_order_id,
+                venue_order_id,
+                order,
+                ..
             } => {
                 let binding = self
                     .context
@@ -1513,7 +1537,12 @@ impl AccountEventEncoder {
                     price_ticks: order.price_tick,
                     quantity_lots: to_units(order.qty, binding.quantity_lot)?,
                     filled_quantity_lots: cumulative_filled_quantity_lots,
-                    average_price_ticks: order.exec_price_tick,
+                    average_price_ticks: match event {
+                        AccountPublication::OrderWithExecution { average_price, .. } => {
+                            to_observation_units(*average_price, binding.price_tick)?
+                        }
+                        _ => order.exec_price_tick,
+                    },
                     venue_order_id: id,
                     client_order_id: client_order_id.unwrap_or_default(),
                     ..Default::default()
@@ -1605,11 +1634,16 @@ impl AccountEventEncoder {
                     event.liquidation_price_ticks = to_observation_units(*price, b.price_tick)?;
                 }
                 if let Some(pnl) = unrealized_pnl {
-                    let currency = self
-                        .context
-                        .currencies
-                        .first()
-                        .ok_or_else(|| rejected("position margin currency binding missing"))?;
+                    let currency = if previous.is_some() {
+                        self.context
+                            .currencies
+                            .iter()
+                            .find(|c| c.currency_id.0 == event.margin_currency_id)
+                    } else {
+                        self.context.currencies.first()
+                    }
+                    .ok_or_else(|| rejected("position margin currency binding missing"))?;
+                    event.margin_currency_id = currency.currency_id.0;
                     event.unrealized_pnl_units = to_observation_units(*pnl, currency.amount_unit)?;
                 }
                 if event.quantity_lots == 0 {
@@ -1847,15 +1881,26 @@ fn account_position_side(side: ApiPositionSide) -> Result<u8, account::AccountCo
     }
 }
 
+fn position_currency_binding<'a>(
+    context: &'a account::AccountConnectorContext,
+    native: Option<&str>,
+) -> Result<&'a account::AccountCurrencyBinding, account::AccountConnectorError> {
+    let currency = if let Some(native) = native {
+        context
+            .currencies
+            .iter()
+            .find(|c| c.native_currency.eq_ignore_ascii_case(native))
+    } else {
+        context.currencies.first()
+    };
+    currency.ok_or_else(|| rejected("position margin currency binding missing"))
+}
+
 fn position_snapshot(
     value: &PositionInfo,
     binding: &account::AccountInstrumentBinding,
-    context: &account::AccountConnectorContext,
+    currency: &account::AccountCurrencyBinding,
 ) -> Result<account::PositionSnapshot, account::AccountConnectorError> {
-    let currency = context
-        .currencies
-        .first()
-        .ok_or_else(|| rejected("position margin currency binding missing"))?;
     if (value.position_side == ApiPositionSide::Long && value.qty < 0.0)
         || (value.position_side == ApiPositionSide::Short && value.qty > 0.0)
     {
@@ -2158,8 +2203,20 @@ fn build_hyperliquid(config: &str) -> Result<Box<dyn Connector>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "gatecrossex")]
+fn build_gate_crossex(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::gatecrossex::GateCrossEx::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
+
 pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory>> {
     let values: Vec<Arc<dyn account::AccountConnectorFactory>> = vec![
+        #[cfg(feature = "gatecrossex")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "gate-crossex-account",
+            build_gate_crossex,
+        )),
         #[cfg(feature = "binancefutures")]
         Arc::new(VenueAccountConnectorFactory::new(
             "binance-futures-account",
@@ -2972,5 +3029,142 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(actions.0.load(Ordering::Acquire), 1);
+    }
+    #[test]
+    fn account_facts_keep_incremental_price_average_and_settlement_units_distinct() {
+        let handle = account::AccountHandle {
+            account_id: account::AccountId(8),
+            generation: 1,
+        };
+        let sink = Arc::new(RecordingSink::default());
+        let resources = ResourceScope::new(ComponentIdentity::new(
+            "connector",
+            "execution-currency-test",
+        ));
+        let context = account::AccountConnectorContext {
+            account: handle,
+            instruments: vec![account::AccountInstrumentBinding {
+                native_symbol: Arc::from("BTCUSDC"),
+                asset_id: account::AssetId(42),
+                price_tick: account::DecimalUnit::new(1, 1).unwrap(),
+                quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
+                contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+            }]
+            .into(),
+            currencies: vec![
+                account::AccountCurrencyBinding {
+                    native_currency: Arc::from("USDT"),
+                    currency_id: account::CurrencyId(9),
+                    amount_unit: account::DecimalUnit::new(1, 2).unwrap(),
+                },
+                account::AccountCurrencyBinding {
+                    native_currency: Arc::from("USDC"),
+                    currency_id: account::CurrencyId(10),
+                    amount_unit: account::DecimalUnit::new(1, 3).unwrap(),
+                },
+            ]
+            .into(),
+            ownership: account::OrderOwnershipPolicy::ObserveAll,
+            account_stream: account::SourceStreamId(11),
+            control_stream: account::SourceStreamId(12),
+            event_publisher: account::AccountEventPublisher::from_sink(handle, sink.clone()),
+            resources: resources.handle(),
+            secrets: account::ScopedSecretResolver::scoped(
+                account::SecretRef::new("secret://test/account"),
+                Arc::new(account::UnavailableSecretProvider),
+            ),
+        };
+        assert_eq!(
+            position_currency_binding(&context, Some("USDC"))
+                .unwrap()
+                .currency_id,
+            account::CurrencyId(10)
+        );
+        assert!(position_currency_binding(&context, Some("JPY")).is_err());
+        let encoder = AccountEventEncoder {
+            context,
+            epoch: Arc::new(AtomicU64::new(1)),
+            version: Arc::new(AtomicU64::new(0)),
+            ready: Arc::new(AtomicBool::new(true)),
+            ids: Arc::new(Mutex::new(IdInterner::default())),
+            projection: Arc::new(Mutex::new(AccountProjection::default())),
+            publication: Mutex::new(()),
+        };
+        let mut order = Order::new(
+            1,
+            1000,
+            0.1,
+            2.0,
+            Side::Buy,
+            OrdType::Limit,
+            TimeInForce::GTC,
+        );
+        order.status = Status::PartiallyFilled;
+        order.leaves_qty = 1.0;
+        order.exec_qty = 1.0;
+        order.exec_price_tick = 1000;
+        order.exch_timestamp = 100;
+        encoder
+            .publish(&AccountPublication::OrderWithExecution {
+                position_side: ApiPositionSide::Net,
+                symbol: "BTCUSDC".into(),
+                client_order_id: Some("client".into()),
+                venue_order_id: Some("venue".into()),
+                order: order.clone(),
+                average_price: 100.0,
+            })
+            .unwrap();
+        order.status = Status::Filled;
+        order.leaves_qty = 0.0;
+        order.exec_price_tick = 2000;
+        order.exch_timestamp = 200;
+        encoder
+            .publish(&AccountPublication::OrderWithExecution {
+                position_side: ApiPositionSide::Net,
+                symbol: "BTCUSDC".into(),
+                client_order_id: Some("client".into()),
+                venue_order_id: Some("venue".into()),
+                order,
+                average_price: 150.0,
+            })
+            .unwrap();
+        let events = sink.events.lock().unwrap();
+        let changes: Vec<_> = events
+            .iter()
+            .filter(|(t, _)| t == account::ORDER_CHANGED_EVENT)
+            .map(|(_, v)| account::OrderChangedV1::decode(v).unwrap())
+            .collect();
+        assert_eq!(changes[1].average_price_ticks, 1500);
+        let fills: Vec<_> = events
+            .iter()
+            .filter(|(t, _)| t == account::FILL_EVENT)
+            .map(|(_, v)| account::FillV2::decode(v).unwrap())
+            .collect();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[1].price_ticks, 2000);
+        assert_eq!(fills[1].last_fill_quantity_lots, 100);
+        assert_eq!(fills[1].cumulative_filled_quantity_lots, 200);
+        drop(events);
+        encoder.cache_position(&account::PositionChangedV1 {
+            asset_id: 42,
+            position_side: 0,
+            margin_currency_id: 10,
+            ..Default::default()
+        });
+        encoder
+            .publish(&AccountPublication::Position {
+                symbol: "BTCUSDC".into(),
+                position_side: ApiPositionSide::Net,
+                qty: 1.0,
+                entry_price: None,
+                unrealized_pnl: Some(0.03),
+                liquidation_price: None,
+                exch_ts: 300,
+            })
+            .unwrap();
+        let events = sink.events.lock().unwrap();
+        let position = account::PositionChangedV1::decode(&events.last().unwrap().1).unwrap();
+        assert_eq!(position.margin_currency_id, 10);
+        assert_eq!(position.unrealized_pnl_units, 30);
     }
 }

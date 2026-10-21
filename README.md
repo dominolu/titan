@@ -44,7 +44,7 @@ titan CLI controller
 
 ### 静态核心服务与直接执行
 
-- Binance Futures、OKX、Hyperliquid connector 直接编译进主程序，由构造期静态 catalog 注入
+- Binance Futures、OKX、Hyperliquid、Gate CrossEx connector 直接编译进主程序，由构造期静态 catalog 注入
   `MarketService` 和 `AccountService`；运行时不加载 connector manifest、cdylib 或 JSON/C ABI。
 - `TradingRuntime` 直接持有并按顺序启动/停止 EventEngine、Market、Account、Strategy 和共享 execution runtime，
   服务间不通过字符串 endpoint 或 ServiceRegistry 查找。
@@ -171,6 +171,7 @@ def on_tick(ctx):
 |---|---|---|---|
 | Binance Futures | USD-M 永续合约 | ✅ 生产可用 | 主网/测试网，已接入统一 Broker API |
 | OKX | V5 SWAP | ✅ 生产可用 | 实盘/模拟盘，已接入统一 Broker API |
+| Gate CrossEx | 跨所 FUTURE / SPOT / MARGIN + 原生扩展 | Gate BTC 被动下改撤实盘通过 | 含隔离交易所账户配置，已接入 Broker API、MarketService、AccountService；[能力与配置](docs/gate_crossex_broker.md)、[实盘范围](docs/verification/2026-10-21/gate-crossex-live/README.md) |
 | Hyperliquid | 永续合约 | ✅ 生产可用 | 主网/测试网，支持 EIP-712 签名 |
 
 ## 数据与结果

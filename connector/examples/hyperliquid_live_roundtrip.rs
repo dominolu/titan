@@ -119,6 +119,12 @@ async fn main() -> Result<()> {
                 venue_order_id,
                 order,
                 ..
+            }
+            | AccountPublication::OrderWithExecution {
+                client_order_id,
+                venue_order_id,
+                order,
+                ..
             } => {
                 let _ = tx.send((
                     format!(

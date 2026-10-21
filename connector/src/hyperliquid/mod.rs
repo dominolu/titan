@@ -1258,6 +1258,12 @@ mod live_ws_tests {
                     venue_order_id,
                     order,
                     ..
+                }
+                | AccountPublication::OrderWithExecution {
+                    client_order_id,
+                    venue_order_id,
+                    order,
+                    ..
                 } => {
                     let _ = tx.send(PrivateFact::Order {
                         client_order_id: client_order_id.clone(),

@@ -1,0 +1,26 @@
+{
+  "staged_tree": "f4ba03a69f1d00a0ffbfe7b8ca3e93ae0ee014e1",
+  "source_manifest_files": 370,
+  "source_manifest_passed": true,
+  "commands": {
+    "fmt": 0,
+    "clippy": 0,
+    "workspace": 0,
+    "doc": 0
+  },
+  "auxiliary_no_index_diff": {
+    "exit_code": 1,
+    "output_bytes": 0,
+    "note": "git diff --no-index returns 1 for a new file; no whitespace diagnostics; not a compilation/test gate"
+  },
+  "workspace": {
+    "passed": 508,
+    "failed": 0,
+    "ignored": 12
+  },
+  "doc": {
+    "passed": 2,
+    "failed": 0,
+    "ignored": 1
+  }
+}

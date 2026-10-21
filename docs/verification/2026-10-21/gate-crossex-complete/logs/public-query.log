@@ -1,0 +1,5 @@
+$ cargo run --locked -p connector --example gate_crossex_public_api_probe
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-complete-20261021-39f1267b/connector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.61s
+     Running `/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/gate_crossex_public_api_probe`
+{"account_used":false,"asks":5,"bids":5,"book_time":1792562006885,"instruments":7824,"last_price":82603.0,"symbol":"BINANCE_FUTURE_BTC_USDT","ticker_time":1792562006358}

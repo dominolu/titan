@@ -1,0 +1,20 @@
+# Public settings. AccountService resolves api_key/secret through credential_ref.
+rest_url = "https://api.gateio.ws/api/v4"
+public_ws_url = "wss://api.gateio.ws/ws/crossex/public"
+private_ws_url = "wss://api.gateio.ws/ws/crossex"
+depth_levels = 5
+reconnect_ms = 1000
+# Native symbols include the underlying exchange, e.g. OKX_FUTURE_BTC_USDT.
+# BYBIT snapshot depth must be 1. KRAKEN incremental depth is not supported.
+
+# Required only for an ISOLATED_EXCHANGE account. Does not change the account mode.
+# exchange_type = "OKX"
+
+# Public-feed quantities can use native contract counts while REST orders use base quantity.
+# Gate/OKX linear contracts resolve native metadata automatically; verified overrides are optional.
+# [market_quantity_multipliers]
+# GATE_FUTURE_BTC_USDT = 0.0001 # Only after confirming the current native quanto_multiplier.
+
+# L2 borrows frame strings and converts contract quantities directly into integer ABI lots.
+# Set false to use the compatible generic decoder for rollback or controlled comparison.
+# borrowed_depth = true
