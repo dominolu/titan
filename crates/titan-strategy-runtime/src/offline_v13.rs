@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-    CallbackCommandStagingV13, StagedCommandV13, StrategyArtifactV13, StrategyInstanceV13,
-    StrategyRuntimeContextV13, TitanAccountStateEventView, TitanAccountView, TitanActiveOrderView,
-    TitanBalanceEventView, TitanBalanceView, TitanCancelEventView, TitanDepthView, TitanFillView,
-    TitanMarketView, TitanOrderEventView, TitanPositionEventView, TitanPositionView, TitanTickView,
-    TitanTimerView, V13EventKind, V13LoadError,
+    CallbackCommandStagingV13, StagedCommandV13, StrategyArtifactV13, StrategyCapabilitiesV13,
+    StrategyInstanceV13, StrategyRuntimeContextV13, TitanAccountStateEventView, TitanAccountView,
+    TitanActiveOrderView, TitanBalanceEventView, TitanBalanceView, TitanCancelEventView,
+    TitanDepthView, TitanFillView, TitanMarketView, TitanOrderEventView, TitanPositionEventView,
+    TitanPositionView, TitanTickView, TitanTimerView, V13_STOP_READY, V13EventKind, V13LoadError,
 };
 
 /// Host-independent ABI V13 callback adapter used by deterministic backtests and replay tools.
@@ -21,6 +21,9 @@ pub struct OfflineV13Adapter {
     balances: Vec<TitanBalanceView>,
     accounts: Vec<TitanAccountView>,
     active_orders: Vec<TitanActiveOrderView>,
+    stop_barrier: bool,
+    stopping: bool,
+    stopped: bool,
 }
 
 pub struct OfflineV13Config {
@@ -50,6 +53,12 @@ impl OfflineV13Adapter {
         } = config;
 
         Ok(Self {
+            stop_barrier: artifact
+                .manifest
+                .capabilities
+                .contains(StrategyCapabilitiesV13::STOP_BARRIER),
+            stopping: false,
+            stopped: false,
             instance: artifact.instantiate(strategy_instance_id, generation)?,
             staging: CallbackCommandStagingV13::new(
                 command_capacity,
@@ -70,9 +79,18 @@ impl OfflineV13Adapter {
     }
 
     pub fn stop(&mut self, now_ns: i64) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+        self.stopping = true;
         let commands = self.invoke(V13EventKind::Stop, now_ns, |_| {})?;
-        self.instance.stop();
+        if !self.stop_barrier {
+            self.instance.stop();
+            self.stopped = true;
+        }
         Ok(commands)
+    }
+
+    /// Barrier-enabled strategies remain callable until their final business confirmation.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
     }
 
     pub fn update_public_state(
@@ -218,6 +236,18 @@ impl OfflineV13Adapter {
             &self.active_orders,
         )?;
         self.staging.clear_committed();
+        if self.stopping
+            && self.stop_barrier
+            && context.flags & V13_STOP_READY != 0
+            && commands.is_empty()
+            && self
+                .active_orders
+                .iter()
+                .all(|order| matches!(order.status, 4 | 6..=8))
+        {
+            self.instance.stop();
+            self.stopped = true;
+        }
         Ok(commands)
     }
 }

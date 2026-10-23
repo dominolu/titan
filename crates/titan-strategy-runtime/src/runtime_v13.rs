@@ -129,6 +129,15 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     command_count: 0,
                     last_error: None,
                     stop_called: false,
+                    stop_ready: false,
+                    recovery_order_results: artifact
+                        .manifest
+                        .capabilities
+                        .contains(StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS),
+                    stop_barrier: artifact
+                        .manifest
+                        .capabilities
+                        .contains(StrategyCapabilitiesV13::STOP_BARRIER),
                     stop_operation: None,
                     stop_deadline: None,
                     flight_records: VecDeque::with_capacity(128),
@@ -186,6 +195,9 @@ struct NativeV13Inner {
     command_count: u64,
     last_error: Option<Arc<str>>,
     stop_called: bool,
+    stop_ready: bool,
+    recovery_order_results: bool,
+    stop_barrier: bool,
     stop_operation: Option<StrategyOperationId>,
     stop_deadline: Option<Instant>,
     flight_records: VecDeque<StrategyFlightRecord>,
@@ -319,6 +331,11 @@ impl NativeV13Runtime {
             &inner.active_orders,
         );
         configure(&mut context);
+        if kind == V13EventKind::Recover && inner.recovery_order_results {
+            context.event_payload_ptr = inner.recovery_orders.as_ptr().cast();
+            context.event_payload_len =
+                std::mem::size_of_val(inner.recovery_orders.as_slice()) as u64;
+        }
         let commands = match crate::v13::invoke_staged_v13(
             &mut inner.instance,
             &mut inner.staging,
@@ -344,6 +361,9 @@ impl NativeV13Runtime {
         if let Err(error) = committed {
             fail_runtime(core, inner, error.reason_code.clone());
             return Err(error);
+        }
+        if inner.lifecycle == StrategyLifecycle::Stopping && context.flags & V13_STOP_READY != 0 {
+            inner.stop_ready = true;
         }
         inner.staging.clear_committed();
         inner.callback_count = inner.callback_count.saturating_add(1);
@@ -1471,6 +1491,7 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
     if inner.lifecycle != StrategyLifecycle::Stopping
         || !inner.active_orders.is_empty()
         || !inner.awaiting_fills.is_empty()
+        || (inner.stop_barrier && !inner.stop_ready)
     {
         return Ok(());
     }
@@ -2022,6 +2043,7 @@ impl StrategyRuntime for NativeV13Runtime {
                     return Err(v13_runtime_error("invalid_stop_state"));
                 }
                 inner.lifecycle = StrategyLifecycle::Stopping;
+                inner.stop_ready = false;
                 inner.stop_operation = Some(id);
                 inner.stop_deadline = Some(deadline);
                 core.context.activation.open();

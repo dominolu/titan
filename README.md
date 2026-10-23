@@ -20,8 +20,9 @@ titan CLI controller
     └── 原子写入 ResultBundle
 ```
 
-- `titan` 是唯一用户入口；`run`/`validate` controller 不初始化 Python，只有显式执行 `strategy compile` 时例外。
-- 每次运行使用独立 worker；只有 `titan strategy compile` 会启动 CPython/Numba。
+- `titan` 是唯一用户入口；`run`/`validate` controller 和交易 worker 均不初始化 Python。
+- 每次运行使用独立 worker；`titan strategy compile` 通过 Rust 控制器启动短生命周期 Numba 桥接进程，打包、签名和制品校验均由 Rust 执行。
+- Python SDK 只提供策略声明、typed state、Numba 编译和 ABI 桥接；报告输出继续使用独立 Python renderer。
 - 事件热路径为 `Rust Runtime → C ABI → Numba nopython callback`，不经过 Python、PyO3 或 GIL。
 - 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
 - Python reporting 只读取并渲染 ResultBundle，不重新计算交易结果。
@@ -72,7 +73,7 @@ titan CLI controller
 ## 环境
 
 - Rust 1.94.0
-- Python 3.11+
+- Python 3.11+：编译服务器上的 Numba 策略构建，以及可选的离线报告生成；运行预编译策略不需要 Python。
 
 ```bash
 python3.11 -m venv .venv
@@ -145,6 +146,10 @@ target/release/titan strategy compile --strategy strategies/pair_arb/strategy.py
 详细命令和配置格式见 [Titan CLI](docs/titan_cli.md)。
 
 Numba 策略位于 [`strategies/`](strategies/)，通过 `StrategySpec` 和 `build(parameters)` 静态编译，不存在运行时 `module:function` entrypoint。
+
+完整的线性合约网格示例见 [Numba 网格](strategies/grid/README.md)，包含等差/等比、多空/中性、部分成交、撤单确认、停止平仓与 checkpoint 恢复；来源分析见 [gate_arb 网格迁移](docs/gate_arb_grid_analysis.md)。
+
+真实 BTCUSDT 历史成交与盘口的网格回测、成本假设、收益、回撤和在途敞口见 [历史回测报告](docs/verification/2026-10-22/grid-history/README.md)。
 
 ```python
 from numba import njit

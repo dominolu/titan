@@ -181,6 +181,10 @@ impl StrategyCapabilitiesV13 {
     pub const ACCOUNT_DATA: Self = Self(1 << 1);
     pub const ORDER_EXECUTION: Self = Self(1 << 2);
     pub const TIMER: Self = Self(1 << 3);
+    /// Stop waits for a callback to explicitly confirm its business work is complete.
+    pub const STOP_BARRIER: Self = Self(1 << 4);
+    /// Recover receives host-reconciled order results in its typed event payload.
+    pub const RECOVERY_ORDER_RESULTS: Self = Self(1 << 5);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -616,6 +620,9 @@ pub struct StrategyRuntimeContextV13 {
     pub last_error_code: i32,
     pub reserved: u32,
 }
+
+/// Callback output flag, honored only for artifacts declaring STOP_BARRIER.
+pub const V13_STOP_READY: u32 = 1;
 
 impl Default for StrategyRuntimeContextV13 {
     fn default() -> Self {
@@ -1543,8 +1550,22 @@ fn parse_manifest(
             "account_data" => StrategyCapabilitiesV13::ACCOUNT_DATA.0,
             "order_execution" => StrategyCapabilitiesV13::ORDER_EXECUTION.0,
             "timer" => StrategyCapabilitiesV13::TIMER.0,
+            "stop_barrier" => StrategyCapabilitiesV13::STOP_BARRIER.0,
+            "recovery_order_results" => StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS.0,
             _ => return Err(V13LoadError::Contract("unknown strategy capability")),
         };
+    }
+    if capabilities.contains(StrategyCapabilitiesV13::STOP_BARRIER)
+        && value_u64(map_get(value, "callback_mask")?)? & (1 << V13EventKind::Stop.index()) == 0
+    {
+        return Err(V13LoadError::Contract("stop barrier lacks stop callback"));
+    }
+    if capabilities.contains(StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS)
+        && value_u64(map_get(value, "callback_mask")?)? & (1 << V13EventKind::Recover.index()) == 0
+    {
+        return Err(V13LoadError::Contract(
+            "recovery results lack recover callback",
+        ));
     }
     if subscriptions.iter().any(|item| {
         matches!(

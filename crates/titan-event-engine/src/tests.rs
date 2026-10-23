@@ -1200,7 +1200,7 @@ fn drive_receiver(
     receiver: Arc<dyn EventReceiver>,
     gate: Arc<ActivationGate>,
     handler: Arc<dyn EventHandler>,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if gate.wait_until_active() != titan_core_types::ActivationState::Active {
             return;
@@ -1211,7 +1211,7 @@ fn drive_receiver(
                 Ok(DispatchOutcome::Closed) | Err(_) => break,
             }
         }
-    });
+    })
 }
 
 fn subscribe(
@@ -1242,7 +1242,7 @@ fn subscribe(
     let (_, mut subscriptions) = handle.commit_at_safe_point(tx).unwrap();
     let subscription = subscriptions.pop().unwrap();
     let token = subscription.token.0;
-    drive_receiver(subscription.receiver, gate.clone(), handler);
+    let _ = drive_receiver(subscription.receiver, gate.clone(), handler);
     (token, gate)
 }
 
@@ -1979,7 +1979,7 @@ fn precompiled_routes_filter_keys_and_continue_large_fanout() {
             .unwrap();
         let (_, mut subscriptions) = handle.commit_at_safe_point(transaction).unwrap();
         let subscription = subscriptions.pop().unwrap();
-        drive_receiver(
+        let _ = drive_receiver(
             subscription.receiver,
             gate.clone(),
             Arc::new(RecordingHandler(tx)),
@@ -2301,7 +2301,7 @@ fn event_publish_metadata_drives_routing_and_source_sequence() {
         .unwrap();
     let (_, mut subscriptions) = handle.commit_at_safe_point(route).unwrap();
     let subscription = subscriptions.pop().unwrap();
-    drive_receiver(
+    let _ = drive_receiver(
         subscription.receiver,
         gate.clone(),
         Arc::new(RecordingHandler(tx)),
@@ -2537,7 +2537,7 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
         trace_ring: Arc::new(crossbeam_queue::ArrayQueue::new(32)),
         metrics,
     });
-    drive_receiver(
+    let receiver_worker = drive_receiver(
         channel.clone(),
         gate.clone(),
         Arc::new(RecordingHandler(tx)),
@@ -2588,6 +2588,9 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
     values.push(rx.recv_timeout(Duration::from_secs(2)).unwrap()[0]);
     assert_eq!(values, vec![1, 2, 3, 4, 5]);
     channel.stop_and_drain();
+    // Receiving a handler message does not mean its TrackedDelivery was dropped.
+    // Join the receiver before asserting that its last in-flight lease is released.
+    receiver_worker.join().unwrap();
     assert_eq!(arena.outstanding_blocks(), 0);
 }
 

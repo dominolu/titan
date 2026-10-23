@@ -3,12 +3,51 @@ import ctypes
 import json
 import tempfile
 import unittest
+import os
+import subprocess
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 from titan_strategy import abi_v13
 from titan_strategy.static_compiler import (
-    CompileRequest, StrategyCompileError, compile_package, load_strategy_definition,
-    validate_strategy_definition, verify_artifact,
+    StrategyCompileError, load_strategy_definition, validate_strategy_definition,
 )
+
+
+@dataclass
+class _Request:
+    source_file: Path
+    parameters: dict
+    target_triple: str
+    cpu_baseline: str
+    artifact_format: str
+    output_path: Path
+    runtime_abi: dict
+
+
+def _rust(*args):
+    root = Path(__file__).parents[3]
+    binary = os.environ.get("TITAN_TEST_BINARY", str(root / "target/debug/titan"))
+    result = subprocess.run([binary, "strategy", *map(str, args), "--json"],
+                            check=True, capture_output=True, text=True, timeout=360)
+    return json.loads(result.stdout)
+
+
+def _compile_with_rust(request):
+    # Test adapter only: exercise the production Rust controller and keep dtype
+    # access here for ctypes tests of the Numba ABI. No artifact logic lives in SDK.
+    parameters = request.output_path.parent / "parameters.json"
+    parameters.write_text(json.dumps(request.parameters))
+    result = _rust("compile", "--strategy", request.source_file, "--parameters", parameters,
+                   "--target", request.target_triple, "--cpu-baseline", request.cpu_baseline,
+                   "--artifact-format", request.artifact_format, "--output", request.output_path)
+    strategy = validate_strategy_definition(load_strategy_definition(request.source_file, request.parameters), request.runtime_abi)
+    return SimpleNamespace(strategy=strategy, artifact=SimpleNamespace(
+        paths=tuple(Path(path) for path in result["paths"]), artifact_digest=result["artifact_digest"]))
+
+
+def _inspect_with_rust(path, _runtime_abi):
+    return _rust("show", path)["strategy"]
 
 
 class TestV13StaticCompiler(unittest.TestCase):
@@ -36,35 +75,21 @@ class TestV13StaticCompiler(unittest.TestCase):
             root = Path(temporary)
             (root / "pair").mkdir()
             (root / "bundle").mkdir()
-            pair = compile_package(CompileRequest(
+            pair = _compile_with_rust(_Request(
                 source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
                 "pair", root / "pair" / "v13_smoke", runtime_abi,
             ))
             self.assertEqual(len(pair.artifact.paths), 2)
             self.assertFalse(hasattr(pair, "native"))
-            manifest = verify_artifact(root / "pair" / "v13_smoke.manifest.cbor", runtime_abi)
+            manifest = _inspect_with_rust(root / "pair" / "v13_smoke.manifest.cbor", runtime_abi)
             self.assertEqual(manifest["callback_mask"], 4098)
-            bundle = compile_package(CompileRequest(
+            bundle = _compile_with_rust(_Request(
                 source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
                 "bundle", root / "bundle" / "v13_smoke.titan", runtime_abi,
             ))
             self.assertEqual(len(bundle.artifact.paths), 1)
-            self.assertEqual(verify_artifact(bundle.artifact.paths[0], runtime_abi)["state_len"], 48)
+            self.assertEqual(_inspect_with_rust(bundle.artifact.paths[0], runtime_abi)["state_len"], 48)
             self.assertEqual(pair.artifact.artifact_digest, bundle.artifact.artifact_digest)
-
-    def test_bundle_can_be_signed_with_ed25519_key_id(self):
-        source = Path(__file__).parents[3] / "strategies" / "v13_smoke" / "strategy.py"
-        runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "signed.titan"
-            result = compile_package(CompileRequest(
-                source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
-                "bundle", output, runtime_abi, bytes(range(32)), "rotation-2026-09",
-            ))
-            manifest = verify_artifact(result.artifact.paths[0], runtime_abi)
-            self.assertEqual(manifest["signature"]["algorithm"], "ed25519")
-            self.assertEqual(manifest["signature"]["key_id"], "rotation-2026-09")
-            self.assertEqual(len(manifest["signature"]["value"]), 64)
 
     def test_missing_public_view_returns_stable_callback_error(self):
         for fixture, expected in (("v13_missing_view.py", -4), ("v13_handler_error.py", -1)):
@@ -72,7 +97,7 @@ class TestV13StaticCompiler(unittest.TestCase):
                 source = Path(__file__).parent / "fixtures" / fixture
                 runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
                 with tempfile.TemporaryDirectory() as temporary:
-                    result = compile_package(CompileRequest(
+                    result = _compile_with_rust(_Request(
                         source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
                         Path(temporary) / "missing_view", runtime_abi,
                     ))
@@ -96,7 +121,7 @@ class TestV13StaticCompiler(unittest.TestCase):
         source = Path(__file__).parent / "fixtures" / "v13_hedge_views.py"
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
         with tempfile.TemporaryDirectory() as temporary:
-            result = compile_package(CompileRequest(
+            result = _compile_with_rust(_Request(
                 source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
                 Path(temporary) / "hedge", runtime_abi,
             ))
@@ -143,11 +168,11 @@ class TestV13StaticCompiler(unittest.TestCase):
         )
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
         with tempfile.TemporaryDirectory() as temporary:
-            result = compile_package(CompileRequest(
+            result = _compile_with_rust(_Request(
                 source, parameters, "x86_64-unknown-linux-gnu", "x86-64-v2",
                 "bundle", Path(temporary) / "pair_arb.titan", runtime_abi,
             ))
-            manifest = verify_artifact(result.artifact.paths[0], runtime_abi)
+            manifest = _inspect_with_rust(result.artifact.paths[0], runtime_abi)
             self.assertEqual(manifest["strategy_id"], "pair_arb")
             self.assertEqual(manifest["callback_mask"], 8179)
 
@@ -158,12 +183,12 @@ class TestV13StaticCompiler(unittest.TestCase):
             with self.subTest(strategy=name), tempfile.TemporaryDirectory() as temporary:
                 strategy_root = root / "strategies" / name
                 parameters = json.loads((strategy_root / "parameters.json").read_text())
-                result = compile_package(CompileRequest(
+                result = _compile_with_rust(_Request(
                     strategy_root / "strategy.py", parameters,
                     "x86_64-unknown-linux-gnu", "x86-64-v2", "bundle",
                     Path(temporary) / f"{name}.titan", runtime_abi,
                 ))
-                manifest = verify_artifact(result.artifact.paths[0], runtime_abi)
+                manifest = _inspect_with_rust(result.artifact.paths[0], runtime_abi)
                 self.assertEqual(manifest["strategy_id"], name)
                 self.assertEqual(manifest["abi_version"], 13)
 

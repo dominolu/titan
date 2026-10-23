@@ -1,4 +1,4 @@
-"""Titan Strategy ABI V13 authoring and offline AOT SDK."""
+"""Titan Strategy ABI V13 authoring and Numba bridge SDK."""
 
 from . import abi_v13
 from .definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
