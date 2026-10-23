@@ -1,0 +1,241 @@
+{
+  "independent_csv_recomputation_passed": true,
+  "rows": 4467,
+  "percentile_method": "nearest-rank; no negative or tail samples removed",
+  "series": [
+    {
+      "path": "connector_callback",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "samples": 1200,
+      "source_age_ms": {
+        "n": 1200,
+        "min": 4.296534,
+        "mean": 10.021739293333333,
+        "p50": 7.943213,
+        "p90": 17.61484,
+        "p95": 19.85462,
+        "p99": 27.230147,
+        "max": 181.89373,
+        "negative": 0
+      },
+      "push_age_ms": null,
+      "push_minus_source_ms": null,
+      "post_receive_to_callback_us": {
+        "n": 1200,
+        "min": 9.226,
+        "mean": 24.568135833333333,
+        "p50": 20.283,
+        "p90": 30.299,
+        "p95": 31.93,
+        "p99": 48.166,
+        "max": 1063.41,
+        "negative": 0
+      },
+      "interarrival_ms": {
+        "n": 1199,
+        "min": 0.017834,
+        "mean": 99.99982908673896,
+        "p50": 99.992078,
+        "p90": 100.756642,
+        "p95": 102.599419,
+        "p99": 114.213577,
+        "max": 273.261501,
+        "negative": 0
+      },
+      "source_timestamp_regressions": 0,
+      "source_timestamp_repeats": 0,
+      "epochs": [
+        1
+      ],
+      "bids_levels": [
+        5
+      ],
+      "asks_levels": [
+        5
+      ]
+    },
+    {
+      "path": "raw_socket",
+      "symbol": "BINANCE_FUTURE_BTC_USDT",
+      "samples": 1106,
+      "source_age_ms": {
+        "n": 1106,
+        "min": 5.275886,
+        "mean": 6.614534685352622,
+        "p50": 6.406483,
+        "p90": 8.563655,
+        "p95": 8.935201,
+        "p99": 12.328652,
+        "max": 34.375387,
+        "negative": 0
+      },
+      "push_age_ms": {
+        "n": 1106,
+        "min": 2.603239,
+        "mean": 3.3450952640144664,
+        "p50": 3.491226,
+        "p90": 3.641853,
+        "p95": 3.675676,
+        "p99": 3.935201,
+        "max": 6.649146,
+        "negative": 0
+      },
+      "push_minus_source_ms": {
+        "n": 1106,
+        "min": 2,
+        "mean": 3.2694394213381557,
+        "p50": 3,
+        "p90": 5,
+        "p95": 6,
+        "p99": 9,
+        "max": 31,
+        "negative": 0
+      },
+      "post_receive_to_callback_us": null,
+      "interarrival_ms": {
+        "n": 1105,
+        "min": 73.331947,
+        "mean": 108.56051015384615,
+        "p50": 102.089213,
+        "p90": 108.332868,
+        "p95": 132.078729,
+        "p99": 234.058482,
+        "max": 432.436941,
+        "negative": 0
+      },
+      "source_timestamp_regressions": 0,
+      "source_timestamp_repeats": 0,
+      "epochs": [
+        0
+      ],
+      "bids_levels": [
+        5
+      ],
+      "asks_levels": [
+        5
+      ]
+    },
+    {
+      "path": "raw_socket",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "samples": 1200,
+      "source_age_ms": {
+        "n": 1200,
+        "min": 5.400585,
+        "mean": 10.724963124166667,
+        "p50": 8.85786,
+        "p90": 17.833048,
+        "p95": 20.57274,
+        "p99": 26.626866,
+        "max": 49.243575,
+        "negative": 0
+      },
+      "push_age_ms": {
+        "n": 1200,
+        "min": 2.561441,
+        "mean": 3.1707964575000003,
+        "p50": 3.23163,
+        "p90": 3.594532,
+        "p95": 3.643731,
+        "p99": 4.254463,
+        "max": 5.286058,
+        "negative": 0
+      },
+      "push_minus_source_ms": {
+        "n": 1200,
+        "min": 2,
+        "mean": 7.554166666666666,
+        "p50": 6,
+        "p90": 15,
+        "p95": 17,
+        "p99": 23,
+        "max": 46,
+        "negative": 0
+      },
+      "post_receive_to_callback_us": null,
+      "interarrival_ms": {
+        "n": 1199,
+        "min": 59.534244,
+        "mean": 99.99912031359467,
+        "p50": 99.989715,
+        "p90": 100.863774,
+        "p95": 103.229379,
+        "p99": 115.627589,
+        "max": 140.63553,
+        "negative": 0
+      },
+      "source_timestamp_regressions": 0,
+      "source_timestamp_repeats": 0,
+      "epochs": [
+        0
+      ],
+      "bids_levels": [
+        5
+      ],
+      "asks_levels": [
+        5
+      ]
+    },
+    {
+      "path": "raw_socket",
+      "symbol": "OKX_FUTURE_BTC_USDT",
+      "samples": 961,
+      "source_age_ms": {
+        "n": 961,
+        "min": 8.89802,
+        "mean": 11.702523085327785,
+        "p50": 11.23407,
+        "p90": 14.073452,
+        "p95": 15.383879,
+        "p99": 18.559106,
+        "max": 27.814102,
+        "negative": 0
+      },
+      "push_age_ms": {
+        "n": 961,
+        "min": 2.614853,
+        "mean": 3.2030433766909465,
+        "p50": 3.228495,
+        "p90": 3.600181,
+        "p95": 3.64218,
+        "p99": 4.304823,
+        "max": 5.166016,
+        "negative": 0
+      },
+      "push_minus_source_ms": {
+        "n": 961,
+        "min": 6,
+        "mean": 8.499479708636837,
+        "p50": 8,
+        "p90": 11,
+        "p95": 12,
+        "p99": 15,
+        "max": 25,
+        "negative": 0
+      },
+      "post_receive_to_callback_us": null,
+      "interarrival_ms": {
+        "n": 960,
+        "min": 88.34731,
+        "mean": 124.89771273958333,
+        "p50": 100.465904,
+        "p90": 200.530878,
+        "p95": 206.088509,
+        "p99": 401.908589,
+        "max": 701.79191,
+        "negative": 0
+      },
+      "source_timestamp_regressions": 0,
+      "source_timestamp_repeats": 0,
+      "epochs": [
+        0
+      ],
+      "bids_levels": [
+        5
+      ],
+      "asks_levels": [
+        5
+      ]
+    }
+  ]
+}

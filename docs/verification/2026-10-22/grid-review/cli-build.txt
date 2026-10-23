@@ -1,0 +1,4 @@
+COMMAND: /home/dominolu/.cargo/bin/cargo +1.94.1 build -p titan-cli
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.36s
+
+EXIT_CODE=0

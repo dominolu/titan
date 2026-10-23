@@ -1,7 +1,7 @@
 //! Connector 库入口。
 //!
 //! 策略工程可通过 path 依赖本 crate，使用 [`api::BrokerApi`] 统一接口在
-//! Binance USD-M / OKX V5 / Hyperliquid 之间自由切换：
+//! Binance USD-M / OKX V5 / Hyperliquid / Gate CrossEx 之间自由切换：
 //!
 //! ```ignore
 //! let api: Box<dyn BrokerApi> = match broker {
@@ -17,6 +17,7 @@ mod account_projection;
 pub mod account_runtime;
 pub mod api;
 pub mod connector;
+pub mod decimal;
 mod market_event;
 pub mod market_runtime;
 mod units;
@@ -38,3 +39,6 @@ pub mod binancefutures;
 pub mod hyperliquid;
 #[cfg(feature = "okx")]
 pub mod okx;
+
+#[cfg(feature = "gatecrossex")]
+pub mod gatecrossex;

@@ -1,0 +1,5 @@
+   Compiling tracing-subscriber v0.3.23
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-20261021-39f1267b/connector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.07s
+     Running `/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/gate_crossex_market_stream_probe`
+{"account_used":false,"observed":["bbo","depth","funding","mark","trade"],"symbol":"BINANCE_FUTURE_BTC_USDT"}

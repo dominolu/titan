@@ -1,0 +1,35 @@
+{
+  "event-engine": {
+    "passed": 53,
+    "failed": 0,
+    "ignored": 0
+  },
+  "fairness-repeat": {
+    "passed": 100,
+    "failed": 0,
+    "ignored": 0
+  },
+  "rust-default": {
+    "passed": 513,
+    "failed": 0,
+    "ignored": 13
+  },
+  "rust-all": {
+    "passed": 517,
+    "failed": 0,
+    "ignored": 12
+  },
+  "sdk": {
+    "passed": 112,
+    "ok": true
+  },
+  "reporting": {
+    "passed": 4,
+    "ok": true
+  },
+  "source_files": 751,
+  "rust": "1.94.1",
+  "python": "3.11.14",
+  "numba": "0.63.1",
+  "numpy": "2.2.6"
+}

@@ -1,0 +1,36 @@
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-review-20261021-39f1267b/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.70s
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/connector-463ca50a9bf10eb3)
+
+running 4 tests
+
+thread 'gatecrossex::tests::review_incremental_fill_price_is_not_the_cumulative_average' (1768591) panicked at connector/src/gatecrossex/tests.rs:661:5:
+assertion `left == right` failed: the second fill is 200, not its 150 cumulative average
+  left: 1500
+ right: 2000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test gatecrossex::tests::review_incremental_fill_price_is_not_the_cumulative_average ... FAILED
+
+thread 'gatecrossex::tests::review_reconciliation_reseeds_the_order_cumulative_baseline' (1768592) panicked at connector/src/gatecrossex/tests.rs:649:5:
+new WS fill must exclude the 0.006 already seeded by REST, actual=0.004
+test gatecrossex::tests::review_reconciliation_reseeds_the_order_cumulative_baseline ... FAILED
+
+thread 'gatecrossex::tests::review_cancel_all_does_not_abandon_other_live_orders' (1768590) panicked at connector/src/gatecrossex/tests.rs:679:5:
+a fill/cancel race on order 99 must not leave live order 100 untouched
+test gatecrossex::tests::review_cancel_all_does_not_abandon_other_live_orders ... FAILED
+
+thread 'gatecrossex::tests::review_slow_balance_refresh_does_not_block_order_delivery' (1768593) panicked at connector/src/gatecrossex/tests.rs:730:5:
+order delivery waits for unrelated balance HTTP response while the private stream remains READY
+test gatecrossex::tests::review_slow_balance_refresh_does_not_block_order_delivery ... FAILED
+
+failures:
+
+failures:
+    gatecrossex::tests::review_cancel_all_does_not_abandon_other_live_orders
+    gatecrossex::tests::review_incremental_fill_price_is_not_the_cumulative_average
+    gatecrossex::tests::review_reconciliation_reseeds_the_order_cumulative_baseline
+    gatecrossex::tests::review_slow_balance_refresh_does_not_block_order_delivery
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 267 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `-p connector --lib`

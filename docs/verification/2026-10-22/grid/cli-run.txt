@@ -1,0 +1,18 @@
+{
+  "artifact_digest": "2622146fca5094cafa5b02d1824ee7d46835b62c1cbce82b474700560866a5f7",
+  "cancel_count": 1,
+  "config_sha256": "0e7051c45e7d658ffca15a120db4871e0dc191e583ad77b1623f7bc5dccceed8",
+  "environment": "backtest",
+  "event_count": 7,
+  "event_mode": "tick",
+  "returns": [],
+  "run_id": "run-18e0c9c2f4a4f8ab-1ea664",
+  "schema_version": 1,
+  "state_sha256": "8ac7a38d9b2862bc9284e420f4c162010fbf4f1be24c81548db6a14b06a747b9",
+  "status": "COMPLETED",
+  "strategy_id": "grid",
+  "strategy_version": "1.0.0",
+  "submit_count": 3,
+  "trace_sha256": "0f7f5ee38bf81d251c91dd701bca001989428fdc72bf8d0d8ae666b49f1bc922",
+  "wall_time_ns": 674626
+}

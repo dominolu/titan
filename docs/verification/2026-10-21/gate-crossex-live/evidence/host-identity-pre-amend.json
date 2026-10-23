@@ -1,0 +1,9 @@
+{
+  "host": "43.130.234.54",
+  "machine": "x86_64",
+  "system": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+  "credential_mode": "0o600",
+  "ntp_synchronized": "yes",
+  "binary_sha256": "d2b36b18efd2d607ca38116962200f3f47d5f438cdd63afd86b77218ed595086",
+  "pre_amend_confirmation_build": true
+}

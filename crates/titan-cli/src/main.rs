@@ -15,6 +15,7 @@ use std::{
     time::Instant,
 };
 
+mod compiler;
 mod registry;
 use registry::{Registry, StopAction, now_ns, process_start_time};
 
@@ -363,6 +364,7 @@ enum V13TraceEventKind {
     Balance,
     AccountState,
     Timer,
+    Stop,
 }
 
 #[derive(Debug, Deserialize)]
@@ -707,6 +709,11 @@ fn v13_manifest_json(
         "native_digest": hex_digest(&manifest.native_digest),
         "target_triple": manifest.target_triple,
         "cpu_baseline": manifest.cpu_baseline,
+        "callback_mask": manifest.callback_mask,
+        "state_len": manifest.state.byte_len,
+        "state_alignment": manifest.state.alignment,
+        "state_schema_version": manifest.state.version,
+        "state_schema_hash": hex_digest(&manifest.state.hash),
         "signed": manifest.signature.is_some(),
         "key_id": manifest.signature.as_ref().map(|value| value.key_id.as_ref()),
         "artifact": path,
@@ -817,104 +824,8 @@ struct CompileV13Request<'a> {
 }
 
 fn compile_v13_strategy(request: CompileV13Request<'_>) -> Result<(), CliError> {
-    let CompileV13Request {
-        strategy,
-        parameters,
-        target,
-        cpu_baseline,
-        artifact_format,
-        output,
-        signing_key,
-        key_id,
-        json,
-    } = request;
-
-    let output = output.ok_or_else(|| {
-        CliError::Engine("ABI V13 compile requires --output <artifact-path>".into())
-    })?;
-    if parameters == "{}" {
-        return Err(CliError::Engine(
-            "ABI V13 compile requires --parameters <parameters.json>".into(),
-        ));
-    }
-    if !strategy.is_file() {
-        return Err(CliError::Engine(format!(
-            "ABI V13 strategy source does not exist: {}",
-            strategy.display()
-        )));
-    }
-    let parameters_path = Path::new(parameters);
-    if !parameters_path.is_file() {
-        return Err(CliError::Engine(format!(
-            "ABI V13 parameters file does not exist: {}",
-            parameters_path.display()
-        )));
-    }
-
-    let sdk_path = std::env::var_os("TITAN_STRATEGY_SDK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk"));
-    if !sdk_path.is_dir() {
-        return Err(CliError::Engine(format!(
-            "Titan Strategy SDK directory does not exist: {}",
-            sdk_path.display()
-        )));
-    }
-    let mut python_paths = vec![
-        fs::canonicalize(&sdk_path).map_err(|source| CliError::Read {
-            path: sdk_path.clone(),
-            source,
-        })?,
-    ];
-    if let Some(existing) = std::env::var_os("PYTHONPATH") {
-        python_paths.extend(std::env::split_paths(&existing));
-    }
-    let python_path = std::env::join_paths(python_paths)
-        .map_err(|error| CliError::Engine(format!("cannot construct PYTHONPATH: {error}")))?;
-    let python = std::env::var_os("TITAN_STRATEGY_PYTHON")
-        .unwrap_or_else(|| std::ffi::OsString::from("python3"));
-    let mut command = Command::new(python);
-    command
-        .env("PYTHONPATH", python_path)
-        .arg("-m")
-        .arg("titan_strategy.cli")
-        .arg("compile")
-        .arg("--strategy")
-        .arg(strategy)
-        .arg("--parameters")
-        .arg(parameters_path)
-        .arg("--cpu-baseline")
-        .arg(cpu_baseline)
-        .arg("--artifact-format")
-        .arg(artifact_format)
-        .arg("--output")
-        .arg(output);
-    if let Some(target) = target {
-        command.arg("--target").arg(target);
-    }
-    if let Some(signing_key) = signing_key {
-        command.arg("--signing-key").arg(signing_key);
-        command.arg("--key-id").arg(
-            key_id.ok_or_else(|| {
-                CliError::Engine("--key-id is required with --signing-key".into())
-            })?,
-        );
-    }
-    let result = command.output().map_err(CliError::Spawn)?;
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr).trim().to_owned();
-        return Err(CliError::StaticCompile(if stderr.is_empty() {
-            format!("compiler exited with {}", result.status)
-        } else {
-            stderr
-        }));
-    }
-    let stdout = String::from_utf8(result.stdout).map_err(|error| {
-        CliError::StaticCompile(format!("compiler output is not UTF-8: {error}"))
-    })?;
-    let value: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|error| {
-        CliError::StaticCompile(format!("compiler returned invalid JSON: {error}"))
-    })?;
+    let json = request.json;
+    let value = compiler::compile(&request)?;
     if json {
         println!("{value}");
     } else {
@@ -1462,6 +1373,7 @@ fn v13_backtest_worker(
                         ..Default::default()
                     }),
             ),
+            V13TraceEventKind::Stop => adapter.stop(event.now_ns),
         }
         .map_err(|error| CliError::Engine(error.to_string()))?;
         for command in commands {
@@ -1472,14 +1384,23 @@ fn v13_backtest_worker(
         }
         event_count += 1;
     }
-    let stop_commands = adapter
-        .stop(last_now_ns)
-        .map_err(|error| CliError::Engine(error.to_string()))?;
+    let stop_commands = if adapter.is_stopped() {
+        Vec::new()
+    } else {
+        adapter
+            .stop(last_now_ns)
+            .map_err(|error| CliError::Engine(error.to_string()))?
+    };
     for command in stop_commands {
         match command {
             StagedCommandV13::Submit { .. } => submit_count += 1,
             StagedCommandV13::Cancel { .. } => cancel_count += 1,
         }
+    }
+    if !adapter.is_stopped() {
+        return Err(CliError::Engine(
+            "trace ended before strategy stop completed; include a stop event followed by cancel, fill and position confirmations".into(),
+        ));
     }
     let state_sha256 = format!("{:x}", Sha256::digest(adapter.state_bytes()));
     let status = if stop.load(Ordering::Acquire) {

@@ -1,0 +1,4 @@
+$ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-complete-20261021-39f1267b/connector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-gatecrossex-complete-20261021-39f1267b/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.97s

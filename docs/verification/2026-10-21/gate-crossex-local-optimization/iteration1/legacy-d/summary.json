@@ -1,0 +1,30 @@
+{
+  "account_used": false,
+  "allocation_audit": {
+    "callbacks": 50,
+    "rust_alloc_or_realloc_calls": 10968,
+    "scope": "whole probe process; counting disabled during latency window",
+    "warmup_seconds": 5
+  },
+  "callbacks_total": 698,
+  "clock": "same-host CLOCK_REALTIME; exchange timestamps excluded",
+  "drop_total": 0,
+  "lane_progress": "LaneProgress { admitted_sequence: 698, dispatched_sequence: 698, committed_sequence: 698 }",
+  "latency_us": {
+    "max": 2052.516,
+    "mean": 112.71589499999995,
+    "min": 60.121,
+    "n": 600,
+    "negative": 0,
+    "p50": 90.881,
+    "p95": 143.227,
+    "p99": 681.594
+  },
+  "path": "WS frame before JSON -> connector -> MarketEventBridge -> EventArena -> PRIMARY async lane -> NativeV13Runtime -> native on_depth entry",
+  "resync_total": 0,
+  "seconds": 60,
+  "strategy_state": "Stopped",
+  "symbol": "GATE_FUTURE_BTC_USDT",
+  "venue": "gate-legacy",
+  "warmup_seconds": 10
+}

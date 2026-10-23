@@ -1,0 +1,13 @@
+{
+  "host": "192.168.3.88",
+  "source_dir": "/home/dominolu/dev/titan-gatecrossex-live-20261021-39f1267b",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+  "machine": "x86_64",
+  "system": "Linux-5.15.0-186-generic-x86_64-with-glibc2.35",
+  "binary_sha256": "833eaf293c3dadb11398bc8130f8fc08a3dafb8361393c82a652ccfe79f8021f",
+  "fixtures": {
+    "deploy/pair_arb_v13/artifacts/pair_arb.titan": "5f532d44ed3b14725e8aa212de9c30ee0e4dbb81378bfcd202d8221cf660af63",
+    "crates/titan-cli/tests/fixtures/artifacts/event_counter.titan": "e0cbe122bea8c0e3a24d932cbadb5b2945205d9b3258482b0684a40be85bdb65"
+  }
+}

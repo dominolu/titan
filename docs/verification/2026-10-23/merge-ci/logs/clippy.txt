@@ -1,0 +1,12 @@
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-core-types)
+    Checking titan-domain-types v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-domain-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/hftbacktest-derive)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-event-engine)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-market-service)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-merge-20261023-a055af91/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.82s

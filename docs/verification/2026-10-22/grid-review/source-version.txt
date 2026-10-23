@@ -1,0 +1,39 @@
+Baseline HEAD: 2aafc598b0ac43d40a2852cae26a16aed09d9408
+Working-tree snapshot, not a clean commit.
+Remote: /home/dominolu/dev/titan-grid-review-20261022-2aafc598
+
+ M AGENTS.md
+ M Cargo.lock
+ M README.md
+ M crates/titan-cli/Cargo.toml
+ M crates/titan-cli/src/main.rs
+ M crates/titan-event-engine/src/tests.rs
+ M crates/titan-strategy-runtime/src/offline_v13.rs
+ M crates/titan-strategy-runtime/src/runtime_v13.rs
+ M crates/titan-strategy-runtime/src/v13.rs
+ M docs/strategy_abi_v13_implementation_status.md
+ M docs/strategy_abi_v13_typed_state_blob_technical_design.md
+ M docs/system_refactor_checklist.md
+ M python/titan-strategy-sdk/README.md
+ M python/titan-strategy-sdk/pyproject.toml
+ M python/titan-strategy-sdk/tests/test_v13_static_compiler.py
+ M python/titan-strategy-sdk/titan_strategy/__init__.py
+ D python/titan-strategy-sdk/titan_strategy/cbor.py
+ M python/titan-strategy-sdk/titan_strategy/cli.py
+ M python/titan-strategy-sdk/titan_strategy/context_v13.py
+ M python/titan-strategy-sdk/titan_strategy/definition.py
+ M python/titan-strategy-sdk/titan_strategy/static_compiler.py
+ M scripts/verify_system_refactor.sh
+?? configs/grid_v13_backtest.toml
+?? crates/titan-cli/src/compiler.rs
+?? crates/titan-cli/tests/strategy_compile.rs
+?? crates/titan-strategy-runtime/examples/v13_grid_stop_smoke.rs
+?? docs/gate_arb_grid_analysis.md
+?? docs/memory/
+?? docs/verification/2026-10-21/native-compiler/
+?? docs/verification/2026-10-22/
+?? fixtures/grid_v13_trace.json
+?? python/titan-strategy-sdk/tests/test_grid.py
+?? python/titan-strategy-sdk/tests/test_grid_native.py
+?? python/titan-strategy-sdk/tests/test_v13_stop_barrier.py
+?? strategies/grid/

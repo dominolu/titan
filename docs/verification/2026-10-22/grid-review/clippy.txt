@@ -1,0 +1,6 @@
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-grid-review-20261022-2aafc598/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-grid-review-20261022-2aafc598/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-grid-review-20261022-2aafc598/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-grid-review-20261022-2aafc598/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-grid-review-20261022-2aafc598/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.39s

@@ -275,3 +275,13 @@ Hyperliquid fill 更新 quantity，但 entry_price/unrealized_pnl/liquidation_pr
 - [x] 编译服务器全量非实盘验证：Rust 446、doctest 2、Python 35；严格 Clippy、AOT、恢复、排空、定时失败和 CLI 集成全部通过。
 
 详细变更、回归范围、验证日志及 282 个源码校验和见 [修复验证报告](verification/2026-10-13/review-fixes/README.md)。12 项实盘测试仍未启用，未部署或操作真实账户。严格 ABI/制品/state schema 校验继续保留。本轮修复与验证证据一并提交 GitHub。
+
+## 2026-10-21 编译与制品职责收敛到 Rust
+
+- [x] Rust 统一调度 describe/Numba 对象生成、资源/超时限制、SIGINT/SIGTERM 取消及子进程组清理。
+- [x] Rust 校验对象协议和符号、调度 nm/objcopy/cc、生成 ABI descriptor 并检查动态依赖与导出。
+- [x] Rust 统一 canonical CBOR、manifest、摘要、Ed25519 签名、pair/bundle 发布和失败回滚；复用现有 runtime loader 校验。
+- [x] 精简 Python SDK：保留策略、必要 Numba/ABI 桥接及相关测试，删除打包/签名/制品校验和进程调度；报告代码不变。
+- [x] 完整编译服务器验证通过：Rust 453、doctest 2、Python SDK 30、报告 4；严格 Clippy、AOT、恢复、排空、CLI、重复构建、签名及实际编译中断验证通过。
+
+测试同步竞态的修复仅限 EventEngine 测试接收线程 join，生产事件引擎不变。新旧制品继续采用相同严格 ABI 校验；未部署或执行实盘测试。详细边界、环境、源码校验和及日志见 [本轮验证报告](verification/2026-10-21/native-compiler/README.md)。

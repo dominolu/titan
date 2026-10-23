@@ -1,0 +1,705 @@
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-live-20261021-39f1267b/connector)
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-gatecrossex-live-20261021-39f1267b/crates/titan-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.20s
+     Running unittests src/main.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/collector-678068fb32c3fbe0)
+
+running 2 tests
+test pipeline::tests::writer_io_failure_is_returned_to_owner ... ok
+test pipeline::tests::bounded_writer_drains_rotates_and_appends_gzip_members ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/bin/normalize.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/normalize-f47821f6cf3726a5)
+
+running 3 tests
+test tests::parses_bybit_snapshot ... ok
+test tests::parses_hyperliquid_book ... ok
+test tests::parses_binance_trade_and_depth ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/connector-7692d375156ac888)
+
+running 294 tests
+test account_projection::tests::position_updates_keep_both_sides_independent ... ok
+test account_projection::tests::position_timestamps_are_scoped_to_side ... ok
+test account_projection::tests::older_buffered_facts_do_not_overwrite_reconciled_images ... ok
+test account_runtime::tests::a_new_connection_invalidates_a_late_ready_commit_from_the_previous_session ... ok
+test account_runtime::tests::pending_account_facts_have_a_hard_limit_and_preserve_order ... ok
+test account_runtime::tests::an_uncommitted_replacement_never_cancels_the_existing_accounts_orders ... ok
+test api::tests::test_margin_type_mapping ... ok
+test api::tests::test_api_error_format ... ok
+test account_projection::tests::concurrent_snapshots_capture_matching_data_and_version ... ok
+test account_runtime::tests::private_position_publication_is_encoded_as_an_account_fact ... ok
+test api::tests::test_position_side_from_qty ... ok
+test api::tests::test_order_status_mapping ... ok
+test api::tests::test_order_type_mapping ... ok
+test account_runtime::tests::managed_orders_use_scoped_sequence_and_rejection_keeps_canonical_facts ... ok
+test account_runtime::tests::account_facts_keep_incremental_price_average_and_settlement_units_distinct ... ok
+test api::tests::test_side_mapping ... ok
+test api::tests::test_tif_mapping ... ok
+test api::tests::test_trait_object_usable ... ok
+test binancefutures::brokerapi::tests::account_mode_validation_accepts_hedge_mode ... ok
+test api::tests::test_unified_types_serde_roundtrip ... ok
+test binancefutures::brokerapi::tests::account_mode_validation_accepts_one_way_single_and_multi_asset ... ok
+test api::tests::test_unified_request_serde ... ok
+test binancefutures::brokerapi::tests::live_readonly_endpoint_inventory ... ignored, requires explicit Binance mainnet credentials
+test binancefutures::brokerapi::tests::live_reversible_endpoint_inventory ... ignored, changes and restores Binance mainnet account configuration
+test binancefutures::brokerapi::tests::decimal_params_do_not_leak_binary_float_precision ... ok
+test binancefutures::brokerapi::tests::server_time_accepts_binance_camel_case_field ... ok
+test binancefutures::brokerapi::tests::net_and_hedge_position_wire_semantics ... ok
+test binancefutures::brokerapi::tests::order_query_error_is_not_deserialized_as_an_empty_order ... ok
+test binancefutures::brokerapi::tests::one_or_many_accepts_binance_symbol_and_all_symbol_shapes ... ok
+test binancefutures::brokerapi::tests::test_build_algo_body ... ok
+test binancefutures::brokerapi::tests::test_build_submit_body_limit ... ok
+test binancefutures::brokerapi::tests::test_book_ticker_stream_parse ... ok
+test binancefutures::brokerapi::tests::test_build_submit_body_market_omits_price_and_tif ... ok
+test binancefutures::brokerapi::tests::test_build_batch_submit_body ... ok
+test binancefutures::brokerapi::tests::test_build_submit_body_stop_and_reduce_only ... ok
+test binancefutures::brokerapi::tests::test_cancel_and_amend_requests_serde ... ok
+test binancefutures::brokerapi::tests::test_parse_account ... ok
+test binancefutures::brokerapi::tests::test_parse_fills ... ok
+test binancefutures::market_data_stream::tests::live_ws ... ignored
+test binancefutures::brokerapi::tests::test_parse_ticker ... ok
+test binancefutures::brokerapi::tests::test_parse_position ... ok
+test binancefutures::brokerapi::tests::test_parse_funding_rate_and_open_interest ... ok
+test binancefutures::brokerapi::tests::test_parse_klines ... ok
+test binancefutures::market_data_stream::tests::split_routes_accept_only_their_assigned_market_kinds ... ok
+test binancefutures::brokerapi::tests::test_parse_exchange_info ... ok
+test binancefutures::brokerapi::tests::test_parse_order_info ... ok
+test connector::tests::account_publication_is_delivered_directly_without_a_live_event_bridge ... ok
+test binancefutures::reconnect_tests::production_market_stream_is_split_by_binance_route ... ok
+test binancefutures::reconnect_tests::private_user_stream_uses_binance_events_route_on_production ... ok
+test binancefutures::ordermanager::tests::duplicated_ws_update_with_same_cumulative_fill_does_not_repeat_delta ... ok
+test binancefutures::ordermanager::tests::tracked_rest_order_flows_through_private_ws_without_legacy_prefix ... ok
+test binancefutures::msg::stream::tests::test_deserialize_mark_price_update ... ok
+test binancefutures::msg::stream::tests::test_deserialize_mark_price_alias ... ok
+test gatecrossex::tests::account_facts_fail_closed_on_unknown_mode_or_invalid_numbers ... ok
+test gatecrossex::tests::account_balances_aggregate_same_coin_across_venues ... ok
+test connector::tests::publish_event_is_delivered_once_through_the_direct_sender ... ok
+test gatecrossex::tests::collateral_margin_valuation_is_not_used_as_wallet_balance ... ok
+test gatecrossex::tests::cumulative_order_updates_coalesce_and_ignore_stale_facts ... ok
+test gatecrossex::tests::dual_positions_preserve_both_sides_and_zero_leg ... ok
+test gatecrossex::tests::empty_client_ids_do_not_merge_different_venue_orders ... ok
+test gatecrossex::tests::late_terminal_fill_correction_is_published_without_reopening_order ... ok
+test gatecrossex::tests::margin_inventory_preserves_long_assets_short_liabilities_and_interest ... ok
+test gatecrossex::tests::multiple_currency_balances_keep_units_and_convert_totals_with_explicit_market_rates ... ok
+test gatecrossex::tests::native_symbols_preserve_case_and_unicode_asset_names ... ok
+test gatecrossex::tests::order_states_post_only_and_client_alias_normalize ... ok
+test account_runtime::tests::id_retention_follows_active_and_retained_terminal_orders ... ok
+test account_projection::tests::projection_versions_follow_their_own_facts_and_history_is_bounded ... ok
+test gatecrossex::tests::public_book_bbo_and_trades_convert_contract_counts_to_base ... ok
+test gatecrossex::tests::amendment_terminal_without_requested_fields_is_unknown ... ok
+test gatecrossex::tests::public_snapshots_funding_and_native_identity_are_preserved ... ok
+test account_runtime::tests::bootstrap_validates_populates_caches_and_publishes_ready_last ... ok
+test gatecrossex::tests::open_orders_use_unpaginated_endpoint_and_full_native_symbol ... ok
+test gatecrossex::tests::cancellation_ack_does_not_invent_terminal_status ... ok
+test gatecrossex::tests::gate_public_contract_multiplier_is_independent_from_order_base_quantity ... ok
+test gatecrossex::tests::review_incremental_fill_price_is_not_the_cumulative_average ... ok
+test gatecrossex::tests::margin_position_mode_and_leverage_do_not_reuse_futures_endpoint ... ok
+test gatecrossex::tests::isolated_accounts_are_scoped_and_never_modify_account_modes ... ok
+test gatecrossex::tests::aligned_float_orders_serialize_canonical_grid_decimals ... ok
+test gatecrossex::tests::scaled_depth_quantities_stay_exact_for_native_decimal_lot_parser ... ok
+test gatecrossex::tests::signing_matches_independent_python_sha512_vector ... ok
+test gatecrossex::tests::spot_inventory_is_scoped_to_venue_and_coin_without_fabricated_cost_basis ... ok
+test gatecrossex::tests::partial_batch_failures_keep_successes_and_continue_processing ... ok
+test gatecrossex::tests::native_rest_preserves_original_adapter_routes_auth_and_payloads ... ok
+test binancefutures::reconnect_tests::public_stream_reconnects_and_replays_desired_subscription ... ok
+test gatecrossex::tests::public_reconnect_replays_desired_subscriptions ... ok
+test gatecrossex::tests::private_ready_waits_for_all_confirmed_subscriptions_and_reconnects ... ok
+test hyperliquid::brokerapi::tests::account_client_order_id_is_prefixed_as_exchange_cloid ... ok
+test hyperliquid::brokerapi::tests::limit_price_wire_hides_binary_float_residue ... ok
+test hyperliquid::brokerapi::tests::live_cancel_single_order_cleanup ... ignored
+test hyperliquid::brokerapi::tests::live_private_api_smoke ... ignored
+test hyperliquid::brokerapi::tests::live_public_api_smoke ... ignored
+test hyperliquid::brokerapi::tests::live_spot_sell_usdh_smoke ... ignored
+test hyperliquid::brokerapi::tests::quantity_wire_hides_binary_float_residue ... ok
+test hyperliquid::brokerapi::tests::test_api_error_from_hl ... ok
+test hyperliquid::brokerapi::tests::test_build_algo_wire ... ok
+test hyperliquid::brokerapi::tests::test_build_wire_limit ... ok
+test hyperliquid::brokerapi::tests::test_build_wire_market ... ok
+test hyperliquid::brokerapi::tests::test_build_wire_stop ... ok
+test hyperliquid::brokerapi::tests::test_parse_asset_ctx_real_shape ... ok
+test hyperliquid::brokerapi::tests::test_parse_clearinghouse_state_detail ... ok
+test hyperliquid::brokerapi::tests::test_parse_exchange_status_and_fees ... ok
+test hyperliquid::brokerapi::tests::test_parse_funding_history_and_candle ... ok
+test hyperliquid::brokerapi::tests::test_parse_l2_book ... ok
+test hyperliquid::brokerapi::tests::test_parse_meta_and_ctxs ... ok
+test gatecrossex::tests::reconciliation_reseeds_notional_and_never_overwrites_a_newer_stream_fact ... ok
+test hyperliquid::brokerapi::tests::test_parse_order_status_response ... ok
+test hyperliquid::brokerapi::tests::test_parse_recent_trades_and_bbo ... ok
+test hyperliquid::brokerapi::tests::test_side_mapping_hl ... ok
+test hyperliquid::brokerapi::tests::test_standard_account_keeps_perp_balance_source ... ok
+test hyperliquid::brokerapi::tests::test_status_mapping_hl ... ok
+test hyperliquid::brokerapi::tests::test_unified_account_uses_spot_balance_and_maintenance_available ... ok
+test hyperliquid::live_ws_tests::live_partial_fill_reconcile_probe ... ignored
+test hyperliquid::live_ws_tests::live_ws_private_stream_probe ... ignored
+test hyperliquid::live_ws_tests::live_ws_public_streams_probe ... ignored
+test hyperliquid::msg::tests::test_deserialize_cancel_status_variants ... ok
+test gatecrossex::tests::raw_websocket_keeps_private_payload_distinct_from_subscription_ack ... ok
+test hyperliquid::msg::tests::test_deserialize_l2_book_levels ... ok
+test hyperliquid::msg::tests::test_deserialize_meta_ignores_unknown_fields ... ok
+test hyperliquid::msg::tests::test_deserialize_order_state_camel_case ... ok
+test hyperliquid::msg::tests::test_deserialize_user_event_fill ... ok
+test hyperliquid::msg::tests::test_deserialize_order_status_variants ... ok
+test hyperliquid::msg::tests::test_deserialize_ws_msg ... ok
+test hyperliquid::ordermanager::tests::cumulative_partial_fills_publish_only_the_new_delta ... ok
+test hyperliquid::ordermanager::tests::amend_does_not_let_delayed_old_cancel_close_replacement ... ok
+test hyperliquid::ordermanager::tests::open_order_with_executed_quantity_is_partially_filled ... ok
+test hyperliquid::ordermanager::tests::repeated_filled_qty_replays_do_not_emit_delta ... ok
+test hyperliquid::ordermanager::tests::test_from_str_to_status_mapping ... ok
+test hyperliquid::ordermanager::tests::test_orders_filters_active_and_symbol ... ok
+test hyperliquid::ordermanager::tests::test_gc_removes_stale_orders ... ok
+test hyperliquid::ordermanager::tests::test_update_from_ws_ignores_out_of_order_timestamp ... ok
+test hyperliquid::ordermanager::tests::test_update_from_ws_uses_status_timestamp_fallback ... ok
+test hyperliquid::ordermanager::tests::tracked_order_matches_unprefixed_cloid ... ok
+test hyperliquid::ordermanager::tests::tracked_order_flows_through_private_ws_without_legacy_prefix ... ok
+test hyperliquid::signing::tests::test_cancel_connection_id_matches_official_sdk ... ok
+test hyperliquid::signing::tests::test_connection_id_matches_official_sdk ... ok
+test hyperliquid::signing::tests::test_connection_id_with_vault_matches_official_sdk ... ok
+test hyperliquid::signing::tests::test_derive_address ... ok
+test hyperliquid::signing::tests::test_derive_address_known_vector ... ok
+test hyperliquid::signing::tests::test_msgpack_field_order_cancel_action ... ok
+test hyperliquid::signing::tests::test_msgpack_field_order_order_action ... ok
+test hyperliquid::signing::tests::test_msgpack_field_order_order_wire ... ok
+test hyperliquid::signing::tests::test_signature_matches_official_sdk_mainnet ... ok
+test gatecrossex::tests::native_websocket_mutation_disconnect_is_an_unknown_outcome ... ok
+test hyperliquid::signing::tests::test_signature_matches_official_sdk_testnet ... ok
+test hyperliquid::signing::tests::test_signature_serialization ... ok
+test hyperliquid::signing::tests::test_signature_recovers_derived_address ... ok
+test hyperliquid::unit_tests::test_build_assets_map_mainnet_order ... ok
+test hyperliquid::unit_tests::test_build_assets_map_testnet_order ... ok
+test gatecrossex::tests::query_ticker_uses_real_public_protocol_and_preserves_native_symbol ... ok
+test gatecrossex::tests::sub_nanounit_rules_do_not_report_zero_decimal_precision ... ok
+test gatecrossex::tests::submit_fence_rechecks_after_async_preparation ... ok
+test hyperliquid::unit_tests::test_build_from_rejects_invalid_private_key ... ok
+test hyperliquid::unit_tests::test_build_order_wire_injects_cloid_and_reduce_only ... ok
+test hyperliquid::unit_tests::test_build_order_wire_price_precision ... ok
+test hyperliquid::unit_tests::test_build_order_wire_rejects_fok_and_unsupported_tif ... ok
+test hyperliquid::unit_tests::test_build_order_wire_rejects_invalid_side_and_type ... ok
+test hyperliquid::unit_tests::test_build_order_wire_side_and_asset ... ok
+test hyperliquid::unit_tests::test_build_order_wire_size_precision ... ok
+test hyperliquid::unit_tests::test_build_order_wire_tif_mapping ... ok
+test hyperliquid::unit_tests::test_exchange_error_message ... ok
+test hyperliquid::unit_tests::test_exchange_response_accepts_string_error_payload ... ok
+test hyperliquid::unit_tests::test_parse_cancel_statuses ... ok
+test hyperliquid::unit_tests::test_parse_order_statuses_err_response ... ok
+test hyperliquid::unit_tests::test_parse_order_statuses_error_and_empty ... ok
+test hyperliquid::unit_tests::test_parse_order_statuses_resting_and_filled ... ok
+test hyperliquid::unit_tests::test_schedule_cancel_unavailable_detection ... ok
+test hyperliquid::wire_format_tests::test_trim_wire_decimals ... ok
+test gatecrossex::tests::metadata_uses_base_quantity_without_contract_multiplier ... ok
+test gatecrossex::tests::submission_signs_exact_wire_body_and_queries_actual_order ... ok
+test hyperliquid::ws::tests::fast_mode_only_changes_the_l2_subscription_identity ... ok
+test gatecrossex::tests::income_filters_client_side_without_unsupported_server_filter ... ok
+test gatecrossex::tests::review_reconciliation_reseeds_the_order_cumulative_baseline ... ok
+test hyperliquid::ws::tests::market_kinds_use_distinct_hyperliquid_channels ... ok
+test gatecrossex::tests::review_slow_balance_refresh_does_not_block_order_delivery ... ok
+test gatecrossex::tests::amendment_updates_quantity_without_synthetic_order_status ... ok
+test hyperliquid::ws::tests::test_apply_fill ... ok
+test hyperliquid::ws::tests::stale_l2_tails_are_not_merged_into_a_newer_bbo ... ok
+test hyperliquid::ws::tests::test_classify_channel ... ok
+test hyperliquid::ws::tests::test_parse_user_fundings_snapshot ... ok
+test hyperliquid::ws::tests::test_parse_user_fundings_streaming ... ok
+test hyperliquid::ws::tests::test_trade_side_is_sell ... ok
+test hyperliquid::ws::tests::unsubscribe_preserves_channels_shared_by_remaining_kinds ... ok
+test gatecrossex::tests::gate_open_interest_query_uses_a_current_public_snapshot_in_base_units ... ok
+test market_event::tests::decimal_scaling_rejects_invalid_values ... ok
+test market_event::tests::decimal_unit_parses_exchange_numbers_without_float_roundtrip ... ok
+test gatecrossex::tests::unsupported_capabilities_are_explicit_and_factories_registered ... ok
+test hyperliquid::brokerapi::tests::test_parse_order_response ... ok
+test market_runtime::tests::direct_publication_queue_full_degrades_and_requests_venue_recovery ... ok
+test market_runtime::tests::command_pressure_is_bounded_and_scope_release_drops_the_runtime ... ok
+test hyperliquid::unit_tests::public_market_builder_does_not_require_or_retain_a_private_key ... ok
+test gatecrossex::tests::risk_limits_require_symbol_list_and_keep_query_public ... ok
+test market_runtime::tests::operation_history_is_bounded_and_pending_operations_are_terminalized ... ok
+test market_runtime::tests::rejected_restart_does_not_leave_the_running_admission_latched ... ok
+test market_runtime::tests::shared_subscription_snapshot_and_shutdown_follow_the_unified_runtime_contract ... ok
+test gatecrossex::tests::review_cancel_all_does_not_abandon_other_live_orders ... ok
+test market_runtime::tests::shutdown_failure_is_not_misreported_as_stopped ... ok
+test market_runtime::tests::shutdown_releases_connector_mutex_while_future_is_pending ... ok
+test okx::brokerapi::tests::account_mode_validation_accepts_cash_only_in_spot_or_futures_mode ... ok
+test okx::brokerapi::tests::account_mode_validation_accepts_supported_derivatives_modes ... ok
+test okx::brokerapi::tests::account_mode_validation_rejects_spot_and_unknown_mode_for_derivatives ... ok
+test okx::brokerapi::tests::live_private_account_smoke ... ignored, requires explicit OKX mainnet credentials
+test okx::brokerapi::tests::live_public_api_smoke ... ignored
+test okx::brokerapi::tests::test_build_algo_body ... ok
+test okx::brokerapi::tests::test_build_order_body_limit ... ok
+test okx::brokerapi::tests::test_build_order_body_market_and_stop ... ok
+test okx::brokerapi::tests::test_build_order_body_tif_variants ... ok
+test okx::brokerapi::tests::test_parse_balance ... ok
+test okx::brokerapi::tests::test_parse_fills ... ok
+test okx::brokerapi::tests::test_parse_instruments ... ok
+test okx::brokerapi::tests::test_parse_order ... ok
+test okx::brokerapi::tests::test_parse_position ... ok
+test okx::brokerapi::tests::test_parse_ticker_and_funding ... ok
+test okx::brokerapi::tests::test_ws_extra_private_channels ... ok
+test okx::brokerapi::tests::test_ws_extra_public_channels ... ok
+test okx::ordermanager::tests::cumulative_partial_fills_publish_only_the_new_delta ... ok
+test okx::ordermanager::tests::repeated_cumulative_fill_replays_do_not_emit_delta ... ok
+test okx::ordermanager::tests::test_cancel_all_respects_pos_side ... ok
+test okx::ordermanager::tests::tracked_rest_order_flows_through_private_ws_without_legacy_prefix ... ok
+test hyperliquid::unit_tests::test_build_from_derives_address_when_empty ... ok
+test okx::private_stream::tests::test_position_qty_signed_hedge_mode ... ok
+test okx::private_stream::tests::test_position_qty_signed_net_mode ... ok
+test okx::public_stream::tests::bbo_uses_the_outer_subscription_symbol_when_rows_omit_inst_id ... ok
+test okx::public_stream::tests::book_gap_invalidates_and_the_recovery_snapshot_advances_epoch ... ok
+test okx::public_stream::tests::checksum_failure_invalidates_without_reusing_the_epoch ... ok
+test binancefutures::market_data_stream::tests::mark_price_frame_publishes_price_and_funding_independently ... ok
+test okx::tests::test_build_from_invalid_toml ... ok
+test hyperliquid::reconnect_tests::public_stream_reconnects_and_replays_desired_subscription ... ok
+test gatecrossex::tests::accepted_submission_with_failed_followup_requires_reconciliation ... ok
+test market_runtime::tests::shutdown_deadline_is_bounded_and_a_later_stop_reaps_the_runtime ... ok
+test okx::tests::test_build_from_rejects_invalid_proxy ... ok
+test binancefutures::market_data_stream::tests::rest_snapshot_and_contiguous_delta_preserve_sequence_and_advance_epoch ... ok
+test okx::tests::test_build_from_rejects_order_prefix_too_long ... ok
+test hyperliquid::ws::tests::full_position_images_replace_prices_and_clear_flat_positions ... ok
+test hyperliquid::ws::tests::private_ready_ignores_public_and_duplicate_subscription_responses ... ok
+test hyperliquid::ws::tests::bbo_array_is_published_as_one_atomic_two_sided_batch ... ok
+test hyperliquid::ws::tests::l2_book_images_are_snapshots_with_monotonic_epochs ... ok
+test okx::tests::test_build_submit_body_fields ... ok
+test okx::tests::test_build_submit_body_market_omits_px ... ok
+test okx::tests::test_build_submit_body_pos_side ... ok
+test okx::tests::test_cancel_all_after_timeout_uses_seconds ... ok
+test okx::tests::test_cancel_all_net_mode ... ok
+test okx::tests::test_check_cancel_result_variants ... ok
+test okx::tests::test_deserialize_books ... ok
+test okx::tests::test_deserialize_cancel_result_with_s_code ... ok
+test okx::tests::test_deserialize_funding_rate ... ok
+test okx::tests::test_deserialize_instrument_lot_sz ... ok
+test okx::tests::test_deserialize_order_response_with_s_code ... ok
+test okx::tests::test_deserialize_order_update_camel_case ... ok
+test okx::tests::test_deserialize_position ... ok
+test okx::tests::test_deserialize_stream_data_before_ack ... ok
+test okx::tests::test_deserialize_trade ... ok
+test okx::tests::test_gc_removes_stale_orders ... ok
+test okx::tests::test_lot_sz_decimals ... ok
+test okx::tests::test_okx_error_to_value ... ok
+test okx::tests::test_orders_filters_active_and_symbol ... ok
+test hyperliquid::ws::tests::depth_subscription_merges_fast_bbo_with_fresh_l2_tails ... ok
+test gatecrossex::tests::uncertain_submission_is_not_retried ... ok
+test gatecrossex::tests::invalid_precision_and_mismatched_position_mode_never_submit ... ok
+test okx::tests::test_simulated_header ... ok
+test okx::tests::test_timestamp_format ... ok
+test okx::tests::test_ws_ignores_external_prefix ... ok
+test okx::tests::test_ws_login_sign_matches_official_vector ... ok
+test okx::tests::test_ws_partial_fill ... ok
+test units::tests::quantities_are_exact_observations_can_round_and_overflow_never_saturates ... ok
+test utils::tests::equivalent_symbol_order_id ... ok
+test utils::tests::test_backoff ... ok
+test hyperliquid::unit_tests::test_build_from_accepts_agent_mode ... ok
+test utils::tests::test_backoff_min_delay ... ok
+test utils::tests::test_backoff_max_delay ... ok
+test utils::tests::test_next_nonce_clock_setback ... ok
+test utils::tests::test_next_nonce_monotonic ... ok
+test market_runtime::tests::okx_factory_obeys_the_unified_local_connector_contract ... ok
+test gatecrossex::tests::private_facts_use_payload_and_balances_refresh_all_venues ... ok
+test hyperliquid::ws::tests::websocket_unparseable_message_is_reported_as_connection_error ... ok
+test gatecrossex::tests::amendment_waits_for_both_fields_without_resending_the_write ... ok
+test market_runtime::tests::hyperliquid_factory_obeys_the_unified_local_connector_contract ... ok
+test market_runtime::tests::gate_crossex_factory_obeys_the_unified_local_connector_contract ... ok
+test hyperliquid::unit_tests::test_build_from_private_key_with_and_without_0x ... ok
+test okx::tests::test_build_from_proxy_default_empty ... ok
+test okx::tests::test_build_from_rejects_order_prefix_invalid_chars ... ok
+test okx::tests::test_sign_login_matches_official_vector ... ok
+test okx::tests::test_build_from_td_mode_default ... ok
+test okx::tests::test_sign_get_with_query ... ok
+test market_runtime::tests::binance_futures_factory_obeys_the_unified_local_connector_contract ... ok
+test hyperliquid::ws::tests::websocket_error_invalidates_the_connection ... ok
+test okx::reconnect_tests::public_stream_reconnects_and_replays_desired_subscription ... ok
+test okx::private_stream::tests::private_ready_requires_each_distinct_private_channel ... ok
+test okx::tests::test_sign_matches_official_vector ... ok
+test okx::tests::test_build_from_simulated_default_false ... ok
+test okx::tests::test_build_from_simulated_true ... ok
+test okx::tests::test_build_from_pos_side_optional ... ok
+test okx::tests::test_build_from_proxy_configured ... ok
+test okx::tests::test_build_from_valid_config ... ok
+test utils::tests::test_backoff_reset_interval ... ok
+
+test result: ok. 282 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 7.32s
+
+     Running unittests examples/binance_futures_account_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/binance_futures_account_probe-8f494e54511a35fb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/binance_futures_live_roundtrip.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/binance_futures_live_roundtrip-333ba7fe33ec8718)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/binance_futures_market_stream_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/binance_futures_market_stream_probe-a618455944127af0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/gate_crossex_live_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/gate_crossex_live_probe-e749f7b503d9eb66)
+
+running 2 tests
+test passive::tests::oversized_or_invalid_minimum_never_produces_a_test_order ... ok
+test passive::tests::passive_plan_is_small_far_and_price_amendment_moves_away ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/gate_crossex_market_stream_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/gate_crossex_market_stream_probe-b9457024a6a14509)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/gate_crossex_public_api_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/gate_crossex_public_api_probe-873983688491a8b2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/hyperliquid_live_roundtrip.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/hyperliquid_live_roundtrip-720f937bf97b40cc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/hyperliquid_reduce_only_cleanup.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/hyperliquid_reduce_only_cleanup-bb557d61eebe8ca1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/okx_market_stream_probe.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/okx_market_stream_probe-c236fe080c054736)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/hftbacktest-fabbeb0287daaae3)
+
+running 106 tests
+test backtest::bar::tests::default_bar_execution_charges_one_per_mille_on_every_fill ... ok
+test backtest::bar::tests::bar_execution_applies_configured_fee_and_response_latency ... ok
+test backtest::bar::tests::bar_submit_runs_local_then_exchange_risk_with_distinct_delivery_semantics ... ok
+test backtest::bar::tests::bar_execution_preserves_independent_partial_fills ... ok
+test backtest::bar::tests::chunked_feed_crosses_chunk_boundary_end_to_end ... ok
+test backtest::bar::tests::groups_global_batches_and_resets_without_reallocation_contract_changes ... ok
+test backtest::bar::tests::invalid_and_duplicate_bar_orders_are_canonical_local_rejections ... ok
+test backtest::bar::tests::invalid_order_transition_stops_and_enters_diagnostic_audit ... ok
+test backtest::bar::tests::ohlc_volume_model_emits_independent_partial_fills_and_fok_is_atomic ... ok
+test backtest::bar::tests::signal_close_fills_at_the_producing_bar_close ... ok
+test backtest::evs::tests::same_timestamp_order_is_asset_then_legacy_event_kind ... ok
+test backtest::bar::tests::next_open_uses_shared_order_account_and_projector_chain ... ok
+test backtest::execution::account::tests::exchange_changes_before_local_delivery ... ok
+test backtest::execution::account::tests::portfolio_aggregates_only_delivered_reports ... ok
+test backtest::execution::account::tests::venue_account_shares_balance_across_instruments ... ok
+test backtest::execution::capabilities::tests::capability_set_is_composable_and_stable ... ok
+test backtest::execution::conditional::tests::gtd_expiry_precedes_trigger_and_order_is_stable ... ok
+test backtest::execution::coordinator::tests::cancel_reject_restores_active_state_and_cancel_accept_is_terminal ... ok
+test backtest::execution::coordinator::tests::derivative_cash_flow_uses_realized_pnl_instead_of_opening_notional ... ok
+test backtest::execution::coordinator::tests::multiple_fills_each_create_report_fee_and_account_delta ... ok
+test backtest::execution::core::tests::ownership_keeps_account_at_venue_not_instrument ... ok
+test backtest::execution::dense_account::tests::reset_preserves_layout_and_clears_values ... ok
+test backtest::execution::dense_account::tests::shares_currency_ledger_without_map_lookup_per_instrument ... ok
+test backtest::execution::funding::tests::explicit_configuration_freezes_sources_boundary_and_hash ... ok
+test backtest::execution::funding::tests::settlement_updates_exchange_then_local_at_delivery_and_resets ... ok
+test backtest::execution::instrument::tests::rejects_invalid_spec_before_order_validation ... ok
+test backtest::execution::instrument_event::tests::scheduled_status_changes_use_global_time_and_replay_after_reset ... ok
+test backtest::execution::instrument::tests::validates_price_quantity_and_notional ... ok
+test backtest::execution::instrument_event::tests::timestamped_updates_are_versioned_and_reset_to_frozen_configuration ... ok
+test backtest::execution::fee::tests::fixed_fee_assessment_is_explicit_resettable_and_hashed ... ok
+test backtest::execution::live_adapter::tests::deduplicates_reconnect_event_but_preserves_distinct_partial_fills ... ok
+test backtest::execution::live_adapter::tests::equivalent_backtest_and_live_reports_project_to_identical_abi_v9_bytes ... ok
+test backtest::bar::tests::npy_chunk_provider_streams_and_rewinds_without_materializing_whole_file ... ok
+test backtest::execution::live_adapter::tests::live_funding_uses_same_projector_and_deduplicates_reconnect ... ok
+test backtest::execution::margin::tests::two_instruments_share_collateral_and_reduce_only_uses_exchange_position ... ok
+test backtest::execution::matching::tests::sink_preserves_every_partial_fill ... ok
+test backtest::execution::observer::bus_tests::cloned_bus_preserves_exchange_order ... ok
+test backtest::execution::projector::tests::accepted_order_does_not_emit_fill_or_position ... ok
+test backtest::execution::projector::tests::fill_projects_order_fill_position_after_local_update ... ok
+test backtest::execution::quality::tests::historical_quantity_cannot_be_consumed_twice_and_reset_replays ... ok
+test backtest::execution::quality::tests::seeded_quality_replays_and_never_breaks_limit_or_liquidity ... ok
+test backtest::execution::risk::tests::allow_all_keeps_three_stages_explicit ... ok
+test backtest::execution::risk::tests::market_status_gate_rejects_halted_and_reset_restores_initial_state ... ok
+test backtest::execution::state_machine::tests::accepts_multiple_independent_partial_fills ... ok
+test backtest::execution::state_machine::tests::fill_can_race_with_pending_cancel_without_losing_cancel ... ok
+test backtest::execution::state_machine::tests::rejects_overfill_and_terminal_transitions ... ok
+test backtest::execution::tick_adapter::tests::maps_each_legacy_partial_response_to_one_fill ... ok
+test backtest::execution::tick_adapter::tests::maps_order_lifecycle_responses ... ok
+test backtest::execution::tick_coordinator::tests::cancel_result_enters_pending_cancel_before_terminal_transition ... ok
+test backtest::execution::tick_coordinator::tests::immediate_fill_synthesizes_accept_and_updates_shared_exchange_account ... ok
+test backtest::execution::transport::tests::separates_exchange_arrival_from_local_rejection ... ok
+test backtest::live_bar::tests::canonical_builder_uses_watermark_accepts_bounded_reordering_and_emits_gaps ... ok
+test backtest::hybrid::tests::bar_signal_and_tick_execution_never_double_match ... ok
+test backtest::live_bar::tests::recovery_deduplicates_and_never_rewrites_delivered_bar ... ok
+test backtest::models::queue::l3_tests::fill_in_queue ... ok
+test backtest::platform::tests::batch_custom_data_and_hooks_stay_outside_execution_core ... ok
+test backtest::models::queue::l3_tests::fill_by_crossing ... ok
+test backtest::result::tests::audit_is_bounded_and_chunk_draining_is_reusable ... ok
+test backtest::proc::partialfillexchange::tests::emits_fill_outcome_at_exchange_time ... ok
+test backtest::platform::tests::manifest_hash_changes_with_source_and_bracket_actions_are_deterministic ... ok
+test backtest::result::tests::binary_audit_sink_writes_versioned_bounded_chunks ... ok
+test backtest::proc::partialfillexchange::tests::configured_tick_reality_prevents_reusing_historical_depth ... ok
+test backtest::result::tests::execution_counts_use_venue_and_order_composite_identity ... ok
+test backtest::result::tests::prepared_runner_reset_matches_fresh_and_dispose_is_explicit ... ok
+test backtest::result::tests::funding_result_keeps_instrument_attribution_and_currency_total ... ok
+test backtest::scheduler::tests::reset_clears_events_and_restarts_sequence ... ok
+test backtest::scheduler::tests::orders_by_full_contract_and_preserves_insertion_sequence ... ok
+test backtest::scheduler::tests::same_timestamp_professional_phase_contract_is_explicit_and_complete ... ok
+test backtest::scheduler::timer::tests::timers_replace_and_drain_without_market_data ... ok
+test backtest::test::skips_unseen_events ... ok
+test backtest::test::legacy_l3_fifo_full_order_lifecycle ... ok
+test backtest::test::legacy_tick_market_fill_latency_and_account_golden ... ok
+test depth::btreemarketdepth::tests::test_l3_add_delete_buy_order ... ok
+test backtest::test::legacy_l2_queue_advances_only_after_ahead_quantity_trades ... ok
+test depth::btreemarketdepth::tests::test_l3_add_delete_sell_order ... ok
+test backtest::test::legacy_tick_same_time_fill_precedes_cancel_arrival ... ok
+test backtest::test::partial_ioc_delivers_every_fill_and_terminal_expiry ... ok
+test depth::btreemarketdepth::tests::test_l3_modify_buy_order ... ok
+test depth::fuse::tests::test_update_ask_depth ... ok
+test depth::fuse::tests::test_update_bid_ask_depth_cross ... ok
+test depth::fuse::tests::test_bound_after_bbo_update ... ok
+test depth::fuse::tests::test_update_bid_depth ... ok
+test depth::fuse::tests::test_update_best_bid ... ok
+test depth::hashmapmarketdepth::tests::test_l3_add_delete_buy_order ... ok
+test depth::fuse::tests::test_update_best_ask ... ok
+test depth::btreemarketdepth::tests::test_l3_modify_sell_order ... ok
+test depth::hashmapmarketdepth::tests::test_l3_add_delete_sell_order ... ok
+test backtest::test::tick_exchange_risk_checks_each_same_time_order_against_authoritative_account ... ok
+test depth::hashmapmarketdepth::tests::test_l3_modify_buy_order ... ok
+test depth::hashmapmarketdepth::tests::test_l3_modify_sell_order ... ok
+test market_data::tests::fixed_intervals_are_epoch_aligned_and_half_open ... ok
+test market_data::tests::history_supports_negative_indices ... ok
+test market_data::tests::missing_intervals_are_not_merged ... ok
+test market_data::tests::offline_and_incremental_construction_are_identical ... ok
+test strategy::tests::cloned_trade_snapshot_does_not_borrow_bot_storage ... ok
+test strategy::tests::test_invalid_spec ... ok
+test types::tests::test_event_is ... ok
+test strategy::tests::test_bar_reset_between_bars ... ok
+test strategy::tests::test_order_placement_from_callback ... ok
+test strategy::tests::test_single_market_multi_instrument ... ok
+test strategy::tests::test_two_market_strategy ... ok
+test depth::roivectormarketdepth::tests::test_l3_modify_sell_order ... ok
+test depth::roivectormarketdepth::tests::test_l3_add_delete_sell_order ... ok
+test depth::roivectormarketdepth::tests::test_l3_add_delete_buy_order ... ok
+test depth::roivectormarketdepth::tests::test_l3_modify_buy_order ... ok
+test backtest::test::tick_reset_replays_identically_one_hundred_times ... ok
+
+test result: ok. 106 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/hftbacktest_derive-c9d4e6c180de4d79)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_account_service-bf455dc92d4e5c4e)
+
+running 8 tests
+test service::recovery_tests::changing_account_versions_fail_instead_of_splicing_different_images ... ok
+test service::recovery_tests::recovery_captures_one_committed_account_boundary ... ok
+test tests::fill_v2_preserves_last_and_cumulative_quantities ... ok
+test tests::position_event_currency_does_not_overwrite_high_pnl_bytes ... ok
+test execution::tests::enforces_process_limit_and_shutdown_admission ... ok
+test tests::directory_secret_provider_is_scoped_bounded_and_requires_private_permissions ... ok
+test execution::tests::future_construction_panic_releases_active_permit ... ok
+test execution::tests::observer_distinguishes_rejected_and_unknown ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_cli-7ceb1c0149e9dd63)
+
+running 8 tests
+test core_runtime::tests::core_live_profile_freezes_bar_and_hybrid_until_producer_exists ... ok
+test core_runtime::tests::trusted_ed25519_keys_are_strict_and_rotation_friendly ... ok
+test core_runtime::tests::adapter_accepts_static_services_and_rejects_zero_capacity ... ok
+test core_runtime::tests::unit_consistency_rejects_strategy_bound_account_mismatch ... ok
+test core_runtime::tests::account_secret_root_is_resolved_relative_to_the_runtime_config ... ok
+test core_runtime::tests::legacy_plugin_configuration_is_rejected ... ok
+test core_runtime::tests::pair_arb_v13_runtime_template_deserializes_human_readable_byte_fields ... ok
+test core_runtime::tests::configured_runtime_starts_static_core_services ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/main.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan-7a0f10eb1a9aed46)
+
+running 10 tests
+test cli_v13_tests::strategy_validation_trust_keys_are_explicit_and_strict ... ok
+test cli_v13_tests::parses_documented_v13_compile_command ... ok
+test compiler::tests::binary_signing_seeds_preserve_whitespace_and_hex_is_strict ... ok
+test registry::tests::unspawned_starting_run_can_be_cancelled ... ok
+test registry::tests::fresh_starting_run_survives_reconciliation ... ok
+test registry::tests::terminal_state_cannot_be_reclaimed_by_a_reused_pid ... ok
+test registry::tests::owner_token_guards_state_and_dead_workers_reconcile_to_stale ... ok
+test registry::tests::report_owner_token_serializes_generation_and_guards_completion ... ok
+test registry::tests::legacy_registry_is_migrated_without_losing_existing_runs ... ok
+test compiler::tests::timeout_kills_worker_group_and_reaps_it ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running tests/cli_golden.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/cli_golden-fe4aaca976b3b738)
+
+running 1 test
+test v13_live_validation_needs_no_python_runtime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/strategy_compile.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/strategy_compile-99b84cd10b8efd39)
+
+running 2 tests
+test termination_cancels_compile_process_group_and_cleans_workspace ... ok
+test rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifier ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.58s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_core_types-e123bbb024a3ba4e)
+
+running 2 tests
+test error::tests::error_is_compact_and_preserves_mutable_diagnostic_context ... ok
+test lifecycle::tests::history_retains_pending_and_binding_leases_release_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_domain_types-bbfb7594b3d34e91)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_event_engine-cf3275f6e78d455b)
+
+running 53 tests
+test tests::configuration_rejects_unbounded_or_inconsistent_capacity ... ok
+test tests::latency_histogram_reports_required_percentiles_without_allocation_on_record ... ok
+test tests::latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain ... ok
+test tests::critical_load_still_services_market_and_due_timers ... ok
+test tests::core_runtime_owns_only_the_event_engine ... ok
+test tests::async_fast_lane_is_ordered_bounded_and_does_not_block_publishers ... ok
+test tests::fast_lane_runs_inline_and_keeps_the_normal_route ... ok
+test tests::event_control_market_reservation_publishes_without_copy_api ... ok
+test tests::async_fast_lane_priority_bypasses_normal_backlog ... ok
+test tests::lagging_subscriber_returns_to_normal_below_low_watermark ... ok
+test tests::event_control_routes_off_publisher_and_event_loop_threads ... ok
+test tests::engine_shutdown_drains_ingress_pending_and_subscriber_channels ... ok
+test tests::pool_exhaustion_is_isolated_and_persisted_in_runtime_health ... ok
+test tests::callback_failure_is_contained_and_marks_only_that_subscriber_failed ... ok
+test tests::overloaded_primary_lane_isolated_from_healthy_lane ... ok
+test tests::pressure_diagnostics_scan_incrementally_with_configured_budget ... ok
+test tests::pending_guarantee_is_reserved_only_for_critical_routes ... ok
+test tests::critical_reserve_flows_to_bounded_pending_then_resync ... ok
+test tests::pending_age_expires_to_resync_without_blocking_event_loop ... ok
+test tests::primary_best_effort_drop_does_not_advance_admitted_watermark ... ok
+test tests::primary_async_lane_owns_handler_and_advances_three_watermarks ... ok
+test tests::failed_subscriber_records_and_releases_queued_and_pending_deliveries ... ok
+test tests::market_batch_reservation_is_zero_copy_and_latest_is_coalesced ... ok
+test tests::primary_latest_is_coalesced_independently_per_routing_key ... ok
+test tests::multiple_publishers_deliver_without_loss ... ok
+test tests::aborted_snapshot_barrier_releases_staging_and_allows_retry ... ok
+test tests::pending_retry_preserves_fifo_after_gate_opens ... ok
+test tests::pending_retry_round_robins_across_subscribers ... ok
+test tests::route_transactions_reject_stale_base_without_partial_commit ... ok
+test tests::snapshot_barrier_stages_then_replays_only_newer_tail ... ok
+test tests::v13_adapter_explicitly_advertises_legacy_capabilities ... ok
+test tests::staged_route_commit_fails_fast_until_event_loop_is_running ... ok
+test tests::subscriptions_from_one_owner_share_a_mailbox_until_the_last_route_retires ... ok
+test tests::timer_queue_and_signal_queue_remain_bounded ... ok
+test tests::retirement_stops_new_routing_and_drains_existing_critical_work ... ok
+test tests::source_gaps_and_timers_use_bounded_out_of_band_signals ... ok
+test tests::recovery_waits_for_the_old_handler_epoch_to_quiesce ... ok
+test tests::primary_async_lane_fails_after_hard_handler_duration_and_releases_tail ... ok
+test tests::snapshot_barrier_registry_enforces_and_releases_global_limits ... ok
+test tests::primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu ... ok
+test tests::async_fast_lane_contains_handler_failure ... ok
+test tests::parked_subscriber_is_actively_woken_by_publish ... ok
+test tests::snapshot_barrier_registry_enforces_active_limit_and_deadline ... ok
+test tests::event_publish_metadata_drives_routing_and_source_sequence ... ok
+test tests::multiple_brokers_and_primary_lanes_drain_a_bounded_burst_without_cross_routing ... ok
+test tests::precompiled_routes_filter_keys_and_continue_large_fanout ... ok
+test tests::arena_is_bounded_reuses_generation_and_reclaims_last_reference ... ok
+test engine::publication_tests::recursive_sequenced_source_is_rejected_instead_of_deadlocking ... ok
+test engine::publication_tests::review_cross_source_inline_publication_must_not_deadlock ... ok
+test engine::publication_tests::rejected_copied_and_reserved_events_are_never_delivered ... ok
+test engine::publication_tests::duplicate_sequences_are_filtered_before_direct_delivery_and_rejection_is_retryable ... ok
+test engine::publication_tests::reservation_created_before_stop_cannot_publish_after_stop ... ok
+test tests::release_acquire_publication_and_last_release_are_model_checked ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+     Running benches/event_engine.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/event_engine-ade95e2ace981d99)
+events=1000000 target_rate=None elapsed=1.177194578s throughput=849477/s dispatch_p50_ns=1023 dispatch_p99_ns=8191 dispatch_p999_ns=32767 dispatch_max_ns=32767 subscriber_p50_ns=2047 subscriber_p99_ns=32767 subscriber_p999_ns=65535 subscriber_max_ns=262143 drop_total=0 resync_total=0 arena_exhausted=[0, 0, 0] fast_lane_drop_total=0
+config small_event_slots=131072 market_batch_slots=8 snapshot_slots=2 critical_capacity=65536 market_capacity=65536 subscriber_capacity=65536 critical_reserve=4096 pending_global=8192 pending_subscriber=1024
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_market_service-117f96f818d3da0e)
+
+running 2 tests
+test tests::abi_has_stable_little_endian_encoding ... ok
+test tests::closed_bar_batch_v1_round_trips_and_rejects_invalid_bars ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/deps/titan_strategy_runtime-b0f0bdc260fb9ca4)
+
+running 26 tests
+test runtime_v13::tests::newer_public_seed_advances_existing_order_history ... ok
+test runtime_v13::tests::account_enums_are_explicitly_translated_to_v13 ... ok
+test runtime_v13::tests::client_order_ownership_is_stable_across_generations ... ok
+test recovery::tests::unknown_orders_and_changed_order_identity_are_rejected ... ok
+test service_core::host_subscription_tests::bbo_only_strategy_receives_all_host_account_facts ... ok
+test recovery::tests::confirmed_cancellation_is_consumed_by_the_common_order_history ... ok
+test recovery::tests::missing_order_is_never_inferred_to_be_canceled ... ok
+test v13::tests::public_identity_is_order_independent_but_fact_sensitive ... ok
+test v13::tests::command_ids_do_not_overlap_between_generations ... ok
+test v13::tests::command_staging_is_atomic_and_cancel_checks_ownership ... ok
+test recovery::tests::hedge_recovery_preserves_sides_even_when_net_exposure_is_unchanged ... ok
+test v13::tests::aligned_state_is_independent_and_hides_tail_padding ... ok
+test v13::tests::recovery_bindings_cover_execution_asset_routes_and_ignore_session_generations ... ok
+test recovery::tests::changed_fills_require_complete_execution_history_even_with_same_net_position ... ok
+test v13::tests::hedge_staging_preserves_side_and_normalizes_closing_semantics ... ok
+test runtime_v13::tests::orders_list_checksum_detects_tampering ... ok
+test recovery::tests::session_and_balance_changes_reconcile_without_replaying_trades ... ok
+test recovery::tests::changed_positions_and_unready_accounts_do_not_reopen_trading ... ok
+test recovery::tests::incomplete_checkpoint_does_not_hide_a_fill_delivery_gap ... ok
+test recovery::tests::baseline_checksum_binds_public_facts_private_snapshot_and_order_history ... ok
+test scheduler::tests::cancel_waits_for_current_callback_and_removes_task ... ok
+test v13::compiler::tests::malformed_bridge_and_failed_pair_publication_preserve_previous_artifacts ... ok
+test service_core::checkpoint_tests::file_checkpoint_store_round_trips_latest_snapshot ... ok
+test v13::compiler::tests::native_digest_and_required_signature_are_checked_by_rust ... ok
+test service_core::checkpoint_tests::generation_watermark_survives_store_restart ... ok
+test v13::compiler::tests::pair_bundle_signatures_and_reproducible_overwrite_share_runtime_validation ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running unittests examples/v13_artifact_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_artifact_smoke-e6a36a9ca83cd73e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/v13_common_recovery_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_common_recovery_smoke-79cfe7e70161ff07)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/v13_order_drain_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_order_drain_smoke-7b1c132b149e9ecc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/v13_pair_arb_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_pair_arb_smoke-cd8c679c965212c1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/v13_service_recovery_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_service_recovery_smoke-2168cbd970f58925)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/v13_timer_failure_smoke.rs (/home/dominolu/dev/titan-compiler-20261021-39f1267b/target/debug/examples/v13_timer_failure_smoke-ccf3b8f664160a9b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

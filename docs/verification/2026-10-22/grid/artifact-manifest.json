@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "abi_version": 13,
+    "artifact": "/home/dominolu/dev/titan-grid-20261022-2aafc598/verification-artifacts/grid/grid.titan",
+    "artifact_digest": "2622146fca5094cafa5b02d1824ee7d46835b62c1cbce82b474700560866a5f7",
+    "callback_mask": 8179,
+    "cpu_baseline": "x86-64-v2",
+    "key_id": null,
+    "native_digest": "ebb38ad09ec603cffdd6c33b6f20019190d93f8af75304fa7643b90cace1bff3",
+    "signed": false,
+    "state_alignment": 8,
+    "state_len": 3864,
+    "state_schema_hash": "f9b055cfaac258ccd14c688a68c6b508e2324d4d29e8ab61e9102a496d43420e",
+    "state_schema_version": 1,
+    "strategy_id": "grid",
+    "strategy_version": "1.0.0",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  }
+}

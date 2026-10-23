@@ -175,6 +175,7 @@ impl MarketConnector for MarketConnectorRuntime {
         let overflowed_symbols = Arc::new(Mutex::new(HashSet::new()));
         let publish_overflow = overflowed_symbols.clone();
         let publish_health = health.clone();
+        let publishing_detail: Arc<str> = Arc::from("connector is publishing data");
         let event_tx = direct_publish_sender(move |publication| {
             let (result, symbol, connector_error, market_activity) = match publication {
                 DirectPublication::Event(value) => (
@@ -222,10 +223,10 @@ impl MarketConnector for MarketConnectorRuntime {
                 *publish_health.lock().unwrap_or_else(|p| p.into_inner()) =
                     (ConnectorHealth::Degraded, Arc::from(error.to_string()));
             } else if market_activity && !connector_error {
-                *publish_health.lock().unwrap_or_else(|p| p.into_inner()) = (
-                    ConnectorHealth::Running,
-                    Arc::from("connector is publishing data"),
-                );
+                let mut health = publish_health.lock().unwrap_or_else(|p| p.into_inner());
+                if health.0 != ConnectorHealth::Running {
+                    *health = (ConnectorHealth::Running, publishing_detail.clone());
+                }
             }
         });
         let initial_symbols: Vec<_> = self
@@ -796,10 +797,28 @@ impl MarketConnectorFactory for HyperliquidMarketFactory {
     }
 }
 
+#[cfg(feature = "gatecrossex")]
+pub struct GateCrossExMarketFactory;
+#[cfg(feature = "gatecrossex")]
+impl MarketConnectorFactory for GateCrossExMarketFactory {
+    fn connector_type(&self) -> &str {
+        "gate-crossex"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        create_runtime::<crate::gatecrossex::GateCrossEx>(definition, context)
+    }
+}
+
 /// Static venue catalog used by TradingRuntime. The returned factories are ordinary in-process
 /// implementations; no manifest, shared library or JSON ABI participates in construction.
 pub fn venue_market_factories() -> Vec<Arc<dyn MarketConnectorFactory>> {
     let values: Vec<Arc<dyn MarketConnectorFactory>> = vec![
+        #[cfg(feature = "gatecrossex")]
+        Arc::new(GateCrossExMarketFactory),
         #[cfg(feature = "binancefutures")]
         Arc::new(BinanceFuturesMarketFactory),
         #[cfg(feature = "okx")]
@@ -1045,6 +1064,12 @@ mod tests {
             .unwrap();
         drop(connector);
         scope.close().unwrap();
+    }
+
+    #[cfg(feature = "gatecrossex")]
+    #[test]
+    fn gate_crossex_factory_obeys_the_unified_local_connector_contract() {
+        assert_venue_factory_local_contract(&GateCrossExMarketFactory, "");
     }
 
     #[cfg(feature = "binancefutures")]

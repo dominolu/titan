@@ -1,0 +1,23 @@
+test_history_protective_exit_survives_transient_zero_fill_iocs (test_grid.TestGrid.test_history_protective_exit_survives_transient_zero_fill_iocs) ... FAIL
+test_history_protective_rejections_do_not_exhaust_opening_retry_counter (test_grid.TestGrid.test_history_protective_rejections_do_not_exhaust_opening_retry_counter) ... FAIL
+
+======================================================================
+FAIL: test_history_protective_exit_survives_transient_zero_fill_iocs (test_grid.TestGrid.test_history_protective_exit_survives_transient_zero_fill_iocs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-history-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 681, in test_history_protective_exit_survives_transient_zero_fill_iocs
+    self.assertEqual(ctx.state["grid"]["status"], grid.STOPPING)
+AssertionError: np.uint8(9) != 7
+
+======================================================================
+FAIL: test_history_protective_rejections_do_not_exhaust_opening_retry_counter (test_grid.TestGrid.test_history_protective_rejections_do_not_exhaust_opening_retry_counter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-history-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 698, in test_history_protective_rejections_do_not_exhaust_opening_retry_counter
+    self.assertEqual(ctx.state["grid"]["status"], grid.STOPPING)
+AssertionError: np.uint8(9) != 7
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.003s
+
+FAILED (failures=2)

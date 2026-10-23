@@ -1,0 +1,5 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.28s
+     Running `target/debug/examples/v13_grid_stop_smoke verification-artifacts/grid-history/grid.titan`
+V13 offline grid stop barrier passed
+V13 grid recovery passed: proven cancels, missing results rejected, changed fills rejected, gate closed
+V13 grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation

@@ -1,0 +1,1 @@
+YAML parsed; jobs: python, quality, test, single-runtime

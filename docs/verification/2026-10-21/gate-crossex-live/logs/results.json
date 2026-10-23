@@ -1,0 +1,45 @@
+{
+  "build_host": "192.168.3.88",
+  "source_dir": "/home/dominolu/dev/titan-gatecrossex-live-20261021-39f1267b",
+  "baseline": "39f1267b6412165fc7adc005719bc9e09dcef9a8",
+  "binary_sha256": "833eaf293c3dadb11398bc8130f8fc08a3dafb8361393c82a652ccfe79f8021f",
+  "source_manifest_sha256": "7a4912bef19fe1c11b43811695d496ee0444ae60e13d92bee368b18219fb759a",
+  "commands": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "log": "titan-crossex-live-fmt-final.log"
+    },
+    {
+      "command": "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+      "exit_code": 0,
+      "log": "titan-crossex-live-clippy-final.log"
+    },
+    {
+      "command": "cargo test --locked --workspace --all-targets --all-features",
+      "exit_code": 0,
+      "log": "titan-crossex-live-workspace-final.log",
+      "passed": 507,
+      "failed": 0,
+      "ignored": 12
+    },
+    {
+      "command": "cargo test --locked --workspace --all-features --doc",
+      "exit_code": 0,
+      "log": "titan-crossex-live-doc-final.log",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 1
+    },
+    {
+      "command": "cargo check --locked -p connector --no-default-features --features gatecrossex --lib",
+      "exit_code": 0,
+      "log": "titan-crossex-live-feature-final.log"
+    },
+    {
+      "command": "cargo build --locked -p connector --example gate_crossex_live_probe",
+      "exit_code": 0,
+      "log": "titan-crossex-live-binary-final.log"
+    }
+  ]
+}

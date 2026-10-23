@@ -1,0 +1,194 @@
+test_review_accepted_ioc_without_terminal_result_times_out (test_grid.TestGrid.test_review_accepted_ioc_without_terminal_result_times_out) ... FAIL
+test_review_cancel_timeout_does_not_reset_on_unrelated_order_refresh (test_grid.TestGrid.test_review_cancel_timeout_does_not_reset_on_unrelated_order_refresh) ... FAIL
+test_review_full_fill_cancels_counterpart_before_position_projection (test_grid.TestGrid.test_review_full_fill_cancels_counterpart_before_position_projection) ... FAIL
+test_review_late_execution_after_zero_fill_cancel_is_not_discarded (test_grid.TestGrid.test_review_late_execution_after_zero_fill_cancel_is_not_discarded) ... FAIL
+test_review_live_notional_limit_uses_current_mark_outside_grid_range (test_grid.TestGrid.test_review_live_notional_limit_uses_current_mark_outside_grid_range) ... FAIL
+test_review_low_margin_does_not_block_reduce_only_grid_exit (test_grid.TestGrid.test_review_low_margin_does_not_block_reduce_only_grid_exit) ... FAIL
+test_review_missing_partial_fill_has_a_bounded_delivery_wait (test_grid.TestGrid.test_review_missing_partial_fill_has_a_bounded_delivery_wait) ... FAIL
+test_review_missing_position_projection_cannot_wait_forever (test_grid.TestGrid.test_review_missing_position_projection_cannot_wait_forever) ... FAIL
+test_review_recovery_consumes_proven_cancellation_without_commands (test_grid.TestGrid.test_review_recovery_consumes_proven_cancellation_without_commands) ... FAIL
+test_review_regressing_terminal_cumulative_never_releases_pending_fills (test_grid.TestGrid.test_review_regressing_terminal_cumulative_never_releases_pending_fills) ... FAIL
+test_review_retain_never_crosses_a_still_reserved_opposite_order (test_grid.TestGrid.test_review_retain_never_crosses_a_still_reserved_opposite_order) ... FAIL
+test_review_risk_stop_flattens_even_with_manual_cancel_policy (test_grid.TestGrid.test_review_risk_stop_flattens_even_with_manual_cancel_policy) ... FAIL
+test_review_risk_stopped_checkpoint_does_not_resume_as_manual_pause (test_grid.TestGrid.test_review_risk_stopped_checkpoint_does_not_resume_as_manual_pause) ... FAIL
+test_review_source_compatible_neutral_starts_without_short_inventory (test_grid.TestGrid.test_review_source_compatible_neutral_starts_without_short_inventory) ... ERROR
+test_review_takeover_rejects_excess_position_before_cost_arithmetic (test_grid.TestGrid.test_review_takeover_rejects_excess_position_before_cost_arithmetic) ... FAIL
+test_review_unknown_fill_is_not_hidden_by_another_orders_sequence (test_grid.TestGrid.test_review_unknown_fill_is_not_hidden_by_another_orders_sequence) ... FAIL
+test_review_valid_fixed_notional_minimum_is_not_rejected_by_crossed_extremes (test_grid.TestGrid.test_review_valid_fixed_notional_minimum_is_not_rejected_by_crossed_extremes) ... ERROR
+test_review_zero_progress_ioc_attempts_are_bounded (test_grid.TestGrid.test_review_zero_progress_ioc_attempts_are_bounded) ... FAIL
+
+======================================================================
+ERROR: test_review_source_compatible_neutral_starts_without_short_inventory (test_grid.TestGrid.test_review_source_compatible_neutral_starts_without_short_inventory)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 652, in test_review_source_compatible_neutral_starts_without_short_inventory
+    ctx = Context(neutral_mode="inventory_only").start()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 23, in __init__
+    self.state_array = grid.build(parameters).state
+                       ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/strategies/grid/strategy.py", line 749, in build
+    p = SPEC.validate_parameters(parameters)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/titan_strategy/definition.py", line 104, in validate_parameters
+    return validate_parameters(self.parameters, values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/titan_strategy/parameters.py", line 207, in validate_parameters
+    raise ParameterError(f"unknown parameters: {', '.join(unknown)}")
+titan_strategy.parameters.ParameterError: unknown parameters: neutral_mode
+
+======================================================================
+ERROR: test_review_valid_fixed_notional_minimum_is_not_rejected_by_crossed_extremes (test_grid.TestGrid.test_review_valid_fixed_notional_minimum_is_not_rejected_by_crossed_extremes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 647, in test_review_valid_fixed_notional_minimum_is_not_rejected_by_crossed_extremes
+    ctx = Context(size_mode="fixed_notional", order_notional_tick_lots=1000, min_notional_tick_lots=880)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 23, in __init__
+    self.state_array = grid.build(parameters).state
+                       ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/strategies/grid/strategy.py", line 783, in build
+    raise ValueError("order sizing cannot satisfy minimum quantity/notional over the range")
+ValueError: order sizing cannot satisfy minimum quantity/notional over the range
+
+======================================================================
+FAIL: test_review_accepted_ioc_without_terminal_result_times_out (test_grid.TestGrid.test_review_accepted_ioc_without_terminal_result_times_out)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 623, in test_review_accepted_ioc_without_terminal_result_times_out
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(3) != 10
+
+======================================================================
+FAIL: test_review_cancel_timeout_does_not_reset_on_unrelated_order_refresh (test_grid.TestGrid.test_review_cancel_timeout_does_not_reset_on_unrelated_order_refresh)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 633, in test_review_cancel_timeout_does_not_reset_on_unrelated_order_refresh
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(5) != 10
+
+======================================================================
+FAIL: test_review_full_fill_cancels_counterpart_before_position_projection (test_grid.TestGrid.test_review_full_fill_cancels_counterpart_before_position_projection)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 512, in test_review_full_fill_cancels_counterpart_before_position_projection
+    self.assertEqual(ctx.cancels, [2])
+AssertionError: Lists differ: [] != [2]
+
+Second list contains 1 additional elements.
+First extra element 0:
+2
+
+- []
++ [2]
+?  +
+
+
+======================================================================
+FAIL: test_review_late_execution_after_zero_fill_cancel_is_not_discarded (test_grid.TestGrid.test_review_late_execution_after_zero_fill_cancel_is_not_discarded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 559, in test_review_late_execution_after_zero_fill_cancel_is_not_discarded
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(4) != 10
+
+======================================================================
+FAIL: test_review_live_notional_limit_uses_current_mark_outside_grid_range (test_grid.TestGrid.test_review_live_notional_limit_uses_current_mark_outside_grid_range)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 662, in test_review_live_notional_limit_uses_current_mark_outside_grid_range
+    self.assertEqual(ctx.state["grid"]["status"], grid.STOPPING)
+AssertionError: np.uint8(4) != 7
+
+======================================================================
+FAIL: test_review_low_margin_does_not_block_reduce_only_grid_exit (test_grid.TestGrid.test_review_low_margin_does_not_block_reduce_only_grid_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 569, in test_review_low_margin_does_not_block_reduce_only_grid_exit
+    self.assertEqual(len(ctx.submits), 1)
+AssertionError: 0 != 1
+
+======================================================================
+FAIL: test_review_missing_partial_fill_has_a_bounded_delivery_wait (test_grid.TestGrid.test_review_missing_partial_fill_has_a_bounded_delivery_wait)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 521, in test_review_missing_partial_fill_has_a_bounded_delivery_wait
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(4) != 10
+
+======================================================================
+FAIL: test_review_missing_position_projection_cannot_wait_forever (test_grid.TestGrid.test_review_missing_position_projection_cannot_wait_forever)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 531, in test_review_missing_position_projection_cannot_wait_forever
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(7) != 10
+
+======================================================================
+FAIL: test_review_recovery_consumes_proven_cancellation_without_commands (test_grid.TestGrid.test_review_recovery_consumes_proven_cancellation_without_commands)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 641, in test_review_recovery_consumes_proven_cancellation_without_commands
+    self.assertEqual(grid.on_recover(ctx), 0)
+AssertionError: -1 != 0
+
+======================================================================
+FAIL: test_review_regressing_terminal_cumulative_never_releases_pending_fills (test_grid.TestGrid.test_review_regressing_terminal_cumulative_never_releases_pending_fills)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 539, in test_review_regressing_terminal_cumulative_never_releases_pending_fills
+    self.assertGreaterEqual(grid.find_ref(ctx.state, 1), 0)
+AssertionError: -1 not greater than or equal to 0
+
+======================================================================
+FAIL: test_review_retain_never_crosses_a_still_reserved_opposite_order (test_grid.TestGrid.test_review_retain_never_crosses_a_still_reserved_opposite_order)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 580, in test_review_retain_never_crosses_a_still_reserved_opposite_order
+    self.assertTrue(all(o["price_ticks"] < old_ask for o in ctx.submits[count:] if o["side"] == grid.BUY))
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_review_risk_stop_flattens_even_with_manual_cancel_policy (test_grid.TestGrid.test_review_risk_stop_flattens_even_with_manual_cancel_policy)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 596, in test_review_risk_stop_flattens_even_with_manual_cancel_policy
+    self.assertFalse(ctx.stop_complete)
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_review_risk_stopped_checkpoint_does_not_resume_as_manual_pause (test_grid.TestGrid.test_review_risk_stopped_checkpoint_does_not_resume_as_manual_pause)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 608, in test_review_risk_stopped_checkpoint_does_not_resume_as_manual_pause
+    self.assertEqual(ctx.state["grid"]["status"], grid.STOPPED)
+AssertionError: np.uint8(4) != 8
+
+======================================================================
+FAIL: test_review_takeover_rejects_excess_position_before_cost_arithmetic (test_grid.TestGrid.test_review_takeover_rejects_excess_position_before_cost_arithmetic)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 585, in test_review_takeover_rejects_excess_position_before_cost_arithmetic
+    self.assertEqual(grid.on_start(ctx), -1)
+AssertionError: 0 != -1
+
+======================================================================
+FAIL: test_review_unknown_fill_is_not_hidden_by_another_orders_sequence (test_grid.TestGrid.test_review_unknown_fill_is_not_hidden_by_another_orders_sequence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 549, in test_review_unknown_fill_is_not_hidden_by_another_orders_sequence
+    self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
+AssertionError: np.uint8(5) != 10
+
+======================================================================
+FAIL: test_review_zero_progress_ioc_attempts_are_bounded (test_grid.TestGrid.test_review_zero_progress_ioc_attempts_are_bounded)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-grid-review-20261022-2aafc598/python/titan-strategy-sdk/tests/test_grid.py", line 617, in test_review_zero_progress_ioc_attempts_are_bounded
+    self.assertEqual(ctx.state["grid"]["status"], grid.ERROR)
+AssertionError: np.uint8(3) != 9
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.011s
+
+FAILED (failures=16, errors=2)

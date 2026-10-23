@@ -273,11 +273,23 @@ impl MarketEventBridge {
         publish_batch(&self.context, DEPTH_BATCH_EVENT, header, |payload| {
             let mut offset = MarketBatchHeaderV1::ENCODED_LEN;
             for (side, levels) in [(1, bids), (2, asks)] {
+                let multiplier = match levels {
+                    NativeDepthLevels::ScaledBorrowed {
+                        quantity_multiplier,
+                        ..
+                    } => Some(quantity_multiplier),
+                    _ => None,
+                };
                 let mut encode_level =
                     |price: &str, quantity: &str| -> Result<(), ConnectorError> {
                         let price_ticks = parse_exact_decimal(price, units.price_unit, "price")?;
-                        let quantity_lots =
-                            parse_exact_decimal(quantity, units.quantity_unit, "quantity")?;
+                        let quantity_lots = if let Some(multiplier) = multiplier {
+                            multiplier
+                                .to_lots(quantity, units.quantity_unit)
+                                .map_err(ConnectorError::new)?
+                        } else {
+                            parse_exact_decimal(quantity, units.quantity_unit, "quantity")?
+                        };
                         let end = offset + DepthItemV1::ENCODED_LEN;
                         let output = &mut payload[offset..end];
                         output[0..8].copy_from_slice(&price_ticks.to_le_bytes());
@@ -294,7 +306,8 @@ impl MarketEventBridge {
                             encode_level(price, quantity)?;
                         }
                     }
-                    NativeDepthLevels::Borrowed(levels) => {
+                    NativeDepthLevels::Borrowed(levels)
+                    | NativeDepthLevels::ScaledBorrowed { levels, .. } => {
                         for &(price, quantity) in levels {
                             encode_level(price, quantity)?;
                         }

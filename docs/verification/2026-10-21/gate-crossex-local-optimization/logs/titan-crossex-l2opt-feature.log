@@ -1,0 +1,150 @@
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-gatecrossex-l2opt-20261021-39f1267b/connector)
+warning: unused import: `chrono::Utc`
+  --> connector/src/utils.rs:11:5
+   |
+11 | use chrono::Utc;
+   |     ^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `I64Visitor` is never constructed
+  --> connector/src/utils.rs:21:8
+   |
+21 | struct I64Visitor;
+   |        ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `OptionF64Visitor` is never constructed
+  --> connector/src/utils.rs:42:8
+   |
+42 | struct OptionF64Visitor;
+   |        ^^^^^^^^^^^^^^^^
+
+warning: struct `F64Visitor` is never constructed
+  --> connector/src/utils.rs:66:8
+   |
+66 | struct F64Visitor;
+   |        ^^^^^^^^^^
+
+warning: function `from_str_to_i64` is never used
+  --> connector/src/utils.rs:87:8
+   |
+87 | pub fn from_str_to_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+   |        ^^^^^^^^^^^^^^^
+
+warning: function `from_str_to_f64` is never used
+  --> connector/src/utils.rs:96:8
+   |
+96 | pub fn from_str_to_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+   |        ^^^^^^^^^^^^^^^
+
+warning: function `from_str_to_f64_opt` is never used
+   --> connector/src/utils.rs:105:8
+    |
+105 | pub fn from_str_to_f64_opt<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `from_lenient_bool` is never used
+   --> connector/src/utils.rs:115:8
+    |
+115 | pub fn from_lenient_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `to_lowercase` is never used
+   --> connector/src/utils.rs:144:8
+    |
+144 | pub fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
+    |        ^^^^^^^^^^^^
+
+warning: function `sign_hmac_sha256` is never used
+   --> connector/src/utils.rs:152:8
+    |
+152 | pub fn sign_hmac_sha256(secret: &str, s: &str) -> String {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: type alias `PxQty` is never used
+   --> connector/src/utils.rs:175:10
+    |
+175 | pub type PxQty = (f64, f64);
+    |          ^^^^^
+
+warning: function `parse_depth` is never used
+   --> connector/src/utils.rs:177:8
+    |
+177 | pub fn parse_depth(
+    |        ^^^^^^^^^^^
+
+warning: function `parse_px_qty_tup` is never used
+   --> connector/src/utils.rs:192:8
+    |
+192 | pub fn parse_px_qty_tup(px: String, qty: String) -> Result<PxQty, std::num::ParseFloatError> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: trait `BackoffStrategy` is never used
+   --> connector/src/utils.rs:196:11
+    |
+196 | pub trait BackoffStrategy {
+    |           ^^^^^^^^^^^^^^^
+
+warning: struct `ExponentialBackoff` is never constructed
+   --> connector/src/utils.rs:200:12
+    |
+200 | pub struct ExponentialBackoff {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `Retry` is never constructed
+   --> connector/src/utils.rs:252:12
+    |
+252 | pub struct Retry<O, E, Backoff, ErrorHandler> {
+    |            ^^^^^
+
+warning: associated items `new`, `error_handler`, and `retry` are never used
+   --> connector/src/utils.rs:265:12
+    |
+259 | / impl<O, E, Backoff, ErrorHandler> Retry<O, E, Backoff, ErrorHandler>
+260 | | where
+261 | |     E: Debug,
+262 | |     Backoff: BackoffStrategy,
+263 | |     ErrorHandler: FnMut(E) -> Result<(), E>,
+    | |____________________________________________- associated items in this implementation
+264 |   {
+265 |       pub fn new(backoff: Backoff) -> Self {
+    |              ^^^
+...
+274 |       pub fn error_handler(self, error_handler: ErrorHandler) -> Self {
+    |              ^^^^^^^^^^^^^
+...
+281 |       pub async fn retry<F, Fut>(&mut self, func: F) -> Result<O, E>
+    |                    ^^^^^
+
+warning: struct `SymbolOrderId` is never constructed
+   --> connector/src/utils.rs:301:12
+    |
+301 | pub struct SymbolOrderId {
+    |            ^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> connector/src/utils.rs:307:12
+    |
+306 | impl SymbolOrderId {
+    | ------------------ associated function in this implementation
+307 |     pub fn new(symbol: String, order_id: OrderId) -> Self {
+    |            ^^^
+
+warning: struct `RefSymbolOrderId` is never constructed
+   --> connector/src/utils.rs:313:12
+    |
+313 | pub struct RefSymbolOrderId<'a> {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> connector/src/utils.rs:319:12
+    |
+318 | impl<'a> RefSymbolOrderId<'a> {
+    | ----------------------------- associated function in this implementation
+319 |     pub fn new(symbol: &'a str, order_id: OrderId) -> Self {
+    |            ^^^
+
+warning: `connector` (lib) generated 21 warnings (run `cargo fix --lib -p connector` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.46s

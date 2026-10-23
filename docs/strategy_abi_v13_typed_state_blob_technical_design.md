@@ -649,6 +649,8 @@ titan strategy compile \
 
 ## 13. 编译器函数
 
+> 2026-10-21 实现更新：本节 Python 制品 API 已由 Rust 编译控制器替代；Python 只保留 Numba 目标文件桥接。当前入口和协议见 [SDK README](../python/titan-strategy-sdk/README.md)。
+
 ### 13.1 `CompileRequest`
 
 ```python

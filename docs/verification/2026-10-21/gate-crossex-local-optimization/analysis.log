@@ -1,0 +1,207 @@
+{
+  "independent_recomputation_passed": true,
+  "percentiles": "nearest-rank; warmup excluded; no outlier or negative filtering",
+  "runs": [
+    {
+      "phase": "iteration1",
+      "run": "binance",
+      "venue": "binance",
+      "exit_code": 1,
+      "latency_us": null,
+      "allocations": 7916,
+      "audit_callbacks": 0,
+      "allocations_per_callback": null
+    },
+    {
+      "phase": "iteration1",
+      "run": "borrowed-b",
+      "venue": "gate-borrowed",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 31.166,
+        "mean": 65.380895,
+        "p50": 53.503,
+        "p95": 81.391,
+        "p99": 367.817,
+        "max": 1747.512,
+        "negative": 0
+      },
+      "allocations": 100,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 2.0
+    },
+    {
+      "phase": "iteration1",
+      "run": "borrowed-c",
+      "venue": "gate-borrowed",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 31.202,
+        "mean": 64.50116166666666,
+        "p50": 52.699,
+        "p95": 79.08,
+        "p99": 382.621,
+        "max": 1212.437,
+        "negative": 0
+      },
+      "allocations": 100,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 2.0
+    },
+    {
+      "phase": "iteration1",
+      "run": "legacy-a",
+      "venue": "gate-legacy",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 57.877,
+        "mean": 103.46748166666667,
+        "p50": 90.389,
+        "p95": 137.324,
+        "p99": 283.647,
+        "max": 1482.982,
+        "negative": 0
+      },
+      "allocations": 11147,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 222.94
+    },
+    {
+      "phase": "iteration1",
+      "run": "legacy-d",
+      "venue": "gate-legacy",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 60.121,
+        "mean": 112.71589499999999,
+        "p50": 90.881,
+        "p95": 143.227,
+        "p99": 681.594,
+        "max": 2052.516,
+        "negative": 0
+      },
+      "allocations": 10968,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 219.36
+    },
+    {
+      "phase": "final",
+      "run": "final-borrowed",
+      "venue": "gate-borrowed",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 30.628,
+        "mean": 77.03047500000001,
+        "p50": 55.233,
+        "p95": 83.702,
+        "p99": 965.181,
+        "max": 1768.02,
+        "negative": 0
+      },
+      "allocations": 100,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 2.0
+    },
+    {
+      "phase": "final",
+      "run": "final-crossex-binance",
+      "venue": "crossex-binance",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 292,
+        "min": 33.257,
+        "mean": 59.63168835616439,
+        "p50": 52.331,
+        "p95": 70.402,
+        "p99": 308.994,
+        "max": 709.969,
+        "negative": 0
+      },
+      "allocations": 98,
+      "audit_callbacks": 49,
+      "allocations_per_callback": 2.0
+    },
+    {
+      "phase": "final",
+      "run": "final-legacy",
+      "venue": "gate-legacy",
+      "exit_code": 0,
+      "latency_us": {
+        "n": 600,
+        "min": 40.865,
+        "mean": 113.77070499999999,
+        "p50": 89.924,
+        "p95": 137.152,
+        "p99": 996.583,
+        "max": 1968.78,
+        "negative": 0
+      },
+      "allocations": 11013,
+      "audit_callbacks": 50,
+      "allocations_per_callback": 220.26
+    }
+  ],
+  "comparisons": {
+    "iteration1": {
+      "legacy": {
+        "n": 1200,
+        "min": 57.877,
+        "mean": 108.09168833333334,
+        "p50": 90.584,
+        "p95": 137.781,
+        "p99": 481.164,
+        "max": 2052.516,
+        "negative": 0
+      },
+      "borrowed": {
+        "n": 1200,
+        "min": 31.166,
+        "mean": 64.94102833333334,
+        "p50": 53.103,
+        "p95": 80.228,
+        "p99": 380.323,
+        "max": 1747.512,
+        "negative": 0
+      },
+      "p50_reduction_pct": 41.377064382230856,
+      "allocations_per_callback": {
+        "legacy": 221.15,
+        "borrowed": 2.0
+      },
+      "allocation_reduction_pct": 99.09563644585123
+    },
+    "final": {
+      "legacy": {
+        "n": 600,
+        "min": 40.865,
+        "mean": 113.77070499999999,
+        "p50": 89.924,
+        "p95": 137.152,
+        "p99": 996.583,
+        "max": 1968.78,
+        "negative": 0
+      },
+      "borrowed": {
+        "n": 600,
+        "min": 30.628,
+        "mean": 77.03047500000001,
+        "p50": 55.233,
+        "p95": 83.702,
+        "p99": 965.181,
+        "max": 1768.02,
+        "negative": 0
+      },
+      "p50_reduction_pct": 38.578132645344965,
+      "allocations_per_callback": {
+        "legacy": 220.26,
+        "borrowed": 2.0
+      },
+      "allocation_reduction_pct": 99.09198220285118
+    }
+  }
+}

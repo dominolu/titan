@@ -1,0 +1,128 @@
+1692301083890000000 callback=order status=4 error=0 expected=876 commands=0
+1692301083890000000 callback=order status=4 error=0 expected=876 commands=0
+1692301083890000000 callback=order status=4 error=0 expected=876 commands=0
+1692301083890000000 callback=position status=4 error=0 expected=876 commands=0
+1692301083890001000 callback=fill status=4 error=0 expected=867 commands=0
+1692301083890001000 callback=fill status=4 error=0 expected=859 commands=0
+1692301083890001000 callback=fill status=5 error=0 expected=858 commands=1
+1692301083890001000 cancel 202
+1692301083891000000 callback=position status=5 error=0 expected=858 commands=0
+1692301083891000000 callback=position status=5 error=0 expected=858 commands=0
+1692301083891000000 callback=position status=5 error=0 expected=858 commands=0
+1692301084890001000 callback=order status=4 error=0 expected=858 commands=0
+1692301085413000000 callback=timer status=4 error=0 expected=858 commands=2
+1692301085413000000 submit 203 side=2 price=280219 qty=26 reduce=1 tif=4
+1692301085413000000 submit 204 side=1 price=279069 qty=26 reduce=0 tif=4
+1692301086413000000 callback=order status=4 error=0 expected=858 commands=0
+1692301086413000000 callback=order status=4 error=0 expected=858 commands=0
+1692302223290000000 fill 204 qty=6 px=279069 cum=6 maker=true
+1692302223449000000 fill 204 qty=1 px=279069 cum=7 maker=true
+1692302223790000000 callback=order status=4 error=0 expected=858 commands=0
+1692302223790001000 callback=fill status=4 error=0 expected=864 commands=0
+1692302223791000000 callback=position status=4 error=0 expected=864 commands=0
+1692302223949000000 callback=order status=4 error=0 expected=864 commands=0
+1692302223949001000 callback=fill status=4 error=0 expected=865 commands=0
+1692302223950000000 callback=position status=4 error=0 expected=865 commands=0
+1692302224474000000 fill 204 qty=8 px=279069 cum=15 maker=true
+1692302224476000000 fill 204 qty=2 px=279069 cum=17 maker=true
+1692302224479000000 fill 204 qty=1 px=279069 cum=18 maker=true
+1692302224479000000 fill 204 qty=8 px=279069 cum=26 maker=true
+1692302224974000000 callback=order status=4 error=0 expected=865 commands=0
+1692302224974001000 callback=fill status=4 error=0 expected=873 commands=0
+1692302224975000000 callback=position status=4 error=0 expected=873 commands=0
+1692302224976000000 callback=order status=4 error=0 expected=873 commands=0
+1692302224976001000 callback=fill status=4 error=0 expected=875 commands=0
+1692302224977000000 callback=position status=4 error=0 expected=875 commands=0
+1692302224979000000 callback=order status=4 error=0 expected=875 commands=0
+1692302224979000000 callback=order status=4 error=0 expected=875 commands=0
+1692302224979001000 callback=fill status=4 error=0 expected=876 commands=0
+1692302224979001000 callback=fill status=5 error=0 expected=884 commands=1
+1692302224979001000 cancel 203
+1692302224980000000 callback=position status=5 error=0 expected=884 commands=0
+1692302224980000000 callback=position status=5 error=0 expected=884 commands=0
+1692302225979001000 callback=order status=4 error=0 expected=884 commands=0
+1692302226513000000 callback=timer status=4 error=0 expected=884 commands=2
+1692302226513000000 submit 205 side=2 price=279644 qty=26 reduce=1 tif=4
+1692302226513000000 submit 206 side=1 price=278494 qty=26 reduce=0 tif=4
+1692302227513000000 callback=order status=4 error=0 expected=884 commands=0
+1692302227513000000 callback=order status=4 error=0 expected=884 commands=0
+1692303483653000000 fill 206 qty=6 px=278494 cum=6 maker=true
+1692303483653000000 fill 206 qty=1 px=278494 cum=7 maker=true
+1692303483653000000 fill 206 qty=12 px=278494 cum=19 maker=true
+1692303483653000000 fill 206 qty=2 px=278494 cum=20.999999999999996 maker=true
+1692303483653000000 fill 206 qty=5 px=278494 cum=26 maker=true
+1692303484153000000 callback=order status=4 error=0 expected=884 commands=0
+1692303484153000000 callback=order status=4 error=0 expected=884 commands=0
+1692303484153000000 callback=order status=4 error=0 expected=884 commands=0
+1692303484153000000 callback=order status=4 error=0 expected=884 commands=0
+1692303484153000000 callback=order status=4 error=0 expected=884 commands=0
+1692303484153001000 callback=fill status=4 error=0 expected=890 commands=0
+1692303484153001000 callback=fill status=4 error=0 expected=891 commands=0
+1692303484153001000 callback=fill status=4 error=0 expected=903 commands=0
+1692303484153001000 callback=fill status=4 error=0 expected=905 commands=0
+1692303484153001000 callback=fill status=5 error=0 expected=910 commands=1
+1692303484153001000 cancel 205
+1692303484154000000 callback=position status=5 error=0 expected=910 commands=0
+1692303484154000000 callback=position status=5 error=0 expected=910 commands=0
+1692303484154000000 callback=position status=5 error=0 expected=910 commands=0
+1692303484154000000 callback=position status=5 error=0 expected=910 commands=0
+1692303484154000000 callback=position status=5 error=0 expected=910 commands=0
+1692303485153001000 callback=order status=4 error=0 expected=910 commands=0
+1692303485713000000 callback=timer status=4 error=0 expected=910 commands=1
+1692303485713000000 submit 207 side=2 price=279069 qty=26 reduce=1 tif=4
+1692303486713000000 callback=order status=4 error=0 expected=910 commands=0
+1692308513469000000 callback=bbo status=7 error=0 expected=910 commands=1
+1692308513469000000 cancel 207
+1692308514469000000 callback=order status=7 error=0 expected=910 commands=0
+1692308515013000000 callback=timer status=7 error=0 expected=910 commands=1
+1692308515013000000 submit 208 side=2 price=273227 qty=910 reduce=1 tif=2
+1692308516013000000 callback=order status=7 error=0 expected=910 commands=0
+1692308516013000000 callback=order status=7 error=0 expected=910 commands=0
+1692308516513000000 callback=timer status=7 error=0 expected=910 commands=1
+1692308516513000000 submit 209 side=2 price=273631 qty=910 reduce=1 tif=2
+1692308517013000000 fill 209 qty=1 px=273634 cum=1 maker=false
+1692308517513000000 callback=order status=7 error=0 expected=910 commands=0
+1692308517513000000 callback=order status=7 error=0 expected=910 commands=0
+1692308517513000000 callback=order status=7 error=0 expected=910 commands=0
+1692308517513001000 callback=fill status=7 error=0 expected=909 commands=0
+1692308517514000000 callback=position status=7 error=0 expected=909 commands=0
+1692308518013000000 callback=timer status=7 error=0 expected=909 commands=1
+1692308518013000000 submit 210 side=2 price=273647 qty=909 reduce=1 tif=2
+1692308519013000000 callback=order status=7 error=0 expected=909 commands=0
+1692308519013000000 callback=order status=7 error=0 expected=909 commands=0
+1692308519513000000 callback=timer status=7 error=0 expected=909 commands=1
+1692308519513000000 submit 211 side=2 price=273365 qty=909 reduce=1 tif=2
+1692308520513000000 callback=order status=7 error=0 expected=909 commands=0
+1692308520513000000 callback=order status=7 error=0 expected=909 commands=0
+1692308521013000000 callback=timer status=7 error=0 expected=909 commands=1
+1692308521013000000 submit 212 side=2 price=273250 qty=909 reduce=1 tif=2
+1692308522013000000 callback=order status=7 error=0 expected=909 commands=0
+1692308522013000000 callback=order status=7 error=0 expected=909 commands=0
+1692308522513000000 callback=timer status=7 error=0 expected=909 commands=1
+1692308522513000000 submit 213 side=2 price=273011 qty=909 reduce=1 tif=2
+1692308523013000000 fill 213 qty=5 px=273055 cum=5 maker=false
+1692308523513000000 callback=order status=7 error=0 expected=909 commands=0
+1692308523513000000 callback=order status=7 error=0 expected=909 commands=0
+1692308523513000000 callback=order status=7 error=0 expected=909 commands=0
+1692308523513001000 callback=fill status=7 error=0 expected=904 commands=0
+1692308523514000000 callback=position status=7 error=0 expected=904 commands=0
+1692308524013000000 callback=timer status=7 error=0 expected=904 commands=1
+1692308524013000000 submit 214 side=2 price=272950 qty=904 reduce=1 tif=2
+1692308525013000000 callback=order status=7 error=0 expected=904 commands=0
+1692308525013000000 callback=order status=7 error=0 expected=904 commands=0
+1692308525513000000 callback=timer status=7 error=0 expected=904 commands=1
+1692308525513000000 submit 215 side=2 price=272631 qty=904 reduce=1 tif=2
+1692308526513000000 callback=order status=7 error=0 expected=904 commands=0
+1692308526513000000 callback=order status=7 error=0 expected=904 commands=0
+1692308527013000000 callback=timer status=7 error=0 expected=904 commands=1
+1692308527013000000 submit 216 side=2 price=272751 qty=904 reduce=1 tif=2
+1692308528013000000 callback=order status=7 error=0 expected=904 commands=0
+1692308528013000000 callback=order status=7 error=0 expected=904 commands=0
+1692308528513000000 callback=timer status=7 error=0 expected=904 commands=1
+1692308528513000000 submit 217 side=2 price=272628 qty=904 reduce=1 tif=2
+1692308529513000000 callback=order status=7 error=0 expected=904 commands=0
+1692308529513000000 callback=order status=7 error=0 expected=904 commands=0
+1692308530013000000 callback=timer status=7 error=0 expected=904 commands=1
+1692308530013000000 submit 218 side=2 price=272583 qty=904 reduce=1 tif=2
+1692308531013000000 callback=order status=7 error=0 expected=904 commands=0
+1692308531013000000 callback=order status=9 error=303 expected=904 commands=0

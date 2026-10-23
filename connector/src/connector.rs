@@ -70,6 +70,11 @@ pub enum NativeMarketBatch<'a> {
 pub enum NativeDepthLevels<'a> {
     Owned(&'a [(String, String)]),
     Borrowed(&'a [(&'a str, &'a str)]),
+    /// Borrow frame strings until synchronous publication returns; scale directly into ABI lots.
+    ScaledBorrowed {
+        levels: &'a [(&'a str, &'a str)],
+        quantity_multiplier: crate::decimal::DecimalMultiplier,
+    },
 }
 
 impl NativeDepthLevels<'_> {
@@ -81,6 +86,7 @@ impl NativeDepthLevels<'_> {
         match self {
             Self::Owned(levels) => levels.len(),
             Self::Borrowed(levels) => levels.len(),
+            Self::ScaledBorrowed { levels, .. } => levels.len(),
         }
     }
 }
@@ -107,6 +113,15 @@ pub enum DirectPublication<'a> {
 /// boundary until that runner is retired.
 #[derive(Clone, Debug)]
 pub enum AccountPublication {
+    /// An order average is independent of the incremental execution price in `Order`.
+    OrderWithExecution {
+        position_side: crate::api::ApiPositionSide,
+        symbol: String,
+        client_order_id: Option<String>,
+        venue_order_id: Option<String>,
+        order: Order,
+        average_price: f64,
+    },
     Order {
         position_side: crate::api::ApiPositionSide,
         symbol: String,

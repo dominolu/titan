@@ -1,0 +1,2 @@
+{"lane_progress":"LaneProgress { admitted_sequence: 398, dispatched_sequence: 398, committed_sequence: 398 }","strategy_state":"Running","venue":"gate-legacy"}
+{"lane_progress":"LaneProgress { admitted_sequence: 698, dispatched_sequence: 698, committed_sequence: 698 }","strategy_state":"Running","venue":"gate-legacy"}

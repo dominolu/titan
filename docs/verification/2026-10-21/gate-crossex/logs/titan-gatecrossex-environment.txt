@@ -1,0 +1,8 @@
+2026-10-21T13:06:25+08:00
+/home/dominolu/dev/titan-gatecrossex-20261021-39f1267b
+rustc 1.94.1 (e408947bf 2026-03-25)
+cargo 1.94.1 (29ea6fb6a 2026-03-24)
+Python 3.11.14
+428f5cfc25752cc3d1ab31e430ab0b1cfb9b93f7ac429eeeabed0a97245bd0b4  Cargo.lock
+5f532d44ed3b14725e8aa212de9c30ee0e4dbb81378bfcd202d8221cf660af63  deploy/pair_arb_v13/artifacts/pair_arb.titan
+e0cbe122bea8c0e3a24d932cbadb5b2945205d9b3258482b0684a40be85bdb65  crates/titan-cli/tests/fixtures/artifacts/event_counter.titan

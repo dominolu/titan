@@ -1200,7 +1200,7 @@ fn drive_receiver(
     receiver: Arc<dyn EventReceiver>,
     gate: Arc<ActivationGate>,
     handler: Arc<dyn EventHandler>,
-) {
+) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         if gate.wait_until_active() != titan_core_types::ActivationState::Active {
             return;
@@ -1211,7 +1211,7 @@ fn drive_receiver(
                 Ok(DispatchOutcome::Closed) | Err(_) => break,
             }
         }
-    });
+    })
 }
 
 fn subscribe(
@@ -1242,7 +1242,7 @@ fn subscribe(
     let (_, mut subscriptions) = handle.commit_at_safe_point(tx).unwrap();
     let subscription = subscriptions.pop().unwrap();
     let token = subscription.token.0;
-    drive_receiver(subscription.receiver, gate.clone(), handler);
+    let _ = drive_receiver(subscription.receiver, gate.clone(), handler);
     (token, gate)
 }
 
@@ -1979,7 +1979,7 @@ fn precompiled_routes_filter_keys_and_continue_large_fanout() {
             .unwrap();
         let (_, mut subscriptions) = handle.commit_at_safe_point(transaction).unwrap();
         let subscription = subscriptions.pop().unwrap();
-        drive_receiver(
+        let _ = drive_receiver(
             subscription.receiver,
             gate.clone(),
             Arc::new(RecordingHandler(tx)),
@@ -2301,7 +2301,7 @@ fn event_publish_metadata_drives_routing_and_source_sequence() {
         .unwrap();
     let (_, mut subscriptions) = handle.commit_at_safe_point(route).unwrap();
     let subscription = subscriptions.pop().unwrap();
-    drive_receiver(
+    let _ = drive_receiver(
         subscription.receiver,
         gate.clone(),
         Arc::new(RecordingHandler(tx)),
@@ -2450,18 +2450,28 @@ fn pending_retry_round_robins_across_subscribers() {
         .unwrap();
     engine.start().unwrap();
     let mut tokens = Vec::new();
-    let mut gates = Vec::new();
+    let mut receivers = Vec::new();
     for _ in 0..2 {
-        let (token, gate) = subscribe(
-            &handle,
-            "pending-fair",
-            1,
-            EventQos::ReliableOrdered,
-            4,
-            Arc::new(RecordingHandler(bounded(16).0)),
-        );
-        tokens.push(token);
-        gates.push(gate);
+        let transaction = handle
+            .begin_route_update(handle.current_route_version())
+            .unwrap();
+        handle
+            .stage_subscription(
+                transaction,
+                &ComponentIdentity::new("test", "subscriber"),
+                &SubscriptionSpec {
+                    event_type: Arc::from("pending-fair"),
+                    schema_version: 1,
+                    qos: EventQos::ReliableOrdered,
+                    capacity: 4,
+                    routing_keys: Arc::from([]),
+                },
+            )
+            .unwrap();
+        let (_, mut subscriptions) = handle.commit_at_safe_point(transaction).unwrap();
+        let subscription = subscriptions.pop().unwrap();
+        tokens.push(subscription.token.0);
+        receivers.push(subscription.receiver);
     }
     for value in 1_u8..=6 {
         handle
@@ -2476,15 +2486,27 @@ fn pending_retry_round_robins_across_subscribers() {
         })
     });
     while handle.pop_trace_point().is_some() {}
-    for gate in gates {
-        gate.activate();
+    // Free exactly one slot per subscriber. Background consumers could drain one
+    // queue first, making the retry order depend on thread scheduling; a dropped
+    // RecordingHandler receiver also made those consumers panic.
+    let handler = CountingHandler(Arc::new(AtomicUsize::new(0)));
+    for receiver in &receivers {
+        assert_eq!(
+            receiver
+                .dispatch_next(&handler, Duration::from_millis(50))
+                .unwrap(),
+            DispatchOutcome::Delivered
+        );
     }
-    wait_until(|| engine.metrics().snapshot().pending_retry_success >= 2);
-    let retried = std::iter::from_fn(|| handle.pop_trace_point())
-        .filter(|point| point.stage == TraceStage::Dispatched)
-        .map(|point| point.subscriber_id)
-        .take(2)
-        .collect::<Vec<_>>();
+    let mut retried = Vec::new();
+    wait_until(|| {
+        retried.extend(
+            std::iter::from_fn(|| handle.pop_trace_point())
+                .filter(|point| point.stage == TraceStage::Dispatched)
+                .map(|point| point.subscriber_id),
+        );
+        retried.len() >= 2
+    });
     assert_eq!(retried.len(), 2);
     assert_ne!(retried[0], retried[1]);
     engine.stop().unwrap();
@@ -2537,7 +2559,7 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
         trace_ring: Arc::new(crossbeam_queue::ArrayQueue::new(32)),
         metrics,
     });
-    drive_receiver(
+    let receiver_worker = drive_receiver(
         channel.clone(),
         gate.clone(),
         Arc::new(RecordingHandler(tx)),
@@ -2588,6 +2610,9 @@ fn latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain() {
     values.push(rx.recv_timeout(Duration::from_secs(2)).unwrap()[0]);
     assert_eq!(values, vec![1, 2, 3, 4, 5]);
     channel.stop_and_drain();
+    // Receiving a handler message does not mean its TrackedDelivery was dropped.
+    // Join the receiver before asserting that its last in-flight lease is released.
+    receiver_worker.join().unwrap();
     assert_eq!(arena.outstanding_blocks(), 0);
 }
 

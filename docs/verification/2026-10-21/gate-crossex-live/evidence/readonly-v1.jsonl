@@ -1,0 +1,25 @@
+{"check": "account_raw", "ok": true, "result": {"account_mode": "CROSS_EXCHANGE", "position_mode": "SINGLE", "assets": [{"coin": "USDT", "exchange_type": "CROSSEX"}], "financial_amounts": "[REDACTED]"}}
+{"check": "account_unified", "ok": true, "result": {"currencies": ["USDT"], "financial_amounts": "[REDACTED]"}}
+{"check": "positions_raw", "ok": true, "result": {"rows": 20, "target_positions": [], "other_positions": "[REDACTED]"}}
+{"check": "margin_positions", "ok": true, "result": {"rows": 0}}
+{"check": "open_orders", "ok": true, "result": {"rows": 33, "target_open_orders": 0, "other_symbols": "[REDACTED]"}}
+{"check": "positions_unified", "ok": true, "result": {"rows": 20, "target_positions": [], "other_positions": "[REDACTED]"}}
+{"check": "leverage", "ok": true, "result": {"leverage": 3.0, "marginType": "UNKNOWN", "positionSide": "NET", "symbol": "GATE_FUTURE_BTC_USDT"}}
+{"check": "fee", "ok": true, "result": {"makerFee": 0.0002, "symbol": "GATE_FUTURE_BTC_USDT", "takerFee": 0.00048, "timestamp": 1792562987547}}
+{"check": "transfer_coins", "ok": true, "result": {"rows": 14}}
+{"check": "risk_limits", "error": "[gate-crossex] COMMON_PARAM_BIND_ERROR: Invalid Parameter, please check api doc", "ok": false}
+{"check": "transfers", "ok": true, "result": {"rows": 3}}
+{"check": "account_book", "ok": true, "result": {"rows": 3}}
+{"check": "order_history", "ok": true, "result": {"rows": 1}}
+{"check": "fills", "ok": true, "result": {"rows": 0}}
+{"check": "income", "ok": true, "result": {"rows": 0}}
+{"check": "market_and_rule", "ok": true, "result": {"book": {"asks": [{"price": 82691.6, "qty": 58600.0}, {"price": 82692.1, "qty": 1488.0}, {"price": 82692.2, "qty": 2539.0}, {"price": 82695.7, "qty": 1.0}, {"price": 82695.8, "qty": 605.0}], "bids": [{"price": 82691.5, "qty": 36001.0}, {"price": 82689.5, "qty": 13.0}, {"price": 82688.7, "qty": 120.0}, {"price": 82686.4, "qty": 16.0}, {"price": 82685.8, "qty": 124.0}], "symbol": "GATE_FUTURE_BTC_USDT", "timestamp": 1792562994750}, "rule": {"business_type": "FUTURE", "contract_size": null, "default_leverage": "5", "delist_time": "0", "exchange_type": "GATE", "liquidation_fee": "0.005", "lot_size": "0.0001", "max_limit_size": "1200", "max_market_size": "1200", "max_num_orders": "50", "min_notional": null, "min_size": "0.0001", "state": "live", "support_cross": "true", "support_rpi": "true", "symbol": "GATE_FUTURE_BTC_USDT", "tag": "", "tick_size": "0.1"}, "ticker": {"fundingRate": null, "high24h": 83400.0, "indexPrice": null, "lastPrice": 82691.6, "low24h": 81286.6, "markPrice": null, "nextFundingTime": null, "open24h": 82691.6, "quoteVolume24h": 5261780738.0, "symbol": "GATE_FUTURE_BTC_USDT", "timestamp": 1792562994633, "volume24h": 63631.3813}}}
+{"check": "private_factory_ready", "ok": true, "result": {"ready": true}}
+{"private_stream_event": {"kind": "error"}}
+{"check": "private_factory_reconnect", "ok": true, "result": {"ready_after_reconnect": true}}
+{"check": "native_private_order", "ok": true, "result": {"code": "100000"}}
+{"check": "native_private_position", "ok": true, "result": {"code": "100000"}}
+{"check": "native_private_asset", "ok": true, "result": {"code": "100000"}}
+{"check": "native_private_margin_position", "ok": true, "result": {"code": "100000"}}
+{"check": "native_private_margin_interest", "ok": true, "result": {"code": "100000"}}
+{"action": "read_only", "failed_checks": ["risk_limits"], "mutations": 0, "symbol": "GATE_FUTURE_BTC_USDT"}

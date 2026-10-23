@@ -1,0 +1,22 @@
+{
+  "final_order": {
+    "avgPrice": 0.0,
+    "clientOrderId": "titanlive-86229355f87dcdb7",
+    "createTime": 1792564412690,
+    "executedQty": 0.0,
+    "leavesQty": 0.0001,
+    "orderId": "2224073367101952",
+    "orderType": "LIMIT",
+    "positionSide": "NET",
+    "price": 81077.1,
+    "qty": 0.0001,
+    "reduceOnly": false,
+    "side": "BUY",
+    "status": "CANCELED",
+    "symbol": "GATE_FUTURE_BTC_USDT",
+    "timeInForce": "GTX",
+    "updateTime": 1792564413289
+  },
+  "own_order_absent_from_open_orders": true,
+  "positions_zero": true
+}
