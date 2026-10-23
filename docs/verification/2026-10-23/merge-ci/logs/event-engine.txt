@@ -1,0 +1,68 @@
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-core-types)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-merge-20261023-a055af91/crates/titan-event-engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.60s
+     Running unittests src/lib.rs (target/debug/deps/titan_event_engine-829d0a44ffc45d39)
+
+running 53 tests
+test tests::configuration_rejects_unbounded_or_inconsistent_capacity ... ok
+test tests::latency_histogram_reports_required_percentiles_without_allocation_on_record ... ok
+test tests::latest_slot_blocks_later_critical_delivery_until_fifo_predecessors_drain ... ok
+test tests::critical_load_still_services_market_and_due_timers ... ok
+test tests::async_fast_lane_is_ordered_bounded_and_does_not_block_publishers ... ok
+test tests::callback_failure_is_contained_and_marks_only_that_subscriber_failed ... ok
+test tests::core_runtime_owns_only_the_event_engine ... ok
+test tests::critical_reserve_flows_to_bounded_pending_then_resync ... ok
+test tests::async_fast_lane_priority_bypasses_normal_backlog ... ok
+test tests::event_control_market_reservation_publishes_without_copy_api ... ok
+test tests::fast_lane_runs_inline_and_keeps_the_normal_route ... ok
+test tests::event_control_routes_off_publisher_and_event_loop_threads ... ok
+test tests::lagging_subscriber_returns_to_normal_below_low_watermark ... ok
+test tests::failed_subscriber_records_and_releases_queued_and_pending_deliveries ... ok
+test tests::engine_shutdown_drains_ingress_pending_and_subscriber_channels ... ok
+test tests::market_batch_reservation_is_zero_copy_and_latest_is_coalesced ... ok
+test tests::overloaded_primary_lane_isolated_from_healthy_lane ... ok
+test tests::pending_guarantee_is_reserved_only_for_critical_routes ... ok
+test tests::pool_exhaustion_is_isolated_and_persisted_in_runtime_health ... ok
+test tests::primary_latest_is_coalesced_independently_per_routing_key ... ok
+test tests::primary_async_lane_owns_handler_and_advances_three_watermarks ... ok
+test tests::pending_age_expires_to_resync_without_blocking_event_loop ... ok
+test tests::pressure_diagnostics_scan_incrementally_with_configured_budget ... ok
+test tests::pending_retry_preserves_fifo_after_gate_opens ... ok
+test tests::primary_async_lane_fails_after_hard_handler_duration_and_releases_tail ... ok
+test tests::primary_best_effort_drop_does_not_advance_admitted_watermark ... ok
+test tests::snapshot_barrier_stages_then_replays_only_newer_tail ... ok
+test tests::source_gaps_and_timers_use_bounded_out_of_band_signals ... ok
+test tests::route_transactions_reject_stale_base_without_partial_commit ... ok
+test tests::retirement_stops_new_routing_and_drains_existing_critical_work ... ok
+test tests::recovery_waits_for_the_old_handler_epoch_to_quiesce ... ok
+test tests::timer_queue_and_signal_queue_remain_bounded ... ok
+test tests::multiple_publishers_deliver_without_loss ... ok
+test tests::staged_route_commit_fails_fast_until_event_loop_is_running ... ok
+test tests::subscriptions_from_one_owner_share_a_mailbox_until_the_last_route_retires ... ok
+test tests::parked_subscriber_is_actively_woken_by_publish ... ok
+test tests::v13_adapter_explicitly_advertises_legacy_capabilities ... ok
+test tests::aborted_snapshot_barrier_releases_staging_and_allows_retry ... ok
+test tests::event_publish_metadata_drives_routing_and_source_sequence ... ok
+test tests::async_fast_lane_contains_handler_failure ... ok
+test tests::precompiled_routes_filter_keys_and_continue_large_fanout ... ok
+test tests::snapshot_barrier_registry_enforces_and_releases_global_limits ... ok
+test tests::snapshot_barrier_registry_enforces_active_limit_and_deadline ... ok
+test tests::primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu ... ok
+test tests::multiple_brokers_and_primary_lanes_drain_a_bounded_burst_without_cross_routing ... ok
+test tests::arena_is_bounded_reuses_generation_and_reclaims_last_reference ... ok
+test engine::publication_tests::duplicate_sequences_are_filtered_before_direct_delivery_and_rejection_is_retryable ... ok
+test engine::publication_tests::rejected_copied_and_reserved_events_are_never_delivered ... ok
+test engine::publication_tests::review_cross_source_inline_publication_must_not_deadlock ... ok
+test engine::publication_tests::recursive_sequenced_source_is_rejected_instead_of_deadlocking ... ok
+test engine::publication_tests::reservation_created_before_stop_cannot_publish_after_stop ... ok
+test tests::pending_retry_round_robins_across_subscribers ... ok
+test tests::release_acquire_publication_and_last_release_are_model_checked ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s
+
+   Doc-tests titan_event_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
