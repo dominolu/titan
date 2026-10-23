@@ -27,6 +27,10 @@ titan CLI controller
 - 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
 - Python reporting 只读取并渲染 ResultBundle，不重新计算交易结果。
 
+管理页面与现有框架的模块职责、能力盘点、新增需求和分阶段验收见 [管理平台需求文档](docs/management_console_requirements.md)；PureAdmin 选型、页面结构、API/SSE、部署及验证见 [Web 管理模块技术方案](docs/web_console_technical_plan.md)。
+
+对应的任务依赖、代码迁移、M1/M2/M3 交付与验收安排见 [管理平台实施计划](docs/management_console_implementation_plan.md)。
+
 ## 近期重要重构
 
 ### EventEngine：统一的有界事件运行时

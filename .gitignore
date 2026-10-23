@@ -16,6 +16,8 @@ venv/
 *.egg-info/
 dist/
 build/
+!web/console/build/
+!web/console/build/**
 
 # Local data and artifacts
 /data/

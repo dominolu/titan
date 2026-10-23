@@ -1,0 +1,1 @@
+pnpm exec prettier --check src/views/console src/api/console.ts src/store/modules/console.ts src/store/modules/user.ts src/utils/auth.ts src/utils/http/index.ts src/utils/http/types.d.ts src/utils/precision.ts src/router/index.ts src/router/modules/home.ts src/views/login/index.vue

@@ -316,7 +316,7 @@ pub(super) fn compile(request: &CompileV13Request<'_>) -> Result<serde_json::Val
         signal_hook::flag::register(signal, stop.clone()).map_err(failed)?;
     }
     let mut seed = request.signing_key.map(read_seed).transpose()?;
-    let result = compile_inner(request, output, target, seed.as_ref(), &stop);
+    let result = compile_inner(request, output, target, seed.as_ref(), &stop, false);
     if let Some(seed) = &mut seed {
         // Keep key bytes out of the Python worker, its request, logs and artifact metadata.
         for byte in seed {
@@ -334,6 +334,7 @@ fn compile_inner(
     target: &str,
     seed: Option<&[u8; 32]>,
     stop: &AtomicBool,
+    describe_only: bool,
 ) -> Result<serde_json::Value, CliError> {
     let source = fs::read(request.strategy).map_err(failed)?;
     let parameters: serde_json::Value =
@@ -364,7 +365,12 @@ fn compile_inner(
     let input_path = work.join("request.json");
     fs::write(&input_path, compiler_json_v13(&input)).map_err(failed)?;
     let mut first = None;
-    for (action, seconds) in [("describe", 60), ("emit-objects", 300)] {
+    let phases: &[(&str, u64)] = if describe_only {
+        &[("describe", 60)]
+    } else {
+        &[("describe", 60), ("emit-objects", 300)]
+    };
+    for &(action, seconds) in phases {
         let mut command = Command::new(&python);
         command.env_clear();
         for name in [
@@ -409,6 +415,16 @@ fn compile_inner(
         }
     }
     let metadata = first.unwrap();
+    let normalized: serde_json::Value =
+        serde_json::from_slice(&fs::read(work.join("normalized-parameters.json")).map_err(failed)?)
+            .map_err(failed)?;
+    if describe_only {
+        return Ok(
+            serde_json::json!({"metadata":metadata,"normalized_parameters":normalized,
+            "source_digest":hex_digest(&Sha256::digest(&source).into()),
+            "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&parameters)).into())}),
+        );
+    }
     normalize_objects(&work, &metadata, stop)?;
     let descriptor = work.join("descriptor.c");
     fs::write(&descriptor, metadata.descriptor_source().map_err(failed)?).map_err(failed)?;
@@ -473,7 +489,36 @@ fn compile_inner(
     Ok(
         serde_json::json!({"strategy_id":artifact.manifest.strategy_id,"strategy_version":artifact.manifest.strategy_version,
         "artifact_digest":hex_digest(&artifact.manifest.artifact_digest),"native_digest":hex_digest(&artifact.manifest.native_digest),
-        "paths":artifact.paths}),
+        "paths":artifact.paths,"metadata":metadata,"normalized_parameters":normalized}),
+    )
+}
+
+pub(super) fn describe(strategy: &Path, parameters: &Path) -> Result<serde_json::Value, CliError> {
+    let directory = tempfile::tempdir().map_err(failed)?;
+    let output = directory.path().join("describe.titan");
+    let stop = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, stop.clone()).map_err(failed)?;
+    }
+    let parameters = parameters.to_string_lossy();
+    let request = CompileV13Request {
+        strategy,
+        parameters: &parameters,
+        target: None,
+        cpu_baseline: "x86-64",
+        artifact_format: "bundle",
+        output: Some(&output),
+        signing_key: None,
+        key_id: None,
+        json: true,
+    };
+    compile_inner(
+        &request,
+        &output,
+        compiler_host_target_v13(),
+        None,
+        &stop,
+        true,
     )
 }
 

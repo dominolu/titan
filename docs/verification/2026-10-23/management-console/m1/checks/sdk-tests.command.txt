@@ -1,0 +1,1 @@
+/home/dominolu/dev/titan/.venv/bin/python -m unittest discover -s python/titan-strategy-sdk/tests -p test_v13_static_compiler.py -v

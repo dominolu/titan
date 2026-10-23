@@ -23,6 +23,10 @@ panic = "unwind"
 incremental = true
 codegen-units = 256
 
+# Management verifies multi-gigabyte historical inputs even in development builds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.test]
 opt-level = 0
 debug = true

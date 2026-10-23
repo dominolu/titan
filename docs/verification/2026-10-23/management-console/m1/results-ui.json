@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "reader-api-write-denied",
+      "passed": true
+    },
+    {
+      "name": "immutable-dataset-prepare-sideways",
+      "passed": true,
+      "sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683"
+    },
+    {
+      "name": "engine-validation-rejection",
+      "passed": true
+    },
+    {
+      "name": "cancellation-confirmed-by-execution-path",
+      "passed": true
+    },
+    {
+      "name": "browser-e2e",
+      "passed": true
+    }
+  ]
+}

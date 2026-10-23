@@ -20,6 +20,10 @@ def main() -> None:
     if request.get("protocol_version") != 1:
         raise SystemExit("unsupported Numba bridge protocol")
     definition = load_strategy_definition(Path(request["source"]), request["parameters"])
+    (args.work_dir / "normalized-parameters.json").write_text(
+        json.dumps(definition.spec.validate_parameters(request["parameters"]), sort_keys=True, allow_nan=False),
+        encoding="utf-8",
+    )
     strategy = validate_strategy_definition(definition, request["runtime_abi"])
     if args.action == "emit-objects":
         objects = emit_objects(strategy, args.work_dir, request["cpu_baseline"])

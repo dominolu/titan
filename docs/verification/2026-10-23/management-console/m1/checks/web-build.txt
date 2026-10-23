@@ -1,0 +1,39 @@
+
+> titan-console@6.2.0 build /home/dominolu/dev/titan-management-20261023-5f424533/web/console
+> rimraf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build
+
+vite v7.1.12 building for production...
+╭─────────────────────────────────────────────╮
+│ 您好! 欢迎使用 pure-admin 开源项目          │
+│ 我们为您精心准备了下面两个贴心的保姆级文档  │
+│ https://pure-admin.cn                       │
+│ https://pure-admin-utils.netlify.app        │
+╰─────────────────────────────────────────────╯
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+Browserslist: browsers data (caniuse-lite) is 12 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+transforming...
+✓ 2342 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                          1.38 kB │ gzip:   0.73 kB
+dist/static/css/404-DgQozwK4.css         0.05 kB │ gzip:   0.07 kB
+dist/static/css/403-DjuzhhlE.css         0.05 kB │ gzip:   0.07 kB
+dist/static/css/500-d2Um_kna.css         0.05 kB │ gzip:   0.07 kB
+dist/static/css/index-CHWXWVgm.css       0.37 kB │ gzip:   0.25 kB
+dist/static/css/index-BNlAW1OW.css       1.68 kB │ gzip:   0.61 kB
+dist/static/css/index-CB66UleR.css      87.11 kB │ gzip:   8.47 kB
+dist/static/css/index-B5IhdeUM.css     421.94 kB │ gzip:  64.82 kB
+dist/static/js/redirect-DoZyaQIL.js      0.30 kB │ gzip:   0.24 kB
+dist/static/js/index-t169ss-U.js         1.86 kB │ gzip:   1.07 kB
+dist/static/js/403-6AWCdJM7.js          11.87 kB │ gzip:   5.24 kB
+dist/static/js/404-B0ia80LH.js          12.97 kB │ gzip:   5.65 kB
+dist/static/js/500-C7efA8f1.js          14.95 kB │ gzip:   6.03 kB
+dist/static/js/index-D2lmHnfW.js       426.54 kB │ gzip: 183.25 kB
+dist/static/js/index-DEzq6m_U.js       537.04 kB │ gzip: 181.46 kB
+dist/static/js/index-kMcuyjLk.js     1,232.67 kB │ gzip: 412.55 kB
+✓ built in 6.73s
+╭───────────────────────────────────────────────────────────╮
+│ 🎉 恭喜打包完成（总用时00分06秒，打包后的大小为2.63 MB）  │
+╰───────────────────────────────────────────────────────────╯
