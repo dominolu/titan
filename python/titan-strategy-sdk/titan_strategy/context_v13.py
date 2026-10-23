@@ -96,6 +96,34 @@ def lower_context_now(context, builder, typ, value):
     return _load_integer(builder, value, "now_ns", ir.IntType(64))
 
 
+@intrinsic
+def _complete_stop(typingctx, context_value):
+    if not isinstance(context_value, StrategyContextType):
+        return None
+    signature = types.void(context_value)
+
+    def codegen(context, builder, sig, args):
+        del context, sig
+        raw = args[0]
+        address = builder.gep(raw, [ir.Constant(ir.IntType(64), _field_offset("flags"))])
+        pointer = builder.bitcast(address, ir.IntType(32).as_pointer())
+        builder.store(builder.or_(builder.load(pointer), ir.Constant(ir.IntType(32), 1)), pointer)
+        return cgutils.get_null_value(ir.IntType(8).as_pointer())
+
+    return signature, codegen
+
+
+@overload_method(StrategyContextType, "complete_stop", inline="always")
+def overload_complete_stop(context_value):
+    if not isinstance(context_value, StrategyContextType):
+        return None
+
+    def implementation(context_value):
+        _complete_stop(context_value)
+
+    return implementation
+
+
 def make_context_from_pointer(context_type: StrategyContextType):
     @intrinsic
     def cast(typingctx, pointer):
@@ -240,10 +268,10 @@ def _borrowed_array_type(dtype: np.dtype) -> types.Array:
     return types.Array(from_dtype(dtype), 1, "C", readonly=True, aligned=True)
 
 
-def _borrow_array_intrinsic(method_name: str, dtype: np.dtype):
+def _borrow_array_intrinsic(method_name: str, dtype: np.dtype, *, recovery_payload=False):
     array_type = _borrowed_array_type(dtype)
-    pointer_field = f"{method_name}_ptr"
-    length_field = f"{method_name}_len"
+    pointer_field = "event_payload_ptr" if recovery_payload else f"{method_name}_ptr"
+    length_field = "event_payload_len" if recovery_payload else f"{method_name}_len"
 
     @intrinsic
     def borrow(typingctx, context_value):
@@ -255,6 +283,20 @@ def _borrow_array_intrinsic(method_name: str, dtype: np.dtype):
             raw = args[0]
             data_address = _load_integer(builder, raw, pointer_field, ir.IntType(64))
             length = _load_integer(builder, raw, length_field, ir.IntType(64))
+            if recovery_payload:
+                size = ir.Constant(ir.IntType(64), dtype.itemsize)
+                valid = builder.and_(
+                    builder.icmp_unsigned("==", _load_integer(builder, raw, "event_kind", ir.IntType(32)), ir.Constant(ir.IntType(32), 12)),
+                    builder.icmp_unsigned("==", builder.urem(length, size), ir.Constant(ir.IntType(64), 0)),
+                )
+                valid = builder.and_(valid, builder.or_(
+                    builder.icmp_unsigned("==", length, ir.Constant(ir.IntType(64), 0)),
+                    builder.icmp_unsigned("!=", data_address, ir.Constant(ir.IntType(64), 0)),
+                ))
+                error = builder.gep(raw, [ir.Constant(ir.IntType(64), _field_offset("last_error_code"))])
+                error = builder.bitcast(error, ir.IntType(32).as_pointer())
+                builder.store(builder.select(valid, builder.load(error), ir.Constant(ir.IntType(32), -2)), error)
+                length = builder.select(valid, builder.udiv(length, size), ir.Constant(ir.IntType(64), 0))
             array = context.make_array(array_type)(context, builder)
             array.data = builder.bitcast(
                 builder.inttoptr(data_address, ir.IntType(8).as_pointer()),
@@ -290,6 +332,8 @@ _BORROW = {
         "active_orders": abi_v13.active_order_dtype,
     }.items()
 }
+_BORROW["recovery_orders"] = _borrow_array_intrinsic("recovery_orders", abi_v13.active_order_dtype,
+                                                   recovery_payload=True)
 
 
 def _register_borrow_method(name: str) -> None:

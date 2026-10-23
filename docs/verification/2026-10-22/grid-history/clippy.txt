@@ -1,0 +1,2 @@
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-grid-history-20261022-2aafc598/hftbacktest)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.52s

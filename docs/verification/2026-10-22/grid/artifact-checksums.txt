@@ -1,0 +1,3 @@
+40f3872a7fdebcc417c6a05a0d12ec2343a6c9ca1325fb72894c42ccdc93087a  strategies/grid/strategy.py
+c948e3b99dd345fdcb982f32dc1afd4418aaf30241842e0bd5ad141383851ffa  strategies/grid/parameters.json
+e14b088f4a30874b0463e676d7a56e9b3d6788d9f98d42af4831ad6bd0d3d425  verification-artifacts/grid/grid.titan

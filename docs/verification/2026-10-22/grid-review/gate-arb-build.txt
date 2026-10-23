@@ -1,0 +1,5 @@
+COMMAND: target/debug/titan strategy compile --strategy strategies/grid/strategy.py --parameters strategies/grid/parameters.gate_arb.json --target x86_64-unknown-linux-gnu --cpu-baseline x86-64-v2 --artifact-format bundle --output verification-artifacts/grid-review/grid-gate-arb.titan
+grid	1.1.0	0aafe861a644e68f9b87ea5a996fd58679d63d158e982b33f4c6f738516b8d4d
+verification-artifacts/grid-review/grid-gate-arb.titan
+
+EXIT_CODE=0

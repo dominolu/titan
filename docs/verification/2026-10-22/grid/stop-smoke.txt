@@ -1,0 +1,2 @@
+V13 offline grid stop barrier passed
+V13 grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation

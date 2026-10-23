@@ -1,0 +1,10 @@
+BTCUSDT-aggTrades-2023-09-02.zip: OK
+BTCUSDT-bookTicker-2023-09-02.zip: OK
+BTCUSDT-aggTrades-2023-10-23.zip: OK
+BTCUSDT-bookTicker-2023-10-23.zip: OK
+BTCUSDT-aggTrades-2023-08-17.zip: OK
+curl: (28) Operation timed out after 180000 milliseconds with 23871718 out of 24195869 bytes received
+BTCUSDT-bookTicker-2023-08-17.zip: OK
+BTCUSDT-fundingRate-2023-09.zip: OK
+BTCUSDT-fundingRate-2023-10.zip: OK
+BTCUSDT-fundingRate-2023-08.zip: OK

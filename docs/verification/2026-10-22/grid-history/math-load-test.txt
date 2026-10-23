@@ -1,0 +1,9 @@
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-grid-history-20261022-2aafc598/crates/titan-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/strategy_compile.rs (target/debug/deps/strategy_compile-5e6ffd7656fb022f)
+
+running 1 test
+test native_math_artifact_loads_in_a_clean_host_without_preloaded_libm ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.54s
+

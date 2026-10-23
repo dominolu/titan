@@ -1,0 +1,8 @@
+COMMAND: /home/dominolu/.cargo/bin/cargo +1.94.1 run -p titan-strategy-runtime --example v13_grid_stop_smoke -- verification-artifacts/grid-review/grid.titan
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running `target/debug/examples/v13_grid_stop_smoke verification-artifacts/grid-review/grid.titan`
+V13 offline grid stop barrier passed
+V13 grid recovery passed: proven cancels, missing results rejected, changed fills rejected, gate closed
+V13 grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation
+
+EXIT_CODE=0

@@ -1,0 +1,7 @@
+Read-only reference: /Users/dominolu/dev/gate_arb
+HEAD: 756d2db3b20afc249b2b9a9f527a449bbe015512
+The source files are untracked in the reference worktree; their SHA256 values identify the actual reviewed inputs.
+
+cb439d089d6d66b3ab2870044f3eb4508a8fb6bf5d266aea52954d4ac049d114  app/services/contract_grid_service.py
+8e85727330d7fe804cd83f689ffb882ce21d5e754af13ccf93b02e290c2e92c7  app/domain/contract_grid.py
+35de5baa1805288e392706b96a28d4514122b4fa499a0922ef5253820b3d7f8c  tests/test_contract_grid_unittest.py

@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "initial": {
+    "now_ns": 1000000000,
+    "markets": [{"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101}],
+    "positions": [{"account_no": 0, "asset_no": 0, "account_sequence": 1}],
+    "balances": [{"account_no": 0, "currency_no": 0, "available_units": 100000, "total_units": 100000}],
+    "accounts": [{"account_no": 0, "account_epoch": 1, "account_sequence": 1, "state": 4}]
+  },
+  "events": [
+    {
+      "kind": "tick", "now_ns": 1100000000,
+      "ticks": [{"asset_no": 0, "receive_ts_ns": 1100000000, "price_ticks": 100}]
+    },
+    {
+      "kind": "fill", "now_ns": 1200000000,
+      "state": {
+        "now_ns": 1200000000,
+        "markets": [{"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101}],
+        "positions": [{"account_no": 0, "asset_no": 0, "qty_lots": 2, "average_price_ticks": 95, "account_sequence": 2}],
+        "balances": [{"account_no": 0, "currency_no": 0, "available_units": 100000, "total_units": 100000}],
+        "accounts": [{"account_no": 0, "account_epoch": 1, "account_sequence": 2, "state": 4}],
+        "active_orders": [{"order_id": 2, "account_no": 0, "asset_no": 0, "side": 2, "order_type": 1, "time_in_force": 4, "status": 2, "price_ticks": 105, "qty_lots": 2, "created_ts_ns": 1100000000, "updated_ts_ns": 1100000000}]
+      },
+      "fills": [{"order_id": 1, "asset_no": 0, "account_no": 0, "side": 1, "fill_price_ticks": 95, "fill_qty_lots": 2, "cumulative_filled_lots": 2, "account_sequence": 2, "final_fill": 1}]
+    },
+    {"kind": "stop", "now_ns": 1250000000},
+    {
+      "kind": "order", "now_ns": 1300000000,
+      "state": {
+        "now_ns": 1300000000,
+        "markets": [{"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101}],
+        "positions": [{"account_no": 0, "asset_no": 0, "qty_lots": 2, "average_price_ticks": 95, "account_sequence": 3}],
+        "balances": [{"account_no": 0, "currency_no": 0, "available_units": 100000, "total_units": 100000}],
+        "accounts": [{"account_no": 0, "account_epoch": 1, "account_sequence": 3, "state": 4}]
+      },
+      "orders": [{"order_id": 2, "account_no": 0, "asset_no": 0, "price_ticks": 105, "qty_lots": 2, "status": 6}]
+    },
+    {
+      "kind": "timer", "now_ns": 1800000000,
+      "timer": {"timer_id": 1, "scheduled_ts_ns": 1800000000, "fired_ts_ns": 1800000000}
+    },
+    {
+      "kind": "fill", "now_ns": 1900000000,
+      "fills": [{"order_id": 3, "asset_no": 0, "account_no": 0, "side": 2, "fill_price_ticks": 98, "fill_qty_lots": 2, "cumulative_filled_lots": 2, "account_sequence": 4, "final_fill": 1}]
+    },
+    {
+      "kind": "position", "now_ns": 2000000000,
+      "state": {
+        "now_ns": 2000000000,
+        "markets": [{"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101}],
+        "positions": [{"account_no": 0, "asset_no": 0, "qty_lots": 0, "account_sequence": 5}],
+        "balances": [{"account_no": 0, "currency_no": 0, "available_units": 100006, "total_units": 100006}],
+        "accounts": [{"account_no": 0, "account_epoch": 1, "account_sequence": 5, "state": 4}]
+      },
+      "positions": [{"account_no": 0, "asset_no": 0, "qty_lots": 0, "account_sequence": 5}]
+    }
+  ]
+}

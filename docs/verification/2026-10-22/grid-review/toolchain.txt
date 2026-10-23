@@ -1,0 +1,6 @@
+Linux deepai 5.15.0-186-generic #196-Ubuntu SMP Sat Jun 20 16:09:34 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+rustc 1.94.1 (e408947bf 2026-03-25)
+cargo 1.94.1 (29ea6fb6a 2026-03-24)
+3.11.14 (main, Oct 21 2025, 18:31:21) [GCC 11.2.0]
+Numba 0.63.1
+NumPy 2.2.6
