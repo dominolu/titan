@@ -404,20 +404,28 @@ impl App {
     }
     pub fn spawn(self: &Arc<Self>) {
         for (id, node) in &self.config.nodes {
-            let app = self.clone();
-            let id = id.clone();
-            let node = node.clone();
-            tokio::spawn(async move {
-                loop {
-                    if let Err(error) = app.tick_node(&id, &node).await {
-                        tracing::warn!(node=%id,error=%error,"management reconciliation deferred");
+            for lane in 0..4 {
+                let app = self.clone();
+                let id = id.clone();
+                let node = node.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let result = match lane {
+                            0 => app.tick_catalog(&id, &node).await,
+                            1 => app.tick_operations(&id, &node, true, Some(true)).await,
+                            2 => app.tick_operations(&id, &node, true, Some(false)).await,
+                            _ => app.tick_operations(&id, &node, false, None).await,
+                        };
+                        if let Err(error) = result {
+                            tracing::warn!(node=%id,error=%error,"management reconciliation deferred");
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            });
+                });
+            }
         }
     }
-    async fn tick_node(&self, id: &str, node: &super::config::RemoteNode) -> Result<()> {
+    async fn tick_catalog(&self, id: &str, node: &super::config::RemoteNode) -> Result<()> {
         let catalog: Result<()> = async {
             let response = self
                 .client
@@ -453,32 +461,27 @@ impl App {
             };
             self.store.save_resource(Resource{id:key,kind:"node".into(),node_id:id.into(),revision:String::new(),frozen:false,digest:String::new(),body:json!({"environment":environment,"online":catalog.is_ok(),"last_seen_at_ns":last_seen,"last_attempt_ns":now_ns(),"source":"management_transport","reason":catalog.as_ref().err().map(ToString::to_string)})},None)?;
         }
-        if let Err(error) = catalog {
-            for op in self
-                .store
-                .active()?
-                .into_iter()
-                .filter(|op| op.node_id == id && op.state != OperationState::Pending)
-            {
-                self.store.update_operation(&Receipt {
-                    operation_id: op.id,
-                    input_digest: op.input_digest,
-                    state: OperationState::Unknown,
-                    result: op.result,
-                    error: Some("node catalog cannot be verified".into()),
-                })?;
-            }
-            return Err(error);
-        }
+        catalog
+    }
+    async fn tick_operations(
+        &self,
+        id: &str,
+        node: &super::config::RemoteNode,
+        stops: bool,
+        pending: Option<bool>,
+    ) -> Result<()> {
         let active: Vec<_> = self
             .store
             .active()?
             .into_iter()
-            .filter(|op| op.node_id == id)
+            .filter(|op| op.node_id == id && matches!(op.input, Action::Stop { .. }) == stops)
+            .filter(|op| pending.is_none_or(|value| value == (op.state == OperationState::Pending)))
             .collect();
         let mut dispatched: std::collections::HashSet<String> = active
             .iter()
-            .filter(|op| op.state != OperationState::Pending)
+            // Unknown is a result classification, not proof that a process still owns a slot.
+            // N remains the admission authority and can conclusively reject a busy slot.
+            .filter(|op| op.state == OperationState::Running)
             .map(|op| op.node_id.clone())
             .collect();
         for op in active {
@@ -588,18 +591,26 @@ impl App {
                             self.store.save_resource(item, None)?;
                         }
                     }
-                    self.store.update_operation(&receipt)?;
+                    if receipt.state == OperationState::Unknown {
+                        self.store
+                            .update_operation_if_current(&receipt, &op.revision)?;
+                    } else {
+                        self.store.update_operation(&receipt)?;
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => {
                     if op.state != OperationState::Pending {
-                        self.store.update_operation(&Receipt {
-                            operation_id: op.id,
-                            input_digest: op.input_digest,
-                            state: OperationState::Unknown,
-                            result: op.result,
-                            error: Some(format!("node response unavailable: {error}")),
-                        })?;
+                        self.store.update_operation_if_current(
+                            &Receipt {
+                                operation_id: op.id,
+                                input_digest: op.input_digest,
+                                state: OperationState::Unknown,
+                                result: op.result,
+                                error: Some(format!("node response unavailable: {error}")),
+                            },
+                            &op.revision,
+                        )?;
                     }
                 }
             }

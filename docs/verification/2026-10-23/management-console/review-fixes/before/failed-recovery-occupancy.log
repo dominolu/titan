@@ -1,0 +1,45 @@
+real-signed-grid-build: passed
+actual-browser-deploy-start-pause-resume-stop-reader: passed
+cross-node-deploy-signature-abi-digest: passed
+tampered-transfer-preserves-good-deployment: passed
+config-drift-rejected-before-activation-and-reservation-released: passed
+direct-cli-bypass-rejected: passed
+start-idempotency: passed
+lost-start-ack-reconciles-same-worker: passed
+actual-runtime-quotes-within-envelope: passed
+E-authoritative-fresh-monetary-risk-and-persisted-sampled-maximum: passed
+pause-consumes-cancel-confirmations: passed
+lost-control-ack-reconciles-same-engine-operation: passed
+A-N-restart-preserves-paused-worker: passed
+resume-same-generation: passed
+crash-retains-checkpoint-and-occupancy: passed
+wrong-checkpoint-rejected: passed
+wrong-historical-order-identity-rejected-before-activation: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 248, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 230, in main
+    recovered=completed(submit({"kind":"recover","run_id":old["id"],"generation":generation,"checkpoint_id":old["body"]["checkpoint_id"]}));new=resource(recovered,"run");assert int(new["body"]["generation"])>int(generation) and new["body"]["expires_at_ns"]==old["body"]["expires_at_ns"];passed("pinned-recovery-new-generation-original-budget")
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 144, in submit
+    def submit(action,node="live",key=None):return call("/api/v1/operations",{"idempotency_key":key or secrets.token_hex(16),"node_id":node,"action":action})
+                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 134, in call
+    with opener.open(request.Request(origin+path,data=None if data is None else json.dumps(data).encode(),headers=headers),timeout=12) as response:return json.load(response)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/miniconda3/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/miniconda3/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/miniconda3/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/miniconda3/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/home/dominolu/miniconda3/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 409: Conflict

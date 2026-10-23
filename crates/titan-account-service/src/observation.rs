@@ -92,6 +92,7 @@ pub struct AccountFactJournal {
     writer: Mutex<Option<thread::JoinHandle<()>>>,
     definitions: Arc<BTreeMap<u32, AccountDefinition>>,
     summaries: Mutex<BTreeMap<String, FillSummary>>,
+    prices: crate::risk::RiskPrices,
 }
 impl AccountFactJournal {
     pub fn open(
@@ -108,7 +109,7 @@ impl AccountFactJournal {
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "FULL")?;
         let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err("account observation database is newer than this program".into());
         }
         db.execute_batch("CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,opened_ns TEXT NOT NULL,clean INTEGER NOT NULL);
@@ -124,23 +125,50 @@ impl AccountFactJournal {
             CREATE INDEX IF NOT EXISTS ledger_account ON ledger(account);
             CREATE INDEX IF NOT EXISTS ledger_time ON ledger(account,CAST(json_extract(body,'$.ledger.occurred_ms') AS INTEGER));
             CREATE TABLE IF NOT EXISTS ledger_coverage(account TEXT PRIMARY KEY,body TEXT NOT NULL);
-            PRAGMA user_version=1;")?;
-        let unclean: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sources WHERE clean=0)",
-            [],
-            |r| r.get(0),
-        )?;
-        if unclean {
-            issue(
-                &db,
-                "RECORDING_GAP",
-                "an earlier recorder did not confirm a clean drain",
-            )?;
+            CREATE TABLE IF NOT EXISTS source_accounts(source TEXT NOT NULL,account TEXT NOT NULL,PRIMARY KEY(source,account));
+            CREATE TABLE IF NOT EXISTS source_issues(source TEXT NOT NULL,account TEXT NOT NULL,code TEXT NOT NULL,detail TEXT NOT NULL,PRIMARY KEY(source,account,code));
+            CREATE TABLE IF NOT EXISTS risk_windows(account TEXT NOT NULL,asset TEXT NOT NULL,instrument TEXT NOT NULL,currency TEXT NOT NULL,unit TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,asset,instrument,currency,unit));
+            PRAGMA user_version=2;")?;
+        let lease = recording_lease(&path, &source)?.ok_or("recorder source is already active")?;
+        let mut query = db.prepare("SELECT id FROM sources WHERE clean=0 LIMIT 4097")?;
+        let unclean = query
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if unclean.len() > 4096 {
+            return Err("unresolved recorder source budget exceeded".into());
         }
+        for previous in unclean {
+            if let Some(_unowned) = recording_lease(&path, &previous)? {
+                let mut query = db.prepare("SELECT account FROM source_accounts WHERE source=?1 UNION SELECT DISTINCT account FROM facts WHERE source=?1")?;
+                let mut affected = query
+                    .query_map([&previous], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                if affected.is_empty() {
+                    affected.push(String::new());
+                }
+                for account in affected {
+                    db.execute(
+                        "INSERT OR IGNORE INTO source_issues VALUES (?1,?2,'RECORDING_GAP',?3)",
+                        params![
+                            previous,
+                            account,
+                            "an unowned earlier recorder did not confirm a clean drain"
+                        ],
+                    )?;
+                }
+            }
+        }
+        drop(query);
         db.execute(
             "INSERT INTO sources VALUES (?1,?2,0)",
             params![source, now()],
         )?;
+        for account in accounts {
+            db.execute(
+                "INSERT INTO source_accounts VALUES (?1,?2)",
+                params![source, account.account_key.as_ref()],
+            )?;
+        }
         let definitions: Arc<BTreeMap<u32, AccountDefinition>> = Arc::new(
             accounts
                 .iter()
@@ -159,6 +187,8 @@ impl AccountFactJournal {
         let writer = thread::Builder::new()
             .name("account-fact-writer".into())
             .spawn(move || {
+                // The writer owns the lease through its final durable clean marker, even after Drop.
+                let _lease = lease;
                 if let Err(error) = record(db, receiver, &identity, &d, &h, &s) {
                     h.failed.store(true, Ordering::Release);
                     tracing::error!(error=%error,"account recording failed; history is incomplete");
@@ -173,6 +203,7 @@ impl AccountFactJournal {
             writer: Mutex::new(Some(writer)),
             definitions,
             summaries: Default::default(),
+            prices: Default::default(),
         }))
     }
     fn enqueue(&self, message: Message) -> bool {
@@ -253,10 +284,38 @@ impl AccountFactJournal {
             .and_then(|v| v["to_ms"].as_str().and_then(|s| s.parse().ok())))
     }
     /// Equity sampling uses one coherent account image; private-stream facts use the independent queue.
+    pub fn bind_risk_market(
+        &self,
+        stream: u32,
+        instruments: &[titan_market_service::MarketInstrumentBinding],
+    ) -> ObservationResult<()> {
+        for definition in self.definitions.values() {
+            for instrument in &*definition.instruments {
+                if instruments.iter().any(|m| {
+                    m.asset_id.0 == instrument.asset_id.0
+                        && m.native_symbol == instrument.native_symbol
+                        && m.price_tick == instrument.price_tick
+                        && m.quantity_lot == instrument.quantity_lot
+                }) {
+                    self.prices
+                        .bind(definition.account_id.0, instrument.asset_id.0, stream)?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn observe_account(
         &self,
         key: &str,
         image: &AccountRecoverySnapshot,
+    ) -> ObservationResult<Value> {
+        self.observe_account_with_execution(key, image, &[])
+    }
+    pub fn observe_account_with_execution(
+        &self,
+        key: &str,
+        image: &AccountRecoverySnapshot,
+        execution: &[ExecutionRiskEvidence],
     ) -> ObservationResult<Value> {
         let definition = self
             .definitions
@@ -270,8 +329,39 @@ impl AccountFactJournal {
             image.positions.clone(),
             image.balances.clone(),
         )?;
-        let body = account_image(definition, &coherent)?;
-        let sampled = json!({"account":key,"source":self.source,"epoch":body["epoch"],"version":body["version"],"captured_at_ns":body["captured_at_ns"],"equity":body["equity"],"completeness":body["completeness"]});
+        let mut body = account_image(definition, &coherent)?;
+        body["risk"] = crate::risk::account_risk(
+            definition,
+            &coherent,
+            &self.prices,
+            execution,
+            now().parse()?,
+        )?;
+        body["completeness"]["risk"] = body["risk"]["complete"].clone();
+        let mut missing = body["completeness"]["missing"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        missing.retain(|reason| {
+            !matches!(
+                reason.as_str(),
+                Some("mark_price" | "unsettled_fill_reconciliation")
+            )
+        });
+        if let Some(assets) = body["risk"]["assets"].as_array() {
+            for asset in assets {
+                if let Some(reasons) = asset["missing"].as_array() {
+                    for reason in reasons {
+                        if !missing.contains(reason) {
+                            missing.push(reason.clone());
+                        }
+                    }
+                }
+            }
+        }
+        body["completeness"]["missing"] = Value::Array(missing);
+        body["max_exposure"] = self.risk_maxima(key)?;
+        let sampled = json!({"account":key,"source":self.source,"epoch":body["epoch"],"version":body["version"],"captured_at_ns":body["captured_at_ns"],"equity":body["equity"],"completeness":body["completeness"],"risk":body["risk"]});
         self.sample
             .lock()
             .map_err(|_| "observation sample lock poisoned")?
@@ -286,6 +376,20 @@ impl AccountFactJournal {
     }
     pub fn health(&self) -> Value {
         json!({"source":self.source,"writer_failed":self.health.failed.load(Ordering::Acquire),"backlog":self.health.pending.load(Ordering::Acquire).to_string(),"dropped":self.health.dropped.load(Ordering::Acquire).to_string(),"history_complete":false,"missing":["pre_observation_history","strategy_attribution"],"ledger_coverage_source":"ledger_coverage"})
+    }
+    fn risk_maxima(&self, account: &str) -> ObservationResult<Value> {
+        let db =
+            Connection::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(Duration::from_millis(200))?;
+        let mut query=db.prepare("SELECT body FROM risk_windows WHERE account=?1 ORDER BY asset,currency,unit LIMIT 1025")?;
+        let rows = query
+            .query_map([account], |r| r.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str::<Value>(&row?)?))
+            .collect::<ObservationResult<Vec<_>>>()?;
+        if rows.len() > 1024 {
+            return Err("risk maximum view capacity exceeded".into());
+        }
+        Ok(Value::Array(rows))
     }
     pub fn history(
         &self,
@@ -386,8 +490,10 @@ impl AccountFactJournal {
             fees.push(json!({"currency":currency,"amount_unit":unit,"amount_units":units.to_string(),"amount":exact(units,unit.parse::<DecimalUnit>()?)?,"coverage_complete":false}));
         }
         let mut issues = Vec::new();
-        let mut stmt = db.prepare("SELECT code,detail FROM issues ORDER BY code")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let mut stmt = db.prepare("SELECT code,detail FROM issues UNION SELECT code,detail FROM source_issues WHERE account=?1 OR account='' ORDER BY code")?;
+        for row in stmt.query_map([account], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
             let (code, detail) = row?;
             issues.push(json!({"code":code,"detail":detail,"active":true}));
         }
@@ -444,7 +550,7 @@ impl AccountFactJournal {
             }
         }
         Ok(
-            json!({"recording":self.health(),"ledger_coverage":coverage,"fee_summary_caught_up":caught_up,"processed_fill_count":fills.count.to_string(),"independent_fills_observed":if caught_up{Some(fills.count.to_string())}else{None},"observed_fees":if caught_up{Some(fees)}else{None},"native_performance":native,"performance":performance,"net_pnl":performance.get("net_pnl"),"max_drawdown":performance.get("max_drawdown"),"attribution":"account","diagnostics":issues}),
+            json!({"recording":self.health(),"ledger_coverage":coverage,"fee_summary_caught_up":caught_up,"processed_fill_count":fills.count.to_string(),"independent_fills_observed":if caught_up{Some(fills.count.to_string())}else{None},"observed_fees":if caught_up{Some(fees)}else{None},"native_performance":native,"performance":performance,"net_pnl":performance.get("net_pnl"),"max_drawdown":performance.get("max_drawdown"),"max_exposure":self.risk_maxima(account)?,"attribution":"account","diagnostics":issues}),
         )
     }
     pub fn close(&self, deadline: Instant) -> ObservationResult<()> {
@@ -470,6 +576,10 @@ impl AccountFactJournal {
 }
 impl EventHandler for AccountFactJournal {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
+        if event.event_type == titan_market_service::BBO_EVENT {
+            self.prices.observe(event);
+            return Ok(());
+        }
         if event.payload.len() > 256 || decode_account_event_header(event.payload).is_err() {
             self.health.failed.store(true, Ordering::Release);
             return Ok(());
@@ -508,7 +618,37 @@ fn issue(db: &Connection, code: &str, detail: &str) -> ObservationResult<()> {
     )?;
     Ok(())
 }
-fn exact(units: i128, unit: DecimalUnit) -> ObservationResult<String> {
+#[cfg(unix)]
+fn recording_lease(path: &Path, source: &str) -> ObservationResult<Option<std::fs::File>> {
+    use std::os::fd::AsRawFd;
+    let path = path.canonicalize()?;
+    let directory = path.with_file_name(format!(
+        "{}.recorders",
+        path.file_name()
+            .ok_or("missing recorder name")?
+            .to_string_lossy()
+    ));
+    std::fs::create_dir_all(&directory)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(directory.join(hex(&Sha256::digest(source.as_bytes()))))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err(error.into())
+    }
+}
+#[cfg(not(unix))]
+fn recording_lease(_: &Path, _: &str) -> ObservationResult<Option<std::fs::File>> {
+    Err("durable recording requires an OS-backed owner lease".into())
+}
+pub(crate) fn exact(units: i128, unit: DecimalUnit) -> ObservationResult<String> {
     let scaled = units
         .checked_mul(i128::from(unit.coefficient()))
         .ok_or("observation decimal overflow")?;
@@ -634,6 +774,54 @@ fn equity_window(
     }
     Ok(())
 }
+fn risk_window(
+    db: &Connection,
+    source: &str,
+    account: &str,
+    risk: &Value,
+) -> ObservationResult<()> {
+    let Some(assets) = risk["assets"].as_array() else {
+        return Ok(());
+    };
+    for asset in assets {
+        let Some(actual) = asset["actual_notional"]["amount_units"].as_str() else {
+            continue;
+        };
+        let Some(bound) = asset["pending_bound_notional"]["amount_units"].as_str() else {
+            continue;
+        };
+        let actual = actual.parse::<i128>()?;
+        let bound = bound.parse::<i128>()?;
+        let id = asset["asset_id"].as_str().ok_or("risk asset missing")?;
+        let instrument = asset["instrument"]
+            .as_str()
+            .ok_or("risk instrument missing")?;
+        let currency = asset["currency"].as_str().ok_or("risk currency missing")?;
+        let unit = asset["actual_notional"]["amount_unit"]
+            .as_str()
+            .ok_or("risk unit missing")?;
+        let old:Option<String>=db.query_row("SELECT body FROM risk_windows WHERE account=?1 AND asset=?2 AND instrument=?3 AND currency=?4 AND unit=?5",params![account,id,instrument,currency,unit],|r|r.get(0)).optional()?;
+        let old: Option<Value> = old.map(|s| serde_json::from_str(&s)).transpose()?;
+        let peak = |key: &str, current: i128| -> ObservationResult<i128> {
+            Ok(old
+                .as_ref()
+                .and_then(|v| v[key].as_str())
+                .map(str::parse::<i128>)
+                .transpose()?
+                .unwrap_or(0)
+                .max(current))
+        };
+        let max_actual = peak("max_actual_units", actual)?;
+        let max_bound = peak("max_pending_bound_units", bound)?;
+        let body = json!({"account":account,"asset_id":id,"instrument":instrument,"currency":currency,"amount_unit":unit,"max_actual_units":max_actual.to_string(),"max_pending_bound_units":max_bound.to_string(),"max_actual_notional":exact(max_actual,unit.parse()?)?,"max_pending_bound_notional":exact(max_bound,unit.parse()?)?,"last_sample_at_ns":asset["captured_at_ns"],"last_source":source,"coverage_complete":false,"method":"maximum_of_observed_snapshots","last_sample_complete":asset["complete"]});
+        db.execute("INSERT INTO risk_windows VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(account,asset,instrument,currency,unit) DO UPDATE SET body=excluded.body",params![account,id,instrument,currency,unit,serde_json::to_string(&body)?])?;
+    }
+    let content = serde_json::to_string(risk)?;
+    let hash = Sha256::digest(content.as_bytes());
+    let key = format!("{source}:risk:{}:{}", account, hex(&hash));
+    db.execute("INSERT OR IGNORE INTO facts(source,account,kind,event_key,digest,body) VALUES (?1,?2,'risk_sample',?3,?4,?5)",params![source,account,key,&hash[..],content])?;
+    Ok(())
+}
 fn record(
     mut db: Connection,
     receiver: mpsc::Receiver<Message>,
@@ -666,6 +854,7 @@ fn record(
                 }
             }
             for sample in images.into_values() {
+                risk_window(&tx, source, &sample.account, &sample.body["risk"])?;
                 let key = format!(
                     "{source}:image:{}:{}:{}",
                     sample.account, sample.body["epoch"], sample.body["version"]
@@ -761,6 +950,12 @@ fn event(
                     symbol,
                     hex(&v.trade_id.0),
                 ))?;
+                // Valuation policy is not part of the immutable execution units. Preserve the
+                // pre-v2 fingerprint when quote valuation is enabled on an existing journal.
+                let execution_binding = binding.cloned().map(|mut binding| {
+                    binding.linear_quote_currency = None;
+                    binding
+                });
                 let fingerprint = serde_json::to_vec(&json!([
                     v.asset_id,
                     v.side,
@@ -770,7 +965,7 @@ fn event(
                     v.fee_currency_id,
                     v.realized_pnl_units,
                     event_flags::position_side(h.flags),
-                    binding,
+                    execution_binding,
                     currency.map(|c| (c.native_currency.as_ref(), c.amount_unit.to_string())),
                     hex(&v.venue_order_id.0)
                 ]))?;
@@ -1271,6 +1466,26 @@ mod tests {
             "1"
         );
         drop(journal);
+        let mut valuation = definition();
+        Arc::make_mut(&mut valuation.instruments)[0].linear_quote_currency = Some(CurrencyId(0));
+        let journal =
+            AccountFactJournal::open(&path, "valuation-only".into(), &[valuation]).unwrap();
+        publish(&journal, fill(1, 2), 1);
+        journal
+            .close(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(
+            journal.history("gate", Some("fill"), 0, 20).unwrap(),
+            original
+        );
+        assert!(
+            !journal.summary("gate").unwrap()["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["code"] == "TRADE_ID_CONFLICT")
+        );
+        drop(journal);
         let mut changed = definition();
         let mut instruments = changed.instruments.to_vec();
         instruments[0].price_tick = "0.01".parse().unwrap();
@@ -1623,6 +1838,7 @@ mod tests {
                 price_tick: "0.1".parse().unwrap(),
                 quantity_lot: "0.0001".parse().unwrap(),
                 contract_multiplier: "1".parse().unwrap(),
+                linear_quote_currency: None,
             }]),
             currencies: Arc::from([AccountCurrencyBinding {
                 native_currency: Arc::from("USDT"),
@@ -1796,6 +2012,60 @@ mod tests {
         );
     }
     #[test]
+    fn live_recorders_do_not_create_gaps_and_crashed_sources_are_scoped_to_their_accounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("facts.db");
+        let a = AccountFactJournal::open(&path, "live-a".into(), &[definition()]).unwrap();
+        let b = AccountFactJournal::open(&path, "live-b".into(), &[definition()]).unwrap();
+        assert!(
+            !b.summary("gate").unwrap()["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["code"] == "RECORDING_GAP")
+        );
+        a.close(Instant::now() + Duration::from_secs(2)).unwrap();
+        b.close(Instant::now() + Duration::from_secs(2)).unwrap();
+        let db = Connection::open(&path).unwrap();
+        db.execute("UPDATE sources SET clean=0 WHERE id='live-a'", [])
+            .unwrap();
+        let mut other = definition();
+        other.account_key = Arc::from("other");
+        other.account_id = AccountId(2);
+        let c = AccountFactJournal::open(&path, "other-worker".into(), &[other]).unwrap();
+        assert!(
+            !c.summary("other").unwrap()["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["code"] == "RECORDING_GAP")
+        );
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM source_issues WHERE account='gate' AND code='RECORDING_GAP')",[],|r|r.get::<_,bool>(0)).unwrap());
+        c.close(Instant::now() + Duration::from_secs(2)).unwrap();
+    }
+    #[test]
+    fn risk_maxima_survive_clean_worker_restart_without_losing_integer_precision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("facts.db");
+        let journal = AccountFactJournal::open(&path, "risk-one".into(), &[definition()]).unwrap();
+        let db = Connection::open(&path).unwrap();
+        for units in ["9007199254740993", "9007199254740995", "3"] {
+            risk_window(&db,"risk-one","gate",&json!({"assets":[{"asset_id":"1","instrument":"BTC_USDT","currency":"USDT","captured_at_ns":"42","actual_notional":{"amount_units":units,"amount_unit":"0.000001"},"pending_bound_notional":{"amount_units":units},"complete":true}]})).unwrap();
+        }
+        journal
+            .close(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        let restarted =
+            AccountFactJournal::open(&path, "risk-two".into(), &[definition()]).unwrap();
+        assert_eq!(
+            restarted.summary("gate").unwrap()["max_exposure"][0]["max_actual_notional"],
+            "9007199254.740995"
+        );
+        restarted
+            .close(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+    }
+    #[test]
     fn interrupted_recording_is_not_repaired_by_opening_a_new_source() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("facts.db");
@@ -1833,6 +2103,7 @@ mod tests {
             writer: Mutex::new(None),
             definitions: Arc::new(BTreeMap::from([(1, definition())])),
             summaries: Default::default(),
+            prices: Default::default(),
         };
         publish(&journal, fill(1, 1), 1);
         publish(&journal, fill(2, 2), 2);

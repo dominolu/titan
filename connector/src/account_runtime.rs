@@ -693,6 +693,47 @@ impl account::AccountConnector for AccountRuntime {
         let (version, items) = image.orders(filter);
         Ok(self.snapshot(image.epoch, version, items))
     }
+    fn order_evidence(
+        &self,
+        asset: account::AssetId,
+        client: account::Id128,
+    ) -> account::OrderEvidenceFuture {
+        let api = self.api.clone();
+        let ids = self.ids.clone();
+        let binding = self
+            .context
+            .instruments
+            .iter()
+            .find(|b| b.asset_id == asset)
+            .cloned();
+        let guard = SubmitSession {
+            ready: self.ready.clone(),
+            active: self.active.clone(),
+            committed: self.committed.clone(),
+            fence: self.readiness_fence.clone(),
+            epoch: self.epoch.clone(),
+            publisher: self.context.event_publisher.clone(),
+        }
+        .capture();
+        Box::pin(async move {
+            guard().map_err(|e| rejected(e.to_string()))?;
+            let binding = binding.ok_or_else(|| rejected("order evidence asset is not bound"))?;
+            let client_text = resolve_id(&ids, client);
+            let order = api
+                .get_order(&binding.native_symbol, None, Some(&client_text))
+                .await
+                .map_err(|e| rejected(e.to_string()))?;
+            guard().map_err(|e| rejected(e.to_string()))?;
+            if order.symbol != binding.native_symbol.as_ref() {
+                return Err(rejected("order evidence symbol mismatch"));
+            }
+            let snapshot = order_snapshot(&order, &binding, &ids)?;
+            if snapshot.client_order_id != client {
+                return Err(rejected("order evidence client identity mismatch"));
+            }
+            Ok(snapshot)
+        })
+    }
     fn positions(
         &self,
         filter: account::PositionFilter,
@@ -2406,6 +2447,7 @@ mod tests {
                 price_tick: account::DecimalUnit::new(1, 1).unwrap(),
                 quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
                 contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+                linear_quote_currency: None,
             }]
             .into(),
             currencies: Vec::new().into(),
@@ -2503,6 +2545,7 @@ mod tests {
             price_tick: account::DecimalUnit::new(1, 1).unwrap(),
             quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
             contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+            linear_quote_currency: None,
         };
         for sequence in [7_u64, 8] {
             let mut id = [9_u8; 16];
@@ -2573,6 +2616,7 @@ mod tests {
                 price_tick: account::DecimalUnit::new(1, 1).unwrap(),
                 quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
                 contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+                linear_quote_currency: None,
             }]
             .into(),
             currencies: vec![account::AccountCurrencyBinding {
@@ -3065,6 +3109,7 @@ mod tests {
                 price_tick: account::DecimalUnit::new(1, 1).unwrap(),
                 quantity_lot: account::DecimalUnit::new(1, 2).unwrap(),
                 contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+                linear_quote_currency: None,
             }]
             .into(),
             currencies: vec![

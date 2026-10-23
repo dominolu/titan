@@ -127,7 +127,9 @@ impl Store {
             }
             return Ok(serde_json::from_str(&data)?);
         }
-        let active: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE json_extract(data,'$.state') IN ('pending','running','unknown')",[],|r|r.get(0))?;
+        // Stop has its own bounded admission budget; ordinary/unknown work cannot consume it.
+        let stopping = matches!(input.action, Action::Stop { .. });
+        let active: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE json_extract(data,'$.state') IN ('pending','running','unknown') AND (json_extract(data,'$.input.kind')='stop')=?1",[stopping],|r|r.get(0))?;
         ensure!(active < 256, "operation capacity exceeded");
         if let Some((run, generation)) = input.action.run() {
             let conflicting: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE node_id=?1 AND json_extract(data,'$.input.run_id')=?2 AND json_extract(data,'$.input.generation')=?3 AND json_extract(data,'$.state') IN ('pending','running','unknown')",params![input.node_id,run,generation],|r|r.get(0))?;
@@ -261,11 +263,24 @@ impl Store {
         Ok(serde_json::from_str(&data)?)
     }
     pub fn update_operation(&self, receipt: &Receipt) -> Result<Operation> {
+        self.update_operation_at(receipt, None)
+    }
+    pub fn update_operation_if_current(
+        &self,
+        receipt: &Receipt,
+        revision: &str,
+    ) -> Result<Operation> {
+        self.update_operation_at(receipt, Some(revision))
+    }
+    fn update_operation_at(&self, receipt: &Receipt, revision: Option<&str>) -> Result<Operation> {
         ensure!(
             receipt.state != OperationState::Pending,
             "node receipt cannot reset dispatch ownership"
         );
         self.mutate_operation(&receipt.operation_id, |op| {
+            if revision.is_some_and(|expected| op.revision != expected) {
+                return Ok(());
+            }
             ensure!(
                 receipt.input_digest == op.input_digest,
                 "node receipt input identity mismatch"
@@ -408,6 +423,23 @@ impl Store {
     ) -> Result<Resource> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let never_activated = resource.kind == "run"
+            && resource.body["observation"]["start_admission_absent"] == true
+            && resource.body["observation"]["source"] == "runtime_owner"
+            && resource.body["observation"]["run_id"] == resource.body["admission_operation_id"];
+        if never_activated
+            && let (Some(previous), Some(admission)) = (
+                resource.body["predecessor_run_id"].as_str(),
+                resource.body["admission_operation_id"].as_str(),
+            )
+        {
+            // A failed candidate never owned an activated strategy. Keep the reservation,
+            // but restore its recoverable predecessor, including when repairing a cached row.
+            tx.execute(
+                "UPDATE occupancy SET run_id=?1 WHERE node_id=?2 AND run_id=?3 AND operation_id=?4",
+                params![previous, resource.node_id, resource.id, admission],
+            )?;
+        }
         let old: Option<String> = tx
             .query_row(
                 "SELECT data FROM resources WHERE id=?1",
@@ -425,6 +457,7 @@ impl Store {
                 resource.body["acknowledgement"] = ack.clone();
             }
             if old.body == resource.body && old.frozen == resource.frozen && expected.is_none() {
+                tx.commit()?;
                 return Ok(old);
             }
             if old.frozen || expected.is_some_and(|r| r != old.revision) {
@@ -439,6 +472,11 @@ impl Store {
         }
         resource.revision = revision(&tx)?.to_string();
         if resource.kind == "run"
+            && !never_activated
+            && resource.body["generation"]
+                .as_str()
+                .and_then(|g| g.parse::<u64>().ok())
+                .is_some_and(|g| g > 0)
             && let Some(previous) = resource.body["predecessor_run_id"].as_str()
         {
             tx.execute(
@@ -663,7 +701,7 @@ impl Store {
     }
     pub fn active(&self) -> Result<Vec<Operation>> {
         let db = self.connection()?;
-        let mut stmt=db.prepare("SELECT data FROM operations WHERE json_extract(data,'$.state') IN ('pending','running','unknown') ORDER BY rowid LIMIT 256")?;
+        let mut stmt=db.prepare("SELECT data FROM operations WHERE json_extract(data,'$.state') IN ('pending','running','unknown') ORDER BY CASE WHEN json_extract(data,'$.input.kind')='stop' THEN 0 ELSE 1 END,rowid LIMIT 512")?;
         let mut out = Vec::new();
         for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
             out.push(serde_json::from_str(&row?)?);

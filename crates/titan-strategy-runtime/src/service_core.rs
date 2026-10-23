@@ -880,6 +880,76 @@ impl StrategyServiceCore {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        // A new account process bootstraps open orders only. Recover unresolved checkpoint
+        // intents through authoritative read-only lookups before capturing the final image.
+        let mut lookups = Vec::new();
+        if let Some(saved) = &checkpoint {
+            for order in saved
+                .orders_list
+                .iter()
+                .filter(|o| !matches!(o.status, 4 | 6 | 7 | 8))
+            {
+                let binding = resolved_accounts
+                    .iter()
+                    .find(|b| b.local_account_no == order.account_no)
+                    .ok_or_else(|| definition_error("recovery_order_account_not_bound"))?;
+                let asset = binding
+                    .tradable_assets
+                    .iter()
+                    .find(|a| a.local_asset_no == order.asset_no)
+                    .ok_or_else(|| definition_error("recovery_order_asset_not_bound"))?;
+                lookups.push((
+                    binding.local_account_no,
+                    binding.account,
+                    titan_account_service::AssetId(asset.asset_id),
+                    crate::runtime_v13::client_order_id(handle, order.order_id),
+                ));
+            }
+        }
+        if lookups.len() > 128 {
+            return Err(definition_error("recovery_order_lookup_capacity"));
+        }
+        let recovered = if lookups.is_empty() {
+            Vec::new()
+        } else {
+            let accounts = self.dependencies.accounts.clone();
+            self.run_cold(deadline, move || {
+                let executor = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| dependency_error("recovery_lookup_executor_failed"))?;
+                executor.block_on(async {
+                    tokio::time::timeout(
+                        deadline.saturating_duration_since(Instant::now()),
+                        async {
+                            let mut evidence = Vec::new();
+                            for (local, account, asset, client) in lookups {
+                                let order = accounts
+                                    .order_evidence(account, asset, client)
+                                    .await
+                                    .map_err(|error| {
+                                    StrategyError::new(
+                                        StrategyErrorKind::DependencyUnavailable,
+                                        "recovery",
+                                        "recovery_order_lookup_failed",
+                                        error.to_string(),
+                                    )
+                                })?;
+                                if order.asset_id != asset || order.client_order_id != client {
+                                    return Err(definition_error(
+                                        "recovery_order_lookup_identity_changed",
+                                    ));
+                                }
+                                evidence.push((local, order));
+                            }
+                            Ok(evidence)
+                        },
+                    )
+                    .await
+                    .map_err(|_| load_timeout("recovery_order_lookup_deadline"))?
+                })
+            })?
+        };
         let mut initial_positions = Vec::new();
         let mut initial_balances = Vec::new();
         let mut initial_accounts = Vec::new();
@@ -964,7 +1034,17 @@ impl StrategyServiceCore {
                 state: AccountLifecycle::Ready as u8,
                 ..TitanAccountView::default()
             });
-            for order in orders.items.iter() {
+            let missing_results = recovered
+                .iter()
+                .filter(|(local, order)| {
+                    *local == binding.local_account_no
+                        && !orders
+                            .items
+                            .iter()
+                            .any(|known| known.client_order_id == order.client_order_id)
+                })
+                .map(|(_, order)| order);
+            for order in orders.items.iter().chain(missing_results) {
                 let Some(asset) = binding
                     .tradable_assets
                     .iter()
@@ -1741,6 +1821,12 @@ impl StrategyAdminService for StrategyServiceCore {
 }
 
 impl StrategyService for StrategyServiceCore {
+    fn execution_risk(
+        &self,
+        strategy: StrategyHandle,
+    ) -> LocalResult<Vec<titan_account_service::ExecutionRiskEvidence>> {
+        self.entry(strategy)?.runtime.execution_risk()
+    }
     fn pause_supported(&self, strategy: StrategyHandle) -> LocalResult<bool> {
         Ok(self.entry(strategy)?.runtime.pause_supported())
     }

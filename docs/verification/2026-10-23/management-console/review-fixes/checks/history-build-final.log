@@ -1,0 +1,4 @@
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/hftbacktest)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.85s

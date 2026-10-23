@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "source": "synthetic E output, no real account",
+  "checks": [
+    "E-image-propagates-without-financial-transformation",
+    "slow-node-does-not-block-other-node",
+    "old-generation-rejected",
+    "readonly-node-control-rejected",
+    "unauthorized-account-is-hidden",
+    "browser-account-history-diagnostics-ack-stale-reconnect-reader"
+  ]
+}

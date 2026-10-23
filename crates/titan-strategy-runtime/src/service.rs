@@ -25,6 +25,12 @@ pub trait StrategyAdminService: Send + Sync {
 }
 
 pub trait StrategyService: Send + Sync {
+    fn execution_risk(
+        &self,
+        _strategy: StrategyHandle,
+    ) -> LocalResult<Vec<titan_account_service::ExecutionRiskEvidence>> {
+        Ok(Vec::new())
+    }
     fn pause_supported(&self, _strategy: StrategyHandle) -> LocalResult<bool> {
         Ok(false)
     }

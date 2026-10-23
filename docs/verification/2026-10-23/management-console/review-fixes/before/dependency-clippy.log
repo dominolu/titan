@@ -1,0 +1,42 @@
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/hftbacktest)
+error: unneeded `return` statement
+   --> hftbacktest/src/backtest/data/npy/mod.rs:314:13
+    |
+314 | /             return Err(Error::new(
+315 | |                 ErrorKind::Unsupported,
+316 | |                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
+317 | |             ));
+    | |______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_return
+    = note: `-D clippy::needless-return` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_return)]`
+help: remove `return`
+    |
+314 ~             Err(Error::new(
+315 +                 ErrorKind::Unsupported,
+316 +                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
+317 ~             ))
+    |
+
+error: unneeded `return` statement
+   --> hftbacktest/src/backtest/data/npy/mod.rs:347:13
+    |
+347 | /             return Err(Error::new(
+348 | |                 ErrorKind::Unsupported,
+349 | |                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
+350 | |             ));
+    | |______________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_return
+help: remove `return`
+    |
+347 ~             Err(Error::new(
+348 +                 ErrorKind::Unsupported,
+349 +                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
+350 ~             ))
+    |
+
+error: could not compile `hftbacktest` (lib) due to 2 previous errors

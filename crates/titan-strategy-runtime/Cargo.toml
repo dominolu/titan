@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.94.0"
 
 [dependencies]
+tokio = { version = "1", features = ["rt", "time", "net"] }
 tempfile = "3"
 ed25519-dalek = "2"
 libloading = "0.8"

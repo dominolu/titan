@@ -193,6 +193,42 @@ async function acknowledge(row: Resource) {
           text(financial.max_drawdown)
         }}</el-descriptions-item>
       </el-descriptions>
+      <el-alert
+        title="敞口按新鲜卖一价保守估值；最大值来自已记录采样。未确认成交、未知委托或缺少估值信息时保留不完整标记。"
+        type="info"
+        :closable="false"
+      />
+      <el-table :data="rows(image.risk?.assets)">
+        <el-table-column prop="instrument" label="品种" />
+        <el-table-column prop="currency" label="计价币" />
+        <el-table-column label="实际名义敞口"
+          ><template #default="{ row }">{{
+            text(row.actual_notional?.amount)
+          }}</template></el-table-column
+        >
+        <el-table-column label="含在途敞口上界"
+          ><template #default="{ row }">{{
+            text(row.pending_bound_notional?.amount)
+          }}</template></el-table-column
+        >
+        <el-table-column label="完整性"
+          ><template #default="{ row }">{{
+            row.complete ? "已确认" : text(row.missing)
+          }}</template></el-table-column
+        >
+      </el-table>
+      <el-table :data="rows(financial.max_exposure)">
+        <el-table-column prop="instrument" label="历史观测品种" />
+        <el-table-column prop="currency" label="计价币" />
+        <el-table-column
+          prop="max_actual_notional"
+          label="最大实际敞口（采样）"
+        />
+        <el-table-column
+          prop="max_pending_bound_notional"
+          label="最大含在途上界（采样）"
+        />
+      </el-table>
       <el-collapse>
         <el-collapse-item
           title="权益与费用（保留原币种，不合并估值）"

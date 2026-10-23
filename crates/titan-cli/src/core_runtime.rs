@@ -400,6 +400,12 @@ impl TradingRuntime {
             .transpose()?;
         let mut observation_routes = Vec::new();
         if let Some(journal) = &observation {
+            observation_routes.push(event_handle.register_fast_lane(
+                titan_market_service::BBO_EVENT,
+                MARKET_EVENT_SCHEMA_VERSION,
+                Vec::new(),
+                journal.clone(),
+            )?);
             for event in ACCOUNT_EVENT_TYPES {
                 observation_routes.push(event_handle.register_fast_lane(
                     event,
@@ -677,17 +683,47 @@ impl TradingRuntime {
         strategies: Vec<StrategyDefinition>,
         defer_strategies: bool,
     ) -> Result<(), ApplicationRuntimeError> {
+        let observe_prices = self.observation.is_some() && strategies.is_empty();
         if !market_sources.is_empty() {
             for definition in market_sources {
                 let enabled = definition.enabled;
+                let instruments = definition.instruments.clone();
                 let handle = self
                     .market
                     .create(definition)
                     .map_err(|error| ApplicationRuntimeError::Market(error.to_string()))?;
+                if let Some(journal) = &self.observation {
+                    use titan_market_service::MarketService;
+                    journal
+                        .bind_risk_market(
+                            self.market
+                                .source_stream(handle)
+                                .map_err(|e| ApplicationRuntimeError::Market(e.to_string()))?
+                                .0,
+                            &instruments,
+                        )
+                        .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))?;
+                }
                 if enabled {
                     self.market
                         .start(handle)
                         .map_err(|error| ApplicationRuntimeError::Market(error.to_string()))?;
+                    if observe_prices {
+                        use titan_market_service::MarketService;
+                        for instrument in &*instruments {
+                            self.market
+                                .subscribe(
+                                    handle,
+                                    titan_market_service::MarketSubscribeRequest {
+                                        asset_id: instrument.asset_id,
+                                        kinds: Arc::from([
+                                            titan_market_service::MarketDataKind::Bbo,
+                                        ]),
+                                    },
+                                )
+                                .map_err(|e| ApplicationRuntimeError::Market(e.to_string()))?;
+                        }
+                    }
                 }
             }
         }
@@ -1434,6 +1470,7 @@ config = {}
                 price_tick: "0.0001".parse().unwrap(),
                 quantity_lot: "0.01".parse().unwrap(),
                 contract_multiplier: "1".parse().unwrap(),
+                linear_quote_currency: None,
             }]),
             currencies: Arc::from([]),
             ownership: titan_account_service::OrderOwnershipPolicy::ManagedOnly {

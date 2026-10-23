@@ -57,6 +57,20 @@ fn directory(config: &NodeConfig, id: &str) -> Result<PathBuf> {
     checked_id(id)?;
     Ok(config.work_root.join("operations").join(id))
 }
+fn occupies_task_slot(record: &crate::registry::RunRecord) -> bool {
+    record.strategy_id == "management-task"
+        && matches!(
+            record.state.as_str(),
+            "STARTING" | "LOADING" | "COMPILING" | "READY" | "RUNNING" | "STOP_REQUESTED"
+        )
+        && record
+            .pid
+            .zip(record.process_start_time)
+            .is_none_or(|(pid, start)| {
+                // Preserve the uncertain admission without treating a dead process as occupied CPU.
+                crate::registry::process_start_time(pid) == Some(start)
+            })
+}
 pub(crate) fn registry(config: &NodeConfig) -> Result<Registry> {
     Ok(Registry::open(&config.work_root.join("runs.sqlite3"))?)
 }
@@ -211,6 +225,7 @@ async fn history(
                 | "equity_sample"
                 | "funding"
                 | "cashflow"
+                | "risk_sample"
         )
     }) {
         return Err(fault(
@@ -378,16 +393,22 @@ async fn accept(
         )?;
         return Ok(Json(read_receipt(config, &input.operation_id)?));
     }
-    let active_count = registry(config)?
+    let active = registry(config)?
         .list()
         .map_err(anyhow::Error::from)?
         .iter()
-        .filter(|r| {
-            r.strategy_id == "management-task"
-                && matches!(
-                    r.state.as_str(),
-                    "STARTING" | "LOADING" | "COMPILING" | "READY" | "RUNNING" | "STOP_REQUESTED"
-                )
+        .filter(|r| occupies_task_slot(r))
+        .cloned()
+        .collect::<Vec<_>>();
+    let stopping = matches!(input.action, Action::Stop { .. });
+    let active_count = active
+        .iter()
+        .filter(|record| {
+            let stop = std::fs::read(&record.spec_path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<NodeRequest>(&b).ok())
+                .is_some_and(|request| matches!(request.action, Action::Stop { .. }));
+            stop == stopping
         })
         .count();
     let control = matches!(

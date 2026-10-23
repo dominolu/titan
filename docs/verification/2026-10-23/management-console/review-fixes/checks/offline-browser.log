@@ -1,0 +1,7 @@
+{"name": "reader-api-write-denied", "passed": true}
+{"name": "immutable-dataset-prepare-sideways", "passed": true, "sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683"}
+{"name": "engine-validation-rejection", "passed": true}
+{"name": "cancellation-confirmed-by-execution-path", "passed": true}
+{"name": "fault-injection", "passed": true, "checks": ["unproven-prepared-cache-rejected", "tampered-artifact-rejected-valid-file-restored", "private-and-symlink-files-rejected", "retained-inventory-keeps-metrics-with-failed-operation", "concurrent-node-dedup-and-real-compiler-timeout", "expired-session-rejected"]}
+{"name":"browser-e2e","passed":true}
+{"name": "browser-e2e", "passed": true}

@@ -450,20 +450,37 @@ impl State {
         let value=self.build_snapshot().unwrap_or_else(|error|json!({"available":false,"reason":error.to_string(),"captured_at_ns":now(),"account":self.claim.account,"instrument":self.claim.instrument}));
         *self.snapshot.write().unwrap_or_else(|p| p.into_inner()) = value;
     }
+    fn execution_risk(&self) -> Result<Vec<titan_account_service::ExecutionRiskEvidence>> {
+        let mut evidence = Vec::new();
+        if let Some(service) = &self.strategy {
+            for strategy in service.list().iter() {
+                evidence.extend(service.execution_risk(strategy.handle)?);
+            }
+        }
+        Ok(evidence)
+    }
     fn build_snapshot(&self) -> Result<Value> {
         let account = self.account.resolve(&self.claim.account)?;
         let health = self.account.health(account)?;
         let diagnostics = self.account.diagnostics(account)?;
+        let mut execution = self.execution_risk()?;
         let mut account_flat = false;
         let image = match self.account.recovery_snapshot(account) {
             Ok(image) => {
+                // A sample spans two independently owned projections. A changed intent or
+                // inventory view cannot prove that the combined exposure is complete.
+                if execution != self.execution_risk()? {
+                    for evidence in &mut execution {
+                        evidence.inventory_confirmed = false;
+                    }
+                }
                 account_flat = image.positions.items.iter().all(|p| p.quantity_lots == 0)
                     && image
                         .orders
                         .items
                         .iter()
                         .all(|o| matches!(o.status, 2 | 3 | 4 | 6));
-                json!({"available":true,"image":self.journal.observe_account(&self.claim.account,&image).map_err(|e|anyhow::anyhow!(e.to_string()))?})
+                json!({"available":true,"image":self.journal.observe_account_with_execution(&self.claim.account,&image,&execution).map_err(|e|anyhow::anyhow!(e.to_string()))?})
             }
             Err(error) => {
                 let old = self.snapshot.read().unwrap_or_else(|p| p.into_inner());

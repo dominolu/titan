@@ -59,6 +59,8 @@ def main():
     assert Decimal(params["lower_price_ticks"])/10<mid<Decimal(params["upper_price_ticks"])/10 and Decimal(300)/mid<Decimal("0.005")
     duration=lambda secs,nanos=0:{"secs":secs,"nanos":nanos};instrument={"native_symbol":SYMBOL,"asset_id":1,"price_tick":unit(1,1),"quantity_lot":unit(1,4)}
     runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret_root),"startup_timeout_ms":30000},"strategy_service":{"trusted_ed25519_keys":{"acceptance":manifest["public_key"]}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":"","instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":"","ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","strategy_id":int(time.time()),"package":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"controlled-100-usdt","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(30),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"definition_version":1}]}
+    runtime["accounts"][0]["instruments"][0]["linear_quote_currency"]=1
+    runtime["strategies"][0]["runtime"]["checkpoint_interval"]=duration(60)
     private(a.root/"runtime.toml",toml(runtime));mp,np,bp=port(),port(),port();origin=f"http://127.0.0.1:{mp}";token,password=secrets.token_hex(32),secrets.token_hex(24);env={**os.environ,"TITAN_CONSOLE_LIVE_TOKEN":token,"RUST_LOG":"warn"}
     hashed=subprocess.check_output([str(binary),"console","password-hash"],input=password.encode(),env=env).decode().strip()
     remote=lambda port,live:{"endpoint":f"http://127.0.0.1:{port}","token_env":"TITAN_CONSOLE_LIVE_TOKEN","environments":["live" if live else "backtest"],"live_control":live}
@@ -103,6 +105,15 @@ def main():
         wait(lambda:resources("artifact") and resources("binding"));deployment=resource(completed(submit({"kind":"deploy","artifact_id":artifact["id"],"binding_id":"gate-btc"})),"deployment");passed("signed-remote-deployment")
         started=time.monotonic();run=resource(completed(submit({"kind":"start","deployment_id":deployment["id"]})),"run");active=run;passed("start-engine-running")
         wait(lambda:facts()[0],timeout=15);passed("minimum-post-only-order-confirmed")
+        def risk_ready():
+            item=current()
+            if not item:return None
+            image=item["body"].get("observation",{}).get("account_snapshot",{}).get("image",{})
+            return image if image.get("risk",{}).get("complete") and image.get("max_exposure") else None
+        risk=wait(risk_ready,timeout=15)
+        assert Decimal(risk["risk"]["assets"][0]["pending_bound_notional"]["amount"])<=100
+        assert Decimal(risk["max_exposure"][0]["max_pending_bound_notional"])<=100
+        passed("E-monetary-risk-and-persisted-sampled-maximum-within-100-USDT")
         control("pause");wait(lambda:facts()==([],[]),timeout=15);time.sleep(1.5);passed("pause-private-terminal-and-flat")
         stop(managerp);stop(nodep);nodep=start("live","node");managerp=start("manager","manager")
         adopted=wait(lambda:(r if r["body"]["available"] else None) if (r:=current()) else None,timeout=15)
@@ -110,8 +121,11 @@ def main():
         control("resume");wait(lambda:facts()[0],timeout=15);control("pause");wait(lambda:facts()==([],[]),timeout=15);time.sleep(1.5);passed("same-generation-resume-and-confirmed-cancel")
         observation=current()["body"]["observation"];pid=int(observation["pid"]);assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")",1)[1].split()[19])==int(observation["start_time"]);os.kill(pid,signal.SIGKILL)
         old=wait(lambda:(r if r["body"]["checkpoint_id"] and r["body"]["process_state"]=="UNKNOWN" else None) if (r:=current()) else None,timeout=15);passed("controlled-flat-crash-preserves-checkpoint")
+        checkpoint=next((a.root/"node/checkpoints").rglob("strategy-*.json"))
+        assert any(o["status"] not in (4,6,7,8) for o in json.loads(checkpoint.read_text())["orders_list"])
         active=resource(completed(submit({"kind":"recover","run_id":old["id"],"generation":old["body"]["generation"],"checkpoint_id":old["body"]["checkpoint_id"]})),"run")
         assert int(active["body"]["generation"])>int(run["body"]["generation"]) and active["body"]["expires_at_ns"]==run["body"]["expires_at_ns"];passed("pinned-recovery-original-budget")
+        passed("authoritative-historical-order-reconciliation")
         control("stop");wait(lambda:(r if r["body"]["release_proof"]["safe"] else None) if (r:=current()) else None,timeout=20);assert facts()==([],[]);passed("engine-stop-proof-zero-residual-risk")
         with sqlite3.connect(a.root/"manager.sqlite3") as db:assert db.execute("SELECT COUNT(*) FROM occupancy").fetchone()[0]==0
         history=call(f"/api/v1/resources/{run['id']}/history?kind=order&generation={run['body']['generation']}");assert history["items"]

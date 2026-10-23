@@ -1,0 +1,20 @@
+{
+  "baseline": "dd555c3b28e0e954f8d9dff2934c7fbbfba28b7e",
+  "build_server": "192.168.3.88",
+  "rust": {
+    "passed": 565,
+    "failed": 0,
+    "ignored": 13
+  },
+  "sdk_passed": 113,
+  "source_files": 537,
+  "scenarios": [
+    "control-faults",
+    "control",
+    "observation",
+    "offline",
+    "offline-faults"
+  ],
+  "live_account_access": false,
+  "binary_sha256": "fee02111897d57b7919655d654b22558fd4788890afd9f517254d37d362c043e"
+}

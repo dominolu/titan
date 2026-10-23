@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "pageErrors": [],
+  "checks": [
+    "deploy",
+    "start-cancel-no-operation",
+    "start-confirmation",
+    "pause",
+    "resume",
+    "stop-confirmation",
+    "readonly-controls"
+  ]
+}

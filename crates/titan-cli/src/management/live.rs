@@ -397,7 +397,12 @@ pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> R
         let mut raw: crate::ApplicationConfig = toml::from_str(&contents)?;
         raw.managed_by_console = false;
         raw.strategies.clear();
-        raw.market_sources.clear();
+        raw.market_sources.retain(|source| {
+            source
+                .instruments
+                .iter()
+                .any(|i| i.native_symbol.as_ref() == binding.instrument)
+        });
         raw.accounts
             .retain(|a| a.account_key.as_ref() == binding.account);
         ensure!(

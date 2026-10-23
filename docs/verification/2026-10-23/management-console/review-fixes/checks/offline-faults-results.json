@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "checks": [
+    "unproven-prepared-cache-rejected",
+    "tampered-artifact-rejected-valid-file-restored",
+    "private-and-symlink-files-rejected",
+    "retained-inventory-keeps-metrics-with-failed-operation",
+    "concurrent-node-dedup-and-real-compiler-timeout",
+    "expired-session-rejected"
+  ]
+}
