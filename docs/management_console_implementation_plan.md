@@ -1,7 +1,7 @@
 # Titan 管理平台实施计划
 
 版本：v0.1  
-状态：M1、M2 已实现并验收；M3 实施中  
+状态：M1、M2、M3 均已实现并验收\
 更新日期：2026-10-23  
 代码基线：`master`，提交 `5f424533bc7f053a929a21bd4edb4249c99e7aee`
 
@@ -36,7 +36,7 @@ flowchart TB
 | 现有入口 | 本期迁移动作 | 保持的职责边界 |
 | --- | --- | --- |
 | [CLI main](../crates/titan-cli/src/main.rs) 的 controller、worker、stop、report | 将本机执行例程整理给 N；增加管理模式 CLI 客户端及受控任务入口 | HTTP 不直接执行 controller；纳管节点的 CLI 经同一管理入口 |
-| [CLI lib](../crates/titan-cli/src/lib.rs) 与 [运行组装](../crates/titan-cli/src/core_runtime.rs) | 按实际复用需要整理模块接口，保留 runtime 组装 | 当前库仅导出 core runtime，不能假定已有共享管理应用 |
+| [CLI lib](../crates/titan-cli/src/lib.rs) 与 [运行组装](../crates/titan-cli/src/core_runtime.rs) | 按实际复用需要整理模块接口，保留 runtime 组装 | 基线库仅导出 core runtime；现已增加共享 management、registry 与 runtime_host 入口 |
 | [Rust 编译器](../crates/titan-cli/src/compiler.rs) | 补齐描述/校验结果导出，保持独立任务进程执行 | 当前入口注册进程级信号，不在 HTTP 进程内直接运行 |
 | [本机 Registry](../crates/titan-cli/src/registry.rs) | 保留 owner token、PID/启动身份与心跳，补充操作回执和重启核对 | N 管本机事实，A 不远程修改 Registry |
 | [历史回测入口](../hftbacktest/examples/v13_grid_history.rs)、[场景脚本](../scripts/run_grid_history.sh) | 将准备数据、制品及执行模型显式化，为 N 提供固定调用入口 | 复用真实回放和 Rust 记账；脚本不再成为第二个管理调度器 |
@@ -201,4 +201,4 @@ Web 回滚不终止交易 worker。数据库恢复后先按原操作 ID 与节�
 
 - T01 至 T09：M1 实现和编译服务器离线验收完成，见 [验证与发布证据](verification/2026-10-23/management-console/m1/README.md) 和 [运行说明](management_console_operations.md)。包含真实十八组回放、实际页面全流程及失败/取消/重启/篡改/越权/留仓/超时验证。
 - T10 至 T13：M2 实现、编译服务器回归及浏览器验收完成，见 [M2 证据](verification/2026-10-23/management-console/m2/README.md)。指定实盘账户的只读验收持续 91.676 秒，A/N 重启保持同一 worker，正常停止，BTC 无挂单、无持仓；交易控制关闭。账户采样绩效明确保留覆盖不完整和归属限制。
-- T14 至 T17：实施中。用户已确认实盘目标 43.130.234.54、CrossEx gate（ID 1）、GATE_FUTURE_BTC_USDT，最大风险敞口 100 USDT；受控期限按 120 秒、价格偏离有效盘口不超过 0.5%，执行前核对品种规则、账户残留及能力。M3 交易动作尚未执行。
+- T14 至 T17：实现及最终验收完成，见 [M3 证据](verification/2026-10-23/management-console/m3/README.md)。最终全仓库 556 passed、13 ignored，SDK 113 项、原生暂停/成交/停止/恢复探针、M1/M2 页面回归及 M3 浏览器/故障矩阵通过。43.130.234.54 的 gate（ID 1）BTC 受控验收按 100 USDT、50 bps、120 秒上限执行，耗时 23.348 秒；六笔最小委托均撤销，零成交、零挂单、零持仓，恢复沿用原期限，全部占用释放，验收进程已退出。

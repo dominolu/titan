@@ -135,6 +135,16 @@ impl std::fmt::Debug for CommittedSubscription {
 }
 
 pub trait EventControl: Send + Sync + 'static {
+    /// Reserves engine-wide source identities. Identities are not reused during an engine lifetime.
+    fn allocate_source_streams(&self, _count: u32) -> Result<u32, CoreError> {
+        Err(CoreError::new(
+            ErrorKind::SubscriptionRejected,
+            ComponentIdentity::new("titan.core", "event-control"),
+            ComponentState::Running,
+            "allocate_source_streams",
+            "event control does not support source allocation",
+        ))
+    }
     fn api_version(&self) -> crate::ApiVersion;
     fn api_capabilities(&self) -> EventApiCapabilities {
         EventApiCapabilities::default()
@@ -227,6 +237,9 @@ pub struct EventPublisher {
 }
 
 impl EventPublisher {
+    pub fn allocate_source_streams(&self, count: u32) -> Result<u32, CoreError> {
+        self.control.allocate_source_streams(count)
+    }
     fn authorize(&self, event_type: &str, schema_version: u32) -> Result<(), CoreError> {
         if !self
             .allowed

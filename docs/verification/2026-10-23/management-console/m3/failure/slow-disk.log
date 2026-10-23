@@ -1,0 +1,32 @@
+2026-10-23T11:52:04.550709Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=373947 bytes=17950
+2026-10-23T11:52:05.328667Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=382381 bytes=19321
+2026-10-23T11:52:07.927383Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1978032 bytes=19325
+2026-10-23T11:52:08.477882Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=532537 bytes=19326
+2026-10-23T11:52:08.909756Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=428124 bytes=19325
+2026-10-23T11:52:09.142442Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=164825 bytes=19321
+2026-10-23T11:52:10.789916Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=805933 bytes=19314
+2026-10-23T11:52:11.368053Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=378236 bytes=19323
+2026-10-23T11:52:12.282988Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=289929 bytes=19307
+2026-10-23T11:52:12.559959Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=201047 bytes=19349
+2026-10-23T11:52:13.666200Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=301695 bytes=18781
+2026-10-23T11:52:14.664096Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=295765 bytes=18778
+2026-10-23T11:52:18.725423Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=3351230 bytes=18781
+2026-10-23T11:52:21.071106Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2245855 bytes=18780
+2026-10-23T11:52:24.167093Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2922602 bytes=18789
+2026-10-23T11:52:26.979988Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2806045 bytes=18783
+2026-10-23T11:52:30.370426Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=3390324 bytes=18780
+2026-10-23T11:52:32.431011Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2060455 bytes=18788
+2026-10-23T11:52:34.474860Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2043209 bytes=18783
+2026-10-23T11:52:35.884155Z  WARN titan_strategy_runtime::runtime_v13: strategy runtime failed strategy_id=77 generation=1 reason_code="checkpoint_flush_deadline_exceeded"
+2026-10-23T11:52:37.599453Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=3124541 bytes=18786
+2026-10-23T11:52:40.498085Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2741507 bytes=18794
+2026-10-23T11:52:41.592236Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1094056 bytes=18789
+2026-10-23T11:52:43.433199Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1811784 bytes=18786
+2026-10-23T11:52:45.465750Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1990411 bytes=18777
+2026-10-23T11:52:48.161547Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2375163 bytes=18774
+2026-10-23T11:52:50.114476Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1952608 bytes=18778
+2026-10-23T11:52:52.565315Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=2450782 bytes=18776
+2026-10-23T11:52:54.122294Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1556908 bytes=18770
+2026-10-23T11:52:55.745036Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1570741 bytes=18779
+2026-10-23T11:52:56.484079Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=738951 bytes=18786
+titan: invalid configuration: database is locked: Error code 5: The database file is locked

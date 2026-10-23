@@ -77,7 +77,7 @@ def integer(name, default, minimum=0, maximum=SAFE_INTEGER):
 
 
 SPEC = StrategySpec(
-    strategy_id="grid", strategy_version="1.2.0", state_schema_version=3,
+    strategy_id="grid", strategy_version="1.2.1", state_schema_version=3,
     parameters=(
         integer("account_no", 0, maximum=2**32 - 1),
         integer("asset_no", 0, maximum=2**32 - 1),
@@ -120,7 +120,7 @@ SPEC = StrategySpec(
             (EventKind.TIMER, "on_timer", EventQos.RELIABLE_ORDERED),
         )
     ),
-    capabilities=Capability.MARKET_DATA | Capability.ACCOUNT_DATA | Capability.ORDER_EXECUTION | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS,
+    capabilities=Capability.MARKET_DATA | Capability.ACCOUNT_DATA | Capability.ORDER_EXECUTION | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS | Capability.PAUSE_SAFE,
 )
 
 
@@ -644,6 +644,9 @@ def drive_inner(ctx):
             submit(ctx, EXIT, side, abs(pos), price, IOC, True)
         else:
             g["status"] = STOPPED
+        return
+    if ctx.is_paused:
+        cancel_orders(ctx)
         return
     if not ready or not fresh:
         if g["status"] != PAUSED:

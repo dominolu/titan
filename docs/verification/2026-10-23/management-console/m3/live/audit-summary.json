@@ -1,0 +1,76 @@
+{
+  "fill_facts": 0,
+  "order_facts": 18,
+  "unique_client_orders": 6,
+  "maximum_cumulative_filled_lots": 0,
+  "final_order_statuses": [
+    4,
+    4,
+    4,
+    4,
+    4,
+    4
+  ],
+  "order_quantity_lots": [
+    1
+  ],
+  "order_source_ids": [
+    "3"
+  ],
+  "occupancy_rows": 0,
+  "active_titan_pids": [],
+  "operations": [
+    {
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "kind": "resume",
+      "state": "succeeded"
+    },
+    {
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "kind": "recover",
+      "state": "succeeded"
+    },
+    {
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "runs": [
+    {
+      "generation": "1",
+      "lifecycle": "Unknown",
+      "process_state": "UNKNOWN",
+      "expires_at_ns": "1792758334934936657",
+      "release_proof": {
+        "safe": false,
+        "source": "trading_runtime",
+        "worker_id": "19452d80d5e19b721ff5777d0ef594681096c72918b28f8f30f53229565cebd9"
+      }
+    },
+    {
+      "generation": "2",
+      "lifecycle": "Stopped",
+      "process_state": "STOPPED",
+      "expires_at_ns": "1792758334934936657",
+      "release_proof": {
+        "safe": true,
+        "source": "trading_runtime",
+        "worker_id": "0980abd8c0572bfab850c127ad2de23c530d710768013108efd95d1438e4b96d"
+      }
+    }
+  ]
+}

@@ -125,6 +125,8 @@ impl User {
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
     #[serde(default)]
+    pub artifact_sources: BTreeMap<String, RemoteNode>,
+    #[serde(default)]
     pub live_control: bool,
     pub id: String,
     pub listen: String,
@@ -168,6 +170,8 @@ pub struct Dataset {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
+    #[serde(default)]
+    pub account_identity: Option<String>,
     pub account: String,
     pub instrument: String,
     pub runtime_config: PathBuf,

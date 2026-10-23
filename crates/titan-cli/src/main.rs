@@ -2133,7 +2133,10 @@ impl std::io::Write for DiagnosticWriter {
 }
 fn main() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    let limit = if arguments.iter().any(|a| a == "observe-worker") {
+    let limit = if arguments
+        .iter()
+        .any(|a| a == "observe-worker" || a == "managed-worker")
+    {
         4 * 1024 * 1024
     } else {
         usize::MAX

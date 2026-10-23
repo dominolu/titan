@@ -285,17 +285,13 @@ impl LiveNode {
         } else {
             resources.push(node::resource(&self.config,"alert",&format!("observer-{}",spec.claim.binding_id),false,json!({"account":spec.claim.account,"environment":"live","source":"node_worker_identity","code":"OBSERVATION_UNAVAILABLE","condition_identity":format!("{}:unavailable",spec.claim.generation),"active":false})));
         }
-        if let Some(diagnostics) = snapshot
-            .as_ref()
-            .and_then(|s| s["financial"]["diagnostics"].as_array())
-        {
-            for diagnostic in diagnostics {
-                let Some(code) = diagnostic["code"].as_str() else {
-                    continue;
-                };
-                let key = digest(code.as_bytes());
-                resources.push(node::resource(&self.config,"alert",&format!("{}-{}",spec.claim.binding_id,&key[..16]),false,json!({"account":spec.claim.account,"environment":"live","source":"account_fact_journal","code":code,"condition_identity":format!("{}:{code}",spec.claim.generation),"active":diagnostic["active"].as_bool().unwrap_or(true),"message":diagnostic["detail"],"worker_id":spec.claim.run_id,"generation":spec.claim.generation})));
-            }
+        if let Some(snapshot) = snapshot.as_ref() {
+            resources.extend(financial_alerts(
+                &self.config,
+                &spec.claim,
+                &spec.claim.generation,
+                snapshot,
+            ));
         }
         Ok(resources)
     }
@@ -399,6 +395,7 @@ pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> R
             "runtime configuration changed"
         );
         let mut raw: crate::ApplicationConfig = toml::from_str(&contents)?;
+        raw.managed_by_console = false;
         raw.strategies.clear();
         raw.market_sources.clear();
         raw.accounts
@@ -467,4 +464,23 @@ pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> R
         result.as_ref().err().map(ToString::to_string).as_deref(),
     )?;
     result
+}
+
+pub(super) fn financial_alerts(
+    config: &NodeConfig,
+    claim: &HostClaim,
+    generation: &str,
+    snapshot: &Value,
+) -> Vec<Resource> {
+    let mut resources = Vec::new();
+    if let Some(diagnostics) = snapshot["financial"]["diagnostics"].as_array() {
+        for diagnostic in diagnostics {
+            let Some(code) = diagnostic["code"].as_str() else {
+                continue;
+            };
+            let key = digest(code.as_bytes());
+            resources.push(node::resource(config,"alert",&format!("{}-{}",claim.binding_id,&key[..16]),false,json!({"account":claim.account,"environment":"live","source":"account_fact_journal","code":code,"condition_identity":format!("{generation}:{code}"),"active":diagnostic["active"].as_bool().unwrap_or(true),"message":diagnostic["detail"],"worker_id":claim.run_id,"generation":generation})));
+        }
+    }
+    resources
 }

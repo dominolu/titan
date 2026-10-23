@@ -218,6 +218,7 @@ fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> 
             strategy: handle,
             artifact_id: id,
             markets: Arc::from([strategy::ResolvedMarketBinding {
+                source_stream: markets.source_stream(source)?,
                 local_market_no: 0,
                 local_asset_no: 0,
                 source,

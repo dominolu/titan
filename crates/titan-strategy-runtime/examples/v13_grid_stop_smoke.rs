@@ -250,6 +250,7 @@ fn main() {
                 },
                 artifact_id: artifact.id,
                 markets: Arc::from([ResolvedMarketBinding {
+                    source_stream: titan_market_service::SourceStreamId(2),
                     local_market_no: 0,
                     local_asset_no: 0,
                     source,
@@ -354,7 +355,7 @@ fn main() {
             schema_version: 1,
             payload: &payload,
             metadata: titan_core_types::EventPublishMetadata {
-                source_id: source.market_stream_id().unwrap().0,
+                source_id: 2,
                 ..Default::default()
             },
             trace: Default::default(),
@@ -379,12 +380,41 @@ fn main() {
         artifact.clone(),
         sink.0.lock().unwrap().last().unwrap().clone(),
     );
+    assert!(runtime.pause_supported());
+    wait(&runtime, runtime.pause(PauseReason::User).unwrap());
+    assert_eq!(runtime.state().lifecycle, StrategyLifecycle::Paused);
+    assert!(!runtime.state().activation_gate_open);
+    runtime
+        .handle(EventView {
+            event_type: BBO_EVENT,
+            schema_version: 1,
+            payload: &payload,
+            metadata: titan_core_types::EventPublishMetadata {
+                source_id: 2,
+                ..Default::default()
+            },
+            trace: Default::default(),
+        })
+        .unwrap();
     order(&runtime, buy, 3, 2, 2);
     fill(&runtime, buy, 95, 3);
     position(&runtime, 2, 4);
+    assert_eq!(
+        runtime.state().lifecycle,
+        StrategyLifecycle::Paused,
+        "paused fills must remain consumable without opening risk"
+    );
+    wait(&runtime, runtime.resume().unwrap());
     let stop = runtime
         .stop(Instant::now() + Duration::from_secs(5))
         .unwrap();
+    assert_eq!(
+        runtime
+            .stop(Instant::now() + Duration::from_secs(30))
+            .unwrap(),
+        stop,
+        "repeated stop must preserve the original operation/deadline"
+    );
     lane.submit_safe_point(|| Ok(()))
         .unwrap()
         .wait(Instant::now() + Duration::from_secs(3))
@@ -471,6 +501,7 @@ fn recovery_probe(
                     },
                     artifact_id: artifact.id,
                     markets: Arc::from([ResolvedMarketBinding {
+                        source_stream: titan_market_service::SourceStreamId(2),
                         local_market_no: 0,
                         local_asset_no: 0,
                         source: MarketSourceHandle {

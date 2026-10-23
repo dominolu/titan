@@ -25,6 +25,12 @@ pub trait StrategyAdminService: Send + Sync {
 }
 
 pub trait StrategyService: Send + Sync {
+    fn pause_supported(&self, _strategy: StrategyHandle) -> LocalResult<bool> {
+        Ok(false)
+    }
+    fn release_safe(&self, _strategy: StrategyHandle) -> LocalResult<bool> {
+        Ok(false)
+    }
     fn business_snapshot(&self, _strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
         Ok(serde_json::json!({"available":false,"reason":"business snapshot unsupported"}))
     }

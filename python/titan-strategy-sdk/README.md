@@ -118,3 +118,5 @@ ABI fingerprint、CBOR 字段、签名覆盖范围及 pair/bundle 读取方式�
 旧制品继续由现有严格加载器验证；旧检查点不会自动迁移到重新编译后摘要不同的制品。
 制品先在目标文件系统暂存并验证，再发布；pair 以 manifest 最后提交，替换窗口中的不一致读取会被摘要校验拒绝，失败时回滚已有文件。
 报告模块及其 Python 依赖保持原样。
+
+管理暂停使用可选的 `Capability.PAUSE_SAFE`（bit 6）和 `ctx.is_paused`。声明该能力的策略在暂停期间仍会收到事实和定时器，必须保留订单引用和保护性退出；host 仅允许撤单及 reduce-only 委托。此标志使用既有 V13 context flags 的 bit 1，STOP_READY 输出仍为 bit 0，结构布局不变。未声明能力的制品拒绝 Pause；旧 host 会拒绝未知能力位。

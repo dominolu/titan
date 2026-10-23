@@ -1,0 +1,19 @@
+real-signed-grid-build: passed
+cross-node-deploy-signature-abi-digest: passed
+tampered-transfer-preserves-good-deployment: passed
+config-drift-rejected-before-activation-and-reservation-released: passed
+direct-cli-bypass-rejected: passed
+start-idempotency: passed
+actual-runtime-quotes-within-envelope: passed
+pause-consumes-cancel-confirmations: passed
+A-N-restart-preserves-paused-worker: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-management-20261023-5f424533/scripts/management_control_smoke.py", line 207, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/home/dominolu/dev/titan-management-20261023-5f424533/scripts/management_control_smoke.py", line 187, in main
+    completed(submit({"kind":"resume","run_id":run["id"],"generation":generation}));wait(lambda:len(venue.orders)>before);passed("resume-same-generation")
+                                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-management-20261023-5f424533/scripts/management_control_smoke.py", line 139, in wait
+    raise RuntimeError("M3 acceptance timeout; inspect isolated logs")
+RuntimeError: M3 acceptance timeout; inspect isolated logs

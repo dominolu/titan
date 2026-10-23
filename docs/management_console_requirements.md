@@ -1,9 +1,9 @@
 # Titan 管理平台需求文档
 
 版本：v0.2  
-状态：需求草案，待实施  
+状态：M1/M2/M3 已实现并验收\
 更新日期：2026-10-23  
-实现现状基线：`master`，提交 `5f424533bc7f053a929a21bd4edb4249c99e7aee`
+设计基线：`master`，提交 `5f424533bc7f053a929a21bd4edb4249c99e7aee`
 
 Web 的 PureAdmin 选型、前端结构、API/SSE、部署与验证见 [Web 管理模块技术方案](web_console_technical_plan.md)；功能范围和职责归属以本文为准。
 

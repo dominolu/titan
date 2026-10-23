@@ -173,6 +173,12 @@ pub trait StrategyRuntimeFactory: Send + Sync {
 }
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
+    fn pause_supported(&self) -> bool {
+        false
+    }
+    fn release_safe(&self) -> bool {
+        false
+    }
     fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
         Ok(
             serde_json::json!({"available":false,"reason":"runtime has no committed business snapshot"}),

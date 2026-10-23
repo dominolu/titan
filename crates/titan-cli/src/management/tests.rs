@@ -471,3 +471,249 @@ async fn http_requires_real_session_and_does_not_fallback_api_errors_to_html() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.headers()["content-type"], "application/json");
 }
+
+#[test]
+fn occupancy_survives_unknown_and_only_matching_engine_proof_releases_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let start = SubmitOperation {
+        idempotency_key: "first".into(),
+        node_id: "live".into(),
+        action: Action::Start {
+            deployment_id: "deployment".into(),
+        },
+    };
+    let op = store
+        .accept(
+            "operator",
+            &start,
+            vec![],
+            "hash",
+            Some("canonical-account-instrument"),
+        )
+        .unwrap();
+    let mut competing = start.clone();
+    competing.node_id = "other".into();
+    competing.idempotency_key = "competing".into();
+    assert!(
+        store
+            .accept(
+                "operator",
+                &competing,
+                vec![],
+                "other",
+                Some("canonical-account-instrument")
+            )
+            .is_err()
+    );
+    store.begin_dispatch_after_absence(&op.id).unwrap();
+    let mut resource = Resource {
+        id: format!("live-run-{}", op.id),
+        kind: "run".into(),
+        node_id: "live".into(),
+        revision: String::new(),
+        frozen: false,
+        digest: String::new(),
+        body: json!({"admission_operation_id":op.id,"environment":"live","process_state":"UNKNOWN","release_proof":{"safe":false,"source":"trading_runtime"}}),
+    };
+    store.save_resource(resource.clone(), None).unwrap();
+    assert!(
+        store
+            .accept(
+                "operator",
+                &competing,
+                vec![],
+                "other",
+                Some("canonical-account-instrument")
+            )
+            .is_err()
+    );
+    let mut wrong = resource.clone();
+    wrong.id = "other-run".into();
+    wrong.body["release_proof"]["safe"] = true.into();
+    store.save_resource(wrong, None).unwrap();
+    assert!(
+        store
+            .accept(
+                "operator",
+                &competing,
+                vec![],
+                "other",
+                Some("canonical-account-instrument")
+            )
+            .is_err()
+    );
+    resource.body["release_proof"]["safe"] = true.into();
+    store.save_resource(resource, None).unwrap();
+    assert!(
+        store
+            .accept(
+                "operator",
+                &competing,
+                vec![],
+                "other",
+                Some("canonical-account-instrument")
+            )
+            .is_ok()
+    );
+}
+#[test]
+fn recovery_transfers_occupancy_without_an_old_snapshot_releasing_the_new_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let start = SubmitOperation {
+        idempotency_key: "start".into(),
+        node_id: "live".into(),
+        action: Action::Start {
+            deployment_id: "deployment".into(),
+        },
+    };
+    let old = store
+        .accept("operator", &start, vec![], "hash", Some("binding"))
+        .unwrap();
+    let old_run = format!("live-run-{}", old.id);
+    let recovery = SubmitOperation {
+        idempotency_key: "recover".into(),
+        node_id: "live".into(),
+        action: Action::Recover {
+            run_id: old_run.clone(),
+            generation: "1".into(),
+            checkpoint_id: "digest".into(),
+        },
+    };
+    store
+        .accept("operator", &recovery, vec![], "recover", Some("binding"))
+        .unwrap();
+    store
+        .save_resource(
+            Resource {
+                id: old_run,
+                kind: "run".into(),
+                node_id: "live".into(),
+                revision: String::new(),
+                frozen: false,
+                digest: String::new(),
+                body: json!({"release_proof":{"safe":true,"source":"trading_runtime"}}),
+            },
+            None,
+        )
+        .unwrap();
+    let next = SubmitOperation {
+        idempotency_key: "next".into(),
+        ..start
+    };
+    assert!(
+        store
+            .accept("operator", &next, vec![], "next", Some("binding"))
+            .is_err()
+    );
+}
+#[test]
+fn managed_configuration_cannot_use_direct_core_entry() {
+    assert!(
+        crate::ConfigurationAdapter::adapt(
+            toml::from_str("schema_version=1\nmanaged_by_console=true").unwrap(),
+            std::path::Path::new(".")
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn failed_start_releases_only_with_positive_non_activation_evidence() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let start = SubmitOperation {
+        idempotency_key: "failed-start".into(),
+        node_id: "live".into(),
+        action: Action::Start {
+            deployment_id: "deployment".into(),
+        },
+    };
+    let op = store
+        .accept("operator", &start, vec![], "hash", Some("binding"))
+        .unwrap();
+    store
+        .update_operation(&Receipt {
+            operation_id: op.id,
+            input_digest: op.input_digest,
+            state: OperationState::Failed,
+            result: Some(json!({"start_admission_absent":true})),
+            error: Some("binding changed before activation".into()),
+        })
+        .unwrap();
+    let next = SubmitOperation {
+        idempotency_key: "next".into(),
+        ..start
+    };
+    assert!(
+        store
+            .accept("operator", &next, vec![], "next", Some("binding"))
+            .is_ok()
+    );
+}
+
+#[test]
+fn imported_artifact_download_uses_existing_resource_authorization() {
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    let tmp = tempfile::tempdir().unwrap();
+    let hash = Argon2::default()
+        .hash_password(
+            b"long-test-password",
+            &SaltString::generate(&mut rand::rngs::OsRng),
+        )
+        .unwrap()
+        .to_string();
+    let config = super::config::ManagerConfig {
+        listen: "127.0.0.1:0".into(),
+        public_origin: "http://127.0.0.1:3200".into(),
+        database: tmp.path().join("db"),
+        web_root: tmp.path().into(),
+        secure_cookie: false,
+        session_seconds: 3600,
+        nodes: Default::default(),
+        users: vec![super::config::User {
+            username: "reader".into(),
+            password_hash: hash,
+            role: Role::Reader,
+            nodes: vec!["build".into()],
+            accounts: vec!["gate".into()],
+            environments: vec!["backtest".into()],
+        }],
+    };
+    let app = super::app::App::open(config).unwrap();
+    app.store
+        .save_resource(
+            Resource {
+                id: "imported".into(),
+                kind: "artifact".into(),
+                node_id: "build".into(),
+                revision: String::new(),
+                frozen: true,
+                digest: String::new(),
+                body: json!({"operation_id":"external-build","environment":"backtest"}),
+            },
+            None,
+        )
+        .unwrap();
+    let reader = identity(vec!["gate".into()]);
+    assert_eq!(
+        app.file_node(&reader, "external-build", "strategy.titan")
+            .unwrap(),
+        "build"
+    );
+    assert!(
+        app.file_node(&reader, "external-build", "receipt.json")
+            .is_err()
+    );
+    let mut denied = reader.clone();
+    denied.nodes = vec!["other".into()];
+    assert_eq!(
+        app.file_node(&denied, "external-build", "strategy.titan")
+            .unwrap_err()
+            .downcast_ref::<super::Fault>()
+            .unwrap()
+            .status,
+        403
+    );
+}

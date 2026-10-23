@@ -1,0 +1,10 @@
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-core-types)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-account-service)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-event-engine)
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-market-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.95s
+     Running `/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/examples/v13_grid_stop_smoke verification-artifacts/management/m3/grid-probe-v20.titan`
+V13 offline grid stop barrier passed
+V13 grid recovery passed: proven cancels, missing results rejected, changed fills rejected, gate closed
+V13 grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation

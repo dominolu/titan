@@ -1,0 +1,29 @@
+{
+  "passed": true,
+  "checks": [
+    "signed-remote-deployment",
+    "start-engine-running",
+    "minimum-post-only-order-confirmed",
+    "pause-private-terminal-and-flat",
+    "A-N-restart-same-worker",
+    "same-generation-resume-and-confirmed-cancel",
+    "controlled-flat-crash-preserves-checkpoint",
+    "pinned-recovery-original-budget",
+    "engine-stop-proof-zero-residual-risk"
+  ],
+  "host": "43.130.234.54",
+  "account": "gate",
+  "account_id": 1,
+  "instrument": "GATE_FUTURE_BTC_USDT",
+  "binary_sha256": "8b0ccebd2f8d981dc90fb81460000709065fb3ce865fc0b6c3e43f03fb766a84",
+  "artifact_sha256": "902befcdc0effcb70e5b6132ac51e8520e3b8813268d601e8ad349fff560076f",
+  "max_exposure_quote": "100",
+  "max_price_deviation_bps": 50,
+  "maximum_run_seconds": 120,
+  "minimum_order_base": "0.0001",
+  "stop_action": "flatten",
+  "elapsed_seconds": 23.348,
+  "final_target_orders": 0,
+  "final_target_positions": [],
+  "order_facts_recorded": 18
+}

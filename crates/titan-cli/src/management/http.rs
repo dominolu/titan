@@ -478,8 +478,8 @@ async fn file(
     Path((id, path)): Path<(String, String)>,
 ) -> ApiResult<Response> {
     let actor = identity(&app, &headers, false)?;
-    let op = app.operation(&actor, &id, false)?;
-    let node = app.config.nodes.get(&op.node_id).context("unknown node")?;
+    let node_id = app.file_node(&actor, &id, &path)?;
+    let node = app.config.nodes.get(&node_id).context("unknown node")?;
     let mut url = reqwest::Url::parse(&format!(
         "{}/v1/files/",
         node.endpoint.trim_end_matches('/')

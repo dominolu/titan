@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "source": "real runtime with loopback simulated venue; no real account",
+  "checks": [
+    "real-signed-grid-build",
+    "actual-browser-deploy-start-pause-resume-stop-reader",
+    "cross-node-deploy-signature-abi-digest",
+    "tampered-transfer-preserves-good-deployment",
+    "config-drift-rejected-before-activation-and-reservation-released",
+    "direct-cli-bypass-rejected",
+    "start-idempotency",
+    "lost-start-ack-reconciles-same-worker",
+    "actual-runtime-quotes-within-envelope",
+    "pause-consumes-cancel-confirmations",
+    "lost-control-ack-reconciles-same-engine-operation",
+    "A-N-restart-preserves-paused-worker",
+    "resume-same-generation",
+    "crash-retains-checkpoint-and-occupancy",
+    "wrong-checkpoint-rejected",
+    "pinned-recovery-new-generation-original-budget",
+    "stop-reserved-receipt-capacity",
+    "stop-engine-proof-and-flat-release"
+  ],
+  "venue_order_count": 10,
+  "remaining_orders": 0
+}
