@@ -3758,9 +3758,12 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 name = "titan-account-service"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "titan-core-types",
  "titan-domain-types",
  "titan-event-engine",
@@ -3795,6 +3798,7 @@ dependencies = [
  "thiserror",
  "titan-account-service",
  "titan-core-types",
+ "titan-domain-types",
  "titan-event-engine",
  "titan-market-service",
  "titan-strategy-runtime",
@@ -3823,6 +3827,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3870,6 +3875,7 @@ dependencies = [
  "thiserror",
  "titan-account-service",
  "titan-core-types",
+ "titan-domain-types",
  "titan-event-engine",
  "titan-market-service",
  "tracing",

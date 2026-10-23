@@ -86,6 +86,7 @@ struct ListQuery {
     from_ns: Option<String>,
     to_ns: Option<String>,
     run_id: Option<String>,
+    generation: Option<String>,
 }
 #[derive(Deserialize)]
 struct StreamQuery {
@@ -107,6 +108,9 @@ pub fn manager_router(config: ManagerConfig) -> Result<Router> {
             get(resource).patch(update_version),
         )
         .route("/api/v1/resources/{id}", get(resource))
+        .route("/api/v1/resources/{id}/history", get(resource_history))
+        .route("/api/v1/resources/{id}/log", get(resource_log))
+        .route("/api/v1/resources/{id}/acknowledge", post(acknowledge))
         .route("/api/v1/resources", get(resources))
         .route("/api/v1/strategies", get(resources))
         .route("/api/v1/artifacts", get(resources))
@@ -300,6 +304,97 @@ async fn resource(
 ) -> ApiResult<Json<Resource>> {
     let actor = identity(&app, &headers, false)?;
     Ok(Json(app.resource(&actor, &id, false)?))
+}
+#[derive(Deserialize)]
+struct Acknowledge {
+    expected_revision: String,
+    condition_identity: String,
+}
+async fn acknowledge(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(input): Json<Acknowledge>,
+) -> ApiResult<Json<Resource>> {
+    let actor = identity(&app, &headers, true)?;
+    let mut resource = app.resource(&actor, &id, true)?;
+    if resource.kind != "alert"
+        || resource.body["condition_identity"].as_str() != Some(input.condition_identity.as_str())
+    {
+        return Err(fault(409, "ALERT_CHANGED", "alert condition changed").into());
+    }
+    resource.body["acknowledgement"] = serde_json::json!({"actor":actor.username,"at_ns":now_ns(),"condition_identity":input.condition_identity});
+    let saved = app.store.save_resource_audited(
+        resource,
+        Some(&input.expected_revision),
+        &actor.username,
+        "acknowledge_alert",
+    )?;
+    Ok(Json(saved))
+}
+async fn resource_history(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    runtime_query(app, headers, id, query, "history").await
+}
+async fn resource_log(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    runtime_query(app, headers, id, query, "log").await
+}
+async fn runtime_query(
+    app: Arc<App>,
+    headers: HeaderMap,
+    id: String,
+    query: ListQuery,
+    endpoint: &str,
+) -> ApiResult<Json<serde_json::Value>> {
+    let actor = identity(&app, &headers, false)?;
+    let resource = app.resource(&actor, &id, false)?;
+    if !matches!(resource.kind.as_str(), "run" | "account") {
+        return Err(fault(400, "INVALID_RESOURCE", "resource has no runtime history").into());
+    }
+    if let Some(generation) = query.generation
+        && resource.body["generation"].as_str() != Some(generation.as_str())
+    {
+        return Err(fault(409, "STALE_GENERATION", "runtime source generation changed").into());
+    }
+    let worker = resource.body["worker_id"]
+        .as_str()
+        .context("resource has no worker identity")?;
+    super::checked_id(worker)?;
+    let node = app
+        .config
+        .nodes
+        .get(&resource.node_id)
+        .context("unknown runtime node")?;
+    let response = app
+        .client
+        .get(format!(
+            "{}/v1/runs/{worker}/{endpoint}",
+            node.endpoint.trim_end_matches('/')
+        ))
+        .bearer_auth(node.token()?)
+        .query(&[
+            ("kind", query.kind.unwrap_or_default()),
+            (
+                "offset",
+                query.offset.unwrap_or(0).min(8_388_608).to_string(),
+            ),
+            ("limit", query.limit.unwrap_or(50).clamp(1, 200).to_string()),
+        ])
+        .send()
+        .await
+        .map_err(anyhow::Error::from)?
+        .error_for_status()
+        .map_err(anyhow::Error::from)?;
+    Ok(Json(super::app::node_json(response).await?))
 }
 async fn operation(
     State(app): State<Arc<App>>,

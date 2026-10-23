@@ -2107,16 +2107,49 @@ fn load_core_configuration_bytes(
     Ok(adapted)
 }
 
+#[derive(Clone)]
+struct DiagnosticWriter {
+    used: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    limit: usize,
+}
+impl std::io::Write for DiagnosticWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use std::sync::atomic::Ordering;
+        let before = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                Some(used.saturating_add(bytes.len()).min(self.limit))
+            })
+            .unwrap_or(0);
+        let count = self.limit.saturating_sub(before).min(bytes.len());
+        if count > 0 {
+            std::io::Write::write_all(&mut std::io::stderr(), &bytes[..count])?;
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut std::io::stderr())
+    }
+}
 fn main() -> ExitCode {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let limit = if arguments.iter().any(|a| a == "observe-worker") {
+        4 * 1024 * 1024
+    } else {
+        usize::MAX
+    };
+    let diagnostics = DiagnosticWriter {
+        used: Default::default(),
+        limit,
+    };
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(move || diagnostics.clone())
         .with_ansi(false)
         .try_init();
-    let arguments = std::env::args_os().collect::<Vec<_>>();
     let json_argument = arguments.iter().any(|argument| argument == "--json");
     let cli = match Cli::try_parse_from(arguments) {
         Ok(cli) => cli,

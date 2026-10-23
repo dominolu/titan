@@ -12,6 +12,7 @@ import {
 import { parseExact, integerToken, scalarText } from "@/utils/precision";
 import ResultChart from "./ResultChart.vue";
 import HistoryDrawer from "./HistoryDrawer.vue";
+import ObservationPanel from "./ObservationPanel.vue";
 const store = useConsoleStore();
 const route = useRoute();
 const selectedTemplate = ref("");
@@ -565,6 +566,9 @@ onMounted(() => {
     </template>
 
     <template v-if="section === 'runs' || section === 'accounts'">
+      <ObservationPanel
+        :items="section === 'runs' ? store.runs : store.accounts"
+      />
       <el-card class="panel"
         ><template #header>{{
           section === "runs" ? "运行实例" : "账户风险"

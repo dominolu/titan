@@ -3,6 +3,7 @@ mod app;
 mod config;
 pub mod contract;
 mod http;
+mod live;
 mod node;
 mod store;
 

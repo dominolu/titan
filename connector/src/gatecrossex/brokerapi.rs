@@ -251,6 +251,63 @@ impl GateCrossExClient {
 
 #[async_trait::async_trait]
 impl BrokerApi for GateCrossExClient {
+    async fn account_ledger_page(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+        page: u32,
+        limit: u32,
+    ) -> Result<Vec<AccountLedgerRecord>, ApiError> {
+        if from_ms < 0 || to_ms < from_ms || page == 0 || !(1..=1000).contains(&limit) {
+            return Err(protocol("invalid ledger range or page"));
+        }
+        let value = self
+            .get(
+                "/crossex/account_book",
+                &[
+                    ("from", from_ms.to_string()),
+                    ("to", to_ms.to_string()),
+                    ("page", page.to_string()),
+                    ("limit", limit.to_string()),
+                ],
+                true,
+            )
+            .await?;
+        let entries = rows(&value)?;
+        if entries.len() > limit as usize {
+            return Err(protocol("ledger page exceeds requested bound"));
+        }
+        let mut records = Vec::with_capacity(entries.len());
+        for row in entries {
+            let record = AccountLedgerRecord {
+                id: text(row, "id")?,
+                kind: text(row, "statement_type")?,
+                currency: text(row, "coin")?,
+                amount: text(row, "change")?,
+                occurred_ms: integer(row, "create_time")?,
+                instrument: row["symbol"].as_str().unwrap_or("").into(),
+                exchange: text(row, "exchange_type")?,
+            };
+            if record.id.is_empty()
+                || [
+                    &record.id,
+                    &record.kind,
+                    &record.currency,
+                    &record.amount,
+                    &record.instrument,
+                    &record.exchange,
+                ]
+                .iter()
+                .any(|s| s.len() > 256)
+                || record.occurred_ms < from_ms
+                || record.occurred_ms > to_ms
+            {
+                return Err(protocol("ledger identity or time range mismatch"));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
     async fn ping(&self) -> Result<(), ApiError> {
         self.get("/crossex/rule/symbols", &[], false)
             .await

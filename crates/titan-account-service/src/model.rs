@@ -642,6 +642,20 @@ pub trait AccountConnectorFactory: Send + Sync + 'static {
 }
 
 pub trait AccountConnector: Send + Sync + 'static {
+    /// Optional read-only ledger evidence. Never derives cash flows from balance deltas.
+    fn ledger_page(
+        &self,
+        _from_ms: i64,
+        _to_ms: i64,
+        _page: u32,
+        _limit: u32,
+    ) -> crate::AccountLedgerFuture {
+        Box::pin(async {
+            Err(AccountConnectorError::rejected(
+                "account ledger provider is unavailable",
+            ))
+        })
+    }
     fn start(&self) -> Result<(), AccountConnectorError>;
     /// Publish an already prepared candidate image after its external admission gate opens.
     fn activate(&self) -> Result<(), AccountConnectorError> {

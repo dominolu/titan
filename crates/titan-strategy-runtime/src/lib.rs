@@ -6,6 +6,7 @@
 mod artifact;
 mod error;
 mod model;
+mod observation;
 mod offline_v13;
 mod runtime;
 mod runtime_v13;

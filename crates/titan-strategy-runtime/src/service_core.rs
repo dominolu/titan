@@ -240,6 +240,17 @@ impl FileCheckpointStore {
 }
 
 impl StrategyStateSnapshotSink for FileCheckpointStore {
+    fn latest(
+        &self,
+        strategy: StrategyHandle,
+    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+        self.check_health()?;
+        let snapshot = self.load(strategy.strategy_id)?;
+        if snapshot.as_ref().is_some_and(|s| s.strategy != strategy) {
+            return Err(checkpoint_error("checkpoint_generation_changed"));
+        }
+        Ok(snapshot)
+    }
     fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
         self.check_health()?;
         let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
@@ -1682,6 +1693,9 @@ impl StrategyAdminService for StrategyServiceCore {
 }
 
 impl StrategyService for StrategyServiceCore {
+    fn business_snapshot(&self, strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
+        self.entry(strategy)?.runtime.business_snapshot()
+    }
     fn resolve(&self, strategy_key: &str) -> LocalResult<StrategyHandle> {
         self.registry
             .state

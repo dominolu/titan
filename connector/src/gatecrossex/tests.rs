@@ -94,6 +94,26 @@ fn client(url: &str) -> GateCrossExClient {
     GateCrossExClient::new(url, "test_key", "test_secret").unwrap()
 }
 
+#[tokio::test]
+async fn account_ledger_preserves_decimal_and_native_identity_with_bounded_time_query() {
+    let response = json!([{"id":"121","statement_type":"FUNDING_FEE","coin":"USDT","symbol":SYMBOL,"exchange_type":"OKX","change":"-9007199254740993.000001","create_time":"1700000000000"}]);
+    let (url, mut requests, server) = mock(vec![(200, response)]).await;
+    let api = client(&url);
+    let records = api
+        .account_ledger_page(1699999999000, 1700000001000, 1, 1000)
+        .await
+        .unwrap();
+    assert_eq!(records[0].amount, "-9007199254740993.000001");
+    assert_eq!(records[0].id, "121");
+    assert_eq!(records[0].instrument, SYMBOL);
+    let wire = requests.recv().await.unwrap();
+    assert!(wire.starts_with(
+        "GET /api/v4/crossex/account_book?from=1699999999000&to=1700000001000&page=1&limit=1000 "
+    ));
+    server.await.unwrap();
+    assert!(api.account_ledger_page(10, 9, 1, 1000).await.is_err());
+}
+
 #[test]
 fn signing_matches_independent_python_sha512_vector() {
     assert_eq!(

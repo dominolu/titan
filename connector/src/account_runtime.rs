@@ -399,6 +399,22 @@ fn close_weak(weak: &Weak<AccountRuntime>) -> Result<(), titan_core_types::CoreE
 }
 
 impl account::AccountConnector for AccountRuntime {
+    fn ledger_page(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+        page: u32,
+        limit: u32,
+    ) -> account::AccountLedgerFuture {
+        let api = self.api.clone();
+        Box::pin(async move {
+            api.account_ledger_page(from_ms, to_ms, page, limit)
+                .await
+                .map_err(|e| {
+                    account::AccountConnectorError::rejected(format!("ledger provider: {}", e.code))
+                })
+        })
+    }
     fn start(&self) -> Result<(), account::AccountConnectorError> {
         crate::ensure_rustls_crypto_provider();
         if self.started.swap(true, Ordering::AcqRel) {

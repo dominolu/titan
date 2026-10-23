@@ -61,6 +61,27 @@ pub struct StrategyPrivateStateSnapshot {
     #[serde(default)]
     pub recovery: Option<crate::RecoveryBaseline>,
 }
+impl StrategyPrivateStateSnapshot {
+    pub(crate) fn native_snapshot(&self) -> StrategyStateSnapshotV13 {
+        StrategyStateSnapshotV13 {
+            checkpoint_id: self.checkpoint_id,
+            strategy_instance_id: self.strategy_instance_id,
+            generation: self.generation,
+            event_committed_sequence: self.event_committed_sequence,
+            strategy_id: self.strategy_id.clone(),
+            strategy_version: self.strategy_version.clone(),
+            artifact_digest: self.artifact_digest,
+            binding_digest: self.binding_digest,
+            abi_version: self.abi_version,
+            state_schema_version: self.state_schema_version,
+            state_schema_hash: self.state_schema_hash,
+            state_alignment: self.state_alignment,
+            state_bytes: self.state_bytes.clone(),
+            public_state_identity: self.public_state_identity,
+            checksum: self.checksum,
+        }
+    }
+}
 
 /// Runtime-owned order lifecycle history for Strategy ABI V13. Each order ID owns one record
 /// updated from confirmed events. Strategy-private Slot/role relationships remain in the
@@ -90,6 +111,12 @@ pub struct StrategyOrderRecordV13 {
 }
 
 pub trait StrategyStateSnapshotSink: Send + Sync {
+    fn latest(
+        &self,
+        _strategy: StrategyHandle,
+    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+        Ok(None)
+    }
     fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
     fn check_health(&self) -> LocalResult<()> {
         Ok(())
@@ -146,6 +173,11 @@ pub trait StrategyRuntimeFactory: Send + Sync {
 }
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
+    fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
+        Ok(
+            serde_json::json!({"available":false,"reason":"runtime has no committed business snapshot"}),
+        )
+    }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
     fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
     fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
