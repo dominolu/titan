@@ -9,16 +9,22 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  TITAN_STRATEGY_SDK: ${{ github.workspace }}/python/titan-strategy-sdk
+  TITAN_TEST_BINARY: ${{ github.workspace }}/target/debug/titan
 
 jobs:
   python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python -m pip install ./python/titan-strategy-sdk ./python/titan-reporting
+      - run: echo "TITAN_STRATEGY_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+      - run: cargo build --locked -p titan-cli --bin titan
       - run: python -m unittest discover -s python/titan-reporting/tests -v
       - run: python -m unittest discover -s python/titan-strategy-sdk/tests -v
       - run: python -m compileall -q python/titan-strategy-sdk python/titan-reporting strategies
@@ -27,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -35,7 +41,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install ./python/titan-strategy-sdk
-      - run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+      - run: echo "TITAN_STRATEGY_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
       - name: Clippy
         run: >-
@@ -67,19 +73,17 @@ jobs:
           - cargo test -p connector --features hyperliquid
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: python -m pip install ./python/titan-strategy-sdk
-      - run: echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+      - run: echo "TITAN_STRATEGY_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
 
-  dynamic-connectors:
+  single-runtime:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.94.0
-      - uses: Swatinem/rust-cache@v2
-      - run: ./scripts/test_dynamic_connector_plugins.sh
+      - run: bash scripts/check_single_runtime.sh

@@ -20,6 +20,8 @@ class Capability(IntFlag):
     ACCOUNT_DATA = 1 << 1
     ORDER_EXECUTION = 1 << 2
     TIMER = 1 << 3
+    STOP_BARRIER = 1 << 4
+    RECOVERY_ORDER_RESULTS = 1 << 5
 
 
 _HANDLERS = (

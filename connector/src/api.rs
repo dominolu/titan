@@ -1,6 +1,6 @@
 //! 统一 Broker API 层。
 //!
-//! 定义三家交易所（Binance USD-M / OKX V5 / Hyperliquid）共用的统一数据结构和
+//! 定义 Binance USD-M / OKX V5 / Hyperliquid / Gate CrossEx 共用的统一数据结构和
 //! [`BrokerApi`] trait，保证策略代码只依赖本模块即可在任意 broker 之间自由切换。
 //!
 //! 统一规范：
@@ -591,7 +591,7 @@ pub struct AlgoOrderRequest {
 
 /// 统一 Broker REST API。
 ///
-/// 策略只依赖本 trait，通过 `Box<dyn BrokerApi>` 即可在 Binance / OKX / Hyperliquid
+/// 策略只依赖本 trait，通过 `Box<dyn BrokerApi>` 即可在 Binance / OKX / Hyperliquid / Gate CrossEx
 /// 之间自由切换。
 #[async_trait::async_trait]
 pub trait BrokerApi: Send + Sync {
@@ -663,6 +663,19 @@ pub trait BrokerApi: Send + Sync {
 
     async fn get_account_position_mode(&self) -> Result<ApiPositionMode, ApiError> {
         Ok(ApiPositionMode::Unknown)
+    }
+
+    /// Position semantics may differ between spot, margin and futures in one gateway account.
+    async fn get_instrument_position_mode(
+        &self,
+        _symbol: &str,
+    ) -> Result<ApiPositionMode, ApiError> {
+        self.get_account_position_mode().await
+    }
+
+    /// Native settlement currency when a gateway mixes instruments with different currencies.
+    fn position_currency(&self, _symbol: &str) -> Option<String> {
+        None
     }
 
     /// 批量下单。

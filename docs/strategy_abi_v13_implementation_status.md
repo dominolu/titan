@@ -1,6 +1,6 @@
 # Strategy ABI V13 实施状态
 
-更新日期：2026-10-13
+更新日期：2026-10-21
 
 ## 结论
 
@@ -62,3 +62,9 @@ in-process Python/Numba loader、f64/i64 双数组 state、V12 SDK surface、旧
 ## 2026-10-13 Review 修复验证
 
 R1–R7 已修复：真实投影复合快照、定时失败关门、同步发布重入保护、延迟下单会话 fencing、宿主账户订阅、真实模式空仓 bootstrap 和 Hyperliquid 完整持仓流。最终编译服务器回归为 Rust 446、doctest 2、Python 35，通过严格 Clippy 和全部 AOT/CLI 非实盘集成。实盘测试继续保持未启用，旧 ABI/制品/状态结构不自动迁移。具体范围及原始日志见 [Review 修复报告](verification/2026-10-13/review-fixes/README.md)。
+
+## 2026-10-21 Rust 编译控制器
+
+编译调度、超时/取消回收、原生符号规范化、descriptor/链接、canonical CBOR 制品打包、Ed25519 签名及制品校验统一由 Rust 承担。Python SDK 只保留策略定义、typed state、AST/Numba 类型检查、PIC 目标文件及原始符号描述；移除 Python 制品 API、CBOR 模块及 cryptography 依赖。报告功能未修改。
+
+编译服务器完整非实盘验证：Rust 453、doctest 2、SDK 30、reporting 4，通过严格 Clippy、全部 AOT/恢复/排空/CLI 集成、签名、重复构建及实际编译中断回收。ABI fingerprint 不变，重构前制品继续通过严格 Rust 校验；构建身份与新制品摘要改变，不自动迁移旧检查点。证据及环境见 [Rust 编译控制器验证](verification/2026-10-21/native-compiler/README.md)。

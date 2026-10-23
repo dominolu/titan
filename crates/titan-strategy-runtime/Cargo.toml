@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.94.0"
 
 [dependencies]
+tempfile = "3"
 ed25519-dalek = "2"
 libloading = "0.8"
 semver = { version = "1", features = ["serde"] }

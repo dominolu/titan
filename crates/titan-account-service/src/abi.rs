@@ -388,7 +388,7 @@ impl AccountEventPayload for PositionChangedV1 {
         put_i64(o, 72, self.liquidation_price_ticks);
         put_i64(o, 80, self.realized_pnl_units);
         put_i64(o, 88, self.unrealized_pnl_units);
-        put_u32(o, 92, self.margin_currency_id);
+        put_u32(o, 96, self.margin_currency_id);
         Ok(())
     }
 }
@@ -405,7 +405,7 @@ impl PositionChangedV1 {
             liquidation_price_ticks: get_i64(i, 72),
             realized_pnl_units: get_i64(i, 80),
             unrealized_pnl_units: get_i64(i, 88),
-            margin_currency_id: get_u32(i, 92),
+            margin_currency_id: get_u32(i, 96),
         })
     }
 }

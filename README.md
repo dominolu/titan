@@ -20,8 +20,9 @@ titan CLI controller
     └── 原子写入 ResultBundle
 ```
 
-- `titan` 是唯一用户入口；`run`/`validate` controller 不初始化 Python，只有显式执行 `strategy compile` 时例外。
-- 每次运行使用独立 worker；只有 `titan strategy compile` 会启动 CPython/Numba。
+- `titan` 是唯一用户入口；`run`/`validate` controller 和交易 worker 均不初始化 Python。
+- 每次运行使用独立 worker；`titan strategy compile` 通过 Rust 控制器启动短生命周期 Numba 桥接进程，打包、签名和制品校验均由 Rust 执行。
+- Python SDK 只提供策略声明、typed state、Numba 编译和 ABI 桥接；报告输出继续使用独立 Python renderer。
 - 事件热路径为 `Rust Runtime → C ABI → Numba nopython callback`，不经过 Python、PyO3 或 GIL。
 - 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
 - Python reporting 只读取并渲染 ResultBundle，不重新计算交易结果。
@@ -44,7 +45,7 @@ titan CLI controller
 
 ### 静态核心服务与直接执行
 
-- Binance Futures、OKX、Hyperliquid connector 直接编译进主程序，由构造期静态 catalog 注入
+- Binance Futures、OKX、Hyperliquid、Gate CrossEx connector 直接编译进主程序，由构造期静态 catalog 注入
   `MarketService` 和 `AccountService`；运行时不加载 connector manifest、cdylib 或 JSON/C ABI。
 - `TradingRuntime` 直接持有并按顺序启动/停止 EventEngine、Market、Account、Strategy 和共享 execution runtime，
   服务间不通过字符串 endpoint 或 ServiceRegistry 查找。
@@ -72,7 +73,7 @@ titan CLI controller
 ## 环境
 
 - Rust 1.94.0
-- Python 3.11+
+- Python 3.11+：编译服务器上的 Numba 策略构建，以及可选的离线报告生成；运行预编译策略不需要 Python。
 
 ```bash
 python3.11 -m venv .venv
@@ -146,6 +147,10 @@ target/release/titan strategy compile --strategy strategies/pair_arb/strategy.py
 
 Numba 策略位于 [`strategies/`](strategies/)，通过 `StrategySpec` 和 `build(parameters)` 静态编译，不存在运行时 `module:function` entrypoint。
 
+完整的线性合约网格示例见 [Numba 网格](strategies/grid/README.md)，包含等差/等比、多空/中性、部分成交、撤单确认、停止平仓与 checkpoint 恢复；来源分析见 [gate_arb 网格迁移](docs/gate_arb_grid_analysis.md)。
+
+真实 BTCUSDT 历史成交与盘口的网格回测、成本假设、收益、回撤和在途敞口见 [历史回测报告](docs/verification/2026-10-22/grid-history/README.md)。
+
 ```python
 from numba import njit
 
@@ -171,6 +176,7 @@ def on_tick(ctx):
 |---|---|---|---|
 | Binance Futures | USD-M 永续合约 | ✅ 生产可用 | 主网/测试网，已接入统一 Broker API |
 | OKX | V5 SWAP | ✅ 生产可用 | 实盘/模拟盘，已接入统一 Broker API |
+| Gate CrossEx | 跨所 FUTURE / SPOT / MARGIN + 原生扩展 | Gate BTC 被动下改撤实盘通过 | 含隔离交易所账户配置，已接入 Broker API、MarketService、AccountService；[能力与配置](docs/gate_crossex_broker.md)、[实盘范围](docs/verification/2026-10-21/gate-crossex-live/README.md) |
 | Hyperliquid | 永续合约 | ✅ 生产可用 | 主网/测试网，支持 EIP-712 签名 |
 
 ## 数据与结果
