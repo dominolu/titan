@@ -8,6 +8,8 @@ import type {
   SubmitOperation
 } from "@/generated/management";
 export const consoleApi = {
+  resource: (id: string) =>
+    http.get<Resource>(`/api/v1/resources/${encodeURIComponent(id)}`),
   log: (item: Resource, offset: number) =>
     http.get<{ text: string; next_offset: string; more: boolean }>(
       `/api/v1/resources/${encodeURIComponent(item.id)}/log`,

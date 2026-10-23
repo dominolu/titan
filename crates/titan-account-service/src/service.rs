@@ -17,6 +17,18 @@ pub trait AccountAdminService: Send + Sync {
 }
 
 pub trait AccountService: Send + Sync {
+    fn order_evidence(
+        &self,
+        _account: AccountHandle,
+        _asset: AssetId,
+        _client: Id128,
+    ) -> OrderEvidenceFuture {
+        Box::pin(async {
+            Err(AccountConnectorError::rejected(
+                "order evidence provider unavailable",
+            ))
+        })
+    }
     fn pin_binding(&self, _account: AccountHandle) -> LocalResult<titan_core_types::BindingLease> {
         Ok(Default::default())
     }

@@ -12,6 +12,87 @@ fn input(key: &str) -> SubmitOperation {
     }
 }
 #[test]
+fn stale_receipt_poll_cannot_undo_proven_capacity_rejection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let op = store
+        .accept("operator", &input("race"), vec![], "hash", None)
+        .unwrap();
+    store.begin_dispatch_after_absence(&op.id).unwrap();
+    let polled = store.operation(&op.id).unwrap();
+    store.admission_rejected(&op.id, &op.input_digest).unwrap();
+    let stale = Receipt {
+        operation_id: op.id.clone(),
+        input_digest: op.input_digest.clone(),
+        state: OperationState::Unknown,
+        result: None,
+        error: Some("older concurrent absence poll".into()),
+    };
+    store
+        .update_operation_if_current(&stale, &polled.revision)
+        .unwrap();
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Pending
+    );
+    assert!(
+        store
+            .begin_dispatch_after_absence(&op.id)
+            .unwrap()
+            .is_some()
+    );
+    let current = store.operation(&op.id).unwrap();
+    store
+        .update_operation_if_current(
+            &Receipt {
+                state: OperationState::Succeeded,
+                ..stale
+            },
+            &current.revision,
+        )
+        .unwrap();
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Succeeded
+    );
+}
+#[test]
+fn ordinary_capacity_cannot_consume_stop_admission_or_hide_stop_from_reconciliation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    for i in 0..256 {
+        let op = store
+            .accept(
+                "operator",
+                &input(&format!("ordinary-{i}")),
+                vec![],
+                "hash",
+                None,
+            )
+            .unwrap();
+        store.begin_dispatch_after_absence(&op.id).unwrap();
+    }
+    assert!(
+        store
+            .accept("operator", &input("full"), vec![], "hash", None)
+            .is_err()
+    );
+    let request = SubmitOperation {
+        idempotency_key: "stop".into(),
+        node_id: "live".into(),
+        action: Action::Stop {
+            run_id: "run".into(),
+            generation: "1".into(),
+        },
+    };
+    let stop = store
+        .accept("operator", &request, vec![], "stop", None)
+        .unwrap();
+    let active = store.active().unwrap();
+    assert_eq!(active.len(), 257);
+    assert_eq!(active[0].id, stop.id);
+}
+#[test]
 fn cancellation_and_dispatch_claim_share_one_transaction_boundary() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(&tmp.path().join("db")).unwrap();
@@ -555,6 +636,102 @@ fn occupancy_survives_unknown_and_only_matching_engine_proof_releases_it() {
                 Some("canonical-account-instrument")
             )
             .is_ok()
+    );
+}
+#[test]
+fn failed_unactivated_recovery_keeps_predecessor_retryable_without_releasing_the_account() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("db");
+    let store = Store::open(&path).unwrap();
+    let start = SubmitOperation {
+        idempotency_key: "start".into(),
+        node_id: "live".into(),
+        action: Action::Start {
+            deployment_id: "deployment".into(),
+        },
+    };
+    let initial = store
+        .accept("operator", &start, vec![], "start", Some("binding"))
+        .unwrap();
+    let predecessor = format!("live-run-{}", initial.id);
+    let recovery = SubmitOperation {
+        idempotency_key: "recover-one".into(),
+        node_id: "live".into(),
+        action: Action::Recover {
+            run_id: predecessor.clone(),
+            generation: "1".into(),
+            checkpoint_id: "hash".into(),
+        },
+    };
+    let failed = store
+        .accept(
+            "operator",
+            &recovery,
+            vec![],
+            "recover-one",
+            Some("binding"),
+        )
+        .unwrap();
+    let candidate = Resource {
+        id: format!("live-run-{}", failed.id),
+        kind: "run".into(),
+        node_id: "live".into(),
+        revision: String::new(),
+        digest: String::new(),
+        frozen: false,
+        body: json!({"generation":"unconfirmed","predecessor_run_id":predecessor,"admission_operation_id":failed.id,"observation":{"source":"runtime_owner","run_id":failed.id,"start_admission_absent":true}}),
+    };
+    store.save_resource(candidate.clone(), None).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Also repair a pre-fix ownership transfer even if the resource body is unchanged.
+    db.execute(
+        "UPDATE occupancy SET run_id=?1 WHERE operation_id=?2",
+        rusqlite::params![candidate.id, failed.id],
+    )
+    .unwrap();
+    store.save_resource(candidate.clone(), None).unwrap();
+    store
+        .update_operation(&Receipt {
+            operation_id: failed.id.clone(),
+            input_digest: failed.input_digest,
+            state: OperationState::Failed,
+            result: Some(json!({"start_admission_absent":true})),
+            error: None,
+        })
+        .unwrap();
+    let competing = SubmitOperation {
+        idempotency_key: "other-start".into(),
+        ..start
+    };
+    assert!(
+        store
+            .accept("operator", &competing, vec![], "other", Some("binding"))
+            .is_err()
+    );
+    let retry = SubmitOperation {
+        idempotency_key: "recover-two".into(),
+        ..recovery
+    };
+    let accepted = store
+        .accept("operator", &retry, vec![], "retry", Some("binding"))
+        .unwrap();
+    let mut confirmed = candidate.clone();
+    confirmed.id = format!("live-run-{}", accepted.id);
+    confirmed.body = json!({"generation":"3","predecessor_run_id":predecessor,"admission_operation_id":accepted.id});
+    store.save_resource(confirmed.clone(), None).unwrap();
+    store.save_resource(candidate, None).unwrap();
+    let owner: (String, String) = db
+        .query_row(
+            "SELECT operation_id,run_id FROM occupancy WHERE binding='binding'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(owner, (accepted.id, confirmed.id));
+    assert!(
+        store
+            .accept("operator", &competing, vec![], "other", Some("binding"))
+            .is_err()
     );
 }
 #[test]

@@ -456,6 +456,19 @@ impl AccountService for AccountServiceCore {
     fn resolve(&self, k: &str) -> LocalResult<AccountHandle> {
         self.registry.resolve(k)
     }
+    fn order_evidence(
+        &self,
+        account: AccountHandle,
+        asset: AssetId,
+        client: Id128,
+    ) -> OrderEvidenceFuture {
+        match self.registry.get(account) {
+            Ok(entry) => entry.connector.order_evidence(asset, client),
+            Err(error) => {
+                Box::pin(async move { Err(AccountConnectorError::rejected(error.to_string())) })
+            }
+        }
+    }
     fn orders(
         &self,
         h: AccountHandle,

@@ -10,6 +10,7 @@ mod execution;
 mod model;
 mod observation;
 mod registry;
+mod risk;
 mod service;
 
 pub use abi::*;
@@ -19,6 +20,7 @@ pub use execution::*;
 pub use model::*;
 pub use observation::*;
 pub use registry::*;
+pub use risk::*;
 pub use service::*;
 
 #[cfg(test)]

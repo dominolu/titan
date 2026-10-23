@@ -173,6 +173,9 @@ pub trait StrategyRuntimeFactory: Send + Sync {
 }
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
+    fn execution_risk(&self) -> LocalResult<Vec<titan_account_service::ExecutionRiskEvidence>> {
+        Ok(Vec::new())
+    }
     fn pause_supported(&self) -> bool {
         false
     }

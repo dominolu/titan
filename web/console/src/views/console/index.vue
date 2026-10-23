@@ -51,6 +51,18 @@ const busy = ref(false);
 const detail = ref<Resource | Operation | null>(null);
 const report = ref("");
 const selectedResult = ref("");
+watch(
+  () => [
+    selectedTemplate.value,
+    selectedArtifact.value,
+    selectedBinding.value,
+    selectedDataset.value,
+    selectedResult.value,
+    draft.value?.id ?? "",
+    detail.value && "kind" in detail.value ? detail.value.id : ""
+  ],
+  ids => store.pinResources(ids).catch(error => ElMessage.error(error.message))
+);
 const activeResult = computed(
   () =>
     store.backtests.find(item => item.id === selectedResult.value) ??

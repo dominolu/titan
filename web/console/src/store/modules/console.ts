@@ -9,6 +9,7 @@ import {
 import { getSession } from "@/utils/auth";
 import type { Event as StreamEvent } from "@/generated/management";
 import { parseExact } from "@/utils/precision";
+import { cacheResources } from "../resource-cache";
 let stream: EventSource | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
 let reconnect: ReturnType<typeof setTimeout> | null = null;
@@ -20,6 +21,7 @@ export const useConsoleStore = defineStore("titan-console", {
   state: () => ({
     operations: [] as Operation[],
     resources: [] as Resource[],
+    pinnedResourceIds: [] as string[],
     cursor: "",
     connection: "connecting",
     error: "",
@@ -86,9 +88,11 @@ export const useConsoleStore = defineStore("titan-console", {
       this.operations = changed
         ? snapshot.operations
         : merge(snapshot.operations, this.operations);
-      this.resources = changed
-        ? snapshot.resources
-        : merge(snapshot.resources, this.resources);
+      this.resources = cacheResources(
+        snapshot.resources,
+        changed ? [] : this.resources,
+        this.pinnedResourceIds
+      );
       if (changed || !oldEpoch || newer(revision, oldRevision))
         this.cursor = snapshot.cursor;
       this.updated = snapshot.server_time_ns;
@@ -240,12 +244,21 @@ export const useConsoleStore = defineStore("titan-console", {
       ].slice(0, 200);
     },
     mergeResource(next: Resource) {
-      const old = this.resources.find(item => item.id === next.id);
-      if (old && !newer(next.revision, old.revision)) return;
-      this.resources = [
-        next,
-        ...this.resources.filter(item => item.id !== next.id)
-      ].slice(0, 200);
+      this.resources = cacheResources(
+        [next],
+        this.resources,
+        this.pinnedResourceIds
+      );
+    },
+    async pinResources(ids: string[]) {
+      this.pinnedResourceIds = [...new Set(ids.filter(Boolean))].slice(0, 32);
+      const generation = this.generation;
+      for (const id of this.pinnedResourceIds) {
+        if (this.resources.some(item => item.id === id)) continue;
+        const item = await consoleApi.resource(id);
+        if (generation !== this.generation) return;
+        this.mergeResource(item);
+      }
     },
     async submit(action: SubmitOperation["action"], node_id: string) {
       const signature = JSON.stringify({ action, node_id });
@@ -318,6 +331,7 @@ export const useConsoleStore = defineStore("titan-console", {
       this.pending = [];
       this.operations = [];
       this.resources = [];
+      this.pinnedResourceIds = [];
       this.ready = false;
       this.cursor = "";
       this.owner = "";

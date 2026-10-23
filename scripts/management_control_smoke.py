@@ -16,7 +16,7 @@ def unit(c,s=0):return {"coefficient":c,"scale":s}
 class Venue(ThreadingHTTPServer):
     daemon_threads=True
     def __init__(self):
-        super().__init__(("127.0.0.1",0),Handler);self.lock=threading.RLock();self.orders={};self.private=[];self.public=[];self.calls=[];self.failed=[];self.ws_frames=[];self.alive=True
+        super().__init__(("127.0.0.1",0),Handler);self.lock=threading.RLock();self.orders={};self.private=[];self.public=[];self.calls=[];self.failed=[];self.ws_frames=[];self.alive=True;self.evidence_fault=False
     def broadcast(self,channel,payload):
         self.ws_frames.append({"sent":channel,"connections":len(self.private),"symbol":payload.get("symbol"),"state":payload.get("state")})
         with self.lock:
@@ -74,6 +74,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=="open_orders":return self.reply([v for v in self.server.orders.values() if v["state"]=="OPEN"])
         if path.startswith("orders/"):
             key=parse.unquote(path.split("/")[-1]);order=self.server.orders.get(key) or next((o for o in self.server.orders.values() if o["text"]==key),None)
+            if order and len(key)==32 and self.server.evidence_fault:return self.reply({**order,"text":"wrong-client-identity"})
             return self.reply(order if order else {"label":"ORDER_NOT_FOUND","message":"not found"},200 if order else 404)
         self.server.failed.append(("GET",self.path));return self.reply({"label":"UNSUPPORTED","message":self.path},400)
     def do_POST(self):
@@ -107,6 +108,10 @@ def main():
     instrument={"native_symbol":SYMBOL,"asset_id":1,"price_tick":unit(1),"quantity_lot":unit(1,3)}
     duration=lambda secs,nanos=0:{"secs":secs,"nanos":nanos}
     runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret)},"strategy_service":{"trusted_ed25519_keys":{"acceptance":public}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":cfg,"instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":cfg,"ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","strategy_id":77,"package":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"acceptance","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(10),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"definition_version":1}]}
+    runtime["accounts"][0]["instruments"][0]["linear_quote_currency"]=1
+    # Keep a genuine pre-confirmation checkpoint so recovery must query historical orders.
+    runtime["strategies"][0]["runtime"]["checkpoint_interval"]=duration(60)
+    runtime["strategies"][0]["runtime"]["max_handler_duration"]=duration(5)
     (root/"runtime.toml").write_text(toml(runtime))
     binding={"account":"gate","account_identity":"synthetic-gate-1","instrument":SYMBOL,"runtime_config":str(root/"runtime.toml"),"strategy_key":"grid","max_exposure_quote":"100","max_price_deviation_bps":50,"max_duration_seconds":120}
     remote=lambda p,live:{"endpoint":f"http://127.0.0.1:{p}","token_env":"TITAN_CONSOLE_NODE_TOKEN","environments":["live" if live else "backtest"],"live_control":live}
@@ -185,6 +190,20 @@ def main():
         try:submit({"kind":"start","deployment_id":deployment["id"]});raise AssertionError("duplicate account owner accepted")
         except error.HTTPError as failure:assert failure.code==409
         wait(lambda:len([o for o in venue.orders.values() if o["state"]=="OPEN"])==2);passed("actual-runtime-quotes-within-envelope")
+        def risk_sample():
+            current=next(r for r in resources("run") if r["id"]==run["id"])
+            account=current["body"].get("observation",{}).get("account_snapshot",{}).get("image",{})
+            risk=account.get("risk",{})
+            if risk.get("complete") and account.get("max_exposure"):
+                return account
+        risk=wait(risk_sample)
+        assert not {"mark_price","unsettled_fill_reconciliation"}.intersection(risk["completeness"]["missing"])
+        from decimal import Decimal
+        assert Decimal(risk["risk"]["assets"][0]["actual_notional"]["amount"])==0
+        assert Decimal(risk["risk"]["assets"][0]["pending_bound_notional"]["amount"])>0
+        assert Decimal(risk["max_exposure"][0]["max_pending_bound_notional"])>0
+        (root/"risk-sample.json").write_text(json.dumps(risk,indent=2))
+        passed("E-authoritative-fresh-monetary-risk-and-persisted-sampled-maximum")
         paused=completed(submit({"kind":"pause","run_id":run["id"],"generation":generation}));wait(lambda:all(o["state"]!="OPEN" for o in venue.orders.values()));passed("pause-consumes-cancel-confirmations")
         receipt_path=root/"live/operations"/paused["id"]/"receipt.json";saved=receipt_path.read_bytes();lost=json.loads(saved);lost.update(state="unknown",result=None,error="simulated adapter acknowledgement loss");receipt_path.write_text(json.dumps(lost))
         try:
@@ -198,9 +217,21 @@ def main():
         completed(submit({"kind":"pause","run_id":run["id"],"generation":generation}));wait(lambda:all(o["state"]!="OPEN" for o in venue.orders.values()));time.sleep(.5)
         pid=int(body["observation"]["pid"]);os.kill(pid,signal.SIGKILL)
         old=wait(lambda:next((r for r in resources("run") if r["id"]==run["id"] and r["body"]["checkpoint_id"] and r["body"]["process_state"]=="UNKNOWN"),None));passed("crash-retains-checkpoint-and-occupancy")
+        saved_checkpoint=json.loads((root/"live/checkpoints/synthetic-gate-1/77/strategy-77.json").read_text())
+        unresolved=sum(o["status"] not in (4,6,7,8) for o in saved_checkpoint["orders_list"])
+        assert unresolved>0,"fixture must retain genuine unresolved intents in the checkpoint"
         bad=completed(submit({"kind":"recover","run_id":old["id"],"generation":generation,"checkpoint_id":"0"*64}),False);assert "checkpoint" in bad["error"];passed("wrong-checkpoint-rejected")
+        venue.evidence_fault=True
+        try:
+            bad=completed(submit({"kind":"recover","run_id":old["id"],"generation":generation,"checkpoint_id":old["body"]["checkpoint_id"]}),False)
+            assert "recovery_order_lookup_failed" in bad["result"]["detail"],bad
+        finally:venue.evidence_fault=False
+        passed("wrong-historical-order-identity-rejected-before-activation")
         # A failed recovery keeps reservation until the proven old owner is explicitly retried.
+        lookup_start=len(venue.calls)
         recovered=completed(submit({"kind":"recover","run_id":old["id"],"generation":generation,"checkpoint_id":old["body"]["checkpoint_id"]}));new=resource(recovered,"run");assert int(new["body"]["generation"])>int(generation) and new["body"]["expires_at_ns"]==old["body"]["expires_at_ns"];passed("pinned-recovery-new-generation-original-budget")
+        assert sum(method=="GET" and path.startswith("orders/") for method,path in venue.calls[lookup_start:])>=unresolved
+        passed("unresolved-checkpoint-orders-use-authoritative-read-only-evidence")
         recovered_spec=json.loads((root/"live/managed"/recovered["id"]/"managed.json").read_text());controls=Path(recovered_spec["claim"]["socket"]).parent/"controls";controls.mkdir(exist_ok=True)
         for index in range(1024-len(list(controls.iterdir()))):(controls/("capacity-"+str(index)+".json")).write_text("{}")
         completed(submit({"kind":"stop","run_id":new["id"],"generation":new["body"]["generation"]}));passed("stop-reserved-receipt-capacity");wait(lambda:next((r for r in resources("run") if r["id"]==new["id"] and r["body"]["release_proof"]["safe"]),None));assert all(o["state"]!="OPEN" for o in venue.orders.values());passed("stop-engine-proof-and-flat-release")

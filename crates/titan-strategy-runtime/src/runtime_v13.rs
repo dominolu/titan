@@ -123,6 +123,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     pending_fills: BTreeMap::new(),
                     settled_fills: BTreeMap::new(),
                     awaiting_fills: BTreeMap::new(),
+                    inventory: InventoryProof::default(),
                     checkpoint_dirty: false,
                     last_checkpoint_ns: 0,
                     checkpoint_interval_ns: definition
@@ -151,7 +152,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     flight_records: VecDeque::with_capacity(128),
                 }),
                 lane: OnceLock::new(),
-                stop_request: OnceLock::new(),
+                stop_request: Mutex::new(None),
                 next_operation: AtomicU64::new(1),
                 async_failure: AtomicBool::new(false),
                 operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
@@ -174,7 +175,7 @@ struct NativeV13Core {
     context: StrategyRuntimeBuildContext,
     inner: Mutex<NativeV13Inner>,
     lane: OnceLock<PrimaryAsyncLaneHandle>,
-    stop_request: OnceLock<StrategyOperationId>,
+    stop_request: Mutex<Option<StrategyOperationId>>,
     next_operation: AtomicU64,
     async_failure: AtomicBool,
     operations:
@@ -200,6 +201,7 @@ struct NativeV13Inner {
     pending_fills: BTreeMap<(u32, u64), TitanFillView>,
     settled_fills: BTreeMap<(u32, u64), i64>,
     awaiting_fills: BTreeMap<(u32, u64), i64>,
+    inventory: InventoryProof,
     checkpoint_dirty: bool,
     last_checkpoint_ns: i64,
     checkpoint_interval_ns: i64,
@@ -539,7 +541,7 @@ fn dispatch_event(
                 ),
                 reserved: [0; 5],
             };
-            update_active_fill(inner, &view);
+            update_active_fill(inner, &view)?;
             if !invoke_callbacks {
                 return Ok(());
             }
@@ -806,26 +808,31 @@ fn validate_execution_envelope(
     if limits.max_market_age_ns <= 0 || !(1..=500).contains(&limits.max_price_deviation_bps) {
         return Err(v13_runtime_error("invalid_execution_limit"));
     }
-    let mut notional: i128 = positions
+    // Cancellation-only callbacks do not require a fresh market.
+    if !commands
         .iter()
-        .map(|p| i128::from(p.qty_lots).abs() * i128::from(market.best_ask_ticks.max(0)))
-        .sum();
-    for order in orders {
-        notional = notional
-            .checked_add(
-                i128::from(
-                    order
-                        .qty_lots
-                        .saturating_sub(order.cumulative_filled_lots)
-                        .max(0),
-                )
-                .checked_mul(i128::from(
-                    market.best_ask_ticks.max(order.price_ticks).max(0),
-                ))
-                .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?,
-            )
-            .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?;
+        .any(|c| matches!(c, StagedCommandV13::Submit { .. }))
+    {
+        return Ok(());
     }
+    let gross = positions
+        .iter()
+        .try_fold(0i128, |sum, p| {
+            sum.checked_add(i128::from(p.qty_lots).abs())
+        })
+        .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?;
+    let mut notional = titan_account_service::exposure_tick_lots(
+        market.best_ask_ticks,
+        gross,
+        orders.iter().map(|o| {
+            (
+                o.qty_lots.saturating_sub(o.cumulative_filled_lots).max(0),
+                o.price_ticks,
+            )
+        }),
+    )
+    .map_err(|_| v13_runtime_error("execution_limit_overflow"))?
+    .1;
     for command in commands {
         let StagedCommandV13::Submit { request, .. } = command else {
             continue;
@@ -877,13 +884,11 @@ fn commit_commands(
         if inner.markets.len() != 1 {
             return Err(v13_runtime_error("execution_binding_unproven"));
         }
-        if (!inner.pending_fills.is_empty() || !inner.awaiting_fills.is_empty())
-            && commands
-                .iter()
-                .any(|c| matches!(c,StagedCommandV13::Submit{request,..} if request.reduce_only==0))
-        {
-            return Err(v13_runtime_error("execution_inventory_unproven"));
-        }
+        inner.inventory.validate_opening(
+            &inner.positions,
+            !inner.pending_fills.is_empty() || !inner.awaiting_fills.is_empty(),
+            commands,
+        )?;
         validate_execution_envelope(
             limits,
             inner.markets[0],
@@ -1068,7 +1073,10 @@ fn client_order_prefix(strategy: StrategyHandle) -> [u8; 8] {
     digest.update(strategy.strategy_id.0.to_le_bytes());
     digest.finalize()[..8].try_into().unwrap()
 }
-fn client_order_id(strategy: StrategyHandle, order_id: u64) -> titan_account_service::Id128 {
+pub(crate) fn client_order_id(
+    strategy: StrategyHandle,
+    order_id: u64,
+) -> titan_account_service::Id128 {
     let mut value = [0; 16];
     value[..8].copy_from_slice(&client_order_prefix(strategy));
     value[8..].copy_from_slice(&order_id.to_le_bytes());
@@ -1085,9 +1093,82 @@ pub(crate) fn v13_strategy_order_id(
     }
 }
 
-fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) {
+/// Expected inventory is anchored in the coherent seed, then advanced only by independent fills.
+/// Comparing quantities handles both fill-before-position and position-before-fill delivery.
+#[derive(Default)]
+struct InventoryProof {
+    expected: BTreeMap<(u32, u32, u8), i128>,
+}
+impl InventoryProof {
+    fn validate_opening(
+        &self,
+        positions: &[TitanPositionView],
+        unsettled: bool,
+        commands: &[StagedCommandV13],
+    ) -> LocalResult<()> {
+        if (unsettled || !self.confirmed(positions))
+            && commands
+                .iter()
+                .any(|c| matches!(c,StagedCommandV13::Submit{request,..} if request.reduce_only==0))
+        {
+            return Err(v13_runtime_error("execution_inventory_unproven"));
+        }
+        Ok(())
+    }
+    fn seed(&mut self, positions: &[TitanPositionView]) {
+        self.expected = positions
+            .iter()
+            .map(|p| {
+                (
+                    (p.account_no, p.asset_no, p.position_side),
+                    i128::from(p.qty_lots),
+                )
+            })
+            .collect();
+    }
+    fn fill(&mut self, fill: &TitanFillView, previous: i64, position_side: u8) -> LocalResult<()> {
+        if fill.cumulative_filled_lots < 0 || !matches!(fill.side, 1 | 2) {
+            return Err(v13_runtime_error("invalid_inventory_fill"));
+        }
+        let delta = i128::from(fill.cumulative_filled_lots.saturating_sub(previous).max(0));
+        let key = (fill.account_no, fill.asset_no, position_side);
+        if !self.expected.contains_key(&key) && self.expected.len() >= PUBLIC_CAPACITY {
+            return Err(v13_runtime_error("inventory_proof_capacity"));
+        }
+        let expected = self.expected.entry(key).or_default();
+        *expected = expected
+            .checked_add(if fill.side == 1 { delta } else { -delta })
+            .ok_or_else(|| v13_runtime_error("inventory_proof_overflow"))?;
+        Ok(())
+    }
+    fn confirmed(&self, positions: &[TitanPositionView]) -> bool {
+        self.expected.iter().all(|(key, expected)| {
+            positions
+                .iter()
+                .find(|p| (p.account_no, p.asset_no, p.position_side) == *key)
+                .map_or(0, |p| i128::from(p.qty_lots))
+                == *expected
+        }) && positions.iter().all(|p| {
+            self.expected
+                .get(&(p.account_no, p.asset_no, p.position_side))
+                .copied()
+                .unwrap_or(0)
+                == i128::from(p.qty_lots)
+        })
+    }
+}
+
+fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) -> LocalResult<()> {
     let key = (fill.account_no, fill.order_id);
-    inner.settled_fills.insert(key, fill.cumulative_filled_lots);
+    let previous = inner.settled_fills.get(&key).copied().unwrap_or(0);
+    let position_side = inner
+        .orders_list
+        .get(&fill.order_id)
+        .map_or(0, |o| o.position_side);
+    inner.inventory.fill(fill, previous, position_side)?;
+    inner
+        .settled_fills
+        .insert(key, previous.max(fill.cumulative_filled_lots));
     if inner
         .awaiting_fills
         .get(&key)
@@ -1128,6 +1209,7 @@ fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) {
             order.status = 3;
         }
     }
+    Ok(())
 }
 fn update_active_order(
     inner: &mut NativeV13Inner,
@@ -1537,7 +1619,9 @@ fn checkpoint_state(
         orders_list_checksum,
     )
     .with_pending_execution(
-        !inner.awaiting_fills.is_empty() || !inner.pending_fills.is_empty(),
+        !inner.awaiting_fills.is_empty()
+            || !inner.pending_fills.is_empty()
+            || (core.execution_limits.is_some() && !inner.inventory.confirmed(&inner.positions)),
         snapshot.checksum,
         orders_list_checksum,
     );
@@ -1641,6 +1725,7 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
     if inner.lifecycle != StrategyLifecycle::Stopping
         || !inner.active_orders.is_empty()
         || !inner.awaiting_fills.is_empty()
+        || (core.execution_limits.is_some() && !inner.inventory.confirmed(&inner.positions))
         || (inner.stop_barrier && !inner.stop_ready)
     {
         return Ok(());
@@ -1673,6 +1758,91 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
 }
 
 impl StrategyRuntime for NativeV13Runtime {
+    fn execution_risk(&self) -> LocalResult<Vec<titan_account_service::ExecutionRiskEvidence>> {
+        use titan_account_service::{ExecutionRiskEvidence, ExecutionRiskOrder};
+        let inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let mut result = Vec::new();
+        for binding in self.core.context.accounts.iter() {
+            let epoch = inner
+                .accounts
+                .iter()
+                .find(|a| a.account_no == binding.local_account_no)
+                .map_or(0, |a| a.account_epoch);
+            for asset in binding.tradable_assets.iter() {
+                let positions = inner
+                    .positions
+                    .iter()
+                    .filter(|p| {
+                        p.account_no == binding.local_account_no
+                            && p.asset_no == asset.local_asset_no
+                    })
+                    .map(|p| (p.position_side, p.qty_lots))
+                    .collect();
+                let mut expected = inner
+                    .inventory
+                    .expected
+                    .iter()
+                    .filter(|((account, no, _), _)| {
+                        *account == binding.local_account_no && *no == asset.local_asset_no
+                    })
+                    .map(|((_, _, side), q)| (*side, *q))
+                    .collect::<BTreeMap<_, _>>();
+                for ((account, order), target) in &inner.awaiting_fills {
+                    if *account == binding.local_account_no
+                        && let Some(o) = inner.orders_list.get(order)
+                        && o.asset_no == asset.local_asset_no
+                    {
+                        let delta = i128::from(
+                            target
+                                .saturating_sub(
+                                    inner
+                                        .settled_fills
+                                        .get(&(*account, *order))
+                                        .copied()
+                                        .unwrap_or(0),
+                                )
+                                .max(0),
+                        );
+                        let value = expected.entry(o.position_side).or_default();
+                        *value = value
+                            .checked_add(if o.side == 1 { delta } else { -delta })
+                            .ok_or_else(|| v13_runtime_error("inventory_proof_overflow"))?;
+                    }
+                }
+                let orders = inner
+                    .active_orders
+                    .iter()
+                    .filter(|o| {
+                        o.account_no == binding.local_account_no
+                            && o.asset_no == asset.local_asset_no
+                    })
+                    .map(|o| ExecutionRiskOrder {
+                        client_order_id: client_order_id(self.core.context.strategy, o.order_id),
+                        price_ticks: o.price_ticks,
+                        quantity_lots: o.qty_lots,
+                        filled_lots: o.cumulative_filled_lots,
+                    })
+                    .collect();
+                result.push(ExecutionRiskEvidence {
+                    intent_revision: inner.command_count,
+                    account_id: binding.account.account_id.0,
+                    account_generation: binding.account.generation,
+                    account_epoch: epoch,
+                    asset_id: asset.asset_id,
+                    positions,
+                    expected_positions: expected
+                        .into_iter()
+                        .map(|(s, q)| (s, q.to_string()))
+                        .collect(),
+                    orders,
+                    inventory_confirmed: inner.inventory.confirmed(&inner.positions)
+                        && inner.awaiting_fills.is_empty()
+                        && inner.pending_fills.is_empty(),
+                });
+            }
+        }
+        Ok(result)
+    }
     fn pause_supported(&self) -> bool {
         self.core.pause_safe
     }
@@ -1684,6 +1854,7 @@ impl StrategyRuntime for NativeV13Runtime {
             && inner.active_orders.is_empty()
             && inner.pending_fills.is_empty()
             && inner.awaiting_fills.is_empty()
+            && (self.core.execution_limits.is_none() || inner.inventory.confirmed(&inner.positions))
     }
     fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
         let Some(schema) = &self.core.state_description else {
@@ -1883,6 +2054,8 @@ impl StrategyRuntime for NativeV13Runtime {
             .collect();
         inner.settled_fills.extend(settled);
         inner.awaiting_fills.clear();
+        let positions = inner.positions.clone();
+        inner.inventory.seed(&positions);
         inner.recovery_orders = seed.recovery_orders.to_vec();
         Ok(())
     }
@@ -1913,7 +2086,11 @@ impl StrategyRuntime for NativeV13Runtime {
                         snapshot.public_state_identity,
                     )
                     .map_err(v13_runtime_error)?;
-                if !inner.pending_fills.is_empty() || !inner.awaiting_fills.is_empty() {
+                if !inner.pending_fills.is_empty()
+                    || !inner.awaiting_fills.is_empty()
+                    || (self.core.execution_limits.is_some()
+                        && !inner.inventory.confirmed(&inner.positions))
+                {
                     return Err(v13_runtime_error("recovery_pending_fill_requires_history"));
                 }
                 let current = recovery_seed(
@@ -2195,8 +2372,13 @@ impl StrategyRuntime for NativeV13Runtime {
         ) {
             return Err(v13_runtime_error("invalid_stop_state"));
         }
-        if let Some(id) = self.core.stop_request.get() {
-            return Ok(*id);
+        let mut stop_request = self
+            .core
+            .stop_request
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(id) = *stop_request {
+            return Ok(id);
         }
         let lane = self
             .core
@@ -2204,13 +2386,6 @@ impl StrategyRuntime for NativeV13Runtime {
             .get()
             .ok_or_else(|| v13_runtime_error("lane_not_attached"))?;
         let id = StrategyOperationId(self.core.next_operation.fetch_add(1, Ordering::AcqRel));
-        if self.core.stop_request.set(id).is_err() {
-            return Ok(*self
-                .core
-                .stop_request
-                .get()
-                .expect("stop request initialized"));
-        }
         self.core
             .operations
             .lock()
@@ -2225,7 +2400,7 @@ impl StrategyRuntime for NativeV13Runtime {
                 },
             );
         let core = self.core.clone();
-        lane.submit_safe_point(move || {
+        let admission = lane.submit_safe_point(move || {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
             let result = (|| {
                 if inner.stop_operation.is_some() {
@@ -2277,8 +2452,19 @@ impl StrategyRuntime for NativeV13Runtime {
                 operation.detail = Arc::from("stopped");
             }
             Ok(())
-        })
-        .map_err(|_| v13_runtime_error("control_queue_full"))?;
+        });
+        if admission.is_err() {
+            let mut operations = self
+                .core
+                .operations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let operation = operations.get_mut(&id).expect("stop operation exists");
+            operation.state = StrategyOperationState::Failed;
+            operation.detail = Arc::from("control_queue_full");
+            return Err(v13_runtime_error("control_queue_full"));
+        }
+        *stop_request = Some(id);
         Ok(id)
     }
     fn freeze_state(
@@ -2368,6 +2554,159 @@ fn v13_core_error() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inventory_confirmation_handles_fill_position_orderings_and_hedge_legs() {
+        let flat = TitanPositionView::default();
+        let filled = TitanPositionView {
+            qty_lots: 10,
+            ..flat
+        };
+        let fill = TitanFillView {
+            side: 1,
+            fill_qty_lots: 10,
+            cumulative_filled_lots: 10,
+            ..Default::default()
+        };
+        for position_first in [false, true] {
+            let mut proof = InventoryProof::default();
+            proof.seed(&[flat]);
+            if position_first {
+                assert!(!proof.confirmed(&[filled]));
+            }
+            proof.fill(&fill, 0, 0).unwrap();
+            assert!(!proof.confirmed(&[flat]));
+            assert!(proof.confirmed(&[filled]));
+            proof.fill(&fill, 10, 0).unwrap();
+            assert!(proof.confirmed(&[filled]));
+            proof
+                .fill(
+                    &TitanFillView {
+                        side: 2,
+                        cumulative_filled_lots: 3,
+                        ..fill
+                    },
+                    0,
+                    0,
+                )
+                .unwrap();
+            assert!(!proof.confirmed(&[filled]));
+            assert!(proof.confirmed(&[TitanPositionView {
+                qty_lots: 7,
+                ..flat
+            }]));
+        }
+        let mut proof = InventoryProof::default();
+        proof.seed(&[]);
+        proof.fill(&fill, 0, 1).unwrap();
+        proof
+            .fill(&TitanFillView { side: 2, ..fill }, 0, 2)
+            .unwrap();
+        assert!(!proof.confirmed(&[flat]));
+        assert!(proof.confirmed(&[
+            TitanPositionView {
+                qty_lots: 10,
+                position_side: 1,
+                ..flat
+            },
+            TitanPositionView {
+                qty_lots: -10,
+                position_side: 2,
+                ..flat
+            }
+        ]));
+    }
+
+    #[test]
+    fn filled_risk_stays_reserved_until_positions_confirm_and_protective_exits_remain_allowed() {
+        let flat = TitanPositionView::default();
+        let position = TitanPositionView {
+            qty_lots: 10,
+            ..flat
+        };
+        let opening = StagedCommandV13::Submit {
+            order_id: 2,
+            request: TitanSubmitOrderRequest {
+                qty_lots: 1,
+                price_ticks: 1000,
+                side: 1,
+                order_type: 1,
+                ..Default::default()
+            },
+        };
+        let protective = StagedCommandV13::Submit {
+            order_id: 3,
+            request: TitanSubmitOrderRequest {
+                qty_lots: 10,
+                price_ticks: 1000,
+                side: 2,
+                order_type: 1,
+                reduce_only: 1,
+                ..Default::default()
+            },
+        };
+        let mut inventory = InventoryProof::default();
+        inventory.seed(&[flat]);
+        // A newer unrelated fact or the removal of a terminal order cannot confirm inventory.
+        assert!(
+            inventory
+                .validate_opening(&[position], false, &[opening])
+                .is_err()
+        );
+        inventory
+            .fill(
+                &TitanFillView {
+                    side: 1,
+                    cumulative_filled_lots: 10,
+                    fill_qty_lots: 10,
+                    ..Default::default()
+                },
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(
+            inventory
+                .validate_opening(&[flat], false, &[opening])
+                .is_err()
+        );
+        assert!(
+            inventory
+                .validate_opening(&[flat], false, &[protective])
+                .is_ok()
+        );
+        assert!(
+            inventory
+                .validate_opening(&[position], true, &[opening])
+                .is_err()
+        );
+        assert!(
+            inventory
+                .validate_opening(&[position], false, &[opening])
+                .is_ok()
+        );
+        let limits = ExecutionLimits {
+            max_notional_tick_lots: "10000".into(),
+            max_price_deviation_bps: 50,
+            max_market_age_ns: 100,
+        };
+        assert!(
+            validate_execution_envelope(
+                &limits,
+                TitanMarketView {
+                    best_bid_ticks: 999,
+                    best_ask_ticks: 1000,
+                    ..Default::default()
+                },
+                &[position],
+                &[],
+                100,
+                &[opening],
+                150
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn execution_envelope_bounds_batch_price_staleness_hedges_and_reductions() {

@@ -18,7 +18,8 @@
     "lint:prettier": "prettier --write  \"src/**/*.{js,ts,json,tsx,css,scss,vue,html,md}\"",
     "lint:stylelint": "stylelint --cache --fix \"**/*.{html,vue,css,scss}\" --cache-location node_modules/.cache/stylelint/",
     "lint": "pnpm lint:eslint && pnpm lint:prettier && pnpm lint:stylelint",
-    "check": "pnpm typecheck && pnpm exec prettier --check src/views/console src/api/console.ts src/store/modules/console.ts"
+    "check": "pnpm typecheck && pnpm exec prettier --check src/views/console src/api/console.ts src/store/modules/console.ts src/store/resource-cache.ts",
+    "test:cache": "node ../../scripts/management_web_cache_test.mjs"
   },
   "keywords": [
     "pure-admin-thin",

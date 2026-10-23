@@ -47,6 +47,9 @@ pub struct AccountInstrumentBinding {
     pub price_tick: DecimalUnit,
     pub quantity_lot: DecimalUnit,
     pub contract_multiplier: DecimalUnit,
+    /// Explicitly declares linear valuation and its quote currency; inverse contracts must not set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_quote_currency: Option<CurrencyId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -641,7 +644,19 @@ pub trait AccountConnectorFactory: Send + Sync + 'static {
     ) -> Result<Arc<dyn AccountConnector>, AccountConnectorError>;
 }
 
+pub type OrderEvidenceFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<OrderSnapshot, AccountConnectorError>> + Send>,
+>;
+
 pub trait AccountConnector: Send + Sync + 'static {
+    /// Read-only authoritative lookup; absence and transport errors are never terminal evidence.
+    fn order_evidence(&self, _asset: AssetId, _client: Id128) -> OrderEvidenceFuture {
+        Box::pin(async {
+            Err(AccountConnectorError::rejected(
+                "order evidence provider unavailable",
+            ))
+        })
+    }
     /// Optional read-only ledger evidence. Never derives cash flows from balance deltas.
     fn ledger_page(
         &self,
