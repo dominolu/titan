@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "stage": "M1-offline",
+  "base_commit": "5f424533bc7f053a929a21bd4edb4249c99e7aee",
+  "files": [
+    {
+      "path": "bin/titan",
+      "bytes": 302108144,
+      "sha256": "63100fd13c8e98c794dc43edc44ca709acf1722c9be3e9c72fe1b99b41ed2c79"
+    },
+    {
+      "path": "bin/v13_grid_history",
+      "bytes": 91354496,
+      "sha256": "6cbca2cc184fc30cf71af8936803025c6d8da88680266ed23236db626af8bf3f"
+    },
+    {
+      "path": "console.example.toml",
+      "bytes": 1374,
+      "sha256": "a98119cf589f90138f3e4e1d2a71bc05c0aec804fe801839df59f838b32b8b57"
+    },
+    {
+      "path": "python/titan-reporting/pyproject.toml",
+      "bytes": 376,
+      "sha256": "b296f68f805a4db7f68c7372f2585b134cad3efe7660eae03081cac4432ee961"
+    },
+    {
+      "path": "python/titan-reporting/tests/test_bundle.py",
+      "bytes": 3822,
+      "sha256": "b4765e8f55c633dd34a50e0f4beb92509d7f0ce14e19850e429db94d04d762eb"
+    },
+    {
+      "path": "python/titan-reporting/titan_reporting/__init__.py",
+      "bytes": 204,
+      "sha256": "242fd05b1ba77ec4c91530dc1839be0a5a0f9f0c1065bde4fb56b6576d4dc51b"
+    },
+    {
+      "path": "python/titan-reporting/titan_reporting/__main__.py",
+      "bytes": 581,
+      "sha256": "c9d30484c7a620d81bd9a524df95c3342c2a170edd64b35329a9d9820db52e73"
+    },
+    {
+      "path": "python/titan-reporting/titan_reporting/bundle.py",
+      "bytes": 2002,
+      "sha256": "3106cd1b064661821934c7f21f97df831626f48d2f1b79d96a7f9d5db95df370"
+    },
+    {
+      "path": "python/titan-reporting/titan_reporting/render.py",
+      "bytes": 2597,
+      "sha256": "336e850eaab5f44334b847292a74822f1d042e0c1cdca3a4edfeb4835ea45388"
+    },
+    {
+      "path": "python/titan-strategy-sdk/README.md",
+      "bytes": 9238,
+      "sha256": "dc45cfb0ba5ebb4c18dfa04d30348cb0d6ef165353ccd70694f4636a4d600835"
+    },
+    {
+      "path": "python/titan-strategy-sdk/pyproject.toml",
+      "bytes": 302,
+      "sha256": "6f32cc1e4ba620c4af513bc17b1643dee961b4d15555806638b152f07504c0e3"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_bad_signature.py",
+      "bytes": 587,
+      "sha256": "5342df97e685ac8d9d4354d83d6c0a8918bf45073ba60ef7a95d2bbfc62515a5"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_build_side_effect.py",
+      "bytes": 114,
+      "sha256": "a586d52d8e79a51c0af4d866834408e5f75e20b672232dee6ab42064ec0d26d2"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_handler_error.py",
+      "bytes": 592,
+      "sha256": "0ebce5df941ad56a85fecec9198f0698eac55e3ea1434beb21587af14d1dbc3c"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_hedge_views.py",
+      "bytes": 990,
+      "sha256": "3db72652624145b6324446da91cbf8b4ef59adbe815385fba9016188abf41793"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_missing_capability.py",
+      "bytes": 717,
+      "sha256": "3fad25cede8546b1d581a3fdc8649ce397ba1be34f26aac0bec11513a7214da8"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_missing_view.py",
+      "bytes": 747,
+      "sha256": "d2c94cd176f4562a4838c51eecce74a788cdf32c0fca9118383a23b2b7918f09"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_readonly_violation.py",
+      "bytes": 636,
+      "sha256": "e56f51e60029e8313e121fa7807a8d2469786eb6fddc5c862ff466c75bb97752"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/fixtures/v13_timer_submit.py",
+      "bytes": 1566,
+      "sha256": "1151587b6c2f82d8d07df4af82e1307ce9c1d00b8e3742c18db9f011e60d157b"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_grid.py",
+      "bytes": 39764,
+      "sha256": "94a3d1fe208830e88f7bd72a7181e80348d376fb92744e4825ee5c0c612197f2"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_grid_native.py",
+      "bytes": 14652,
+      "sha256": "0c542ceb4446355686c765a153b9224e6b52c034da22a2882d828479f550348b"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_pair_arb.py",
+      "bytes": 16743,
+      "sha256": "758c68086e785c169cb2db08ffac2aeedacceb2b300fa7ae58448c84ecc559a0"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_v13_sdk.py",
+      "bytes": 4115,
+      "sha256": "5e95162e84ca146d2fda0b18541760c65128bd680a020c35cd7db7e4e4fb9e61"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_v13_static_compiler.py",
+      "bytes": 10438,
+      "sha256": "2e6318a4a8c66112f5bed4f05b099e2339de32e1d380219a834840864dc9de05"
+    },
+    {
+      "path": "python/titan-strategy-sdk/tests/test_v13_stop_barrier.py",
+      "bytes": 2441,
+      "sha256": "37625a76d7b09086fab3ddbcc4062e25adc956c9c6c58ea8ace30574d0edfd0f"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/__init__.py",
+      "bytes": 467,
+      "sha256": "bb4c3b969f86038fb75ca9947f896c3c11b41efee402d45184d891d2fd573970"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/abi_v13.py",
+      "bytes": 10250,
+      "sha256": "4761abeb1935f9181a93d94f64c0bb278ce44bba8377442d596d8dfb74c7560f"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/cli.py",
+      "bytes": 1593,
+      "sha256": "4eda7b9ff44928f0e91ac02ca547d42bf1ee47ad66ab4fe79e19a6c1b9cd3031"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/context_v13.py",
+      "bytes": 20031,
+      "sha256": "7336d437105b38061283232095c50d8c238a0700bde300769cdd5e441dec8685"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/definition.py",
+      "bytes": 6220,
+      "sha256": "06dd4e7a5e1cdc00dd949b8f46361e408184f47cf7858638e10ad3ecc89d4af1"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/parameters.py",
+      "bytes": 8962,
+      "sha256": "e3c7abc93686c1ef51da12b73424e46cd985d4b7f0281f9714de42817aaa7f31"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/state.py",
+      "bytes": 8914,
+      "sha256": "924922ea1bd6dfadaad7bb5964912ee1e324221453bc12381eecf101dc341c72"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/static_compiler.py",
+      "bytes": 24488,
+      "sha256": "69df7eb372cf9ec3f7038991b49c5fa55858501b3ac8cfd7602762080e1e6c62"
+    },
+    {
+      "path": "python/titan-strategy-sdk/titan_strategy/types.py",
+      "bytes": 1309,
+      "sha256": "b6acab6cda30305a9343afe85882f75b8852cb604408494ae07cc77c96641926"
+    },
+    {
+      "path": "strategies/grid/README.md",
+      "bytes": 13593,
+      "sha256": "1b38e2a7aeed7d445777c2b5be4c4a992a3150ae28fefe569dd732eec2db9b0c"
+    },
+    {
+      "path": "strategies/grid/__init__.py",
+      "bytes": 35,
+      "sha256": "af2c4a48e9fdb42f284f7465a0f0ec1ee44a229d4d2bc0363e2567cd70c71331"
+    },
+    {
+      "path": "strategies/grid/parameters.gate_arb.json",
+      "bytes": 472,
+      "sha256": "3c7cf4cd6276debcaecc1f39201d89d2dca2fbe34d07717e68efb88ad472e57c"
+    },
+    {
+      "path": "strategies/grid/parameters.json",
+      "bytes": 447,
+      "sha256": "c948e3b99dd345fdcb982f32dc1afd4418aaf30241842e0bd5ad141383851ffa"
+    },
+    {
+      "path": "strategies/grid/strategy.py",
+      "bytes": 45536,
+      "sha256": "49f7cafb3c04a6b5f0656402e6417705934f285b4e73fb8214932ea205248df7"
+    },
+    {
+      "path": "web/favicon.ico",
+      "bytes": 1270,
+      "sha256": "cee2e12f96e2a721788427cfeac91b56857ca4c7855057e1bf2267eaf90a3a05"
+    },
+    {
+      "path": "web/index.html",
+      "bytes": 1376,
+      "sha256": "8161ca01fb1b5165d52dc54f822f59b2f199d1a31a241bef7c60d42c2043249c"
+    },
+    {
+      "path": "web/logo.svg",
+      "bytes": 706,
+      "sha256": "e5517bd3f8293804fde256a5cdad53361653ebe8271829b7f92ddc117341d624"
+    },
+    {
+      "path": "web/platform-config.json",
+      "bytes": 599,
+      "sha256": "5e334ad5761fd277537a324629373e7e47eb157b2ad6e0e5869e713153ed1394"
+    },
+    {
+      "path": "web/static/css/403-DjuzhhlE.css",
+      "bytes": 51,
+      "sha256": "0cd6c78e1234d88f45ca78fb929e0c326f69aeb1781347a22a23788c3371d187"
+    },
+    {
+      "path": "web/static/css/404-DgQozwK4.css",
+      "bytes": 51,
+      "sha256": "2e745917deb4f41f9f918ab805ee3e6dfca90ea2d848a0cf6e7a24db952eb0aa"
+    },
+    {
+      "path": "web/static/css/500-d2Um_kna.css",
+      "bytes": 51,
+      "sha256": "e1b7f3e88b7caab57f9a8b938b2bf5bc0d6db81e9c01565f09ecea0b8b47ae13"
+    },
+    {
+      "path": "web/static/css/index-B5IhdeUM.css",
+      "bytes": 421941,
+      "sha256": "b658cee67c734daa27296e9390730d36359fd7ac5ed5e1f679a70620db886e5c"
+    },
+    {
+      "path": "web/static/css/index-CB66UleR.css",
+      "bytes": 87108,
+      "sha256": "0521d467e910cd3391e1e6f6824c00cd49da178cba3f653e2022b3ac42ef46cf"
+    },
+    {
+      "path": "web/static/css/index-CHWXWVgm.css",
+      "bytes": 367,
+      "sha256": "c66ce633fd3de8dcf357d654c7901df045654a6ba4da4910aa0753fc81a43128"
+    },
+    {
+      "path": "web/static/css/index-DYqsuo3_.css",
+      "bytes": 1678,
+      "sha256": "f19b6054d492ca65a9b9d6071051ce206920a2ef4dde1dbfc4d1cb9b70db1486"
+    },
+    {
+      "path": "web/static/js/403-D7V5A77g.js",
+      "bytes": 11866,
+      "sha256": "b4e8fb56c98be20d9abec30ff2c39b5fd2f79c31e4e38954f4e6439a9d077c7f"
+    },
+    {
+      "path": "web/static/js/404-C_hg9gsF.js",
+      "bytes": 12968,
+      "sha256": "6876d17c28843b2cd321978d655fe1549e1f736a44483928fce5e74f98dbcb51"
+    },
+    {
+      "path": "web/static/js/500-CFui3_MI.js",
+      "bytes": 14951,
+      "sha256": "bf907b0a398e3315a67fc9008fa60552f623b911d81f2a2bd80a8066dc3442ec"
+    },
+    {
+      "path": "web/static/js/index-Baqg0swN.js",
+      "bytes": 537053,
+      "sha256": "4bc5ea7291292acfd12d42d907b6159b8bbd75d87dadf5d1a52e20b12584204c"
+    },
+    {
+      "path": "web/static/js/index-C60KlLrz.js",
+      "bytes": 1856,
+      "sha256": "4519c4b287f438ab3863ddd3fd40163ec33e82edf38db3316f429ea246dd28ff"
+    },
+    {
+      "path": "web/static/js/index-DdUlVU5T.js",
+      "bytes": 1232673,
+      "sha256": "f4cba467cc5b0c3cb7764cd3e325a199374e498b3f5da664287033267210b723"
+    },
+    {
+      "path": "web/static/js/index-j9XUE7Lg.js",
+      "bytes": 426542,
+      "sha256": "1099196e4981498bf112bf0c0fc066bf561f692c2e9256c85d68cf4959fbb027"
+    },
+    {
+      "path": "web/static/js/redirect-B1ZDZFgN.js",
+      "bytes": 304,
+      "sha256": "1bec21f00a94da2cd2577789774f1e7a2aec6c46dc39155e15c5327351cda1ce"
+    }
+  ]
+}

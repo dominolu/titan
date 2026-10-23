@@ -331,6 +331,7 @@ async fn runtime_bootstrap(path: &str, symbol: &str, api: &GateCrossExClient) ->
         price_tick: decimal_unit(instrument.tick_size)?,
         quantity_lot: decimal_unit(instrument.lot_size)?,
         contract_multiplier: account::DecimalUnit::new(1, 0).unwrap(),
+        linear_quote_currency: None,
     };
     let currency = account::AccountCurrencyBinding {
         native_currency: Arc::from("USDT"),

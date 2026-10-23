@@ -16,8 +16,8 @@ use std::{
 };
 
 mod compiler;
-mod registry;
 use registry::{Registry, StopAction, now_ns, process_start_time};
+use titan_cli::registry;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve or access the management application and authenticated execution node.
+    Console {
+        #[command(subcommand)]
+        command: titan_cli::management::ConsoleCommand,
+    },
     /// Run the configured static TradingRuntime until SIGINT.
     CoreRun {
         #[arg(short = 'c', long = "config", value_name = "RUNTIME.toml")]
@@ -139,6 +144,15 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum StrategyCommands {
+    /// Describe and validate frozen strategy inputs in the bounded compiler bridge.
+    Describe {
+        #[arg(long)]
+        strategy: PathBuf,
+        #[arg(long)]
+        parameters: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// List compiled ABI V13 artifacts without importing strategy Python.
     Ls {
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
@@ -203,12 +217,13 @@ impl Commands {
             | Self::Stop { json, .. }
             | Self::Report { json, .. } => *json,
             Self::Strategy { command } => match command {
-                StrategyCommands::Ls { json, .. }
+                StrategyCommands::Describe { json, .. }
+                | StrategyCommands::Ls { json, .. }
                 | StrategyCommands::Show { json, .. }
                 | StrategyCommands::Validate { json, .. }
                 | StrategyCommands::Compile { json, .. } => *json,
             },
-            Self::RunWorker { .. } => false,
+            Self::RunWorker { .. } | Self::Console { .. } => false,
         }
     }
 }
@@ -558,6 +573,18 @@ fn registry_path() -> PathBuf {
 
 fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     match command {
+        StrategyCommands::Describe {
+            strategy,
+            parameters,
+            ..
+        } => {
+            let result = compiler::describe(&strategy, &parameters)?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(CliError::ResultJson)?
+            );
+            Ok(())
+        }
         StrategyCommands::Ls {
             trusted_keys,
             require_signature,
@@ -2080,16 +2107,52 @@ fn load_core_configuration_bytes(
     Ok(adapted)
 }
 
+#[derive(Clone)]
+struct DiagnosticWriter {
+    used: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    limit: usize,
+}
+impl std::io::Write for DiagnosticWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use std::sync::atomic::Ordering;
+        let before = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                Some(used.saturating_add(bytes.len()).min(self.limit))
+            })
+            .unwrap_or(0);
+        let count = self.limit.saturating_sub(before).min(bytes.len());
+        if count > 0 {
+            std::io::Write::write_all(&mut std::io::stderr(), &bytes[..count])?;
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut std::io::stderr())
+    }
+}
 fn main() -> ExitCode {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let limit = if arguments
+        .iter()
+        .any(|a| a == "observe-worker" || a == "managed-worker")
+    {
+        4 * 1024 * 1024
+    } else {
+        usize::MAX
+    };
+    let diagnostics = DiagnosticWriter {
+        used: Default::default(),
+        limit,
+    };
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(move || diagnostics.clone())
         .with_ansi(false)
         .try_init();
-    let arguments = std::env::args_os().collect::<Vec<_>>();
     let json_argument = arguments.iter().any(|argument| argument == "--json");
     let cli = match Cli::try_parse_from(arguments) {
         Ok(cli) => cli,
@@ -2114,6 +2177,8 @@ fn main() -> ExitCode {
     };
     let json_requested = cli.command.json_requested();
     let result = match cli.command {
+        Commands::Console { command } => titan_cli::management::run(command)
+            .map_err(|error| CliError::Engine(format!("{error:#}"))),
         Commands::CoreRun { config, json } => run_configured_core(&config, json),
         Commands::Run {
             strategy,

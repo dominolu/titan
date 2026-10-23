@@ -1,0 +1,68 @@
+{
+  "risk": {
+    "assets": [
+      {
+        "actual_notional": {
+          "amount": "0",
+          "amount_unit": "0.00000001",
+          "amount_units": "0",
+          "currency": "USDT"
+        },
+        "asset_id": "1",
+        "captured_at_ns": "1792772536936912714",
+        "complete": true,
+        "currency": "USDT",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "missing": [],
+        "pending_bound_notional": {
+          "amount": "2.003",
+          "amount_unit": "0.00000001",
+          "amount_units": "200300000",
+          "currency": "USDT"
+        },
+        "price_captured_at_ns": "1792772536847670664",
+        "price_source_stream": "1"
+      }
+    ],
+    "captured_at_ns": "1792772536936912714",
+    "complete": true,
+    "maximum_method": "observed_samples_not_continuous_market_maximum",
+    "notional": [
+      {
+        "actual_amount": "0",
+        "amount_unit": "0.00000001",
+        "currency": "USDT",
+        "pending_bound_amount": "2.003"
+      }
+    ],
+    "scope": "account_positions_and_known_execution_intents",
+    "valuation": "fresh_best_ask_conservative"
+  },
+  "max_exposure": [
+    {
+      "account": "gate",
+      "amount_unit": "0.00000001",
+      "asset_id": "1",
+      "coverage_complete": false,
+      "currency": "USDT",
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "last_sample_at_ns": "1792772522393184092",
+      "last_sample_complete": true,
+      "last_source": "176b5705038a07e9a58e07bedb7bfbc88a44a33de7ecfb89755a8c2abe79da04:cfbe3da526c590e2150a3bacf077005263dffd8ce568bf94ebca16f091265576",
+      "max_actual_notional": "0",
+      "max_actual_units": "0",
+      "max_pending_bound_notional": "2.003",
+      "max_pending_bound_units": "200300000",
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "completeness": {
+    "account_image": true,
+    "missing": [
+      "funding_coverage",
+      "cashflow_coverage"
+    ],
+    "performance": false,
+    "risk": true
+  }
+}

@@ -2,7 +2,7 @@
 
 `grid` 是单账户、单品种、线性合约、NET 持仓模式的原生策略。分析来源及差异见 [迁移分析](../../docs/gate_arb_grid_analysis.md)。这是交易策略组件；账户杠杆、保证金模式、交易所规则和最终风险审批仍由 Titan 平台管理。策略不会修改账户设置。
 
-当前版本 `1.2.0`，state schema `3`。全面复核见 [网格审查](../../docs/verification/2026-10-22/grid-review/README.md)，真实历史行情、保护性退出修复及新验证见 [历史回测](../../docs/verification/2026-10-22/grid-history/README.md)。旧版本 checkpoint 不能直接恢复到本版；需要先用原制品完成停止，再按平台流程启动新版本。
+当前版本 `1.2.1`，state schema `3`。全面复核见 [网格审查](../../docs/verification/2026-10-22/grid-review/README.md)，真实历史行情、保护性退出修复及新验证见 [历史回测](../../docs/verification/2026-10-22/grid-history/README.md)。旧版本 checkpoint 不能直接恢复到本版；需要先用原制品完成停止，再按平台流程启动新版本。
 
 ## 行为
 
@@ -112,3 +112,7 @@ bash scripts/run_grid_history.sh data/grid-history verification-artifacts/grid-h
 V13 FillView 不含实际手续费和资金费，故 `gross_total_tick_lots` 明确为毛收益。净收益、费用、资金费和权益核对使用平台账本；本策略不会估造这些数据。需要按净亏损触发的账户级限制应配置在平台风控层。
 
 此实现不包含现货库存分配、双向持仓模式、Web 管理界面、运行中热修改参数或自动调整账户杠杆。运行中调参应先完成停止，然后以新参数编译并新建实例。离线回放和实盘使用同一份原生制品；行情撮合、队列、延迟和费用模型由回测环境提供，不能把回调测试当作收益回测或实盘验收。
+
+### 管理暂停
+
+1.2.1 制品声明 `pause_safe`，保持 schema 3。暂停时通过 V13 `ctx.is_paused` 消费订单、独立成交、持仓和定时器，撤销现有报价并等待终态，不创建新的开仓报价；已触发的保护性退出继续执行。恢复运行沿用同一状态和代次。平台同时限制暂停期间仅可撤单和 venue reduce-only 委托。旧制品未声明此能力时，管理端不提供 Pause；新增能力位会被不支持的旧 host 拒绝，不应直接回滚 host 后加载新制品。

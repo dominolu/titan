@@ -1,0 +1,4 @@
+
+> titan-console@6.2.0 typecheck /home/dominolu/dev/titan-management-20261023-5f424533/web/console
+> tsc --noEmit && vue-tsc --noEmit --skipLibCheck
+

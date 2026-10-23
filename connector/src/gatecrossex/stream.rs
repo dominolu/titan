@@ -614,6 +614,11 @@ pub(super) fn private_frame(
     tx: &PublishSender,
     frame: &Value,
 ) -> Result<(), ApiError> {
+    tracing::debug!(
+        channel = frame["channel"].as_str(),
+        has_payload = frame["payload"].is_object(),
+        "CrossEx private frame received"
+    );
     let Some(value) = frame.get("payload").filter(|v| v.is_object()) else {
         return Ok(());
     };
@@ -623,6 +628,15 @@ pub(super) fn private_frame(
         return Ok(());
     }
     let symbol = text(value, "symbol")?;
+    tracing::debug!(
+        symbol = symbol.as_str(),
+        bound = desired
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .accounts
+            .contains(&symbol),
+        "CrossEx private symbol routing"
+    );
     if !desired
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -671,6 +685,11 @@ pub(super) fn private_frame(
             .get(&symbol)
             .ok_or_else(|| protocol("missing order instrument metadata"))?;
         let order = update_order(orders, &info, tick)?;
+        tracing::debug!(
+            symbol = symbol.as_str(),
+            publish = order.is_some(),
+            "CrossEx order fact candidate"
+        );
         if let Some(mut order) = order {
             if order.exec_qty > 0.0 {
                 if value.get("last_executed_qty").is_some()

@@ -1,0 +1,12 @@
+test_all_repository_v13_examples_aot_compile (test_v13_static_compiler.TestV13StaticCompiler.test_all_repository_v13_examples_aot_compile) ... ok
+test_missing_public_view_returns_stable_callback_error (test_v13_static_compiler.TestV13StaticCompiler.test_missing_public_view_returns_stable_callback_error) ... ok
+test_native_hedge_views_and_order_side (test_v13_static_compiler.TestV13StaticCompiler.test_native_hedge_views_and_order_side) ... ok
+test_pair_arb_full_state_machine_aot_compiles (test_v13_static_compiler.TestV13StaticCompiler.test_pair_arb_full_state_machine_aot_compiles) ... ok
+test_readonly_view_and_bad_signature_are_rejected (test_v13_static_compiler.TestV13StaticCompiler.test_readonly_view_and_bad_signature_are_rejected) ... ok
+test_smoke_strategy_builds_pair_and_bundle (test_v13_static_compiler.TestV13StaticCompiler.test_smoke_strategy_builds_pair_and_bundle) ... ok
+test_strategy_definition_load_runs_in_restricted_worker (test_v13_static_compiler.TestV13StaticCompiler.test_strategy_definition_load_runs_in_restricted_worker) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 10.628s
+
+OK

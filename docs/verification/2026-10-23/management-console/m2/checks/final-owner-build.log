@@ -1,0 +1,11 @@
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-management-20261023-5f424533/hftbacktest)
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/connector)
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-management-20261023-5f424533/crates/titan-cli)
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.99s

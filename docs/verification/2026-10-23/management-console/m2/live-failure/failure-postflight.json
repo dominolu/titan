@@ -1,0 +1,11 @@
+{
+  "passed": false,
+  "reason": "observer shutdown panicked before final receipt; not accepted",
+  "account_id": 1,
+  "account": "gate",
+  "instrument": "GATE_FUTURE_BTC_USDT",
+  "strategy_started": false,
+  "venue_write_requests": 0,
+  "target_open_orders": 0,
+  "target_positions": []
+}

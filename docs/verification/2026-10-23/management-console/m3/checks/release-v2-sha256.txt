@@ -1,0 +1,4 @@
+8b0ccebd2f8d981dc90fb81460000709065fb3ce865fc0b6c3e43f03fb766a84  verification-artifacts/management/m3/release-v2/bin/titan
+1e9f620aafe4bfcbb883d6df7efa42f87ee89d17c69aa4986e12dbb36d73ed73  verification-artifacts/management/m3/release-v2/bin/v13_grid_history
+467cf5d9cc7da0230963eb474078ee89970e45123103ee336c2774781a9db58c  verification-artifacts/management/m3/release-v2/management_live_control.py
+4312c3e8dd7eab6d8df16fc33d2a691beb212c5e969517ee7904baa12564d442  web/console/src/generated/management.ts

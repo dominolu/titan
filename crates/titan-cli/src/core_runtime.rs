@@ -31,6 +31,8 @@ pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationConfig {
+    #[serde(default)]
+    pub managed_by_console: bool,
     pub schema_version: u32,
     #[serde(default)]
     pub event_engine: EventEngineConfig,
@@ -219,6 +221,11 @@ impl ConfigurationAdapter {
         mut config: ApplicationConfig,
         config_directory: &Path,
     ) -> Result<AdaptedConfiguration, ConfigurationError> {
+        if config.managed_by_console {
+            return Err(ConfigurationError::Invalid(
+                "managed configuration requires the authenticated console entry point".into(),
+            ));
+        }
         if config.schema_version != APPLICATION_CONFIG_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchema(config.schema_version));
         }
@@ -324,6 +331,8 @@ pub struct TradingRuntime {
     execution: ExecutionRuntime,
     shutdown_deadline: std::time::Duration,
     account_startup_timeout: std::time::Duration,
+    observation: Option<Arc<titan_account_service::AccountFactJournal>>,
+    observation_routes: Vec<titan_event_engine::FastLaneToken>,
 }
 
 /// Construction-only catalog of statically linked venue connectors.
@@ -347,6 +356,27 @@ impl TradingRuntime {
     }
 
     pub fn start(config: AdaptedConfiguration) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, None, false)
+    }
+    pub fn start_observed(
+        config: AdaptedConfiguration,
+        path: PathBuf,
+        source: String,
+    ) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, Some((path, source)), false)
+    }
+    pub(crate) fn start_managed(
+        config: AdaptedConfiguration,
+        path: PathBuf,
+        source: String,
+    ) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, Some((path, source)), true)
+    }
+    fn start_inner(
+        config: AdaptedConfiguration,
+        observed: Option<(PathBuf, String)>,
+        defer_strategies: bool,
+    ) -> Result<Self, ApplicationRuntimeError> {
         let AdaptedConfiguration {
             event_engine,
             market_service,
@@ -362,6 +392,39 @@ impl TradingRuntime {
         let event_handle = Arc::new(events.handle());
         register_event_catalog(&event_handle)?;
         events.start()?;
+        let observation = observed
+            .map(|(path, source)| {
+                titan_account_service::AccountFactJournal::open(path, source, &accounts)
+                    .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))
+            })
+            .transpose()?;
+        let mut observation_routes = Vec::new();
+        if let Some(journal) = &observation {
+            observation_routes.push(event_handle.register_fast_lane(
+                titan_market_service::BBO_EVENT,
+                MARKET_EVENT_SCHEMA_VERSION,
+                Vec::new(),
+                journal.clone(),
+            )?);
+            for event in ACCOUNT_EVENT_TYPES {
+                observation_routes.push(event_handle.register_fast_lane(
+                    event,
+                    if event == FILL_EVENT {
+                        FILL_EVENT_SCHEMA_VERSION
+                    } else {
+                        ACCOUNT_EVENT_SCHEMA_VERSION
+                    },
+                    Vec::new(),
+                    journal.clone(),
+                )?);
+            }
+            observation_routes.push(event_handle.register_fast_lane(
+                FILL_EVENT,
+                ACCOUNT_EVENT_SCHEMA_VERSION,
+                Vec::new(),
+                journal.clone(),
+            )?);
+        }
         let catalog = ConnectorCatalog::builtin();
 
         let market = MarketServiceCore::new(MarketCoreConfig {
@@ -473,8 +536,12 @@ impl TradingRuntime {
             execution,
             shutdown_deadline,
             account_startup_timeout,
+            observation,
+            observation_routes,
         };
-        if let Err(error) = runtime.apply_definitions(market_sources, accounts, strategies) {
+        if let Err(error) =
+            runtime.apply_definitions(market_sources, accounts, strategies, defer_strategies)
+        {
             let _ = runtime.shutdown();
             return Err(error);
         }
@@ -492,8 +559,29 @@ impl TradingRuntime {
     pub fn strategy_service(&self) -> Option<&Arc<StrategyServiceCore>> {
         self.strategy.as_ref()
     }
+    pub fn account_service(&self) -> &Arc<AccountServiceCore> {
+        &self.account
+    }
+    pub fn observation(&self) -> Option<&Arc<titan_account_service::AccountFactJournal>> {
+        self.observation.as_ref()
+    }
 
     pub fn check_health(&self) -> Result<(), ApplicationRuntimeError> {
+        self.check_dependency_health()?;
+        if let Some(service) = &self.strategy {
+            for entry in service.list().iter().filter(|entry| entry.enabled) {
+                if entry.lifecycle != titan_strategy_runtime::StrategyLifecycle::Running {
+                    return Err(ApplicationRuntimeError::Shutdown(format!(
+                        "strategy {}: {:?}",
+                        entry.strategy_key, entry.lifecycle
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_dependency_health(&self) -> Result<(), ApplicationRuntimeError> {
         use titan_market_service::MarketService;
         let events = self.event_handle.runtime_health();
         if events.event_loop_failed
@@ -527,16 +615,6 @@ impl TradingRuntime {
                     "account {}: {:?}: {}",
                     entry.account_key, health.state, health.message
                 )));
-            }
-        }
-        if let Some(service) = &self.strategy {
-            for entry in service.list().iter().filter(|entry| entry.enabled) {
-                if entry.lifecycle != titan_strategy_runtime::StrategyLifecycle::Running {
-                    return Err(ApplicationRuntimeError::Shutdown(format!(
-                        "strategy {}: {:?}",
-                        entry.strategy_key, entry.lifecycle
-                    )));
-                }
             }
         }
         Ok(())
@@ -574,6 +652,14 @@ impl TradingRuntime {
         if let Err(error) = self.account.shutdown() {
             failures.push(format!("account shutdown: {error}"));
         }
+        for token in self.observation_routes.drain(..) {
+            self.event_handle.unregister_fast_lane(token);
+        }
+        if let Some(journal) = &self.observation
+            && let Err(error) = journal.close(deadline)
+        {
+            failures.push(format!("account recorder: {error}"));
+        }
         if let Err(error) = self.market.quiesce_all(deadline) {
             failures.push(format!("market quiesce: {error}"));
         }
@@ -595,18 +681,49 @@ impl TradingRuntime {
         market_sources: Vec<MarketSourceDefinition>,
         accounts: Vec<AccountDefinition>,
         strategies: Vec<StrategyDefinition>,
+        defer_strategies: bool,
     ) -> Result<(), ApplicationRuntimeError> {
+        let observe_prices = self.observation.is_some() && strategies.is_empty();
         if !market_sources.is_empty() {
             for definition in market_sources {
                 let enabled = definition.enabled;
+                let instruments = definition.instruments.clone();
                 let handle = self
                     .market
                     .create(definition)
                     .map_err(|error| ApplicationRuntimeError::Market(error.to_string()))?;
+                if let Some(journal) = &self.observation {
+                    use titan_market_service::MarketService;
+                    journal
+                        .bind_risk_market(
+                            self.market
+                                .source_stream(handle)
+                                .map_err(|e| ApplicationRuntimeError::Market(e.to_string()))?
+                                .0,
+                            &instruments,
+                        )
+                        .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))?;
+                }
                 if enabled {
                     self.market
                         .start(handle)
                         .map_err(|error| ApplicationRuntimeError::Market(error.to_string()))?;
+                    if observe_prices {
+                        use titan_market_service::MarketService;
+                        for instrument in &*instruments {
+                            self.market
+                                .subscribe(
+                                    handle,
+                                    titan_market_service::MarketSubscribeRequest {
+                                        asset_id: instrument.asset_id,
+                                        kinds: Arc::from([
+                                            titan_market_service::MarketDataKind::Bbo,
+                                        ]),
+                                    },
+                                )
+                                .map_err(|e| ApplicationRuntimeError::Market(e.to_string()))?;
+                        }
+                    }
                 }
             }
         }
@@ -640,7 +757,7 @@ impl TradingRuntime {
                 let handle = strategy
                     .create(definition)
                     .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
-                if enabled {
+                if enabled && !defer_strategies {
                     let prepare = strategy
                         .prepare(handle)
                         .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
@@ -656,7 +773,7 @@ impl TradingRuntime {
     }
 }
 
-fn wait_strategy_operation(
+pub(crate) fn wait_strategy_operation(
     strategy: &dyn StrategyAdminService,
     operation: titan_strategy_runtime::StrategyOperationId,
     timeout: std::time::Duration,
@@ -738,6 +855,14 @@ fn register_event_catalog(events: &EventEngineHandle) -> Result<(), CoreError> {
             )
             .map_err(event_error)?;
     }
+    events
+        .register_event(
+            FILL_EVENT,
+            ACCOUNT_EVENT_SCHEMA_VERSION,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .map_err(event_error)?;
     Ok(())
 }
 
@@ -1119,6 +1244,7 @@ mod tests {
 
     fn application() -> ApplicationConfig {
         ApplicationConfig {
+            managed_by_console: false,
             schema_version: APPLICATION_CONFIG_SCHEMA_VERSION,
             event_engine: EventEngineConfig::default(),
             market_service: MarketServiceConfig::default(),
@@ -1344,6 +1470,7 @@ config = {}
                 price_tick: "0.0001".parse().unwrap(),
                 quantity_lot: "0.01".parse().unwrap(),
                 contract_multiplier: "1".parse().unwrap(),
+                linear_quote_currency: None,
             }]),
             currencies: Arc::from([]),
             ownership: titan_account_service::OrderOwnershipPolicy::ManagedOnly {

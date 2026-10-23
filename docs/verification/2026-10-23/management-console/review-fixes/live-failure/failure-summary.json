@@ -1,0 +1,11 @@
+{
+  "state": "failed",
+  "detail": "account runtime definition failed: account bootstrap failed: account stream changed or overflowed during reconciliation",
+  "start_admission_absent": true,
+  "outcome_unknown": false,
+  "retained_owner_is_predecessor": true,
+  "postflight": {
+    "target_order_count": 0,
+    "target_positions": []
+  }
+}

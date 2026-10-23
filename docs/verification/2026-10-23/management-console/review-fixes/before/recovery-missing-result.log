@@ -1,0 +1,27 @@
+real-signed-grid-build: passed
+actual-browser-deploy-start-pause-resume-stop-reader: passed
+cross-node-deploy-signature-abi-digest: passed
+tampered-transfer-preserves-good-deployment: passed
+config-drift-rejected-before-activation-and-reservation-released: passed
+direct-cli-bypass-rejected: passed
+start-idempotency: passed
+lost-start-ack-reconciles-same-worker: passed
+actual-runtime-quotes-within-envelope: passed
+E-authoritative-fresh-monetary-risk-and-persisted-sampled-maximum: passed
+pause-consumes-cancel-confirmations: passed
+lost-control-ack-reconciles-same-engine-operation: passed
+A-N-restart-preserves-paused-worker: passed
+resume-same-generation: passed
+crash-retains-checkpoint-and-occupancy: passed
+wrong-checkpoint-rejected: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 233, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 217, in main
+    recovered=completed(submit({"kind":"recover","run_id":old["id"],"generation":generation,"checkpoint_id":old["body"]["checkpoint_id"]}));new=resource(recovered,"run");assert int(new["body"]["generation"])>int(generation) and new["body"]["expires_at_ns"]==old["body"]["expires_at_ns"];passed("pinned-recovery-new-generation-original-budget")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/scripts/management_control_smoke.py", line 144, in completed
+    assert (result["state"]=="succeeded")==success,result;return result
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'id': 'a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8', 'actor': 'operator', 'node_id': 'live', 'input': {'kind': 'recover', 'run_id': 'live-run-c8da20b10d4377973d92f0e26898e2fefd116465d738e0f87d918a851bde9597', 'generation': '2', 'checkpoint_id': '5eff7d5d47bff7baeeebd920ce400ddeb5d9f5a975d9c5767b157d862fd8992e'}, 'account': 'gate', 'input_digest': '87e63b3ee90652505eb34ba7672043f70ed10308ffb7da1758df1ea0d04f945f', 'state': 'failed', 'cancel_requested': False, 'created_at_ns': '1792770151875726467', 'updated_at_ns': '1792770155604468142', 'result': {'business_success': False, 'detail': 'strategy runtime definition failed: InvalidState [runtime_v13:recovery_order_result_missing]: V13 runtime operation failed', 'outcome_unknown': False, 'resources': [{'body': {'account': 'gate', 'account_identity': 'synthetic-gate-1', 'admission_operation_id': 'a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8', 'allowed_actions': [], 'available': False, 'binding_id': 'gate-btc', 'checkpoint_id': None, 'deployment_id': 'live-deployment-7d90e9f8320d61ab157ead5572d49857c6a42af66707879f9d08de28a6e1bf4e', 'environment': 'live', 'expires_at_ns': '1792770251012967163', 'generation': 'unconfirmed', 'instrument': 'GATE_FUTURE_BTC_USDT', 'lifecycle': 'Unknown', 'mode': 'trade', 'observation': {'available': False, 'reason': 'strategy activation was never attempted', 'run_id': 'a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8', 'source': 'runtime_owner', 'start_admission_absent': True}, 'observation_stale': True, 'predecessor_run_id': 'live-run-c8da20b10d4377973d92f0e26898e2fefd116465d738e0f87d918a851bde9597', 'process_state': 'FAILED', 'release_proof': {'safe': False, 'source': 'trading_runtime', 'worker_id': 'a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8'}, 'reservation_operation_id': 'c8da20b10d4377973d92f0e26898e2fefd116465d738e0f87d918a851bde9597', 'source_started_at_ns': '1792770153771679728', 'stop_action': 'cancel', 'strategy_id': '77', 'worker_id': 'a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8'}, 'digest': '08d2827be2ad2ce034a94a9180bddabe3533721d064edd215760561fbf5e8a1c', 'frozen': False, 'id': 'live-run-a9f57114799940939abe7fd6667f4b206f59741ef828998410a53f431e1eebe8', 'kind': 'run', 'node_id': 'live', 'revision': ''}], 'start_admission_absent': True}, 'error': 'engine did not confirm successful completion; inspect preserved result', 'revision': '269'}

@@ -1,0 +1,24 @@
+{
+  "source": "persisted_E_account_facts",
+  "order_fact_count": 12,
+  "unique_order_count": 4,
+  "maximum_cumulative_filled_lots": 0,
+  "independent_fill_count": 0,
+  "account_occupancy_rows": 0,
+  "titan_process_count": 0,
+  "target_order_count": 0,
+  "target_positions": [],
+  "sampled_max_exposure": [
+    {
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "currency": "USDT",
+      "max_actual_notional": "0",
+      "max_pending_bound_notional": "16.3664",
+      "method": "maximum_of_observed_snapshots",
+      "coverage_complete": false
+    }
+  ],
+  "last_order_status_counts": {
+    "4": 4
+  }
+}

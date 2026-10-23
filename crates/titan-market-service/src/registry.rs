@@ -13,6 +13,7 @@ use crate::{
 use titan_core_types::ResourceScope;
 
 pub(crate) struct ConnectorEntry {
+    pub market_stream: crate::SourceStreamId,
     pub handle: MarketSourceHandle,
     pub definition: MarketSourceDefinition,
     pub connector: Arc<dyn MarketConnector>,
@@ -22,12 +23,14 @@ pub(crate) struct ConnectorEntry {
 
 impl ConnectorEntry {
     pub(crate) fn new(
+        market_stream: crate::SourceStreamId,
         handle: MarketSourceHandle,
         definition: MarketSourceDefinition,
         connector: Arc<dyn MarketConnector>,
         resources: ResourceScope,
     ) -> Self {
         Self {
+            market_stream,
             handle,
             definition,
             connector,
@@ -70,6 +73,7 @@ impl ConnectorEntry {
 
     pub(crate) fn snapshot(&self) -> MarketSourceSnapshot {
         MarketSourceSnapshot {
+            market_stream: self.market_stream,
             handle: self.handle,
             source_key: self.definition.source_key.clone(),
             connector_type: self.definition.connector_type.clone(),

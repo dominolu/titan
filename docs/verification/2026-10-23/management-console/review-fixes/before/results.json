@@ -1,0 +1,21 @@
+{
+  "stop_when_256_unknown_operations": {
+    "http_status": 400,
+    "error": "operation capacity exceeded",
+    "reproduced": true
+  },
+  "stop_with_failed_catalog": {
+    "accepted_status": 202,
+    "state_after_3s": "pending",
+    "node_post_count": 0,
+    "reproduced": true
+  },
+  "dead_task_retains_node_capacity": {
+    "first_receipt_state": "unknown",
+    "registry_state": "STARTING",
+    "process_alive": false,
+    "next_task_http_status": 429,
+    "next_task_error": "NODE_BUSY",
+    "reproduced": true
+  }
+}

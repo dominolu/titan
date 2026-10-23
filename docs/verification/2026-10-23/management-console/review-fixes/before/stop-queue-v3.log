@@ -1,0 +1,10 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-m123-review-20261023-dd555c3b/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running `/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/examples/review_stop_queue /home/dominolu/dev/titan-management-20261023-5f424533/verification-artifacts/management/m3/grid-probe-v20.titan`
+first_error="control_queue_full"; retry_operation=1; retry_state=Pending; lifecycle=Defined
+
+thread 'main' (2559371) panicked at crates/titan-strategy-runtime/examples/review_stop_queue.rs:43:5:
+assertion `left == right` failed: Stop retry after queue recovery returned an operation that was never enqueued
+  left: Pending
+ right: Succeeded
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

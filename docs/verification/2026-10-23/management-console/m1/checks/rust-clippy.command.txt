@@ -1,0 +1,1 @@
+cargo clippy --locked --no-deps -p titan-cli --all-targets -- -D warnings

@@ -1,0 +1,1 @@
+/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/titan console export-types --output web/console/src/generated

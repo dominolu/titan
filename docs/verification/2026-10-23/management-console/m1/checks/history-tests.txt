@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests examples/v13_grid_history.rs (/home/dominolu/dev/titan-refactor-20261012-741d2de5/target/debug/examples/v13_grid_history-2f51a7c61274ed8e)
+
+running 4 tests
+test engine::tests::maker_needs_opposite_aggressor_and_strict_penetration ... ok
+test data::tests::decimal_units_are_exact_and_reject_silent_rounding ... ok
+test engine::tests::drawdown_uses_running_equity_peak_and_includes_loss_before_recovery ... ok
+test engine::tests::reduce_only_capacity_cannot_reverse_or_increase ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

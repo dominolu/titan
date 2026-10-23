@@ -1463,6 +1463,52 @@ fn event_control_market_reservation_publishes_without_copy_api() {
 }
 
 #[test]
+fn allocated_sources_keep_independent_sequences_across_services_and_replacements() {
+    let engine = EventEngine::new(test_config()).unwrap();
+    let handle = engine.handle();
+    handle
+        .register_event("allocated", 1, EventClass::Critical, PoolKind::SmallEvent)
+        .unwrap();
+    engine.start().unwrap();
+    let (tx, rx) = bounded(8);
+    let token = handle
+        .register_fast_lane("allocated", 1, vec![], Arc::new(RecordingHandler(tx)))
+        .unwrap();
+    let first = EventControl::allocate_source_streams(&handle, 2).unwrap();
+    let second = EventControl::allocate_source_streams(&handle, 2).unwrap();
+    let replacement = EventControl::allocate_source_streams(&handle, 2).unwrap();
+    assert_eq!((first, second, replacement), (1, 3, 5));
+    for (source, seq, bytes) in [
+        (first, 50, b"old".as_slice()),
+        (second, 1, b"account".as_slice()),
+        (replacement, 1, b"new".as_slice()),
+    ] {
+        let mut value = EventControl::reserve_event_payload(
+            &handle,
+            "allocated",
+            1,
+            bytes.len(),
+            EventPublishMetadata {
+                source_id: source,
+                source_sequence: seq,
+                ..Default::default()
+            },
+            TraceContext::default(),
+        )
+        .unwrap();
+        value.payload_mut().copy_from_slice(bytes);
+        value.commit().unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), bytes);
+    }
+    assert!(handle.allocate_source_streams(0).is_err());
+    assert!(handle.allocate_source_streams(10).is_err());
+    assert_eq!(handle.allocate_source_streams(9).unwrap(), 7);
+    assert!(handle.allocate_source_streams(1).is_err());
+    handle.unregister_fast_lane(token);
+    engine.stop().unwrap();
+}
+
+#[test]
 fn arena_is_bounded_reuses_generation_and_reclaims_last_reference() {
     let metrics = Arc::new(EngineMetrics::default());
     let config = ArenaConfig {

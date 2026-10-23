@@ -1,0 +1,21 @@
+{
+  "stop_when_256_unknown_operations": {
+    "http_status": 202,
+    "state": "succeeded",
+    "passed": true
+  },
+  "stop_with_failed_catalog": {
+    "accepted_status": 202,
+    "state": "succeeded",
+    "node_post_count": 1,
+    "passed": true
+  },
+  "dead_task_releases_only_process_capacity": {
+    "first_receipt_state": "unknown",
+    "registry_state": "STARTING",
+    "process_alive": false,
+    "next_task_http_status": 200,
+    "old_admission_still_unknown": true,
+    "passed": true
+  }
+}

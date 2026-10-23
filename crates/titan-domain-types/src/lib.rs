@@ -79,6 +79,23 @@ pub struct DecimalUnit {
     coefficient: u64,
     scale: u8,
 }
+/// Wire projection for authoritative observations; input parameters keep their numeric types.
+pub fn json_numbers_as_strings(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => Value::String(n.to_string()),
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(json_numbers_as_strings).collect())
+        }
+        Value::Object(items) => Value::Object(
+            items
+                .into_iter()
+                .map(|(k, v)| (k, json_numbers_as_strings(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
 
 impl DecimalUnit {
     pub const MAX_SCALE: u8 = 18;

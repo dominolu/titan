@@ -29,19 +29,25 @@ def load_bundle(path: str | Path) -> ResultBundle:
     if manifest.get("schema_version") != 1:
         raise BundleError(f"unsupported ResultBundle schema {manifest.get('schema_version')}")
     decoded: dict[str, Any] = {}
+    seen: set[str] = set()
     for descriptor in manifest.get("files", ()):
         relative = descriptor.get("path", "")
-        if relative in decoded:
+        if relative in seen:
             raise BundleError(f"Duplicate bundle file: {relative}")
+        seen.add(relative)
         target = (root / relative).resolve()
         if root.resolve() not in target.parents:
             raise BundleError(f"Bundle file escapes root: {relative}")
-        content = target.read_bytes()
-        if len(content) != int(descriptor["bytes"]):
+        if target.stat().st_size != int(descriptor["bytes"]):
             raise BundleError(f"Bundle size mismatch: {relative}")
-        if hashlib.sha256(content).hexdigest() != descriptor["sha256"]:
+        digest = hashlib.sha256()
+        with target.open("rb") as stream:
+            for block in iter(lambda: stream.read(65536), b""):
+                digest.update(block)
+        if digest.hexdigest() != descriptor["sha256"]:
             raise BundleError(f"Bundle SHA-256 mismatch: {relative}")
-        decoded[relative] = json.loads(content)
+        if target.suffix == ".json":
+            decoded[relative] = json.loads(target.read_text(encoding="utf-8"))
     if "result.json" not in decoded:
         raise BundleError("ResultBundle has no result.json")
     return ResultBundle(root=root, manifest=manifest, result=decoded["result.json"])

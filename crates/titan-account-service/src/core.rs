@@ -71,6 +71,20 @@ impl AccountServiceCore {
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
         self.factories.register(f)
     }
+    pub fn ledger_page(
+        &self,
+        h: AccountHandle,
+        from_ms: i64,
+        to_ms: i64,
+        page: u32,
+        limit: u32,
+    ) -> LocalResult<AccountLedgerFuture> {
+        Ok(self
+            .registry
+            .get(h)?
+            .connector
+            .ledger_page(from_ms, to_ms, page, limit))
+    }
     pub fn activate(&self, identity: ComponentIdentity, publisher: EventPublisher) {
         *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Some(RuntimeBindings {
             identity,
@@ -121,19 +135,14 @@ impl AccountServiceCore {
             account_id: d.account_id,
             generation,
         };
-        let base = d.account_id.0.checked_mul(2).ok_or_else(|| {
-            AccountError::new(
-                AccountErrorKind::CapacityExceeded,
-                "account source stream id overflow",
-            )
-        })?;
+        let base = runtime
+            .publisher
+            .allocate_source_streams(2)
+            .map_err(|error| {
+                AccountError::new(AccountErrorKind::CapacityExceeded, error.to_string())
+            })?;
         let account_stream = SourceStreamId(base);
-        let control_stream = SourceStreamId(base.checked_add(1).ok_or_else(|| {
-            AccountError::new(
-                AccountErrorKind::CapacityExceeded,
-                "account source stream id overflow",
-            )
-        })?);
+        let control_stream = SourceStreamId(base + 1);
         let resources = ResourceScope::new(runtime.identity.clone());
         let publisher_admission = Arc::new(AtomicBool::new(publisher_open));
         let secret_active = Arc::new(AtomicBool::new(true));
@@ -446,6 +455,19 @@ impl AccountService for AccountServiceCore {
     }
     fn resolve(&self, k: &str) -> LocalResult<AccountHandle> {
         self.registry.resolve(k)
+    }
+    fn order_evidence(
+        &self,
+        account: AccountHandle,
+        asset: AssetId,
+        client: Id128,
+    ) -> OrderEvidenceFuture {
+        match self.registry.get(account) {
+            Ok(entry) => entry.connector.order_evidence(asset, client),
+            Err(error) => {
+                Box::pin(async move { Err(AccountConnectorError::rejected(error.to_string())) })
+            }
+        }
     }
     fn orders(
         &self,

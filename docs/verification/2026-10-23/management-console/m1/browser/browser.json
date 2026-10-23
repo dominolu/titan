@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": [
+    "five-pages",
+    "real-session",
+    "ui-validate-freeze-build-backtest-report",
+    "refresh",
+    "bounded-chart",
+    "readonly",
+    "offline-reconnect",
+    "integer-precision"
+  ],
+  "pageErrors": []
+}

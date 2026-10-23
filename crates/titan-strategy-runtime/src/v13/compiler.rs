@@ -143,21 +143,13 @@ impl NumbaMetadataV13 {
         {
             return Err(V13LoadError::Contract("invalid compiler state layout"));
         }
-        let mut schema = self.state_schema.clone();
-        let object = schema
-            .as_object_mut()
-            .ok_or(V13LoadError::Contract("invalid compiler state schema"))?;
-        if object.get("itemsize").and_then(|v| v.as_u64()) != Some(self.state_len as u64)
-            || object.get("alignment").and_then(|v| v.as_u64()) != Some(self.state_alignment.into())
-        {
-            return Err(V13LoadError::Contract("state schema layout mismatch"));
+        StateSchemaIdentityV13 {
+            version: self.state_schema_version,
+            hash: self.state_schema_hash,
+            byte_len: self.state_len,
+            alignment: self.state_alignment,
         }
-        object.insert("schema_version".into(), self.state_schema_version.into());
-        if <[u8; 32]>::from(Sha256::digest(compiler_json_v13(&schema))) != self.state_schema_hash {
-            return Err(V13LoadError::Contract(
-                "compiler state schema hash mismatch",
-            ));
-        }
+        .validate_description(&self.state_schema)?;
         let mut mask = 0;
         for callback in &self.callbacks {
             let index = CALLBACK_NAMES

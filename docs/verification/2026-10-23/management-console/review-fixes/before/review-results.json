@@ -1,0 +1,19 @@
+{
+  "reviewed_commit": "dd555c3b28e0e954f8d9dff2934c7fbbfba28b7e",
+  "build_server": "192.168.3.88",
+  "isolated_workspace": "/home/dominolu/dev/titan-m123-review-20261023-dd555c3b",
+  "frozen_binary_sha256": "8b0ccebd2f8d981dc90fb81460000709065fb3ce865fc0b6c3e43f03fb766a84",
+  "live_account_access": false,
+  "production_source_modified": false,
+  "findings": [
+    {"severity":"P1","area":"M3","issue":"Filled inventory loses risk reservation before position confirmation","confirmation":"Native production helpers reproduced cap 10000 accepting another 1000 while 10000 filled inventory awaited position projection","evidence":"fill-lag-v2.log"},
+    {"severity":"P1","area":"M3","issue":"Stop request cached before successful safe-point admission","confirmation":"First Stop returned control_queue_full; retry returned the unqueued operation 1 still Pending after queue drained","evidence":"stop-queue-v3.log"},
+    {"severity":"P1","area":"M1/M3","issue":"Global operation capacity rejects Stop","confirmation":"256 unknown operations caused actual Stop API HTTP 400 operation capacity exceeded","evidence":"results.json"},
+    {"severity":"P1","area":"M1/M3","issue":"Catalog failure blocks independent control dispatch","confirmation":"Stop API accepted HTTP 202; after failed catalog polls it stayed pending with zero node POST calls","evidence":"results.json"},
+    {"severity":"P1","area":"M1/M3","issue":"Dead task keeps node execution slot occupied","confirmation":"Process was dead and receipt Unknown but Registry STARTING caused next task HTTP 429 NODE_BUSY","evidence":"results.json"},
+    {"severity":"P2","area":"M2","issue":"Second healthy recorder marks first live source as interrupted","confirmation":"Opening two journals on shared DB produced permanent RECORDING_GAP despite both closing cleanly","evidence":"parallel-recorders.log"},
+    {"severity":"P2","area":"M1/M2/M3 Web","issue":"Global resource cache evicts still-needed templates","confirmation":"Actual mergeResource method evicted template after 200 distinct artifact updates","evidence":"web-cache.json"},
+    {"severity":"P2","area":"M2/T10","issue":"Account monetary exposure and maximum exposure have no calculation path","confirmation":"Source review: account_image max_exposure is always null; known_account_quantity_bound notional is always null and complete false","source":"crates/titan-account-service/src/observation.rs:551,585"}
+  ],
+  "interpretation": "Native regression assertions intentionally require correct behavior and fail on the reviewed code, confirming findings. Initial fixture failures were repaired before retained final runs. No full-suite rerun or live trade test is claimed."
+}

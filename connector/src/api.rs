@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+pub use titan_account_service::AccountLedgerRecord;
 
 /// Venue-controlled position layout, independent of whether positions are empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,6 +596,19 @@ pub struct AlgoOrderRequest {
 /// 之间自由切换。
 #[async_trait::async_trait]
 pub trait BrokerApi: Send + Sync {
+    async fn account_ledger_page(
+        &self,
+        _from_ms: i64,
+        _to_ms: i64,
+        _page: u32,
+        _limit: u32,
+    ) -> Result<Vec<AccountLedgerRecord>, ApiError> {
+        Err(ApiError::new(
+            "unavailable",
+            "LEDGER_UNAVAILABLE",
+            "read-only account ledger is unsupported",
+        ))
+    }
     // ------------------------------------------------------------------
     // 基础
     // ------------------------------------------------------------------

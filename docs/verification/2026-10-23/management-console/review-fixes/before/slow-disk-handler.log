@@ -1,0 +1,85 @@
+2026-10-23T16:17:09.160899Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=false
+2026-10-23T16:17:09.160946Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="position" has_payload=false
+2026-10-23T16:17:09.162039Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="asset" has_payload=false
+2026-10-23T16:17:09.519311Z  WARN connector::market_runtime: market publication failed; scheduling stream recovery symbol="" error=connector error: LiveError { kind: ConnectionInterrupted, value: Empty }
+2026-10-23T16:17:09.819263Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=196798 bytes=17937
+2026-10-23T16:17:10.570299Z DEBUG titan_strategy_runtime::service_core: checkpoint flush started pending=1
+2026-10-23T16:17:10.654939Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=84576 bytes=19332
+2026-10-23T16:17:10.656092Z DEBUG titan_strategy_runtime::runtime_v13: command intent durability duration elapsed_us=86376
+2026-10-23T16:17:10.656313Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=86770
+2026-10-23T16:17:10.665548Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=20
+2026-10-23T16:17:10.701860Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:10.701912Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:10.701961Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:10.702122Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.OrderChanged" elapsed_us=48
+2026-10-23T16:17:10.705926Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:10.706312Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:10.706345Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:10.706460Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.OrderChanged" elapsed_us=26
+2026-10-23T16:17:10.765720Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=15
+2026-10-23T16:17:10.866210Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=72
+2026-10-23T16:17:10.966055Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=14
+2026-10-23T16:17:11.066213Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=13
+2026-10-23T16:17:11.161444Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.BalanceChanged" elapsed_us=24
+2026-10-23T16:17:11.166273Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=13
+2026-10-23T16:17:11.266902Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=46
+2026-10-23T16:17:11.367297Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=73
+2026-10-23T16:17:11.467089Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=18
+2026-10-23T16:17:11.567410Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=54
+2026-10-23T16:17:11.667936Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=86
+2026-10-23T16:17:11.767480Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=7
+2026-10-23T16:17:11.868152Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=59
+2026-10-23T16:17:11.968293Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=31
+2026-10-23T16:17:12.068074Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=9
+2026-10-23T16:17:12.164146Z DEBUG titan_strategy_runtime::service_core: checkpoint flush started pending=1
+2026-10-23T16:17:12.318687Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=154504 bytes=19347
+2026-10-23T16:17:12.319346Z DEBUG titan_strategy_runtime::runtime_v13: command intent durability duration elapsed_us=155373
+2026-10-23T16:17:12.319615Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=42
+2026-10-23T16:17:12.319762Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=8
+2026-10-23T16:17:12.322932Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:12.323004Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:12.323078Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:12.323343Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.OrderChanged" elapsed_us=91
+2026-10-23T16:17:12.323438Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:12.323460Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:12.323507Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:12.323733Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.OrderChanged" elapsed_us=123
+2026-10-23T16:17:12.368881Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=45
+2026-10-23T16:17:12.468968Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=23
+2026-10-23T16:17:12.569157Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=12
+2026-10-23T16:17:12.669439Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=34
+2026-10-23T16:17:12.769636Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=10
+2026-10-23T16:17:12.869917Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=49
+2026-10-23T16:17:12.970295Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=32
+2026-10-23T16:17:13.070249Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=13
+2026-10-23T16:17:13.162022Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.account.BalanceChanged" elapsed_us=30
+2026-10-23T16:17:13.170618Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=21
+2026-10-23T16:17:13.271318Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=90
+2026-10-23T16:17:13.371015Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=34
+2026-10-23T16:17:13.471595Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=31
+2026-10-23T16:17:13.571902Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=54
+2026-10-23T16:17:13.671649Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=30
+2026-10-23T16:17:13.772082Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=45
+2026-10-23T16:17:13.872348Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=55
+2026-10-23T16:17:13.973097Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=72
+2026-10-23T16:17:14.072638Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=21
+2026-10-23T16:17:14.173054Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=48
+2026-10-23T16:17:14.273274Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=49
+2026-10-23T16:17:14.373734Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=35
+2026-10-23T16:17:14.473606Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=17
+2026-10-23T16:17:14.573945Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=35
+2026-10-23T16:17:14.673822Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=26
+2026-10-23T16:17:14.774277Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=30
+2026-10-23T16:17:14.874323Z DEBUG titan_strategy_runtime::service_core: checkpoint flush started pending=1
+2026-10-23T16:17:16.004937Z DEBUG titan_strategy_runtime::service_core: checkpoint persisted elapsed_us=1130591 bytes=20096
+2026-10-23T16:17:16.006326Z DEBUG titan_strategy_runtime::runtime_v13: command intent durability duration elapsed_us=1132126
+2026-10-23T16:17:16.006645Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=1132504
+2026-10-23T16:17:16.006852Z  WARN titan_strategy_runtime::service_core: strategy subscriber lane lost; runtime invalidated; recovery requires stop/replace strategy_id=77 generation=1 lane_state=Failed reason="subscriber_failed"
+2026-10-23T16:17:16.012708Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:16.012776Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:16.012851Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:16.053786Z DEBUG connector::gatecrossex::stream: CrossEx private frame received channel="order" has_payload=true
+2026-10-23T16:17:16.053821Z DEBUG connector::gatecrossex::stream: CrossEx private symbol routing symbol="GATE_FUTURE_BTC_USDT" bound=true
+2026-10-23T16:17:16.053841Z DEBUG connector::gatecrossex::stream: CrossEx order fact candidate symbol="GATE_FUTURE_BTC_USDT" publish=true
+2026-10-23T16:17:45.155396Z  WARN connector::market_runtime: market publication failed; scheduling stream recovery symbol="" error=connector error: LiveError { kind: ConnectionInterrupted, value: Empty }
+titan: invalid configuration: InvalidState [runtime_v13:invalid_stop_state]: V13 runtime operation failed
