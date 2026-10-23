@@ -324,6 +324,8 @@ pub struct TradingRuntime {
     execution: ExecutionRuntime,
     shutdown_deadline: std::time::Duration,
     account_startup_timeout: std::time::Duration,
+    observation: Option<Arc<titan_account_service::AccountFactJournal>>,
+    observation_routes: Vec<titan_event_engine::FastLaneToken>,
 }
 
 /// Construction-only catalog of statically linked venue connectors.
@@ -347,6 +349,19 @@ impl TradingRuntime {
     }
 
     pub fn start(config: AdaptedConfiguration) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, None)
+    }
+    pub fn start_observed(
+        config: AdaptedConfiguration,
+        path: PathBuf,
+        source: String,
+    ) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, Some((path, source)))
+    }
+    fn start_inner(
+        config: AdaptedConfiguration,
+        observed: Option<(PathBuf, String)>,
+    ) -> Result<Self, ApplicationRuntimeError> {
         let AdaptedConfiguration {
             event_engine,
             market_service,
@@ -362,6 +377,33 @@ impl TradingRuntime {
         let event_handle = Arc::new(events.handle());
         register_event_catalog(&event_handle)?;
         events.start()?;
+        let observation = observed
+            .map(|(path, source)| {
+                titan_account_service::AccountFactJournal::open(path, source, &accounts)
+                    .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))
+            })
+            .transpose()?;
+        let mut observation_routes = Vec::new();
+        if let Some(journal) = &observation {
+            for event in ACCOUNT_EVENT_TYPES {
+                observation_routes.push(event_handle.register_fast_lane(
+                    event,
+                    if event == FILL_EVENT {
+                        FILL_EVENT_SCHEMA_VERSION
+                    } else {
+                        ACCOUNT_EVENT_SCHEMA_VERSION
+                    },
+                    Vec::new(),
+                    journal.clone(),
+                )?);
+            }
+            observation_routes.push(event_handle.register_fast_lane(
+                FILL_EVENT,
+                ACCOUNT_EVENT_SCHEMA_VERSION,
+                Vec::new(),
+                journal.clone(),
+            )?);
+        }
         let catalog = ConnectorCatalog::builtin();
 
         let market = MarketServiceCore::new(MarketCoreConfig {
@@ -473,6 +515,8 @@ impl TradingRuntime {
             execution,
             shutdown_deadline,
             account_startup_timeout,
+            observation,
+            observation_routes,
         };
         if let Err(error) = runtime.apply_definitions(market_sources, accounts, strategies) {
             let _ = runtime.shutdown();
@@ -491,6 +535,12 @@ impl TradingRuntime {
 
     pub fn strategy_service(&self) -> Option<&Arc<StrategyServiceCore>> {
         self.strategy.as_ref()
+    }
+    pub fn account_service(&self) -> &Arc<AccountServiceCore> {
+        &self.account
+    }
+    pub fn observation(&self) -> Option<&Arc<titan_account_service::AccountFactJournal>> {
+        self.observation.as_ref()
     }
 
     pub fn check_health(&self) -> Result<(), ApplicationRuntimeError> {
@@ -573,6 +623,14 @@ impl TradingRuntime {
         }
         if let Err(error) = self.account.shutdown() {
             failures.push(format!("account shutdown: {error}"));
+        }
+        for token in self.observation_routes.drain(..) {
+            self.event_handle.unregister_fast_lane(token);
+        }
+        if let Some(journal) = &self.observation
+            && let Err(error) = journal.close(deadline)
+        {
+            failures.push(format!("account recorder: {error}"));
         }
         if let Err(error) = self.market.quiesce_all(deadline) {
             failures.push(format!("market quiesce: {error}"));
@@ -738,6 +796,14 @@ fn register_event_catalog(events: &EventEngineHandle) -> Result<(), CoreError> {
             )
             .map_err(event_error)?;
     }
+    events
+        .register_event(
+            FILL_EVENT,
+            ACCOUNT_EVENT_SCHEMA_VERSION,
+            EventClass::Critical,
+            PoolKind::SmallEvent,
+        )
+        .map_err(event_error)?;
     Ok(())
 }
 

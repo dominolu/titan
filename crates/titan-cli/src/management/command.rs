@@ -24,6 +24,15 @@ pub enum ConsoleCommand {
         #[arg(long)]
         owner_token: String,
     },
+    #[command(hide = true)]
+    ObserveWorker {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        owner_token: String,
+    },
     /// Generate the browser contract from the Rust DTOs. Run on the build server.
     ExportTypes {
         #[arg(long)]
@@ -48,6 +57,18 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
         .enable_all()
         .build()?;
     match command {
+        ConsoleCommand::ObserveWorker {
+            config,
+            run,
+            owner_token,
+        } => {
+            let config = ConsoleConfig::load(&config)?
+                .node
+                .context("node configuration missing")?;
+            crate::runtime_host::run_runtime_owner(move || {
+                super::live::observe_worker(config, run, owner_token)
+            })
+        }
         ConsoleCommand::Manager { config } => {
             let config = ConsoleConfig::load(&config)?
                 .manager

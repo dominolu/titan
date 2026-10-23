@@ -237,6 +237,10 @@ impl Store {
         Ok(serde_json::from_str(&data)?)
     }
     pub fn update_operation(&self, receipt: &Receipt) -> Result<Operation> {
+        ensure!(
+            receipt.state != OperationState::Pending,
+            "node receipt cannot reset dispatch ownership"
+        );
         self.mutate_operation(&receipt.operation_id, |op| {
             ensure!(
                 receipt.input_digest == op.input_digest,
@@ -254,6 +258,36 @@ impl Store {
         self.mutate_operation(id, |op| {
             if !op.state.terminal() {
                 op.cancel_requested = true;
+            }
+            Ok(())
+        })
+    }
+    pub fn begin_dispatch_after_absence(&self, id: &str) -> Result<Option<NodeRequest>> {
+        let mut claimed = false;
+        self.mutate_operation(id, |op| {
+            if op.state == OperationState::Pending {
+                if op.cancel_requested {
+                    op.state = OperationState::Cancelled;
+                } else {
+                    op.state = OperationState::Unknown;
+                    op.error = Some("dispatch acknowledgement pending".into());
+                    claimed = true;
+                }
+            }
+            Ok(())
+        })?;
+        if claimed {
+            Ok(Some(self.request(id)?))
+        } else {
+            Ok(None)
+        }
+    }
+    pub fn admission_rejected(&self, id: &str, digest: &str) -> Result<Operation> {
+        self.mutate_operation(id, |op| {
+            ensure!(op.input_digest == digest, "admission identity mismatch");
+            if op.state == OperationState::Unknown {
+                op.state = OperationState::Pending;
+                op.error = Some("node capacity occupied; not admitted".into());
             }
             Ok(())
         })
@@ -300,10 +334,23 @@ impl Store {
             fault(404, "NOT_FOUND", "resource not found")
         })?)?)
     }
-    pub fn save_resource(
+    pub fn save_resource(&self, resource: Resource, expected: Option<&str>) -> Result<Resource> {
+        self.save_resource_inner(resource, expected, None)
+    }
+    pub fn save_resource_audited(
+        &self,
+        resource: Resource,
+        expected: Option<&str>,
+        actor: &str,
+        action: &str,
+    ) -> Result<Resource> {
+        self.save_resource_inner(resource, expected, Some((actor, action)))
+    }
+    fn save_resource_inner(
         &self,
         mut resource: Resource,
         expected: Option<&str>,
+        audit: Option<(&str, &str)>,
     ) -> Result<Resource> {
         let mut db = self.connection()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -316,6 +363,13 @@ impl Store {
             .optional()?;
         if let Some(old) = old {
             let old: Resource = serde_json::from_str(&old)?;
+            if resource.kind == "alert"
+                && resource.body["condition_identity"] == old.body["condition_identity"]
+                && resource.body.get("acknowledgement").is_none()
+                && let Some(ack) = old.body.get("acknowledgement")
+            {
+                resource.body["acknowledgement"] = ack.clone();
+            }
             if old.body == resource.body && old.frozen == resource.frozen && expected.is_none() {
                 return Ok(old);
             }
@@ -332,6 +386,12 @@ impl Store {
         resource.revision = revision(&tx)?.to_string();
         resource.digest = digest(&serde_json::to_vec(&resource.body)?);
         tx.execute("INSERT INTO resources VALUES (?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![resource.id,resource.kind,resource.node_id,serde_json::to_string(&resource)?])?;
+        if let Some((actor, action)) = audit {
+            tx.execute(
+                "INSERT INTO audit(at_ns,actor,action,target,digest) VALUES (?1,?2,?3,?4,?5)",
+                params![now_ns(), actor, action, resource.id, resource.digest],
+            )?;
+        }
         let env = resource
             .body
             .get("environment")
@@ -368,7 +428,7 @@ impl Store {
             }
         }
         let mut resources = Vec::new();
-        let mut stmt=db.prepare("SELECT data FROM resources ORDER BY CASE WHEN kind IN ('template','dataset','binding') THEN 0 ELSE 1 END,rowid DESC LIMIT 4096")?;
+        let mut stmt=db.prepare("SELECT data FROM resources ORDER BY CASE WHEN kind IN ('template','dataset','binding','account','node') OR (kind='alert' AND json_extract(data,'$.body.active')=1) OR (kind='run' AND json_extract(data,'$.body.process_state') IN ('RUNNING','READY','STARTING','STOP_REQUESTED')) THEN 0 ELSE 1 END,rowid DESC LIMIT 4096")?;
         for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
             let resource: Resource = serde_json::from_str(&row?)?;
             let env = resource

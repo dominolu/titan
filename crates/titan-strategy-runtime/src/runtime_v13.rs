@@ -91,6 +91,8 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             .collect();
         Ok(Arc::new(NativeV13Runtime {
             core: Arc::new(NativeV13Core {
+                state_description: artifact.manifest.state_description.clone(),
+                state_identity: artifact.manifest.state,
                 context,
                 inner: Mutex::new(NativeV13Inner {
                     lifecycle: StrategyLifecycle::Defined,
@@ -158,6 +160,8 @@ pub struct NativeV13Runtime {
 }
 
 struct NativeV13Core {
+    state_description: Option<Arc<serde_json::Value>>,
+    state_identity: StateSchemaIdentityV13,
     context: StrategyRuntimeBuildContext,
     inner: Mutex<NativeV13Inner>,
     lane: OnceLock<PrimaryAsyncLaneHandle>,
@@ -1523,6 +1527,40 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
 }
 
 impl StrategyRuntime for NativeV13Runtime {
+    fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
+        let Some(schema) = &self.core.state_description else {
+            return Ok(
+                serde_json::json!({"available":false,"reason":"artifact has no typed state description"}),
+            );
+        };
+        let Some(snapshot) = self
+            .core
+            .context
+            .state_snapshot_sink
+            .latest(self.core.context.strategy)?
+        else {
+            return Ok(serde_json::json!({"available":false,"reason":"no committed checkpoint"}));
+        };
+        let identity = &self.core.state_identity;
+        if snapshot.strategy != self.core.context.strategy
+            || snapshot.artifact_digest != self.core.context.artifact_id.digest
+            || snapshot.state_schema_version != identity.version
+            || snapshot.state_schema_hash != identity.hash
+            || snapshot.state_alignment != identity.alignment
+            || snapshot.state_bytes.len() != identity.byte_len
+            || !snapshot.native_snapshot().checksum_valid()
+        {
+            return Err(v13_runtime_error(
+                "business_checkpoint_identity_or_checksum_mismatch",
+            ));
+        }
+        if !(snapshot.orders_list.is_empty() && snapshot.orders_list_checksum == [0; 32])
+            && orders_list_checksum(&snapshot.orders_list) != snapshot.orders_list_checksum
+        {
+            return Err(v13_runtime_error("orders_list_checksum_mismatch"));
+        }
+        crate::observation::business_view(&snapshot, schema)
+    }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()> {
         self.core
             .lane
@@ -1733,23 +1771,7 @@ impl StrategyRuntime for NativeV13Runtime {
                         .map_err(v13_runtime_error)?;
                 }
             }
-            let restored = StrategyStateSnapshotV13 {
-                checkpoint_id: snapshot.checkpoint_id,
-                strategy_instance_id: snapshot.strategy_instance_id,
-                generation: snapshot.generation,
-                event_committed_sequence: snapshot.event_committed_sequence,
-                strategy_id: snapshot.strategy_id,
-                strategy_version: snapshot.strategy_version,
-                artifact_digest: snapshot.artifact_digest,
-                binding_digest: snapshot.binding_digest,
-                abi_version: snapshot.abi_version,
-                state_schema_version: snapshot.state_schema_version,
-                state_schema_hash: snapshot.state_schema_hash,
-                state_alignment: snapshot.state_alignment,
-                state_bytes: snapshot.state_bytes,
-                public_state_identity: snapshot.public_state_identity,
-                checksum: snapshot.checksum,
-            };
+            let restored = snapshot.native_snapshot();
             inner
                 .instance
                 .restore_state(&restored)

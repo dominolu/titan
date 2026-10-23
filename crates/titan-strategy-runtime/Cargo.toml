@@ -17,6 +17,7 @@ titan-account-service = { path = "../titan-account-service" }
 titan-event-engine = { path = "../titan-event-engine" }
 titan-market-service = { path = "../titan-market-service" }
 titan-core-types = { path = "../titan-core-types" }
+titan-domain-types = { path = "../titan-domain-types" }
 tracing = "0.1"
 zip = { version = "6", default-features = false }
 

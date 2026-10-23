@@ -21,6 +21,10 @@ pub(crate) struct App {
 }
 impl App {
     pub fn open(config: ManagerConfig) -> Result<Arc<Self>> {
+        ensure!(config.nodes.len() <= 32, "node capacity exceeded");
+        for id in config.nodes.keys() {
+            super::checked_id(id)?;
+        }
         ensure!(
             config.session_seconds > 0 && config.session_seconds <= 86400,
             "invalid session duration"
@@ -217,6 +221,13 @@ impl App {
             .nodes
             .get(&input.node_id)
             .context("unknown node")?;
+        if input.action.environment() == "live" && !node.live_control {
+            return Err(fault(
+                403,
+                "CAPABILITY_DISABLED",
+                "live control capability is disabled for this node",
+            ));
+        }
         ensure!(
             node.environments
                 .iter()
@@ -367,31 +378,32 @@ impl App {
             digest: String::new(),
             body: final_body,
         };
-        let resource = self
-            .store
-            .save_resource(resource, input.expected_revision.as_deref())?;
-        self.store.audit(
+        let resource = self.store.save_resource_audited(
+            resource,
+            input.expected_revision.as_deref(),
             &identity.username,
             if frozen { "freeze" } else { "save_version" },
-            &resource.id,
-            &resource.digest,
         )?;
         Ok(resource)
     }
     pub fn spawn(self: &Arc<Self>) {
-        let app = self.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(error) = app.tick().await {
-                    tracing::warn!(error=%error,"management reconciliation deferred");
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        });
-    }
-    async fn tick(&self) -> Result<()> {
         for (id, node) in &self.config.nodes {
-            let result = self
+            let app = self.clone();
+            let id = id.clone();
+            let node = node.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Err(error) = app.tick_node(&id, &node).await {
+                        tracing::warn!(node=%id,error=%error,"management reconciliation deferred");
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            });
+        }
+    }
+    async fn tick_node(&self, id: &str, node: &super::config::RemoteNode) -> Result<()> {
+        let catalog: Result<()> = async {
+            let response = self
                 .client
                 .get(format!(
                     "{}/v1/catalog",
@@ -399,37 +411,64 @@ impl App {
                 ))
                 .bearer_auth(node.token()?)
                 .send()
-                .await;
-            if let Ok(response) = result
-                && response.status().is_success()
-            {
-                let items: Vec<Resource> = response.json().await?;
-                for item in items {
-                    ensure!(item.node_id == *id, "node catalog identity mismatch");
-                    self.store.save_resource(item, None)?;
+                .await?;
+            let items: Vec<Resource> = node_json(response).await?;
+            for mut item in items {
+                ensure!(item.node_id == id, "node catalog identity mismatch");
+                if item.kind == "alert"
+                    && let Some(body) = item.body.as_object_mut()
+                {
+                    body.remove("acknowledgement");
                 }
+                self.store.save_resource(item, None)?;
             }
+            Ok(())
         }
-        let active = self.store.active()?;
+        .await;
+        for environment in &node.environments {
+            let key = format!("node-status-{id}-{environment}");
+            let previous = self.store.resource(&key).ok();
+            let last_seen = if catalog.is_ok() {
+                Some(now_ns())
+            } else {
+                previous
+                    .as_ref()
+                    .and_then(|r| r.body["last_seen_at_ns"].as_str().map(str::to_owned))
+            };
+            self.store.save_resource(Resource{id:key,kind:"node".into(),node_id:id.into(),revision:String::new(),frozen:false,digest:String::new(),body:json!({"environment":environment,"online":catalog.is_ok(),"last_seen_at_ns":last_seen,"last_attempt_ns":now_ns(),"source":"management_transport","reason":catalog.as_ref().err().map(ToString::to_string)})},None)?;
+        }
+        if let Err(error) = catalog {
+            for op in self
+                .store
+                .active()?
+                .into_iter()
+                .filter(|op| op.node_id == id && op.state != OperationState::Pending)
+            {
+                self.store.update_operation(&Receipt {
+                    operation_id: op.id,
+                    input_digest: op.input_digest,
+                    state: OperationState::Unknown,
+                    result: op.result,
+                    error: Some("node catalog cannot be verified".into()),
+                })?;
+            }
+            return Err(error);
+        }
+        let active: Vec<_> = self
+            .store
+            .active()?
+            .into_iter()
+            .filter(|op| op.node_id == id)
+            .collect();
         let mut dispatched: std::collections::HashSet<String> = active
             .iter()
             .filter(|op| op.state != OperationState::Pending)
             .map(|op| op.node_id.clone())
             .collect();
         for op in active {
-            if op.state == OperationState::Pending && op.cancel_requested {
-                self.store.update_operation(&Receipt {
-                    operation_id: op.id,
-                    input_digest: op.input_digest,
-                    state: OperationState::Cancelled,
-                    result: None,
-                    error: None,
-                })?;
+            if op.state == OperationState::Pending && dispatched.contains(&op.node_id) {
                 continue;
             }
-            let Some(node) = self.config.nodes.get(&op.node_id) else {
-                continue;
-            };
             let endpoint = node.endpoint.trim_end_matches('/');
             let token = node.token()?;
             let response = self
@@ -440,29 +479,34 @@ impl App {
                 .await;
             let result: Result<Option<Receipt>> = async {
                 let response = response?;
+                if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    let error: ApiError = node_json_allow_error(response).await?;
+                    ensure!(
+                        error.code == "RECEIPT_UNCERTAIN",
+                        "node response unavailable"
+                    );
+                    return Ok(Some(Receipt {
+                        operation_id: op.id.clone(),
+                        input_digest: op.input_digest.clone(),
+                        state: OperationState::Unknown,
+                        result: op.result.clone(),
+                        error: Some(error.message),
+                    }));
+                }
                 if response.status() == reqwest::StatusCode::NOT_FOUND {
+                    let absent: ApiError = node_json_allow_error(response).await?;
+                    ensure!(
+                        absent.code == "NOT_FOUND",
+                        "node did not prove operation absence"
+                    );
                     if op.state == OperationState::Pending {
-                        if op.cancel_requested {
-                            return Ok(Some(Receipt {
-                                operation_id: op.id.clone(),
-                                input_digest: op.input_digest.clone(),
-                                state: OperationState::Cancelled,
-                                result: None,
-                                error: None,
-                            }));
-                        }
                         if !dispatched.insert(op.node_id.clone()) {
                             return Ok(None);
                         }
-                        // Persist uncertainty before sending. A crash or lost reply never causes blind redispatch.
-                        self.store.update_operation(&Receipt {
-                            operation_id: op.id.clone(),
-                            input_digest: op.input_digest.clone(),
-                            state: OperationState::Unknown,
-                            result: None,
-                            error: Some("dispatch acknowledgement pending".into()),
-                        })?;
-                        let request = self.store.request(&op.id)?;
+                        // The authenticated node proved absence; claim dispatch atomically against cancellation.
+                        let Some(request) = self.store.begin_dispatch_after_absence(&op.id)? else {
+                            return Ok(None);
+                        };
                         let response = self
                             .client
                             .post(format!("{endpoint}/v1/operations"))
@@ -471,20 +515,15 @@ impl App {
                             .send()
                             .await?;
                         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                            let rejection: ApiError = response.json().await?;
+                            let rejection: ApiError = node_json_allow_error(response).await?;
                             if rejection.code == "NODE_BUSY" {
                                 // This authenticated rejection is issued before the node admission boundary.
-                                return Ok(Some(Receipt {
-                                    operation_id: op.id.clone(),
-                                    input_digest: op.input_digest.clone(),
-                                    state: OperationState::Pending,
-                                    result: None,
-                                    error: Some("node capacity occupied; not admitted".into()),
-                                }));
+                                self.store.admission_rejected(&op.id, &op.input_digest)?;
+                                return Ok(None);
                             }
                             anyhow::bail!("node rejected admission without conclusive receipt");
                         }
-                        return Ok(Some(response.error_for_status()?.json().await?));
+                        return Ok(Some(node_json(response).await?));
                     }
                     return Ok(Some(Receipt {
                         operation_id: op.id.clone(),
@@ -496,17 +535,16 @@ impl App {
                         ),
                     }));
                 }
-                let mut receipt: Receipt = response.error_for_status()?.json().await?;
+                let mut receipt: Receipt = node_json(response).await?;
                 if op.cancel_requested && !receipt.state.terminal() {
-                    receipt = self
-                        .client
-                        .post(format!("{endpoint}/v1/operations/{}/cancel", op.id))
-                        .bearer_auth(&token)
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .json()
-                        .await?;
+                    receipt = node_json(
+                        self.client
+                            .post(format!("{endpoint}/v1/operations/{}/cancel", op.id))
+                            .bearer_auth(&token)
+                            .send()
+                            .await?,
+                    )
+                    .await?;
                 }
                 Ok(Some(receipt))
             }
@@ -547,4 +585,33 @@ impl App {
         }
         Ok(())
     }
+}
+pub(crate) async fn node_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T> {
+    node_json_allow_error(response.error_for_status()?).await
+}
+
+async fn node_json_allow_error<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T> {
+    use futures_util::StreamExt;
+    const LIMIT: usize = 16 * 1024 * 1024;
+    ensure!(
+        response
+            .content_length()
+            .is_none_or(|len| len <= LIMIT as u64),
+        "node response exceeds the protocol limit"
+    );
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        ensure!(
+            bytes.len() + chunk.len() <= LIMIT,
+            "node response exceeds the protocol limit"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }

@@ -4,7 +4,7 @@ use crate::registry::{NewRun, Registry, StopAction};
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -20,6 +20,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_domain_types::json_numbers_as_strings as precise;
 
 pub(crate) fn atomic_json(path: &FsPath, value: &impl serde::Serialize) -> Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", nonce()));
@@ -56,18 +57,25 @@ fn directory(config: &NodeConfig, id: &str) -> Result<PathBuf> {
     checked_id(id)?;
     Ok(config.work_root.join("operations").join(id))
 }
-fn registry(config: &NodeConfig) -> Result<Registry> {
+pub(crate) fn registry(config: &NodeConfig) -> Result<Registry> {
     Ok(Registry::open(&config.work_root.join("runs.sqlite3"))?)
 }
-fn read_receipt(config: &NodeConfig, id: &str) -> Result<Receipt> {
+pub(crate) fn read_receipt(config: &NodeConfig, id: &str) -> Result<Receipt> {
     let dir = directory(config, id)?;
-    let data = std::fs::read(dir.join("receipt.json")).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            fault(404, "NOT_FOUND", "no node receipt")
-        } else {
-            e.into()
+    let data = match std::fs::read(dir.join("receipt.json")) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if dir.exists() || registry(config)?.get(id)?.is_some() {
+                return Err(fault(
+                    503,
+                    "RECEIPT_UNCERTAIN",
+                    "admission evidence exists but its receipt is unavailable",
+                ));
+            }
+            return Err(fault(404, "NOT_FOUND", "operation has never been admitted"));
         }
-    })?;
+        Err(error) => return Err(error.into()),
+    };
     let mut receipt: Receipt = serde_json::from_slice(&data)?;
     if !receipt.state.terminal() {
         let record = registry(config)?.get(id)?;
@@ -106,12 +114,15 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
     let config_path = config_path.canonicalize()?;
     let listen = config.listen.clone();
     let initial_catalog = catalog_items(&config)?;
+    let live = super::live::LiveNode::open(&config, &config_path)?;
     let router = Router::new()
         .route("/v1/catalog", get(catalog))
         .route("/v1/operations", post(accept))
         .route("/v1/operations/{id}", get(receipt))
         .route("/v1/operations/{id}/cancel", post(cancel))
         .route("/v1/files/{id}/{*path}", get(file))
+        .route("/v1/runs/{id}/history", get(history))
+        .route("/v1/runs/{id}/log", get(runtime_log))
         .layer(DefaultBodyLimit::max(1_048_576))
         .layer(axum::middleware::from_fn(super::http::json_errors))
         .with_state(Arc::new((
@@ -119,6 +130,7 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
             config_path,
             initial_catalog,
             std::sync::Mutex::new(()),
+            live,
         )));
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     axum::serve(listener, router)
@@ -128,7 +140,69 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
         .await?;
     Ok(())
 }
-type NodeState = Arc<(NodeConfig, PathBuf, Vec<Resource>, std::sync::Mutex<()>)>;
+type NodeState = Arc<(
+    NodeConfig,
+    PathBuf,
+    Vec<Resource>,
+    std::sync::Mutex<()>,
+    super::live::LiveNode,
+)>;
+#[derive(serde::Deserialize)]
+struct HistoryQuery {
+    kind: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+async fn runtime_log(
+    State(state): State<NodeState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> std::result::Result<Json<Value>, Error> {
+    authenticate(&state.0, &headers)?;
+    Ok(Json(state.4.read_log(&id, query.offset.unwrap_or(0))?))
+}
+async fn history(
+    State(state): State<NodeState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> std::result::Result<Json<Value>, Error> {
+    authenticate(&state.0, &headers)?;
+    let kind = query.kind.filter(|k| !k.is_empty());
+    if !kind.as_deref().is_none_or(|k| {
+        matches!(
+            k,
+            "fill"
+                | "ledger"
+                | "order"
+                | "position"
+                | "balance"
+                | "stream"
+                | "equity_sample"
+                | "funding"
+                | "cashflow"
+        )
+    }) {
+        return Err(fault(
+            400,
+            "INVALID_HISTORY_KIND",
+            "unsupported account history kind",
+        )
+        .into());
+    }
+    Ok(Json(
+        state
+            .4
+            .history(
+                &id,
+                kind,
+                query.offset.unwrap_or(0),
+                query.limit.unwrap_or(50).clamp(1, 200),
+            )
+            .await?,
+    ))
+}
 async fn catalog(
     State(state): State<NodeState>,
     headers: HeaderMap,
@@ -152,6 +226,7 @@ async fn catalog(
             }
         }
     }
+    out.extend(state.4.catalog().await?);
     Ok(Json(out))
 }
 fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
@@ -170,7 +245,13 @@ fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
     }
     Ok(out)
 }
-fn resource(config: &NodeConfig, kind: &str, id: &str, frozen: bool, body: Value) -> Resource {
+pub(crate) fn resource(
+    config: &NodeConfig,
+    kind: &str,
+    id: &str,
+    frozen: bool,
+    body: Value,
+) -> Resource {
     Resource {
         id: format!("{}-{kind}-{id}", config.id),
         kind: kind.into(),
@@ -192,6 +273,14 @@ async fn accept(
         input.api_version == API_VERSION,
         "unsupported node protocol",
     )?;
+    if input.action.environment() == "live" && !config.live_control {
+        return Err(fault(
+            403,
+            "CAPABILITY_DISABLED",
+            "live control capability is disabled on this node",
+        )
+        .into());
+    }
     super::require(
         config
             .environments
@@ -698,16 +787,6 @@ async fn execute(
             )
         }
         _ => bail!("live control capability has not been enabled"),
-    }
-}
-pub(crate) fn precise(value: Value) -> Value {
-    match value {
-        Value::Number(v) => Value::String(v.to_string()),
-        Value::Array(items) => Value::Array(items.into_iter().map(precise).collect()),
-        Value::Object(items) => {
-            Value::Object(items.into_iter().map(|(k, v)| (k, precise(v))).collect())
-        }
-        other => other,
     }
 }
 pub(crate) fn digest_file(path: &FsPath) -> Result<String> {

@@ -24,8 +24,11 @@ run() {
     return "$status"
   fi
 }
-run rust-format cargo fmt -p titan-cli -- --check
-run rust-clippy cargo clippy --locked --no-deps -p titan-cli --all-targets -- -D warnings
+run rust-format cargo fmt -p titan-cli -p titan-account-service -p titan-domain-types -p titan-strategy-runtime -p connector -- --check
+run rust-clippy cargo clippy --locked --no-deps -p titan-cli -p titan-account-service -p titan-domain-types -p titan-strategy-runtime -p connector --all-targets -- -D warnings
+run account-tests cargo test --locked -p titan-account-service --lib
+run strategy-tests cargo test --locked -p titan-strategy-runtime --lib --tests
+run connector-tests cargo test --locked -p connector gatecrossex --lib
 run cli-tests cargo test --locked -p titan-cli --lib --tests
 run history-tests cargo test --locked -p hftbacktest --example v13_grid_history
 run cli-build cargo build --locked -p titan-cli --bin titan

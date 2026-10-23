@@ -71,6 +71,20 @@ impl AccountServiceCore {
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
         self.factories.register(f)
     }
+    pub fn ledger_page(
+        &self,
+        h: AccountHandle,
+        from_ms: i64,
+        to_ms: i64,
+        page: u32,
+        limit: u32,
+    ) -> LocalResult<AccountLedgerFuture> {
+        Ok(self
+            .registry
+            .get(h)?
+            .connector
+            .ledger_page(from_ms, to_ms, page, limit))
+    }
     pub fn activate(&self, identity: ComponentIdentity, publisher: EventPublisher) {
         *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Some(RuntimeBindings {
             identity,

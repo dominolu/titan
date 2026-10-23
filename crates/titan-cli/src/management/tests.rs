@@ -11,6 +11,116 @@ fn input(key: &str) -> SubmitOperation {
         },
     }
 }
+#[test]
+fn cancellation_and_dispatch_claim_share_one_transaction_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let op = store
+        .accept("operator", &input("before"), vec![], "hash", None)
+        .unwrap();
+    store.cancel(&op.id).unwrap();
+    assert!(
+        store
+            .begin_dispatch_after_absence(&op.id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Cancelled
+    );
+    let op = store
+        .accept("operator", &input("after"), vec![], "hash", None)
+        .unwrap();
+    assert!(
+        store
+            .begin_dispatch_after_absence(&op.id)
+            .unwrap()
+            .is_some()
+    );
+    store.cancel(&op.id).unwrap();
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Unknown
+    );
+    assert!(
+        store
+            .begin_dispatch_after_absence(&op.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .update_operation(&Receipt {
+                operation_id: op.id.clone(),
+                input_digest: op.input_digest.clone(),
+                state: OperationState::Pending,
+                result: None,
+                error: None
+            })
+            .is_err()
+    );
+    store.admission_rejected(&op.id, &op.input_digest).unwrap();
+    assert!(
+        store
+            .begin_dispatch_after_absence(&op.id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Cancelled
+    );
+}
+#[test]
+fn concurrent_dispatchers_cannot_claim_the_same_operation_twice() {
+    use std::sync::Arc;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&tmp.path().join("db")).unwrap());
+    let op = store
+        .accept("operator", &input("parallel"), vec![], "hash", None)
+        .unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let workers: Vec<_> = (0..8)
+        .map(|_| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let id = op.id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.begin_dispatch_after_absence(&id).unwrap().is_some()
+            })
+        })
+        .collect();
+    assert_eq!(
+        workers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .filter(|claimed| *claimed)
+            .count(),
+        1
+    );
+}
+#[test]
+fn incomplete_admission_never_claims_that_an_operation_was_absent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let configuration = format!(
+        "id='build'\nlisten='127.0.0.1:0'\ntoken_env='unused'\nwork_root={}\ntitan_program='/bin/false'\nenvironments=['backtest']\n",
+        serde_json::to_string(tmp.path()).unwrap()
+    );
+    let config: super::config::NodeConfig = toml::from_str(&configuration).unwrap();
+    std::fs::create_dir_all(tmp.path().join("operations/partial")).unwrap();
+    let error = super::node::read_receipt(&config, "partial").unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<super::Fault>().unwrap().code,
+        "RECEIPT_UNCERTAIN"
+    );
+    let error = super::node::read_receipt(&config, "never-admitted").unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<super::Fault>().unwrap().code,
+        "NOT_FOUND"
+    );
+}
 #[tokio::test]
 async fn flooded_task_output_is_drained_with_a_strict_file_limit() {
     use std::sync::{
@@ -45,6 +155,43 @@ fn identity(accounts: Vec<String>) -> Identity {
         accounts,
         environments: vec!["backtest".into(), "live".into()],
     }
+}
+#[test]
+fn alert_acknowledgement_is_scoped_to_one_source_condition() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let mut alert = Resource {
+        id: "alert".into(),
+        kind: "alert".into(),
+        node_id: "build".into(),
+        revision: String::new(),
+        frozen: false,
+        digest: String::new(),
+        body: json!({"environment":"backtest","condition_identity":"generation:one","active":true}),
+    };
+    let first = store.save_resource(alert.clone(), None).unwrap();
+    alert.body["acknowledgement"] = json!({"actor":"operator"});
+    let ack = store
+        .save_resource(alert.clone(), Some(&first.revision))
+        .unwrap();
+    alert
+        .body
+        .as_object_mut()
+        .unwrap()
+        .remove("acknowledgement");
+    assert_eq!(
+        store.save_resource(alert.clone(), None).unwrap().revision,
+        ack.revision
+    );
+    alert.body["condition_identity"] = "generation:two".into();
+    assert!(
+        store
+            .save_resource(alert, None)
+            .unwrap()
+            .body
+            .get("acknowledgement")
+            .is_none()
+    );
 }
 #[test]
 fn idempotency_survives_restart_and_rejects_changed_input() {

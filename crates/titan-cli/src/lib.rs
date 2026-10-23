@@ -3,5 +3,6 @@
 mod core_runtime;
 pub mod management;
 pub mod registry;
+pub mod runtime_host;
 
 pub use core_runtime::*;

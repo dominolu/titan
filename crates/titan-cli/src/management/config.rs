@@ -86,6 +86,8 @@ fn session_seconds() -> u64 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteNode {
+    #[serde(default)]
+    pub live_control: bool,
     pub endpoint: String,
     pub token_env: String,
     pub environments: Vec<String>,
@@ -122,6 +124,8 @@ impl User {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
+    #[serde(default)]
+    pub live_control: bool,
     pub id: String,
     pub listen: String,
     pub token_env: String,
@@ -137,6 +141,8 @@ pub struct NodeConfig {
     pub datasets: BTreeMap<String, Dataset>,
     #[serde(default)]
     pub bindings: BTreeMap<String, Binding>,
+    #[serde(default)]
+    pub observe_bindings: Vec<String>,
     #[serde(default = "task_seconds")]
     pub task_seconds: u64,
 }

@@ -651,6 +651,29 @@ pub struct StateSchemaIdentityV13 {
     pub byte_len: usize,
     pub alignment: u32,
 }
+impl StateSchemaIdentityV13 {
+    pub fn validate_description(
+        &self,
+        description: &serde_json::Value,
+    ) -> Result<(), V13LoadError> {
+        let mut schema = description.clone();
+        let object = schema
+            .as_object_mut()
+            .ok_or(V13LoadError::Contract("invalid compiler state schema"))?;
+        if object.get("itemsize").and_then(|v| v.as_u64()) != Some(self.byte_len as u64)
+            || object.get("alignment").and_then(|v| v.as_u64()) != Some(self.alignment.into())
+        {
+            return Err(V13LoadError::Contract("state schema layout mismatch"));
+        }
+        object.insert("schema_version".into(), self.version.into());
+        if <[u8; 32]>::from(Sha256::digest(compiler_json_v13(&schema))) != self.hash {
+            return Err(V13LoadError::Contract(
+                "compiler state schema hash mismatch",
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AlignedStateMemoryV13 {
@@ -740,6 +763,7 @@ pub struct ArtifactManifestV13 {
     pub subscriptions: Arc<[EventSubscriptionV13]>,
     pub capabilities: StrategyCapabilitiesV13,
     pub state: StateSchemaIdentityV13,
+    pub state_description: Option<Arc<serde_json::Value>>,
     pub initial_state: Arc<[u8]>,
     pub native_digest: [u8; 32],
     pub artifact_digest: [u8; 32],
@@ -1070,6 +1094,11 @@ pub struct StrategyStateSnapshotV13 {
     pub state_bytes: Arc<[u8]>,
     pub public_state_identity: [u8; 32],
     pub checksum: [u8; 32],
+}
+impl StrategyStateSnapshotV13 {
+    pub(crate) fn checksum_valid(&self) -> bool {
+        self.checksum == snapshot_checksum(self)
+    }
 }
 
 fn validate_local_numbers(values: &[(u32, u32)]) -> Result<(), V13LoadError> {
@@ -1594,6 +1623,20 @@ fn parse_manifest(
             "account subscription lacks capability",
         ));
     }
+    let state = StateSchemaIdentityV13 {
+        version: value_u64(map_get(value, "state_schema_version")?)? as u32,
+        hash: value_bytes32(map_get(value, "state_schema_hash")?)?,
+        byte_len: state_len,
+        alignment: value_u64(map_get(value, "state_alignment")?)? as u32,
+    };
+    let state_description = map_get(value, "state_schema")
+        .ok()
+        .map(cbor_to_json)
+        .transpose()?
+        .map(Arc::new);
+    if let Some(description) = &state_description {
+        state.validate_description(description)?;
+    }
     Ok(ArtifactManifestV13 {
         strategy_id: Arc::from(value_text(map_get(value, "strategy_id")?)?),
         strategy_version: Arc::from(value_text(map_get(value, "strategy_version")?)?),
@@ -1605,12 +1648,8 @@ fn parse_manifest(
         parameters_digest: value_bytes32(map_get(value, "parameters_digest")?)?,
         subscriptions: subscriptions.into(),
         capabilities,
-        state: StateSchemaIdentityV13 {
-            version: value_u64(map_get(value, "state_schema_version")?)? as u32,
-            hash: value_bytes32(map_get(value, "state_schema_hash")?)?,
-            byte_len: state_len,
-            alignment: value_u64(map_get(value, "state_alignment")?)? as u32,
-        },
+        state,
+        state_description,
         initial_state: initial_state.into(),
         native_digest: value_bytes32(map_get(value, "native_digest")?)?,
         artifact_digest,

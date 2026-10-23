@@ -22,6 +22,7 @@ signal-hook = "0.3"
 sysinfo = "0.37"
 titan-event-engine = { path = "../titan-event-engine" }
 titan-core-types = { path = "../titan-core-types" }
+titan-domain-types = { path = "../titan-domain-types" }
 titan-market-service = { path = "../titan-market-service" }
 titan-account-service = { path = "../titan-account-service" }
 titan-strategy-runtime = { path = "../titan-strategy-runtime" }
