@@ -55,6 +55,9 @@ class StrategyContextAttributes(AttributeTemplate):
     def resolve_state(self, typ):
         return typ.state_type
 
+    def resolve_is_paused(self, typ):
+        return types.boolean
+
     def resolve_now(self, typ):
         return types.int64
 
@@ -94,6 +97,13 @@ def lower_context_state(context, builder, typ, value):
 def lower_context_now(context, builder, typ, value):
     del context, typ
     return _load_integer(builder, value, "now_ns", ir.IntType(64))
+
+
+@lower_getattr(StrategyContextType, "is_paused")
+def lower_context_is_paused(context, builder, typ, value):
+    del context, typ
+    flags = _load_integer(builder, value, "flags", ir.IntType(32))
+    return builder.icmp_unsigned("!=", builder.and_(flags, ir.Constant(ir.IntType(32), 2)), ir.Constant(ir.IntType(32), 0))
 
 
 @intrinsic

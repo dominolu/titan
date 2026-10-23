@@ -80,6 +80,11 @@ pub struct RiskScopeRef(pub Arc<str>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StrategyRuntimeSpec {
+    #[serde(default)]
+    pub recovery_checkpoint_sha256: Option<String>,
+    /// Optional platform execution envelope, independent of strategy business parameters.
+    #[serde(default)]
+    pub execution_limits: Option<ExecutionLimits>,
     pub async_lane_capacity: usize,
     pub critical_reserve: usize,
     pub reliable_pending_capacity: usize,
@@ -102,6 +107,8 @@ pub struct StrategyRuntimeSpec {
 impl Default for StrategyRuntimeSpec {
     fn default() -> Self {
         Self {
+            recovery_checkpoint_sha256: None,
+            execution_limits: None,
             async_lane_capacity: 16_384,
             critical_reserve: 2_048,
             reliable_pending_capacity: 1_024,
@@ -116,6 +123,14 @@ impl Default for StrategyRuntimeSpec {
             stop_timeout: Duration::from_secs(10),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionLimits {
+    pub max_notional_tick_lots: String,
+    pub max_price_deviation_bps: u32,
+    pub max_market_age_ns: i64,
 }
 
 fn default_command_capacity() -> usize {
@@ -191,6 +206,7 @@ pub struct StrategyPackageManifest {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedMarketBinding {
+    pub source_stream: titan_market_service::SourceStreamId,
     pub local_market_no: u32,
     pub local_asset_no: u32,
     pub source: MarketSourceHandle,

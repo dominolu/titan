@@ -36,6 +36,15 @@ const differences = computed(() => {
     }));
 });
 const selectedArtifact = ref("");
+const selectedBinding = ref("");
+const bindings = computed(() =>
+  store.resources.filter(
+    row => row.kind === "binding" && body(row).control_enabled === true
+  )
+);
+const deployments = computed(() =>
+  store.resources.filter(row => row.kind === "deployment")
+);
 const selectedDataset = ref("");
 const stress = ref(false);
 const busy = ref(false);
@@ -178,17 +187,58 @@ async function editVersion(item: Resource, copy: boolean) {
   validation.value = "";
   draft.value = copy ? null : item;
 }
-async function control(item: Resource, kind: "pause" | "resume" | "stop") {
-  const state = body(item);
-  await ElMessageBox.confirm(
-    `账户 ${state.account}，品种 ${state.instrument}，代次 ${state.generation}，停止方式 ${state.stop_action ?? "由引擎确认"}。操作以实际回执为准。`,
-    "确认操作",
-    { type: "warning" }
+function confirmOperation(message: string, title: string) {
+  return ElMessageBox.confirm(message, title, { type: "warning" }).then(
+    () => true,
+    () => false
   );
+}
+async function control(
+  item: Resource,
+  kind: "pause" | "resume" | "stop" | "recover"
+) {
+  const state = body(item);
+  if (
+    !(await confirmOperation(
+      `账户 ${state.account}，品种 ${state.instrument}，代次 ${state.generation}，停止方式 ${state.stop_action ?? "由引擎确认"}。操作以实际回执为准。`,
+      "确认操作"
+    ))
+  )
+    return;
   await action(
-    { kind, run_id: item.id, generation: state.generation },
+    kind === "recover"
+      ? {
+          kind,
+          run_id: item.id,
+          generation: state.generation,
+          checkpoint_id: state.checkpoint_id
+        }
+      : { kind, run_id: item.id, generation: state.generation },
     item.node_id
   );
+}
+async function deploy() {
+  const binding = bindings.value.find(row => row.id === selectedBinding.value);
+  if (!binding || !selectedArtifact.value) return;
+  await action(
+    {
+      kind: "deploy",
+      artifact_id: selectedArtifact.value,
+      binding_id: body(binding).binding_id
+    },
+    binding.node_id
+  );
+}
+async function startDeployment(item: Resource) {
+  const state = body(item);
+  if (
+    !(await confirmOperation(
+      `账户 ${state.account}，品种 ${state.instrument}，最大敞口 ${state.max_exposure_quote}，价格保护 ${state.max_price_deviation_bps} bps，期限 ${state.max_duration_seconds} 秒，停止方式 ${state.stop_action ?? "由引擎确认"}。`,
+      "确认启动"
+    ))
+  )
+    return;
+  await action({ kind: "start", deployment_id: item.id }, item.node_id);
 }
 watch(template, item => {
   if (item) {
@@ -397,6 +447,60 @@ onMounted(() => {
 
     <template v-if="section === 'artifacts'">
       <el-card class="panel"
+        ><template #header>受控部署</template>
+        <div class="actions">
+          <el-select v-model="selectedArtifact" placeholder="选择已构建制品"
+            ><el-option
+              v-for="item in store.artifacts"
+              :key="item.id"
+              :value="item.id"
+              :label="item.id"
+          /></el-select>
+          <el-select v-model="selectedBinding" placeholder="选择已授权实盘绑定"
+            ><el-option
+              v-for="item in bindings"
+              :key="item.id"
+              :value="item.id"
+              :label="`${item.node_id} / ${body(item).account} / ${body(item).instrument}`"
+          /></el-select>
+          <el-button
+            :disabled="
+              !store.writable || busy || !selectedArtifact || !selectedBinding
+            "
+            @click="deploy"
+            >部署制品</el-button
+          >
+        </div>
+        <el-table :data="deployments"
+          ><el-table-column
+            prop="id"
+            label="部署版本"
+            min-width="240"
+            show-overflow-tooltip
+          /><el-table-column label="账户 / 品种"
+            ><template #default="{ row }"
+              >{{ body(row).account }} / {{ body(row).instrument }}</template
+            ></el-table-column
+          ><el-table-column label="操作"
+            ><template #default="{ row }"
+              ><el-button
+                :disabled="
+                  !store.writable ||
+                  busy ||
+                  !bindings.some(
+                    binding =>
+                      binding.node_id === row.node_id &&
+                      body(binding).binding_id === body(row).binding_id
+                  )
+                "
+                @click="startDeployment(row)"
+                >启动</el-button
+              ></template
+            ></el-table-column
+          ></el-table
+        >
+      </el-card>
+      <el-card class="panel"
         ><template #header>构建制品</template
         ><el-table :data="store.artifacts" @row-click="item => (detail = item)"
           ><el-table-column
@@ -600,8 +704,12 @@ onMounted(() => {
                 :disabled="!store.writable || busy"
                 @click.stop="control(row, kind)"
                 >{{
-                  { pause: "暂停", resume: "恢复运行", stop: "停止" }[kind] ??
-                  kind
+                  {
+                    pause: "暂停",
+                    resume: "恢复运行",
+                    stop: "停止",
+                    recover: "checkpoint 恢复"
+                  }[kind] ?? kind
                 }}</el-button
               ></template
             ></el-table-column

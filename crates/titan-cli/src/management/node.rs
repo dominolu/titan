@@ -1,7 +1,7 @@
 use super::http::Error;
 use super::{checked_id, config::NodeConfig, contract::*, digest, fault, hex, inside, nonce};
 use crate::registry::{NewRun, Registry, StopAction};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -85,6 +85,13 @@ pub(crate) fn read_receipt(config: &NodeConfig, id: &str) -> Result<Receipt> {
         {
             receipt.state = OperationState::Cancelled;
             receipt.error = Some("cancelled before worker admission".into());
+            if std::fs::read(dir.join("request.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<NodeRequest>(&b).ok())
+                .is_some_and(|r| matches!(r.action, Action::Start { .. }))
+            {
+                receipt.result = Some(json!({"start_admission_absent":true}));
+            }
             return Ok(receipt);
         }
         if let Some(record) = record
@@ -113,6 +120,22 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
     std::fs::create_dir_all(config.work_root.join("operations"))?;
     let config_path = config_path.canonicalize()?;
     let listen = config.listen.clone();
+    // Bind before spawning observers. One node owns each local Registry/work directory.
+    let listener = tokio::net::TcpListener::bind(&listen).await?;
+    use std::os::fd::AsRawFd;
+    let owner = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(config.work_root.join("node.lock"))?;
+    ensure!(
+        unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "node work root is already owned"
+    );
+    std::fs::write(
+        config.work_root.join("node-config.ref"),
+        config_path.to_str().context("invalid node config path")?,
+    )?;
     let initial_catalog = catalog_items(&config)?;
     let live = super::live::LiveNode::open(&config, &config_path)?;
     let router = Router::new()
@@ -132,7 +155,6 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
             std::sync::Mutex::new(()),
             live,
         )));
-    let listener = tokio::net::TcpListener::bind(&listen).await?;
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -160,6 +182,13 @@ async fn runtime_log(
     Query(query): Query<HistoryQuery>,
 ) -> std::result::Result<Json<Value>, Error> {
     authenticate(&state.0, &headers)?;
+    if super::control::is_managed(&state.0, &id) {
+        return Ok(Json(super::control::read_log(
+            &state.0,
+            &id,
+            query.offset.unwrap_or(0),
+        )?));
+    }
     Ok(Json(state.4.read_log(&id, query.offset.unwrap_or(0))?))
 }
 async fn history(
@@ -190,6 +219,18 @@ async fn history(
             "unsupported account history kind",
         )
         .into());
+    }
+    if super::control::is_managed(&state.0, &id) {
+        return Ok(Json(
+            super::control::history(
+                &state.0,
+                &id,
+                kind,
+                query.offset.unwrap_or(0),
+                query.limit.unwrap_or(50).clamp(1, 200),
+            )
+            .await?,
+        ));
     }
     Ok(Json(
         state
@@ -227,6 +268,37 @@ async fn catalog(
         }
     }
     out.extend(state.4.catalog().await?);
+    out.extend(super::control::catalog(config).await?);
+    let published = config.work_root.join("published");
+    if published.is_dir() {
+        let entries = std::fs::read_dir(published)
+            .map_err(anyhow::Error::from)?
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(anyhow::Error::from)?;
+        super::require(
+            entries.len() <= 1024,
+            "published resource capacity exceeded",
+        )?;
+        for entry in entries {
+            if entry.path().extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).map_err(anyhow::Error::from)?;
+            super::require(bytes.len() <= 1_048_576, "published resource exceeds limit")?;
+            let resource: Resource = serde_json::from_slice(&bytes).map_err(anyhow::Error::from)?;
+            super::require(
+                resource.node_id == config.id
+                    && matches!(resource.kind.as_str(), "artifact" | "deployment"),
+                "invalid published resource",
+            )?;
+            let operation = resource.body["operation_id"]
+                .as_str()
+                .context("missing publication operation")?;
+            if read_receipt(config, operation)?.state == OperationState::Succeeded {
+                out.push(resource);
+            }
+        }
+    }
     Ok(Json(out))
 }
 fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
@@ -241,7 +313,7 @@ fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
         out.push(resource(config,"dataset",id,false,json!({"dataset_id":id,"regime":dataset.regime,"prepared":false,"prepared_sha256":null,"prepared_operation_id":null,"input_sha256":input_sha256,"environment":"backtest"})));
     }
     for (id, binding) in &config.bindings {
-        out.push(resource(config,"binding",id,false,json!({"binding_id":id,"account":binding.account,"instrument":binding.instrument,"max_exposure_quote":binding.max_exposure_quote,"max_price_deviation_bps":binding.max_price_deviation_bps,"max_duration_seconds":binding.max_duration_seconds,"environment":"live"})));
+        out.push(resource(config,"binding",id,false,json!({"binding_id":id,"control_enabled":config.live_control,"account":binding.account,"account_identity":binding.account_identity,"instrument":binding.instrument,"max_exposure_quote":binding.max_exposure_quote,"max_price_deviation_bps":binding.max_price_deviation_bps,"max_duration_seconds":binding.max_duration_seconds,"environment":"live"})));
     }
     Ok(out)
 }
@@ -306,18 +378,23 @@ async fn accept(
         )?;
         return Ok(Json(read_receipt(config, &input.operation_id)?));
     }
-    let busy = registry(config)?
+    let active_count = registry(config)?
         .list()
         .map_err(anyhow::Error::from)?
         .iter()
-        .any(|r| {
+        .filter(|r| {
             r.strategy_id == "management-task"
                 && matches!(
                     r.state.as_str(),
                     "STARTING" | "LOADING" | "COMPILING" | "READY" | "RUNNING" | "STOP_REQUESTED"
                 )
-        });
-    if busy {
+        })
+        .count();
+    let control = matches!(
+        input.action,
+        Action::Pause { .. } | Action::Resume { .. } | Action::Stop { .. }
+    );
+    if active_count >= if control { 8 } else { 1 } {
         return Err(fault(429, "NODE_BUSY", "node task capacity is occupied").into());
     }
     // Directory creation is the durable unique admission boundary, before process creation.
@@ -386,7 +463,10 @@ async fn receipt(
     Path(id): Path<String>,
 ) -> std::result::Result<Json<Receipt>, Error> {
     authenticate(&state.0, &headers)?;
-    Ok(Json(read_receipt(&state.0, &id)?))
+    let old = read_receipt(&state.0, &id)?;
+    Ok(Json(
+        super::control::reconcile_receipt(&state.0, old).await?,
+    ))
 }
 async fn cancel(
     State(state): State<NodeState>,
@@ -492,11 +572,22 @@ pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Res
         },
     )?;
     let result = execute(&config, &request, &dir, &stop).await;
+    let absent = result.is_err()
+        && matches!(request.action, Action::Start { .. })
+        && !config
+            .work_root
+            .join("managed")
+            .join(&id)
+            .join("managed.json")
+            .exists()
+        && registry(&config)?.get(&format!("worker-{id}"))?.is_none();
     let (state, error, result) = match result {
         Ok(result) => {
             let success = result.get("business_success") != Some(&Value::Bool(false));
             (
-                if success {
+                if result["outcome_unknown"] == true {
+                    OperationState::Unknown
+                } else if success {
                     OperationState::Succeeded
                 } else if stop.load(Ordering::Acquire) {
                     OperationState::Cancelled
@@ -516,12 +607,20 @@ pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Res
         }
         Err(error) => (
             if stop.load(Ordering::Acquire) {
-                OperationState::Cancelled
+                if request.action.environment() == "live" && !absent {
+                    OperationState::Unknown
+                } else {
+                    OperationState::Cancelled
+                }
             } else {
                 OperationState::Failed
             },
             Some(format!("{error:#}")),
-            None,
+            if absent {
+                Some(json!({"start_admission_absent":true}))
+            } else {
+                None
+            },
         ),
     };
     let final_receipt = Receipt {
@@ -532,6 +631,27 @@ pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Res
         error: error.clone(),
     };
     atomic_json(&dir.join("receipt.json"), &final_receipt)?;
+    if final_receipt.state == OperationState::Succeeded
+        && let Some(items) = final_receipt
+            .result
+            .as_ref()
+            .and_then(|r| r["resources"].as_array())
+    {
+        for item in items {
+            let resource: Resource = serde_json::from_value(item.clone())?;
+            if matches!(resource.kind.as_str(), "artifact" | "deployment") {
+                checked_id(&resource.id)?;
+                std::fs::create_dir_all(config.work_root.join("published"))?;
+                atomic_json(
+                    &config
+                        .work_root
+                        .join("published")
+                        .join(format!("{}.json", resource.id)),
+                    &resource,
+                )?;
+            }
+        }
+    }
     reg.finish(
         &id,
         &token,
@@ -635,7 +755,7 @@ async fn execute(
                 "artifact",
                 id,
                 true,
-                json!({"environment":"backtest","operation_id":id,"artifact_digest":actual["artifact_digest"],"blob_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"version_id":version.id,"template_id":template_id,"metadata":metadata}),
+                json!({"environment":"backtest","operation_id":id,"artifact_digest":actual["artifact_digest"],"blob_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"version_id":version.id,"template_id":template_id,"metadata":metadata,"normalized_parameters":actual["normalized_parameters"]}),
             );
             Ok(json!({"compiler":actual,"resources":[artifact]}))
         }
@@ -786,7 +906,7 @@ async fn execute(
                 json!({"report":result,"resources":[resource(config,"report",id,true,json!({"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
             )
         }
-        _ => bail!("live control capability has not been enabled"),
+        _ => super::control::execute(config, request, stop).await,
     }
 }
 pub(crate) fn digest_file(path: &FsPath) -> Result<String> {

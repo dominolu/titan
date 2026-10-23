@@ -131,7 +131,7 @@ impl Store {
         ensure!(active < 256, "operation capacity exceeded");
         if let Some((run, generation)) = input.action.run() {
             let conflicting: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE node_id=?1 AND json_extract(data,'$.input.run_id')=?2 AND json_extract(data,'$.input.generation')=?3 AND json_extract(data,'$.state') IN ('pending','running','unknown')",params![input.node_id,run,generation],|r|r.get(0))?;
-            if conflicting != 0 {
+            if conflicting != 0 && !matches!(input.action, Action::Stop { .. }) {
                 return Err(fault(
                     409,
                     "RUN_BUSY",
@@ -141,22 +141,46 @@ impl Store {
         }
         let id = nonce();
         if let Some(binding) = occupancy {
-            let occupied: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM occupancy WHERE binding=?1)",
-                [binding],
-                |r| r.get(0),
-            )?;
-            if occupied {
-                return Err(fault(
-                    409,
-                    "BINDING_OCCUPIED",
-                    "account/instrument is reserved, including unknown or inventory-retaining runs",
-                ));
+            let mut keys = vec![binding.to_owned()];
+            if let Some(resource) = resources.first()
+                && let (Some(account), Some(strategy)) = (
+                    resource.body["account_identity"].as_str(),
+                    resource.body["strategy_id"].as_str(),
+                )
+            {
+                keys.push(serde_json::to_string(&json!([
+                    "order_namespace",
+                    account,
+                    strategy
+                ]))?);
             }
-            tx.execute(
-                "INSERT INTO occupancy(binding,operation_id,node_id) VALUES (?1,?2,?3)",
-                params![binding, id, input.node_id],
+            for binding in &keys {
+                let occupied: Option<String> = tx
+                    .query_row(
+                        "SELECT run_id FROM occupancy WHERE binding=?1",
+                        [binding],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let predecessor = match &input.action {
+                    Action::Recover { run_id, .. } => Some(run_id),
+                    _ => None,
+                };
+                if occupied
+                    .as_ref()
+                    .is_some_and(|run| Some(run) != predecessor)
+                {
+                    return Err(fault(
+                        409,
+                        "BINDING_OCCUPIED",
+                        "account/instrument is reserved, including unknown or inventory-retaining runs",
+                    ));
+                }
+                tx.execute(
+                "INSERT INTO occupancy(binding,operation_id,node_id,run_id) VALUES (?1,?2,?3,?4) ON CONFLICT(binding) DO UPDATE SET operation_id=excluded.operation_id,node_id=excluded.node_id,run_id=excluded.run_id",
+                params![binding, id, input.node_id, predecessor.cloned().unwrap_or_else(||format!("{}-run-{id}",input.node_id))],
             )?;
+            }
         }
         let material = json!({"action":input.action,"resources":resources,"node_id":input.node_id});
         let input_digest = digest(&serde_json::to_vec(&material)?);
@@ -279,6 +303,12 @@ impl Store {
         if claimed {
             Ok(Some(self.request(id)?))
         } else {
+            if self.operation(id)?.state == OperationState::Cancelled
+                && matches!(self.operation(id)?.input, Action::Start { .. })
+            {
+                self.connection()?
+                    .execute("DELETE FROM occupancy WHERE operation_id=?1", [id])?;
+            }
             Ok(None)
         }
     }
@@ -305,6 +335,18 @@ impl Store {
         let mut op: Operation = serde_json::from_str(&data)?;
         let before = serde_json::to_string(&op)?;
         mutate(&mut op)?;
+        if matches!(op.input, Action::Start { .. })
+            && matches!(op.state, OperationState::Failed | OperationState::Cancelled)
+            && op
+                .result
+                .as_ref()
+                .is_some_and(|r| r["start_admission_absent"] == true)
+        {
+            tx.execute(
+                "DELETE FROM occupancy WHERE operation_id=?1 AND node_id=?2",
+                params![op.id, op.node_id],
+            )?;
+        }
         if before != serde_json::to_string(&op)? {
             op.updated_at_ns = now_ns();
             op.revision = revision(&tx)?.to_string();
@@ -333,6 +375,18 @@ impl Store {
         Ok(serde_json::from_str(&data.ok_or_else(|| {
             fault(404, "NOT_FOUND", "resource not found")
         })?)?)
+    }
+    pub fn artifact_for_operation(&self, id: &str) -> Result<Resource> {
+        let db = self.connection()?;
+        let mut stmt = db.prepare("SELECT data FROM resources WHERE kind='artifact' AND json_extract(data,'$.body.operation_id')=?1 LIMIT 2")?;
+        let rows = stmt
+            .query_map([id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ensure!(rows.len() <= 1, "ambiguous artifact reference");
+        let data = rows
+            .first()
+            .ok_or_else(|| fault(404, "NOT_FOUND", "artifact not found"))?;
+        Ok(serde_json::from_str(data)?)
     }
     pub fn save_resource(&self, resource: Resource, expected: Option<&str>) -> Result<Resource> {
         self.save_resource_inner(resource, expected, None)
@@ -384,6 +438,36 @@ impl Store {
             return Err(fault(409, "VERSION_CONFLICT", "resource no longer exists"));
         }
         resource.revision = revision(&tx)?.to_string();
+        if resource.kind == "run"
+            && let Some(previous) = resource.body["predecessor_run_id"].as_str()
+        {
+            tx.execute(
+                "UPDATE occupancy SET run_id=?1 WHERE node_id=?2 AND run_id=?3 AND operation_id=?4",
+                params![
+                    resource.id,
+                    resource.node_id,
+                    previous,
+                    resource.body["admission_operation_id"]
+                        .as_str()
+                        .unwrap_or("")
+                ],
+            )?;
+        }
+        if resource.kind == "run"
+            && resource.body["release_proof"]["safe"] == true
+            && resource.body["release_proof"]["source"] == "trading_runtime"
+        {
+            tx.execute(
+                "DELETE FROM occupancy WHERE node_id=?1 AND run_id=?2 AND operation_id=?3",
+                params![
+                    resource.node_id,
+                    resource.id,
+                    resource.body["admission_operation_id"]
+                        .as_str()
+                        .unwrap_or("")
+                ],
+            )?;
+        }
         resource.digest = digest(&serde_json::to_vec(&resource.body)?);
         tx.execute("INSERT INTO resources VALUES (?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![resource.id,resource.kind,resource.node_id,serde_json::to_string(&resource)?])?;
         if let Some((actor, action)) = audit {

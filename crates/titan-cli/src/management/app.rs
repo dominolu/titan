@@ -187,6 +187,21 @@ impl App {
         }
         Ok(op)
     }
+    pub fn file_node(&self, identity: &Identity, id: &str, path: &str) -> Result<String> {
+        match self.operation(identity, id, false) {
+            Ok(op) => Ok(op.node_id),
+            Err(error)
+                if path == "strategy.titan"
+                    && error
+                        .downcast_ref::<super::Fault>()
+                        .is_some_and(|f| f.status == 404) =>
+            {
+                let artifact = self.store.artifact_for_operation(id)?;
+                Ok(self.resource(identity, &artifact.id, false)?.node_id)
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn submit(&self, identity: &Identity, input: SubmitOperation) -> Result<Operation> {
         ensure!(
             !input.idempotency_key.is_empty() && input.idempotency_key.len() <= 128,
@@ -296,13 +311,14 @@ impl App {
                 "run generation changed"
             );
         }
-        let occupancy = if matches!(input.action, Action::Start { .. }) {
+        let occupancy = if matches!(input.action, Action::Start { .. } | Action::Recover { .. }) {
             let body = &resources[0].body;
-            Some(format!(
-                "{}:{}",
-                body["account"].as_str().context("missing account")?,
+            Some(serde_json::to_string(&json!([
+                body["account_identity"]
+                    .as_str()
+                    .context("missing canonical account identity")?,
                 body["instrument"].as_str().context("missing instrument")?
-            ))
+            ]))?)
         } else {
             None
         };
@@ -466,7 +482,10 @@ impl App {
             .map(|op| op.node_id.clone())
             .collect();
         for op in active {
-            if op.state == OperationState::Pending && dispatched.contains(&op.node_id) {
+            if op.state == OperationState::Pending
+                && dispatched.contains(&op.node_id)
+                && op.input.environment() != "live"
+            {
                 continue;
             }
             let endpoint = node.endpoint.trim_end_matches('/');
@@ -500,7 +519,9 @@ impl App {
                         "node did not prove operation absence"
                     );
                     if op.state == OperationState::Pending {
-                        if !dispatched.insert(op.node_id.clone()) {
+                        if !dispatched.insert(op.node_id.clone())
+                            && op.input.environment() != "live"
+                        {
                             return Ok(None);
                         }
                         // The authenticated node proved absence; claim dispatch atomically against cancellation.

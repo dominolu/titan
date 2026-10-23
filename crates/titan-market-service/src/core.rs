@@ -148,18 +148,14 @@ impl MarketServiceCore {
             source_id,
             generation,
         };
-        let market_stream = handle.market_stream_id().ok_or_else(|| {
-            MarketError::new(
-                MarketErrorKind::CapacityExceeded,
-                "source stream id overflow",
-            )
-        })?;
-        let control_stream = handle.control_stream_id().ok_or_else(|| {
-            MarketError::new(
-                MarketErrorKind::CapacityExceeded,
-                "source stream id overflow",
-            )
-        })?;
+        let base = runtime
+            .publisher
+            .allocate_source_streams(2)
+            .map_err(|error| {
+                MarketError::new(MarketErrorKind::CapacityExceeded, error.to_string())
+            })?;
+        let market_stream = crate::SourceStreamId(base);
+        let control_stream = crate::SourceStreamId(base + 1);
         let resources = ResourceScope::new(runtime.identity.clone());
         let context = MarketConnectorContext {
             source: handle,
@@ -177,7 +173,11 @@ impl MarketServiceCore {
             .create(&definition, context)
             .map_err(|error| connector_error("create", error))?;
         Ok(Arc::new(ConnectorEntry::new(
-            handle, definition, connector, resources,
+            market_stream,
+            handle,
+            definition,
+            connector,
+            resources,
         )))
     }
 
@@ -417,6 +417,9 @@ impl MarketAdminService for MarketServiceCore {
 }
 
 impl MarketService for MarketServiceCore {
+    fn source_stream(&self, source: MarketSourceHandle) -> LocalResult<crate::SourceStreamId> {
+        Ok(self.registry.get(source)?.market_stream)
+    }
     fn pin_binding(
         &self,
         handle: MarketSourceHandle,

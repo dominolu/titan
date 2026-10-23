@@ -2,6 +2,7 @@
 mod app;
 mod config;
 pub mod contract;
+mod control;
 mod http;
 mod live;
 mod node;

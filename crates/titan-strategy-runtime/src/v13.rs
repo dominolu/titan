@@ -138,7 +138,12 @@ pub(crate) fn invoke_staged_v13(
     gate: bool,
     active_orders: &[TitanActiveOrderView],
 ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
-    staging.begin_callback(gate && instance.command_gate_open(), active_orders);
+    let paused = context.flags & V13_PAUSED != 0;
+    staging.begin_callback(
+        (gate || paused) && instance.command_gate_open(),
+        active_orders,
+    );
+    staging.reducing_only = paused;
     staging.bind_context(context);
     if let Err(error) = instance.invoke(kind, context) {
         staging.finish_callback(-1);
@@ -185,6 +190,7 @@ impl StrategyCapabilitiesV13 {
     pub const STOP_BARRIER: Self = Self(1 << 4);
     /// Recover receives host-reconciled order results in its typed event payload.
     pub const RECOVERY_ORDER_RESULTS: Self = Self(1 << 5);
+    pub const PAUSE_SAFE: Self = Self(1 << 6);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -408,6 +414,7 @@ pub struct CallbackCommandStagingV13 {
     next_order_id: u64,
     next_command_id: u64,
     gate_open: bool,
+    reducing_only: bool,
     active_orders_ptr: *const TitanActiveOrderView,
     active_orders_len: usize,
 }
@@ -441,6 +448,7 @@ impl CallbackCommandStagingV13 {
             next_order_id: generation_prefix | 1,
             next_command_id: generation_prefix | 1,
             gate_open: false,
+            reducing_only: false,
             active_orders_ptr: std::ptr::null(),
             active_orders_len: 0,
         })
@@ -449,6 +457,7 @@ impl CallbackCommandStagingV13 {
     pub fn begin_callback(&mut self, gate_open: bool, active_orders: &[TitanActiveOrderView]) {
         self.commands.clear();
         self.gate_open = gate_open;
+        self.reducing_only = false;
         self.active_orders_ptr = active_orders.as_ptr();
         self.active_orders_len = active_orders.len();
     }
@@ -515,6 +524,9 @@ unsafe extern "C" fn stage_submit_order_v13(
     }
     if closes_side {
         request.reduce_only = 1;
+    }
+    if staging.reducing_only && request.reduce_only == 0 {
+        return -2;
     }
     let order_id = staging.next_order_id;
     staging.next_order_id = staging.next_order_id.checked_add(1).unwrap_or(0);
@@ -623,6 +635,8 @@ pub struct StrategyRuntimeContextV13 {
 
 /// Callback output flag, honored only for artifacts declaring STOP_BARRIER.
 pub const V13_STOP_READY: u32 = 1;
+/// Host input: callbacks continue to consume facts, but only cancel/reduce commands are allowed.
+pub const V13_PAUSED: u32 = 2;
 
 impl Default for StrategyRuntimeContextV13 {
     fn default() -> Self {
@@ -1581,6 +1595,7 @@ fn parse_manifest(
             "timer" => StrategyCapabilitiesV13::TIMER.0,
             "stop_barrier" => StrategyCapabilitiesV13::STOP_BARRIER.0,
             "recovery_order_results" => StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS.0,
+            "pause_safe" => StrategyCapabilitiesV13::PAUSE_SAFE.0,
             _ => return Err(V13LoadError::Contract("unknown strategy capability")),
         };
     }
@@ -2081,6 +2096,49 @@ mod tests {
             -2
         );
         assert!(staging.finish_callback(0).is_empty());
+    }
+
+    #[test]
+    fn paused_command_staging_allows_cancels_and_venue_reduce_only_but_rejects_opening() {
+        let active = [TitanActiveOrderView {
+            order_id: 9,
+            asset_no: 0,
+            account_no: 0,
+            ..Default::default()
+        }];
+        let mut staging = CallbackCommandStagingV13::new(4, 42, 1).unwrap();
+        let mut context = StrategyRuntimeContextV13::default();
+        staging.begin_callback(true, &active);
+        staging.reducing_only = true;
+        staging.bind_context(&mut context);
+        let mut request = TitanSubmitOrderRequest {
+            qty_lots: 1,
+            price_ticks: 100,
+            side: 1,
+            order_type: 1,
+            time_in_force: 1,
+            ..Default::default()
+        };
+        let mut id = 0;
+        assert_eq!(
+            unsafe { context.submit_order.unwrap()(context.command_context, &request, &mut id) },
+            -2
+        );
+        request.reduce_only = 1;
+        assert_eq!(
+            unsafe { context.submit_order.unwrap()(context.command_context, &request, &mut id) },
+            0
+        );
+        let cancel = TitanCancelOrderRequest {
+            order_id: 9,
+            asset_no: 0,
+            account_no: 0,
+        };
+        assert_eq!(
+            unsafe { context.cancel_order.unwrap()(context.command_context, &cancel, &mut id) },
+            0
+        );
+        assert_eq!(staging.finish_callback(0).len(), 2);
     }
 
     #[test]

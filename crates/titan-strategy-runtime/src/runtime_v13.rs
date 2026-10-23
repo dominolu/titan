@@ -91,6 +91,11 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             .collect();
         Ok(Arc::new(NativeV13Runtime {
             core: Arc::new(NativeV13Core {
+                execution_limits: definition.runtime.execution_limits.clone(),
+                pause_safe: artifact
+                    .manifest
+                    .capabilities
+                    .contains(StrategyCapabilitiesV13::PAUSE_SAFE),
                 state_description: artifact.manifest.state_description.clone(),
                 state_identity: artifact.manifest.state,
                 context,
@@ -104,6 +109,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     )
                     .map_err(|_| v13_runtime_error("v13_staging_failed"))?,
                     markets,
+                    last_bbo_ns: 0,
                     positions: Vec::with_capacity(PUBLIC_CAPACITY),
                     balances: Vec::with_capacity(PUBLIC_CAPACITY),
                     accounts,
@@ -145,6 +151,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     flight_records: VecDeque::with_capacity(128),
                 }),
                 lane: OnceLock::new(),
+                stop_request: OnceLock::new(),
                 next_operation: AtomicU64::new(1),
                 async_failure: AtomicBool::new(false),
                 operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
@@ -160,11 +167,14 @@ pub struct NativeV13Runtime {
 }
 
 struct NativeV13Core {
+    pause_safe: bool,
+    execution_limits: Option<ExecutionLimits>,
     state_description: Option<Arc<serde_json::Value>>,
     state_identity: StateSchemaIdentityV13,
     context: StrategyRuntimeBuildContext,
     inner: Mutex<NativeV13Inner>,
     lane: OnceLock<PrimaryAsyncLaneHandle>,
+    stop_request: OnceLock<StrategyOperationId>,
     next_operation: AtomicU64,
     async_failure: AtomicBool,
     operations:
@@ -172,6 +182,7 @@ struct NativeV13Core {
 }
 
 struct NativeV13Inner {
+    last_bbo_ns: i64,
     lifecycle: StrategyLifecycle,
     instance: StrategyInstanceV13,
     staging: CallbackCommandStagingV13,
@@ -310,7 +321,7 @@ impl NativeV13Runtime {
                 Err(error) => {
                     snapshot.state = StrategyOperationState::Failed;
                     snapshot.detail = error.reason_code;
-                    Err(EngineError::SafePointPanicked)
+                    Ok(())
                 }
             }
         })
@@ -334,6 +345,9 @@ impl NativeV13Runtime {
             &inner.accounts,
             &inner.active_orders,
         );
+        if core.pause_safe && inner.lifecycle == StrategyLifecycle::Paused {
+            context.flags |= V13_PAUSED;
+        }
         configure(&mut context);
         if kind == V13EventKind::Recover && inner.recovery_order_results {
             context.event_payload_ptr = inner.recovery_orders.as_ptr().cast();
@@ -379,6 +393,7 @@ impl NativeV13Runtime {
 
 impl EventHandler for NativeV13Runtime {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
+        let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
         if self.core.async_failure.load(Ordering::Acquire) {
             fail_runtime(
@@ -423,6 +438,13 @@ impl EventHandler for NativeV13Runtime {
         let result = dispatch_event(&self.core, &mut inner, event, invoke_callbacks)
             .and_then(|_| finish_stop_if_drained(&self.core, &mut inner));
         prune_terminal_history(&mut inner);
+        if let Some(started) = timing {
+            tracing::debug!(
+                event_type = event.event_type,
+                elapsed_us = started.elapsed().as_micros() as u64,
+                "strategy event dispatch duration"
+            );
+        }
         if let Err(error) = result {
             fail_runtime(&self.core, &mut inner, error.reason_code);
             return Err(v13_core_error());
@@ -704,13 +726,7 @@ fn decode_market_batch(
         .context
         .markets
         .iter()
-        .find(|item| {
-            item.asset_id == asset_id
-                && item
-                    .source
-                    .market_stream_id()
-                    .is_some_and(|id| id.0 == event.metadata.source_id)
-        })
+        .find(|item| item.asset_id == asset_id && item.source_stream.0 == event.metadata.source_id)
         .map(|item| item.local_asset_no)
         .ok_or_else(|| v13_runtime_error("market_not_bound"))?;
     let expected = titan_market_service::MarketBatchHeaderV1::ENCODED_LEN
@@ -721,6 +737,10 @@ fn decode_market_batch(
     let exchange_ts = i64::from_le_bytes(event.payload[36..44].try_into().unwrap());
     let receive_ts = i64::from_le_bytes(event.payload[44..52].try_into().unwrap());
     let sequence = u64::from_le_bytes(event.payload[28..36].try_into().unwrap());
+    let is_bbo = event.event_type == titan_market_service::BBO_EVENT;
+    if is_bbo {
+        inner.last_bbo_ns = receive_ts;
+    }
     inner.ticks.clear();
     inner.depth.clear();
     for index in 0..count {
@@ -757,12 +777,92 @@ fn decode_market_batch(
         }
         let market = &mut inner.markets[asset_no as usize];
         market.source_sequence = sequence;
-        if side == 1 {
+        if is_bbo && side == 1 {
             market.best_bid_ticks = price;
             market.best_bid_qty_lots = qty;
-        } else if side == 2 {
+        } else if is_bbo && side == 2 {
             market.best_ask_ticks = price;
             market.best_ask_qty_lots = qty;
+        }
+    }
+    Ok(())
+}
+
+fn validate_execution_envelope(
+    limits: &ExecutionLimits,
+    market: TitanMarketView,
+    positions: &[TitanPositionView],
+    orders: &[TitanActiveOrderView],
+    last_bbo_ns: i64,
+    commands: &[StagedCommandV13],
+    now: i64,
+) -> LocalResult<()> {
+    let cap = limits
+        .max_notional_tick_lots
+        .parse::<i128>()
+        .ok()
+        .filter(|v| *v > 0)
+        .ok_or_else(|| v13_runtime_error("invalid_execution_limit"))?;
+    if limits.max_market_age_ns <= 0 || !(1..=500).contains(&limits.max_price_deviation_bps) {
+        return Err(v13_runtime_error("invalid_execution_limit"));
+    }
+    let mut notional: i128 = positions
+        .iter()
+        .map(|p| i128::from(p.qty_lots).abs() * i128::from(market.best_ask_ticks.max(0)))
+        .sum();
+    for order in orders {
+        notional = notional
+            .checked_add(
+                i128::from(
+                    order
+                        .qty_lots
+                        .saturating_sub(order.cumulative_filled_lots)
+                        .max(0),
+                )
+                .checked_mul(i128::from(
+                    market.best_ask_ticks.max(order.price_ticks).max(0),
+                ))
+                .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?,
+            )
+            .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?;
+    }
+    for command in commands {
+        let StagedCommandV13::Submit { request, .. } = command else {
+            continue;
+        };
+        if request.asset_no != 0
+            || request.order_type != 1
+            || request.price_ticks <= 0
+            || request.qty_lots <= 0
+            || market.best_bid_ticks <= 0
+            || market.best_ask_ticks < market.best_bid_ticks
+            || now
+                .checked_sub(last_bbo_ns)
+                .is_none_or(|age| age < 0 || age > limits.max_market_age_ns)
+        {
+            return Err(v13_runtime_error("execution_price_unproven"));
+        }
+        let reference = if request.side == 1 {
+            market.best_ask_ticks
+        } else {
+            market.best_bid_ticks
+        };
+        let deviation = (i128::from(request.price_ticks) - i128::from(reference)).abs() * 10_000;
+        if deviation > i128::from(reference) * i128::from(limits.max_price_deviation_bps) {
+            return Err(v13_runtime_error("execution_price_limit"));
+        }
+        // Venue reduce-only prevents new inventory; protective exits retain the price envelope.
+        if request.reduce_only == 0 {
+            notional = notional
+                .checked_add(
+                    i128::from(request.qty_lots)
+                        .checked_mul(i128::from(market.best_ask_ticks.max(request.price_ticks)))
+                        .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?,
+                )
+                .ok_or_else(|| v13_runtime_error("execution_limit_overflow"))?;
+            if notional > cap {
+                return Err(v13_runtime_error("execution_exposure_limit"));
+            }
         }
     }
     Ok(())
@@ -773,6 +873,27 @@ fn commit_commands(
     inner: &mut NativeV13Inner,
     commands: &[StagedCommandV13],
 ) -> LocalResult<()> {
+    if let Some(limits) = &core.execution_limits {
+        if inner.markets.len() != 1 {
+            return Err(v13_runtime_error("execution_binding_unproven"));
+        }
+        if (!inner.pending_fills.is_empty() || !inner.awaiting_fills.is_empty())
+            && commands
+                .iter()
+                .any(|c| matches!(c,StagedCommandV13::Submit{request,..} if request.reduce_only==0))
+        {
+            return Err(v13_runtime_error("execution_inventory_unproven"));
+        }
+        validate_execution_envelope(
+            limits,
+            inner.markets[0],
+            &inner.positions,
+            &inner.active_orders,
+            inner.last_bbo_ns,
+            commands,
+            core.context.clock.now_ns(),
+        )?;
+    }
     let submits = commands
         .iter()
         .filter(|command| matches!(command, StagedCommandV13::Submit { .. }))
@@ -839,11 +960,30 @@ fn commit_commands(
         }
     }
     if !commands.is_empty() && core.context.state_snapshot_sink.enabled() {
+        let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
         checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)?;
         core.context
             .state_snapshot_sink
             .flush(Instant::now() + std::time::Duration::from_secs(5))
             .map_err(|_| v13_runtime_error("command_intent_flush_failed"))?;
+        if let Some(started) = timing {
+            tracing::debug!(
+                elapsed_us = started.elapsed().as_micros() as u64,
+                "command intent durability duration"
+            );
+        }
+    }
+    // Durability may take time: the same price envelope must still hold at dispatch.
+    if let Some(limits) = &core.execution_limits {
+        validate_execution_envelope(
+            limits,
+            inner.markets[0],
+            &inner.positions,
+            &[],
+            inner.last_bbo_ns,
+            commands,
+            core.context.clock.now_ns(),
+        )?;
     }
     for command in commands {
         match *command {
@@ -1468,9 +1608,15 @@ fn prune_terminal_history(inner: &mut NativeV13Inner) {
 }
 
 fn fail_runtime(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<str>) {
+    tracing::warn!(
+        strategy_id = core.context.strategy.strategy_id.0,
+        generation = core.context.strategy.generation,
+        reason_code = reason.as_ref(),
+        "strategy runtime failed"
+    );
     core.context.activation.close();
     inner.lifecycle = StrategyLifecycle::Failed;
-    inner.last_error = Some(reason.clone());
+    inner.last_error.get_or_insert_with(|| reason.clone());
     if let Some(id) = inner.stop_operation.take()
         && let Some(operation) = core
             .operations
@@ -1527,6 +1673,18 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
 }
 
 impl StrategyRuntime for NativeV13Runtime {
+    fn pause_supported(&self) -> bool {
+        self.core.pause_safe
+    }
+    fn release_safe(&self) -> bool {
+        let inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner.lifecycle == StrategyLifecycle::Stopped
+            && !inner.instance.command_gate_open()
+            && !self.core.context.activation.is_open()
+            && inner.active_orders.is_empty()
+            && inner.pending_fills.is_empty()
+            && inner.awaiting_fills.is_empty()
+    }
     fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
         let Some(schema) = &self.core.state_description else {
             return Ok(
@@ -1825,7 +1983,9 @@ impl StrategyRuntime for NativeV13Runtime {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
             if !matches!(
                 inner.lifecycle,
-                StrategyLifecycle::Running | StrategyLifecycle::Stopping
+                StrategyLifecycle::Running
+                    | StrategyLifecycle::Paused
+                    | StrategyLifecycle::Stopping
             ) {
                 return Ok(());
             }
@@ -1976,12 +2136,18 @@ impl StrategyRuntime for NativeV13Runtime {
         })
     }
     fn pause(&self, _reason: PauseReason) -> LocalResult<StrategyOperationId> {
-        self.core.context.activation.close();
+        if !self.core.pause_safe {
+            return Err(v13_runtime_error("pause_capability_unavailable"));
+        }
         self.schedule(|core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            if inner.lifecycle == StrategyLifecycle::Paused {
+                return Ok(());
+            }
             if inner.lifecycle != StrategyLifecycle::Running {
                 return Err(v13_runtime_error("invalid_pause_state"));
             }
+            core.context.activation.close();
             inner.lifecycle = StrategyLifecycle::Paused;
             Ok(())
         })
@@ -2015,18 +2181,36 @@ impl StrategyRuntime for NativeV13Runtime {
         self.core.context.activation.close();
         self.schedule(move |core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            inner.lifecycle = StrategyLifecycle::Invalidated;
-            inner.last_error = Some(reason);
+            if inner.lifecycle != StrategyLifecycle::Failed {
+                inner.lifecycle = StrategyLifecycle::Invalidated;
+            }
+            inner.last_error.get_or_insert(reason);
             Ok(())
         })
     }
     fn stop(&self, deadline: Instant) -> LocalResult<StrategyOperationId> {
+        if matches!(
+            self.state().lifecycle,
+            StrategyLifecycle::Failed | StrategyLifecycle::Invalidated
+        ) {
+            return Err(v13_runtime_error("invalid_stop_state"));
+        }
+        if let Some(id) = self.core.stop_request.get() {
+            return Ok(*id);
+        }
         let lane = self
             .core
             .lane
             .get()
             .ok_or_else(|| v13_runtime_error("lane_not_attached"))?;
         let id = StrategyOperationId(self.core.next_operation.fetch_add(1, Ordering::AcqRel));
+        if self.core.stop_request.set(id).is_err() {
+            return Ok(*self
+                .core
+                .stop_request
+                .get()
+                .expect("stop request initialized"));
+        }
         self.core
             .operations
             .lock()
@@ -2184,6 +2368,74 @@ fn v13_core_error() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_envelope_bounds_batch_price_staleness_hedges_and_reductions() {
+        let limits = ExecutionLimits {
+            max_notional_tick_lots: "10000".into(),
+            max_price_deviation_bps: 50,
+            max_market_age_ns: 100,
+        };
+        let market = TitanMarketView {
+            best_bid_ticks: 999,
+            best_ask_ticks: 1000,
+            ..Default::default()
+        };
+        let submit = |qty, price, reduce| StagedCommandV13::Submit {
+            order_id: 1,
+            request: TitanSubmitOrderRequest {
+                qty_lots: qty,
+                price_ticks: price,
+                side: 1,
+                order_type: 1,
+                reduce_only: reduce,
+                ..Default::default()
+            },
+        };
+        let check = |positions: &[TitanPositionView],
+                     orders: &[TitanActiveOrderView],
+                     commands: &[StagedCommandV13],
+                     now| {
+            validate_execution_envelope(&limits, market, positions, orders, 100, commands, now)
+        };
+        assert!(check(&[], &[], &[submit(10, 1000, 0)], 150).is_ok());
+        assert!(check(&[], &[], &[submit(6, 1000, 0), submit(5, 1000, 0)], 150).is_err());
+        assert!(check(&[], &[], &[submit(1, 1006, 0)], 150).is_err());
+        assert!(check(&[], &[], &[submit(1, 1000, 0)], 201).is_err());
+        assert!(check(&[], &[], &[submit(1, 1000, 0)], 99).is_err());
+        let hedge = [
+            TitanPositionView {
+                qty_lots: 6,
+                position_side: 1,
+                ..Default::default()
+            },
+            TitanPositionView {
+                qty_lots: -6,
+                position_side: 2,
+                ..Default::default()
+            },
+        ];
+        assert!(check(&hedge, &[], &[submit(1, 1000, 0)], 150).is_err());
+        assert!(check(&hedge, &[], &[submit(6, 1000, 1)], 150).is_ok());
+        let pending = [TitanActiveOrderView {
+            qty_lots: 8,
+            cumulative_filled_lots: 3,
+            ..Default::default()
+        }];
+        assert!(check(&[], &pending, &[submit(6, 1000, 0)], 150).is_err());
+        assert!(check(&[], &pending, &[submit(5, 1000, 0)], 150).is_ok());
+        let higher_limit = [TitanActiveOrderView {
+            qty_lots: 5,
+            price_ticks: 1005,
+            ..Default::default()
+        }];
+        assert!(check(&[], &higher_limit, &[submit(5, 1000, 0)], 150).is_err());
+        let cancel = StagedCommandV13::Cancel {
+            command_id: 1,
+            request: TitanCancelOrderRequest::default(),
+        };
+        assert!(check(&[], &[], &[cancel], 1000).is_ok());
+    }
 
     #[test]
     fn account_enums_are_explicitly_translated_to_v13() {

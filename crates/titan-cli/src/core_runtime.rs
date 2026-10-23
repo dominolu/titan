@@ -31,6 +31,8 @@ pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationConfig {
+    #[serde(default)]
+    pub managed_by_console: bool,
     pub schema_version: u32,
     #[serde(default)]
     pub event_engine: EventEngineConfig,
@@ -219,6 +221,11 @@ impl ConfigurationAdapter {
         mut config: ApplicationConfig,
         config_directory: &Path,
     ) -> Result<AdaptedConfiguration, ConfigurationError> {
+        if config.managed_by_console {
+            return Err(ConfigurationError::Invalid(
+                "managed configuration requires the authenticated console entry point".into(),
+            ));
+        }
         if config.schema_version != APPLICATION_CONFIG_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchema(config.schema_version));
         }
@@ -349,18 +356,26 @@ impl TradingRuntime {
     }
 
     pub fn start(config: AdaptedConfiguration) -> Result<Self, ApplicationRuntimeError> {
-        Self::start_inner(config, None)
+        Self::start_inner(config, None, false)
     }
     pub fn start_observed(
         config: AdaptedConfiguration,
         path: PathBuf,
         source: String,
     ) -> Result<Self, ApplicationRuntimeError> {
-        Self::start_inner(config, Some((path, source)))
+        Self::start_inner(config, Some((path, source)), false)
+    }
+    pub(crate) fn start_managed(
+        config: AdaptedConfiguration,
+        path: PathBuf,
+        source: String,
+    ) -> Result<Self, ApplicationRuntimeError> {
+        Self::start_inner(config, Some((path, source)), true)
     }
     fn start_inner(
         config: AdaptedConfiguration,
         observed: Option<(PathBuf, String)>,
+        defer_strategies: bool,
     ) -> Result<Self, ApplicationRuntimeError> {
         let AdaptedConfiguration {
             event_engine,
@@ -518,7 +533,9 @@ impl TradingRuntime {
             observation,
             observation_routes,
         };
-        if let Err(error) = runtime.apply_definitions(market_sources, accounts, strategies) {
+        if let Err(error) =
+            runtime.apply_definitions(market_sources, accounts, strategies, defer_strategies)
+        {
             let _ = runtime.shutdown();
             return Err(error);
         }
@@ -544,6 +561,21 @@ impl TradingRuntime {
     }
 
     pub fn check_health(&self) -> Result<(), ApplicationRuntimeError> {
+        self.check_dependency_health()?;
+        if let Some(service) = &self.strategy {
+            for entry in service.list().iter().filter(|entry| entry.enabled) {
+                if entry.lifecycle != titan_strategy_runtime::StrategyLifecycle::Running {
+                    return Err(ApplicationRuntimeError::Shutdown(format!(
+                        "strategy {}: {:?}",
+                        entry.strategy_key, entry.lifecycle
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn check_dependency_health(&self) -> Result<(), ApplicationRuntimeError> {
         use titan_market_service::MarketService;
         let events = self.event_handle.runtime_health();
         if events.event_loop_failed
@@ -577,16 +609,6 @@ impl TradingRuntime {
                     "account {}: {:?}: {}",
                     entry.account_key, health.state, health.message
                 )));
-            }
-        }
-        if let Some(service) = &self.strategy {
-            for entry in service.list().iter().filter(|entry| entry.enabled) {
-                if entry.lifecycle != titan_strategy_runtime::StrategyLifecycle::Running {
-                    return Err(ApplicationRuntimeError::Shutdown(format!(
-                        "strategy {}: {:?}",
-                        entry.strategy_key, entry.lifecycle
-                    )));
-                }
             }
         }
         Ok(())
@@ -653,6 +675,7 @@ impl TradingRuntime {
         market_sources: Vec<MarketSourceDefinition>,
         accounts: Vec<AccountDefinition>,
         strategies: Vec<StrategyDefinition>,
+        defer_strategies: bool,
     ) -> Result<(), ApplicationRuntimeError> {
         if !market_sources.is_empty() {
             for definition in market_sources {
@@ -698,7 +721,7 @@ impl TradingRuntime {
                 let handle = strategy
                     .create(definition)
                     .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
-                if enabled {
+                if enabled && !defer_strategies {
                     let prepare = strategy
                         .prepare(handle)
                         .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
@@ -714,7 +737,7 @@ impl TradingRuntime {
     }
 }
 
-fn wait_strategy_operation(
+pub(crate) fn wait_strategy_operation(
     strategy: &dyn StrategyAdminService,
     operation: titan_strategy_runtime::StrategyOperationId,
     timeout: std::time::Duration,
@@ -1185,6 +1208,7 @@ mod tests {
 
     fn application() -> ApplicationConfig {
         ApplicationConfig {
+            managed_by_console: false,
             schema_version: APPLICATION_CONFIG_SCHEMA_VERSION,
             event_engine: EventEngineConfig::default(),
             market_service: MarketServiceConfig::default(),

@@ -5,6 +5,15 @@ use std::{io::Read, path::PathBuf};
 
 #[derive(Debug, Subcommand)]
 pub enum ConsoleCommand {
+    #[command(hide = true)]
+    ManagedWorker {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        owner_token: String,
+    },
     /// Run the management application (HTTP, SSE and static console).
     Manager {
         #[arg(long)]
@@ -52,11 +61,26 @@ pub enum ConsoleCommand {
         request: PathBuf,
     },
 }
-pub fn run(command: ConsoleCommand) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+fn async_runtime() -> Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
         .enable_all()
-        .build()?;
+        .build()?)
+}
+pub fn run(command: ConsoleCommand) -> Result<()> {
     match command {
+        ConsoleCommand::ManagedWorker {
+            config,
+            run,
+            owner_token,
+        } => {
+            let config = ConsoleConfig::load(&config)?
+                .node
+                .context("node configuration missing")?;
+            crate::runtime_host::run_runtime_owner(move || {
+                super::control::managed_worker(config, run, owner_token)
+            })
+        }
         ConsoleCommand::ObserveWorker {
             config,
             run,
@@ -73,13 +97,13 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
             let config = ConsoleConfig::load(&config)?
                 .manager
                 .context("manager configuration missing")?;
-            runtime.block_on(super::serve_manager(config))
+            async_runtime()?.block_on(super::serve_manager(config))
         }
         ConsoleCommand::Node { config } => {
             let node = ConsoleConfig::load(&config)?
                 .node
                 .context("node configuration missing")?;
-            runtime.block_on(super::serve_node(node, config))
+            async_runtime()?.block_on(super::serve_node(node, config))
         }
         ConsoleCommand::NodeWorker {
             config,
@@ -89,7 +113,7 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
             let node = ConsoleConfig::load(&config)?
                 .node
                 .context("node configuration missing")?;
-            runtime.block_on(super::node::worker(node, operation, owner_token))
+            async_runtime()?.block_on(super::node::worker(node, operation, owner_token))
         }
         ConsoleCommand::ExportTypes { output } => super::contract::export_types(&output),
         ConsoleCommand::PasswordHash => {
@@ -113,7 +137,7 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
             username,
             password_env,
             request,
-        } => runtime.block_on(async move {
+        } => async_runtime()?.block_on(async move {
             let origin = url.trim_end_matches('/');
             let client = reqwest::Client::builder().cookie_store(true).build()?;
             let password =

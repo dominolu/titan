@@ -84,6 +84,7 @@ pub(crate) struct EngineShared {
     accepting_publications: AtomicBool,
     active_publications: AtomicUsize,
     source_sequences: Vec<Mutex<u64>>,
+    next_source_stream: AtomicU32,
     pub clock: EngineClock,
     pub health_registry: RwLock<BTreeMap<u64, Arc<SubscriberHealth>>>,
     pub transactions: SubscriptionTransactions,
@@ -698,6 +699,7 @@ impl EventEngine {
             source_sequences: (0..config.ingress.max_sources)
                 .map(|_| Mutex::new(0))
                 .collect(),
+            next_source_stream: AtomicU32::new(1),
             clock: EngineClock::new(),
             health_registry: RwLock::new(BTreeMap::new()),
             transactions: Arc::new(Mutex::new(BTreeMap::new())),
@@ -958,6 +960,18 @@ impl Drop for EventEngine {
 }
 
 impl EventEngineHandle {
+    pub fn allocate_source_streams(&self, count: u32) -> Result<u32, EngineError> {
+        if count == 0 {
+            return Err(EngineError::InvalidEvent);
+        }
+        self.shared
+            .next_source_stream
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+                next.checked_add(count)
+                    .filter(|end| *end as usize <= self.shared.source_sequences.len())
+            })
+            .map_err(|_| EngineError::InvalidEvent)
+    }
     /// Registers an EventEngine-owned PRIMARY async lane. Unlike legacy FastLane registration,
     /// this route is not mirrored into a caller-owned EventReceiver and the handler is invoked
     /// only by the lane's isolated worker.

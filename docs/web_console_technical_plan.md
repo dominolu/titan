@@ -1,16 +1,16 @@
 # Titan Web 管理模块技术方案
 
 版本：v0.1  
-状态：技术方案，待实施  
+状态：M1/M2/M3 已实现并验收\
 更新日期：2026-10-23  
-实现现状基线：`master`，提交 `5f424533bc7f053a929a21bd4edb4249c99e7aee`  
+设计基线：`master`，提交 `5f424533bc7f053a929a21bd4edb4249c99e7aee`\
 功能范围与模块职责：[管理平台需求 v0.2](management_console_requirements.md)
 
 任务依赖、代码迁移与分阶段验收安排见 [管理平台实施计划](management_console_implementation_plan.md)。
 
 Web 管理端采用 PureAdmin 官方精简版，复用通用后台界面，接入 Titan 的参数配置、编译、历史回测、运行监控和生命周期管理。生产环境由一个 Rust 管理服务提供静态页面、REST API 与 SSE，节点和交易 worker 保持独立运行。
 
-本方案细化需求中的 U 接入展示，以及 U 与 A 管理应用的契约；A、N、E 的业务职责以需求文档为准。当前仓库尚未引入管理页面、HTTP 服务或节点控制协议，下文描述目标实现。
+本方案细化需求中的 U 接入展示，以及 U 与 A 管理应用的契约；A、N、E 的业务职责以需求文档为准。设计基线尚无管理页面、HTTP 服务或节点协议；当前实现位于 `web/console`、`titan-cli::management` 与既有 E 服务。分阶段实现及验证证据由实施计划维护。
 
 ## 1 技术选型
 
@@ -71,11 +71,9 @@ web/console/
     generated/          Rust DTO 生成的 TypeScript 类型
     store/              模板 Pinia，会话、偏好及共享查询快照
     views/
-      strategies/       策略与参数版本
-      artifacts/        构建与制品
-      backtests/        回测与结果
-      runs/             运行详情
-      accounts/         账户与风险
+      console/          五个业务路由共用目录与 Operation 展示
+        index.vue       参数、制品、回测、运行、账户视图
+        ObservationPanel.vue  运行/账户事实与完整性面板
     components/         实际重复的业务展示组件
   package.json
   pnpm-lock.yaml

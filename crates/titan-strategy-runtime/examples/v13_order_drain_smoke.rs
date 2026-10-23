@@ -218,6 +218,7 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure
                 strategy: handle,
                 artifact_id: artifact.id,
                 markets: Arc::from([ResolvedMarketBinding {
+                    source_stream: titan_market_service::SourceStreamId(2),
                     local_market_no: 0,
                     local_asset_no: 0,
                     source: MarketSourceHandle {
@@ -332,13 +333,7 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure
         schema_version: 1,
         payload: &payload,
         metadata: titan_core_types::EventPublishMetadata {
-            source_id: MarketSourceHandle {
-                source_id: MarketSourceId(1),
-                generation: 1,
-            }
-            .market_stream_id()
-            .unwrap()
-            .0,
+            source_id: 2,
             ..Default::default()
         },
         trace: Default::default(),

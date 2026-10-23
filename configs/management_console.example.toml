@@ -43,3 +43,21 @@ parameters = "../strategies/grid/parameters.json"
 # quotes = "/data/BTCUSDT-bookTicker-2023-09-02.csv"
 # funding = "/data/BTCUSDT-fundingRate-2023-09.csv"
 # regime = "sideways"
+
+# M3: configure on the LIVE node, not together with this build-node section.
+# Both manager.nodes.live.live_control and node.live_control must be explicitly true.
+# The live runtime must set managed_by_console=true and trust the build signing public key.
+# [node.artifact_sources.build]
+# endpoint = "http://127.0.0.1:9041" # Authenticated SSH tunnel to build N, or HTTPS.
+# token_env = "TITAN_CONSOLE_BUILD_TOKEN"
+# environments = ["backtest"]
+# live_control = false
+# [node.bindings.gate-btc]
+# account = "gate"
+# account_identity = "crossex-gate-account-1" # Same identity on every node for this real account.
+# instrument = "GATE_FUTURE_BTC_USDT"
+# runtime_config = "/private/runtime.toml"
+# strategy_key = "grid"
+# max_exposure_quote = "100"
+# max_price_deviation_bps = 50
+# max_duration_seconds = 120

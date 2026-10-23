@@ -11,6 +11,12 @@ use titan_strategy_runtime::*;
 
 struct MockMarket;
 impl MarketService for MockMarket {
+    fn source_stream(
+        &self,
+        _: MarketSourceHandle,
+    ) -> titan_market_service::LocalResult<titan_market_service::SourceStreamId> {
+        Ok(titan_market_service::SourceStreamId(2))
+    }
     fn resolve(&self, _: &str) -> titan_market_service::LocalResult<MarketSourceHandle> {
         Ok(MarketSourceHandle {
             source_id: MarketSourceId(1),

@@ -50,21 +50,6 @@ pub struct MarketSourceDefinition {
 #[repr(transparent)]
 pub struct SourceStreamId(pub u32);
 
-impl MarketSourceHandle {
-    /// Event-engine stream carrying market facts for this logical source.
-    pub fn market_stream_id(self) -> Option<SourceStreamId> {
-        self.source_id.0.checked_mul(2).map(SourceStreamId)
-    }
-
-    /// Event-engine stream carrying control facts for this logical source.
-    pub fn control_stream_id(self) -> Option<SourceStreamId> {
-        self.market_stream_id()?
-            .0
-            .checked_add(1)
-            .map(SourceStreamId)
-    }
-}
-
 #[derive(Clone)]
 struct CoreMarketEventPublisher {
     inner: EventPublisher,
@@ -368,6 +353,7 @@ pub enum ConnectorLifecycle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketSourceSnapshot {
+    pub market_stream: SourceStreamId,
     pub handle: MarketSourceHandle,
     pub source_key: Arc<str>,
     pub connector_type: Arc<str>,

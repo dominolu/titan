@@ -192,12 +192,31 @@ impl FileCheckpointStore {
     }
 
     fn load(&self, strategy_id: StrategyId) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+        self.load_pinned(strategy_id, None)
+    }
+    fn load_pinned(
+        &self,
+        strategy_id: StrategyId,
+        expected: Option<&str>,
+    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
         let path = checkpoint_path(&self.root, strategy_id);
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && expected.is_none() => {
+                return Ok(None);
+            }
             Err(_) => return Err(checkpoint_error("checkpoint_read_failed")),
         };
+        if let Some(expected) = expected {
+            use sha2::{Digest, Sha256};
+            let actual: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if expected != actual {
+                return Err(checkpoint_error("checkpoint_reference_changed"));
+            }
+        }
         let snapshot: StrategyPrivateStateSnapshot = serde_json::from_slice(&bytes)
             .map_err(|_| checkpoint_error("checkpoint_decode_failed"))?;
         if snapshot.strategy.strategy_id != strategy_id
@@ -268,6 +287,10 @@ impl StrategyStateSnapshotSink for FileCheckpointStore {
     }
 
     fn flush(&self, deadline: Instant) -> LocalResult<()> {
+        tracing::debug!(
+            pending = self.pending.load(Ordering::Acquire),
+            "checkpoint flush started"
+        );
         while self.pending.load(Ordering::Acquire) != 0 {
             self.check_health()?;
             if Instant::now() >= deadline {
@@ -329,6 +352,7 @@ fn atomic_write(root: &Path, temporary: &Path, path: &Path, bytes: &[u8]) -> Loc
 }
 
 fn write_checkpoint(root: &Path, snapshot: &StrategyPrivateStateSnapshot) -> LocalResult<()> {
+    let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
     let path = checkpoint_path(root, snapshot.strategy.strategy_id);
     let temporary = root.join(format!(
         ".strategy-{}.json.tmp",
@@ -336,7 +360,15 @@ fn write_checkpoint(root: &Path, snapshot: &StrategyPrivateStateSnapshot) -> Loc
     ));
     let bytes =
         serde_json::to_vec(snapshot).map_err(|_| checkpoint_error("checkpoint_encode_failed"))?;
-    atomic_write(root, &temporary, &path, &bytes)
+    let result = atomic_write(root, &temporary, &path, &bytes);
+    if let Some(started) = timing {
+        tracing::debug!(
+            elapsed_us = started.elapsed().as_micros() as u64,
+            bytes = bytes.len(),
+            "checkpoint persisted"
+        );
+    }
+    result
 }
 
 fn checkpoint_error(code: &'static str) -> StrategyError {
@@ -1243,7 +1275,13 @@ impl StrategyServiceCore {
                     .markets
                     .resolve(&binding.source_key)
                     .map_err(|_| dependency_error("market_not_found"))?;
+                let source_stream = self
+                    .dependencies
+                    .markets
+                    .source_stream(source)
+                    .map_err(|_| dependency_error("market_source_changed"))?;
                 Ok(ResolvedMarketBinding {
+                    source_stream,
                     local_market_no: binding.local_market_no,
                     local_asset_no: binding.local_asset_no,
                     source,
@@ -1388,10 +1426,20 @@ impl StrategyServiceCore {
 impl StrategyAdminService for StrategyServiceCore {
     fn create(&self, definition: StrategyDefinition) -> LocalResult<StrategyHandle> {
         self.ensure_accepting()?;
+        if definition.runtime.recovery_checkpoint_sha256.is_some()
+            && definition.recovery != StrategyRecoveryPolicy::RequireCheckpoint
+        {
+            return Err(checkpoint_error("pinned_checkpoint_requires_recovery"));
+        }
         let checkpoint = self
             .checkpoints
             .as_ref()
-            .map(|store| store.load(definition.strategy_id))
+            .map(|store| {
+                store.load_pinned(
+                    definition.strategy_id,
+                    definition.runtime.recovery_checkpoint_sha256.as_deref(),
+                )
+            })
             .transpose()?
             .flatten();
         if definition.recovery == StrategyRecoveryPolicy::RequireCheckpoint && checkpoint.is_none()
@@ -1693,6 +1741,12 @@ impl StrategyAdminService for StrategyServiceCore {
 }
 
 impl StrategyService for StrategyServiceCore {
+    fn pause_supported(&self, strategy: StrategyHandle) -> LocalResult<bool> {
+        Ok(self.entry(strategy)?.runtime.pause_supported())
+    }
+    fn release_safe(&self, strategy: StrategyHandle) -> LocalResult<bool> {
+        Ok(self.entry(strategy)?.runtime.release_safe())
+    }
     fn business_snapshot(&self, strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
         self.entry(strategy)?.runtime.business_snapshot()
     }
@@ -2072,6 +2126,26 @@ mod checkpoint_tests {
 
         let store = FileCheckpointStore::new(root.clone()).unwrap();
         let restored = store.load(strategy.strategy_id).unwrap().unwrap();
+        let path = checkpoint_path(&root, strategy.strategy_id);
+        use sha2::{Digest, Sha256};
+        let hash: String = Sha256::digest(std::fs::read(&path).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(
+            store
+                .load_pinned(strategy.strategy_id, Some(&hash))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .load_pinned(strategy.strategy_id, Some(&"0".repeat(64)))
+                .unwrap_err()
+                .reason_code
+                .as_ref(),
+            "checkpoint_reference_changed"
+        );
         assert_eq!(restored.checkpoint_id, 11);
         assert_eq!(restored.generation, 7);
         assert_eq!(restored.state_bytes.as_ref(), [5, 6, 7]);

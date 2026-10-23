@@ -21,6 +21,7 @@ pub trait MarketAdminService: Send + Sync {
 }
 
 pub trait MarketService: Send + Sync {
+    fn source_stream(&self, source: MarketSourceHandle) -> LocalResult<crate::SourceStreamId>;
     fn pin_binding(
         &self,
         _source: MarketSourceHandle,

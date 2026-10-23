@@ -135,19 +135,14 @@ impl AccountServiceCore {
             account_id: d.account_id,
             generation,
         };
-        let base = d.account_id.0.checked_mul(2).ok_or_else(|| {
-            AccountError::new(
-                AccountErrorKind::CapacityExceeded,
-                "account source stream id overflow",
-            )
-        })?;
+        let base = runtime
+            .publisher
+            .allocate_source_streams(2)
+            .map_err(|error| {
+                AccountError::new(AccountErrorKind::CapacityExceeded, error.to_string())
+            })?;
         let account_stream = SourceStreamId(base);
-        let control_stream = SourceStreamId(base.checked_add(1).ok_or_else(|| {
-            AccountError::new(
-                AccountErrorKind::CapacityExceeded,
-                "account source stream id overflow",
-            )
-        })?);
+        let control_stream = SourceStreamId(base + 1);
         let resources = ResourceScope::new(runtime.identity.clone());
         let publisher_admission = Arc::new(AtomicBool::new(publisher_open));
         let secret_active = Arc::new(AtomicBool::new(true));

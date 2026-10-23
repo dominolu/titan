@@ -23,6 +23,7 @@ class Context:
     def __init__(self, **parameters):
         self.state_array = grid.build(parameters).state
         self.state = self.state_array[0]
+        self.is_paused = False
         self.now = 1_000_000_000
         self.market_row = row(abi_v13.market_dtype, best_bid_ticks=99, best_ask_ticks=101)
         self.account_row = row(abi_v13.account_dtype, state=4, account_epoch=1, account_sequence=1)
@@ -144,6 +145,22 @@ class TestGrid(unittest.TestCase):
         ctx.tick(101, 103)
         self.assertEqual(ctx.state["grid"]["anchor_ticks"], 100)
         self.assertEqual(len(ctx.submits), 2)
+
+    def test_host_pause_consumes_fills_and_cancels_without_new_risk(self):
+        ctx = Context().start()
+        ctx.is_paused = True
+        ctx.tick()
+        self.assertEqual(set(ctx.cancels), {1, 2})
+        ctx.fill(1, 1, 95)
+        self.assertEqual(ctx.state["grid"]["expected_position_lots"], 1)
+        self.assertEqual(len(ctx.submits), 2)
+        self.assertNotIn(ctx.state["grid"]["status"], (grid.ERROR, grid.RECONCILING))
+        ctx.terminal(1)
+        ctx.terminal(2)
+        ctx.now += 500_000_000
+        ctx.is_paused = False
+        ctx.tick()
+        self.assertGreater(len(ctx.submits), 2)
 
     def test_partial_fill_does_not_cancel_or_reanchor(self):
         ctx = Context().start()

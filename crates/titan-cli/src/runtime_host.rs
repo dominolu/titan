@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -40,6 +40,18 @@ pub struct HostClaim {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostQuery {
+    Control {
+        operation_id: String,
+        input_digest: String,
+        strategy_generation: String,
+        action: String,
+    },
+    ControlReceipt {
+        operation_id: String,
+        input_digest: String,
+        strategy_generation: String,
+        action: String,
+    },
     Snapshot,
     History {
         kind: Option<String>,
@@ -129,6 +141,7 @@ struct State {
     strategy: Option<Arc<StrategyServiceCore>>,
     journal: Arc<AccountFactJournal>,
     snapshot: RwLock<Value>,
+    control: Mutex<()>,
 }
 pub struct WorkerHost {
     state: Arc<State>,
@@ -171,6 +184,7 @@ impl WorkerHost {
             strategy,
             journal,
             snapshot: RwLock::new(json!({"available":false,"reason":"worker is starting"})),
+            control: Mutex::new(()),
         });
         let shared = state.clone();
         let (ready, wait) = std::sync::mpsc::sync_channel(1);
@@ -278,6 +292,103 @@ impl Drop for WorkerHost {
     }
 }
 impl State {
+    fn control(
+        &self,
+        id: &str,
+        digest: &str,
+        generation: &str,
+        action: &str,
+        admit: bool,
+    ) -> Result<Value> {
+        ensure!(
+            !self.claim.readonly,
+            "readonly worker cannot control strategies"
+        );
+        crate::management::checked_id(id)?;
+        ensure!(
+            matches!(action, "pause" | "resume" | "stop"),
+            "unsupported worker control"
+        );
+        let _guard = self
+            .control
+            .lock()
+            .map_err(|_| anyhow::anyhow!("control lock unavailable"))?;
+        let service = self
+            .strategy
+            .as_ref()
+            .context("strategy service unavailable")?;
+        let directory = self
+            .claim
+            .socket
+            .parent()
+            .context("missing socket directory")?
+            .join("controls");
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("{id}.json"));
+        let identity = json!({"id":id,"digest":digest,"generation":generation,"action":action});
+        let mut receipt: Value = if path.exists() {
+            let old: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+            ensure!(old["input"] == identity, "control idempotency conflict");
+            old
+        } else {
+            ensure!(
+                admit,
+                "control receipt absent; engine action was not queried"
+            );
+            ensure!(
+                std::fs::read_dir(&directory)?.count() < if action == "stop" { 1025 } else { 1024 },
+                "worker control receipt capacity exceeded"
+            );
+            let instances = service.list();
+            ensure!(instances.len() == 1, "control requires one bound strategy");
+            let handle = instances[0].handle;
+            ensure!(
+                handle.generation.to_string() == generation,
+                "strategy generation changed"
+            );
+            let mut pending =
+                json!({"input":identity,"state":"unknown","detail":"admitted before engine call"});
+            atomic_receipt(&path, &pending)?;
+            use titan_strategy_runtime::PauseReason;
+            let result = match action {
+                "pause" => service.pause(handle, PauseReason::User),
+                "resume" => service.resume(handle),
+                "stop" => service.stop(handle, std::time::Instant::now() + Duration::from_secs(10)),
+                _ => unreachable!(),
+            };
+            match result {
+                Ok(operation) => {
+                    pending["runtime_operation_id"] = operation.0.to_string().into();
+                    pending["state"] = "running".into();
+                }
+                Err(error) => {
+                    pending["state"] = "failed".into();
+                    pending["detail"] = error.to_string().into();
+                }
+            }
+            atomic_receipt(&path, &pending)?;
+            pending
+        };
+        if matches!(receipt["state"].as_str(), Some("succeeded" | "failed")) {
+            return Ok(receipt);
+        }
+        let before = receipt.clone();
+        if let Some(id) = receipt["runtime_operation_id"].as_str() {
+            let operation =
+                service.operation(titan_strategy_runtime::StrategyOperationId(id.parse()?));
+            receipt["state"] = match operation.state {
+                titan_strategy_runtime::StrategyOperationState::Pending => "running",
+                titan_strategy_runtime::StrategyOperationState::Succeeded => "succeeded",
+                titan_strategy_runtime::StrategyOperationState::Failed => "failed",
+            }
+            .into();
+            receipt["detail"] = operation.detail.as_ref().into();
+            if receipt != before {
+                atomic_receipt(&path, &receipt)?;
+            }
+        }
+        Ok(receipt)
+    }
     async fn poll_ledger(state: Arc<Self>) {
         while !state.stop.load(Ordering::Acquire) {
             let to_ms = now().parse::<i64>().unwrap_or(0) / 1_000_000 - 2000;
@@ -343,8 +454,15 @@ impl State {
         let account = self.account.resolve(&self.claim.account)?;
         let health = self.account.health(account)?;
         let diagnostics = self.account.diagnostics(account)?;
+        let mut account_flat = false;
         let image = match self.account.recovery_snapshot(account) {
             Ok(image) => {
+                account_flat = image.positions.items.iter().all(|p| p.quantity_lots == 0)
+                    && image
+                        .orders
+                        .items
+                        .iter()
+                        .all(|o| matches!(o.status, 2 | 3 | 4 | 6));
                 json!({"available":true,"image":self.journal.observe_account(&self.claim.account,&image).map_err(|e|anyhow::anyhow!(e.to_string()))?})
             }
             Err(error) => {
@@ -353,17 +471,25 @@ impl State {
             }
         };
         let mut strategies = Vec::new();
+        let mut release_safe = false;
         if let Some(service) = &self.strategy {
+            release_safe = !service.list().is_empty()
+                && service
+                    .list()
+                    .iter()
+                    .all(|s| service.release_safe(s.handle).unwrap_or(false));
             for instance in service.list().iter() {
                 let state = service.state(instance.handle)?;
                 let diagnostic = service.diagnostics(instance.handle)?;
-                strategies.push(json!({"strategy_key":instance.strategy_key,"strategy_id":instance.handle.strategy_id.0.to_string(),"generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"artifact_digest":hex(&instance.artifact_id.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"business":service.business_snapshot(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()}))}));
+                strategies.push(json!({"strategy_key":instance.strategy_key,"strategy_id":instance.handle.strategy_id.0.to_string(),"generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"pause_supported":service.pause_supported(instance.handle).unwrap_or(false),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"artifact_digest":hex(&instance.artifact_id.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"business":service.business_snapshot(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()}))}));
             }
         }
         let financial=self.journal.summary(&self.claim.account).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string(),"net_pnl":null,"max_drawdown":null}));
-        Ok(titan_domain_types::json_numbers_as_strings(
+        let mut snapshot = titan_domain_types::json_numbers_as_strings(
             json!({"available":true,"source":"trading_runtime","run_id":self.claim.run_id,"generation":self.claim.generation,"account":self.claim.account,"instrument":self.claim.instrument,"mode":if self.claim.readonly{"observe"}else{"trade"},"readonly":self.claim.readonly,"process_state":"running","pid":self.pid.to_string(),"start_time":self.start.to_string(),"captured_at_ns":now(),"account_health":health,"account_diagnostics":diagnostics,"account_snapshot":image,"financial":financial,"strategies":strategies}),
-        ))
+        );
+        snapshot["release_proof"] = json!({"safe":release_safe && account_flat,"source":"trading_runtime","account_epoch":snapshot["account_snapshot"]["image"]["epoch"],"captured_at_ns":snapshot["captured_at_ns"]});
+        Ok(snapshot)
     }
     async fn serve(self: Arc<Self>, mut stream: tokio::net::UnixStream) -> Result<()> {
         let size = stream.read_u32().await? as usize;
@@ -380,6 +506,42 @@ impl State {
             Err(anyhow::anyhow!("worker identity or credential mismatch"))
         } else {
             match input.query {
+                HostQuery::Control {
+                    operation_id,
+                    input_digest,
+                    strategy_generation,
+                    action,
+                } => {
+                    let state = self.clone();
+                    tokio::task::spawn_blocking(move || {
+                        state.control(
+                            &operation_id,
+                            &input_digest,
+                            &strategy_generation,
+                            &action,
+                            true,
+                        )
+                    })
+                    .await?
+                }
+                HostQuery::ControlReceipt {
+                    operation_id,
+                    input_digest,
+                    strategy_generation,
+                    action,
+                } => {
+                    let state = self.clone();
+                    tokio::task::spawn_blocking(move || {
+                        state.control(
+                            &operation_id,
+                            &input_digest,
+                            &strategy_generation,
+                            &action,
+                            false,
+                        )
+                    })
+                    .await?
+                }
                 HostQuery::Snapshot => Ok(self
                     .snapshot
                     .read()
@@ -427,6 +589,19 @@ fn now() -> String {
         .unwrap_or_default()
         .as_nanos()
         .to_string()
+}
+fn atomic_receipt(path: &Path, value: &Value) -> Result<()> {
+    use std::io::Write;
+    let temporary = path.with_extension("tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, path)?;
+    std::fs::File::open(path.parent().context("missing receipt directory")?)?.sync_all()?;
+    Ok(())
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|v| format!("{v:02x}")).collect()

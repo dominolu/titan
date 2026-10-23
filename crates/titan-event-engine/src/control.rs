@@ -30,6 +30,9 @@ impl V13EventControlAdapter {
 }
 
 impl EventControl for V13EventControlAdapter {
+    fn allocate_source_streams(&self, count: u32) -> Result<u32, CoreError> {
+        EventControl::allocate_source_streams(&self.inner, count)
+    }
     fn api_version(&self) -> ApiVersion {
         titan_core_types::CORE_RUNTIME_V1_COMPAT_VERSION
     }
@@ -106,6 +109,16 @@ impl EventControl for V13EventControlAdapter {
 }
 
 impl EventControl for EventEngineHandle {
+    fn allocate_source_streams(&self, count: u32) -> Result<u32, CoreError> {
+        EventEngineHandle::allocate_source_streams(self, count).map_err(|error| {
+            control_error(
+                ErrorKind::SubscriptionRejected,
+                "allocate_source_streams",
+                error.to_string(),
+                false,
+            )
+        })
+    }
     fn api_version(&self) -> ApiVersion {
         titan_core_types::CORE_RUNTIME_API_VERSION
     }
