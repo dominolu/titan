@@ -29,3 +29,18 @@ connector = { path = "../../connector" }
 semver = "1"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tracing = "0.1"
+anyhow = "1"
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "process", "signal", "io-util", "sync", "fs"] }
+async-stream = "0.3"
+futures-util = "0.3"
+tower-http = { version = "0.6", features = ["fs", "limit"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+rand = "0.8"
+argon2 = "0.5"
+ts-rs = { version = "12", features = ["serde-json-impl"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

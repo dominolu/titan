@@ -8,6 +8,20 @@ from titan_reporting import BundleError, load_bundle, render_html, render_quants
 
 
 class BundleTest(unittest.TestCase):
+    def test_binary_and_csv_files_are_verified_without_json_decoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contents = {"result.json": b'{"success":true}', "equity.csv": b'time,equity\n1,10\n', "artifact.bin": b'\x00\xff'}
+            files = []
+            for name, data in contents.items():
+                (root / name).write_bytes(data)
+                files.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+            (root / "manifest.json").write_text(json.dumps({"schema_version": 1, "files": files}))
+            self.assertEqual(load_bundle(root).result, {"success": True})
+            (root / "equity.csv").write_bytes(b'time,equity\n1,99\n')
+            with self.assertRaisesRegex(BundleError, "SHA-256 mismatch"):
+                load_bundle(root)
+
     def test_verifies_digest_and_renders_without_recomputation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

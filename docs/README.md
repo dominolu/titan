@@ -7,14 +7,18 @@
 - [Titan 系统重构与验证清单](system_refactor_checklist.md)
 - [Titan 项目重构剩余任务清单](refactor_remaining_tasks.md)
 - [Strategy ABI V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)
+- [管理平台实施计划](management_console_implementation_plan.md)
 
 ## 架构与发布
 
 - [Titan 新一代实盘内核：EventEngine 与 PluginEngine 重构](event_plugin_engine_refactor_story.md)
+- [管理平台需求文档](management_console_requirements.md)
+- [Web 管理模块技术方案](web_console_technical_plan.md)
 
 ## CLI
 
 - [Titan CLI 与 Agent 接口](titan_cli.md)
+- [管理模块运行与验证](management_console_operations.md)
 
 ## 策略接口
 

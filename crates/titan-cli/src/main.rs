@@ -16,8 +16,8 @@ use std::{
 };
 
 mod compiler;
-mod registry;
 use registry::{Registry, StopAction, now_ns, process_start_time};
+use titan_cli::registry;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve or access the management application and authenticated execution node.
+    Console {
+        #[command(subcommand)]
+        command: titan_cli::management::ConsoleCommand,
+    },
     /// Run the configured static TradingRuntime until SIGINT.
     CoreRun {
         #[arg(short = 'c', long = "config", value_name = "RUNTIME.toml")]
@@ -139,6 +144,15 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum StrategyCommands {
+    /// Describe and validate frozen strategy inputs in the bounded compiler bridge.
+    Describe {
+        #[arg(long)]
+        strategy: PathBuf,
+        #[arg(long)]
+        parameters: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// List compiled ABI V13 artifacts without importing strategy Python.
     Ls {
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
@@ -203,12 +217,13 @@ impl Commands {
             | Self::Stop { json, .. }
             | Self::Report { json, .. } => *json,
             Self::Strategy { command } => match command {
-                StrategyCommands::Ls { json, .. }
+                StrategyCommands::Describe { json, .. }
+                | StrategyCommands::Ls { json, .. }
                 | StrategyCommands::Show { json, .. }
                 | StrategyCommands::Validate { json, .. }
                 | StrategyCommands::Compile { json, .. } => *json,
             },
-            Self::RunWorker { .. } => false,
+            Self::RunWorker { .. } | Self::Console { .. } => false,
         }
     }
 }
@@ -558,6 +573,18 @@ fn registry_path() -> PathBuf {
 
 fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     match command {
+        StrategyCommands::Describe {
+            strategy,
+            parameters,
+            ..
+        } => {
+            let result = compiler::describe(&strategy, &parameters)?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(CliError::ResultJson)?
+            );
+            Ok(())
+        }
         StrategyCommands::Ls {
             trusted_keys,
             require_signature,
@@ -2114,6 +2141,8 @@ fn main() -> ExitCode {
     };
     let json_requested = cli.command.json_requested();
     let result = match cli.command {
+        Commands::Console { command } => titan_cli::management::run(command)
+            .map_err(|error| CliError::Engine(format!("{error:#}"))),
         Commands::CoreRun { config, json } => run_configured_core(&config, json),
         Commands::Run {
             strategy,
