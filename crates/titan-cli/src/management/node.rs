@@ -319,16 +319,17 @@ async fn catalog(
 fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
     let mut out = Vec::new();
     for (id, template) in &config.templates {
+        let (research_id, research_name) = template.research_identity(&config.id)?;
         let source = std::fs::read(&template.source)?;
         let parameters: Value = serde_json::from_slice(&std::fs::read(&template.parameters)?)?;
-        out.push(resource(config,"template",id,false,json!({"template_id":id,"parameters":parameters,"source_digest":digest(&source),"environment":"backtest"})));
+        out.push(resource(config,"template",id,false,json!({"research_id":research_id,"research_name":research_name,"template_id":id,"parameters":parameters,"source_digest":digest(&source),"environment":"backtest"})));
     }
     for (id, dataset) in &config.datasets {
         let input_sha256 = json!({"trades":digest_file(&dataset.trades)?,"quotes":digest_file(&dataset.quotes)?,"funding":digest_file(&dataset.funding)?});
         out.push(resource(config,"dataset",id,false,json!({"dataset_id":id,"regime":dataset.regime,"prepared":false,"prepared_sha256":null,"prepared_operation_id":null,"input_sha256":input_sha256,"environment":"backtest"})));
     }
     for (id, binding) in &config.bindings {
-        out.push(resource(config,"binding",id,false,json!({"binding_id":id,"control_enabled":config.live_control,"account":binding.account,"account_identity":binding.account_identity,"instrument":binding.instrument,"max_exposure_quote":binding.max_exposure_quote,"max_price_deviation_bps":binding.max_price_deviation_bps,"max_duration_seconds":binding.max_duration_seconds,"environment":"live"})));
+        out.push(resource(config,"binding",id,false,json!({"binding_id":id,"strategy_key":binding.strategy_key,"control_enabled":config.live_control,"account":binding.account,"account_identity":binding.account_identity,"instrument":binding.instrument,"max_exposure_quote":binding.max_exposure_quote,"max_price_deviation_bps":binding.max_price_deviation_bps,"max_duration_seconds":binding.max_duration_seconds,"environment":"live"})));
     }
     Ok(out)
 }
@@ -742,6 +743,13 @@ async fn execute(
                 .templates
                 .get(template_id)
                 .context("unknown template")?;
+            let (research_id, research_name) = template.research_identity(&config.id)?;
+            ensure!(
+                version.body["research_id"]
+                    .as_str()
+                    .is_none_or(|id| id == research_id),
+                "research template identity changed"
+            );
             let source = std::fs::read(&template.source)?;
             ensure!(
                 version.body["source_digest"].as_str() == Some(digest(&source).as_str()),
@@ -776,7 +784,7 @@ async fn execute(
                 "artifact",
                 id,
                 true,
-                json!({"environment":"backtest","operation_id":id,"artifact_digest":actual["artifact_digest"],"blob_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"version_id":version.id,"template_id":template_id,"metadata":metadata,"normalized_parameters":actual["normalized_parameters"]}),
+                json!({"research_id":research_id,"research_name":research_name,"environment":"backtest","operation_id":id,"artifact_digest":actual["artifact_digest"],"blob_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"version_id":version.id,"template_id":template_id,"metadata":metadata,"normalized_parameters":actual["normalized_parameters"]}),
             );
             Ok(json!({"compiler":actual,"resources":[artifact]}))
         }
@@ -908,7 +916,7 @@ async fn execute(
                 "backtest",
                 id,
                 true,
-                json!({"operation_id":id,"artifact_id":artifact.id,"dataset_id":dataset_id,"data_sha256":prepared_sha256,"input_sha256":dataset_ref.body["input_sha256"],"quality":dataset_ref.body.get("quality"),"stress":stress,"business_success":success,"metrics":precise(metrics),"environment":"backtest"}),
+                json!({"research_id":artifact.body["research_id"],"research_name":artifact.body["research_name"],"operation_id":id,"artifact_id":artifact.id,"dataset_id":dataset_id,"data_sha256":prepared_sha256,"input_sha256":dataset_ref.body["input_sha256"],"quality":dataset_ref.body.get("quality"),"stress":stress,"business_success":success,"metrics":precise(metrics),"environment":"backtest"}),
             );
             Ok(json!({"business_success":success,"resources":[record]}))
         }
@@ -924,7 +932,7 @@ async fn execute(
                 .env("TITAN_HOME", &config.work_root);
             let result = run_command(config, cmd, dir, stop).await?;
             Ok(
-                json!({"report":result,"resources":[resource(config,"report",id,true,json!({"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
+                json!({"report":result,"resources":[resource(config,"report",id,true,json!({"research_id":backtest.body["research_id"],"research_name":backtest.body["research_name"],"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
             )
         }
         _ => super::control::execute(config, request, stop).await,

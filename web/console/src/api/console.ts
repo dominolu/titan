@@ -5,9 +5,29 @@ import type {
   Resource,
   SaveVersion,
   Snapshot,
-  SubmitOperation
+  SubmitOperation,
+  ResearchWorkspace
 } from "@/generated/management";
 export const consoleApi = {
+  research: (offset = 0) =>
+    http.get<ResearchWorkspace[]>("/api/v1/research", {
+      params: { offset, limit: 20 }
+    }),
+  researchResources: (
+    research: string,
+    kind: string,
+    offset = 0,
+    id?: string
+  ) =>
+    http.get<Resource[]>("/api/v1/resources", {
+      params: {
+        research_id: research,
+        kind: kind || undefined,
+        offset,
+        limit: 20,
+        resource_id: id
+      }
+    }),
   resource: (id: string) =>
     http.get<Resource>(`/api/v1/resources/${encodeURIComponent(id)}`),
   log: (item: Resource, offset: number) =>
@@ -62,5 +82,6 @@ export type {
   Resource,
   SaveVersion,
   Snapshot,
-  SubmitOperation
+  SubmitOperation,
+  ResearchWorkspace
 };

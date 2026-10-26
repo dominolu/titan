@@ -1,0 +1,8 @@
+Source directory: /home/dominolu/dev/titan-console-ui-20261026-0099c1fb
+Baseline: 0099c1fb566331a2ac3d43a8ef0f4b7ac586daba
+node: v22.22.0
+pnpm: 10.32.1
+system_python: Python 3.12.2
+sdk_python: Python 3.11.14
+browser: Google Chrome for Testing 156.0.8078.4
+native_binary: fee02111897d57b7919655d654b22558fd4788890afd9f517254d37d362c043e  /home/dominolu/dev/titan-console-fixes-20261023-dd555c3b/verification-artifacts/review-fixes/release-accepted/bin/titan

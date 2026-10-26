@@ -1,0 +1,2 @@
+web/console/src/views/console/index.vue
+web/console/src/views/console/ObservationPanel.vue

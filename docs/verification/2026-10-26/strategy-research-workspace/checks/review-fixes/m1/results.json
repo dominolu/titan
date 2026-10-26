@@ -1,0 +1,104 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "reader-api-write-denied",
+      "passed": true
+    },
+    {
+      "name": "immutable-dataset-prepare-sideways",
+      "passed": true,
+      "sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683"
+    },
+    {
+      "name": "manager-and-node-restart-preserve-task",
+      "passed": true
+    },
+    {
+      "name": "compile-sideways-neutral",
+      "passed": true,
+      "artifact_id": "build-artifact-1d1bad79885602d689c32361bcb0ffa966d725df3db152eb4e6d4f3f30ab068c",
+      "metadata_schema": 3
+    },
+    {
+      "name": "backtest-sideways-neutral-base",
+      "passed": true,
+      "operation_id": "fd497b541d9d3ef193848d74e3a931d6bc12625c2bb0e00b49feaf4ff672bec3",
+      "metrics": {
+        "artifact_digest": "c821731befcbdf45a7d27100cbf46fc3831e2d8b3ca5fdb9bd43318576dfc77b",
+        "business_stopped_ns": "1693699170712000000",
+        "callbacks": "1459507",
+        "cancel_lost_fill_race": "0",
+        "cancels": "15",
+        "data": "/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/verification-artifacts/research-fixes/m1/node/operations/32ffc10306af9cdae0ace7ec8242af9aa3b46f899208363d98b427af4ba8582b/prepared.bin",
+        "direction": "0",
+        "error": null,
+        "fees_usdt": "2.32377928",
+        "fills": "30",
+        "final_position_btc": "0.0",
+        "flatten_duration_ms": "703.0",
+        "flatten_started_ns": "1693699170009000000",
+        "funding_credit_usdt": "-0.030291045722000004",
+        "gross_pnl_usdt": "8.746399999997971",
+        "initial_capital_usdt": "10000.0",
+        "leverage": "3.0",
+        "lower_usdt": "24763.800000000003",
+        "max_drawdown_pct": "0.07392107182923553",
+        "max_drawdown_usdt": "7.394125360000544",
+        "max_gross_order_notional_usdt": "1505.1232",
+        "max_notional_limit_usdt": "30000.0",
+        "max_pending_bound_notional_usdt": "3013.0710000000004",
+        "max_position_btc": "0.08700000000000001",
+        "max_position_notional_usdt": "2259.8032500000004",
+        "model": {
+          "end_stop_seconds_before_midnight": "30",
+          "funding_valuation": "historical funding rate times current full-resolution BBO mid; historical mark price not available",
+          "ioc_impact_ticks": "1",
+          "lot_btc": "0.001",
+          "maker_fee_rate": "0.0002",
+          "maker_fill": "strict trade-through only; historical aggressor side; shared print volume budget",
+          "matching_and_risk_use_all_quotes": true,
+          "one_way_latency_ms": "50",
+          "order_tick_usdt": "0.1",
+          "participation": "0.1",
+          "position_delivery_extra_ms": "1",
+          "quote_rounding": "bid floor and ask ceil to order tick; prints retain exact cents",
+          "risk_bound": "conservative absolute net after every pending buy or every pending sell, including in-flight and awaiting-terminal requests",
+          "source_price_unit_usdt": "0.01",
+          "strategy_tick_min_interval_ms": "100",
+          "taker_fee_rate": "0.0005"
+        },
+        "net_pnl_usdt": "6.39232967427597",
+        "net_return_pct": "0.0639232967427597",
+        "partial_fills": "16",
+        "rejections": "0",
+        "schema_version": "1",
+        "state_schema_hash": "cfc45d260aff198135cf2433ec6130936e35a5b029cef0ac0ecd331f4b927672",
+        "stop_reason": "1",
+        "stopped_ns": "1693699170712000000",
+        "strategy_error": "0",
+        "strategy_status": "8",
+        "strategy_version": "1.2.1",
+        "submits": "29",
+        "success": true,
+        "upper_usdt": "26827.4"
+      }
+    },
+    {
+      "name": "verified-report-render-and-download",
+      "passed": true
+    },
+    {
+      "name": "engine-validation-rejection",
+      "passed": true
+    },
+    {
+      "name": "cancellation-confirmed-by-execution-path",
+      "passed": true
+    },
+    {
+      "name": "browser-e2e",
+      "passed": true
+    }
+  ]
+}

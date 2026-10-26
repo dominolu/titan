@@ -1,0 +1,34 @@
+{
+  "length_probe": {
+    "config_id_length": 128,
+    "generated_id_length": 137,
+    "catalog_status": 200,
+    "catalog_contains_workspace": true,
+    "scoped_query_status": 400,
+    "scoped_query_error": {
+      "code": "INVALID_REQUEST",
+      "message": "invalid resource identity",
+      "request_id": "87631a2a90cadd40c8fcdd52664dd67bc3ceebe003c53965fa7d7feefc90c99a"
+    }
+  },
+  "archive": {
+    "records": 12000,
+    "body_padding_bytes": 32768,
+    "timings": {
+      "/api/v1/research": {
+        "status": 200,
+        "seconds": 1.0609879726544023,
+        "records": 2
+      },
+      "/api/v1/resources?research_id=research-empty&kind=artifact&limit=20": {
+        "status": 200,
+        "seconds": 0.9036746025085449,
+        "records": 0
+      }
+    },
+    "resource_lookup_during_catalog_scan": {
+      "status": 200,
+      "seconds": 0.960660352371633
+    }
+  }
+}

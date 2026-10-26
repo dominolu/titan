@@ -22,6 +22,7 @@ export const useConsoleStore = defineStore("titan-console", {
     operations: [] as Operation[],
     resources: [] as Resource[],
     pinnedResourceIds: [] as string[],
+    resourcePinOwners: {} as Record<string, string[]>,
     cursor: "",
     connection: "connecting",
     error: "",
@@ -250,15 +251,31 @@ export const useConsoleStore = defineStore("titan-console", {
         this.pinnedResourceIds
       );
     },
-    async pinResources(ids: string[]) {
-      this.pinnedResourceIds = [...new Set(ids.filter(Boolean))].slice(0, 32);
+    async pinResources(ids: string[], owner: string) {
+      const wanted = [...new Set(ids.filter(Boolean))];
+      const owners = { ...this.resourcePinOwners, [owner]: wanted };
+      const pinned = [...new Set(Object.values(owners).flat())];
+      if (pinned.length > 32 || Object.keys(owners).length > 32)
+        throw new Error("固定资源已达上限，请关闭不再使用的详情");
+      this.resourcePinOwners = owners;
+      this.pinnedResourceIds = pinned;
       const generation = this.generation;
-      for (const id of this.pinnedResourceIds) {
+      for (const id of wanted) {
         if (this.resources.some(item => item.id === id)) continue;
         const item = await consoleApi.resource(id);
-        if (generation !== this.generation) return;
+        if (
+          generation !== this.generation ||
+          !this.resourcePinOwners[owner]?.includes(id)
+        )
+          return;
         this.mergeResource(item);
       }
+    },
+    unpinResources(owner: string) {
+      delete this.resourcePinOwners[owner];
+      this.pinnedResourceIds = [
+        ...new Set(Object.values(this.resourcePinOwners).flat())
+      ];
     },
     async submit(action: SubmitOperation["action"], node_id: string) {
       const signature = JSON.stringify({ action, node_id });
@@ -332,6 +349,7 @@ export const useConsoleStore = defineStore("titan-console", {
       this.operations = [];
       this.resources = [];
       this.pinnedResourceIds = [];
+      this.resourcePinOwners = {};
       this.ready = false;
       this.cursor = "";
       this.owner = "";

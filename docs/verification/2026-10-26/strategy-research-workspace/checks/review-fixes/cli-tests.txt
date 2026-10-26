@@ -1,0 +1,85 @@
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (/home/dominolu/dev/titan-grid-20261022-2aafc598/target/debug/deps/titan_cli-5e8cc697434cd937)
+
+running 42 tests
+test core_runtime::tests::adapter_accepts_static_services_and_rejects_zero_capacity ... ok
+test core_runtime::tests::core_live_profile_freezes_bar_and_hybrid_until_producer_exists ... ok
+test core_runtime::tests::trusted_ed25519_keys_are_strict_and_rotation_friendly ... ok
+test core_runtime::tests::account_secret_root_is_resolved_relative_to_the_runtime_config ... ok
+test management::control::tests::recovery_keeps_monotonic_deadline_and_rejects_changed_boot_or_exhausted_budget ... ok
+test core_runtime::tests::unit_consistency_rejects_strategy_bound_account_mismatch ... ok
+test core_runtime::tests::legacy_plugin_configuration_is_rejected ... ok
+test management::tests::managed_configuration_cannot_use_direct_core_entry ... ok
+test core_runtime::tests::pair_arb_v13_runtime_template_deserializes_human_readable_byte_fields ... ok
+test management::tests::research_identity_groups_aliases_without_using_source_bytes_or_runtime_ids ... ok
+test management::tests::flooded_task_output_is_drained_with_a_strict_file_limit ... ok
+test core_runtime::tests::configured_runtime_starts_static_core_services ... ok
+test management::tests::account_authorization_filters_both_snapshots_and_events ... ok
+test management::tests::concurrent_dispatchers_cannot_claim_the_same_operation_twice ... ok
+test management::tests::terminal_receipt_cannot_be_overwritten_by_late_acknowledgement ... ok
+test management::tests::unknown_start_keeps_account_instrument_reserved ... ok
+test management::tests::failed_start_releases_only_with_positive_non_activation_evidence ... ok
+test management::tests::alert_acknowledgement_is_scoped_to_one_source_condition ... ok
+test management::store::research_read_tests::research_reads_do_not_take_admission_mutex_and_return_full_authorized_bodies ... ok
+test management::tests::incomplete_admission_never_claims_that_an_operation_was_absent ... ok
+test management::tests::materialized_request_does_not_drift_with_catalog_changes ... ok
+test management::tests::frozen_resources_and_optimistic_revisions_are_enforced ... ok
+test management::tests::stale_receipt_poll_cannot_undo_proven_capacity_rejection ... ok
+test management::tests::research_catalog_does_not_expose_private_accounts_or_account_only_observers ... ok
+test management::tests::recovery_transfers_occupancy_without_an_old_snapshot_releasing_the_new_owner ... ok
+test management::tests::stale_epoch_and_expired_cursor_require_resynchronization ... ok
+test management::tests::occupancy_survives_unknown_and_only_matching_engine_proof_releases_it ... ok
+test management::tests::idempotency_survives_restart_and_rejects_changed_input ... ok
+test registry::tests::fresh_starting_run_survives_reconciliation ... ok
+test management::tests::failed_unactivated_recovery_keeps_predecessor_retryable_without_releasing_the_account ... ok
+test management::tests::cancellation_and_dispatch_claim_share_one_transaction_boundary ... ok
+test registry::tests::unspawned_starting_run_can_be_cancelled ... ok
+test registry::tests::terminal_state_cannot_be_reclaimed_by_a_reused_pid ... ok
+test management::tests::http_requires_real_session_and_does_not_fallback_api_errors_to_html ... ok
+test registry::tests::report_owner_token_serializes_generation_and_guards_completion ... ok
+test registry::tests::owner_token_guards_state_and_dead_workers_reconcile_to_stale ... ok
+test management::tests::imported_artifact_download_uses_existing_resource_authorization ... ok
+test registry::tests::legacy_registry_is_migrated_without_losing_existing_runs ... ok
+test management::tests::research_scope_filters_before_paging_preserves_old_digests_and_separates_private_live_records ... ok
+test runtime_host::tests::async_entry_keeps_native_runtime_creation_shutdown_and_drop_on_one_sync_owner ... ok
+test runtime_host::tests::worker_query_rejects_wrong_token_generation_pid_and_unbounded_frames ... ok
+test management::tests::ordinary_capacity_cannot_consume_stop_admission_or_hide_stop_from_reconciliation ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.86s
+
+     Running unittests src/main.rs (/home/dominolu/dev/titan-grid-20261022-2aafc598/target/debug/deps/titan-5a1fc70a6b20493e)
+
+running 4 tests
+test cli_v13_tests::strategy_validation_trust_keys_are_explicit_and_strict ... ok
+test compiler::tests::binary_signing_seeds_preserve_whitespace_and_hex_is_strict ... ok
+test cli_v13_tests::parses_documented_v13_compile_command ... ok
+test compiler::tests::timeout_kills_worker_group_and_reaps_it ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running tests/cli_golden.rs (/home/dominolu/dev/titan-grid-20261022-2aafc598/target/debug/deps/cli_golden-c54805a423a0143c)
+
+running 1 test
+test v13_live_validation_needs_no_python_runtime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/strategy_compile.rs (/home/dominolu/dev/titan-grid-20261022-2aafc598/target/debug/deps/strategy_compile-1bcab9b5a0b86594)
+
+running 3 tests
+test native_math_artifact_loads_in_a_clean_host_without_preloaded_libm ... ok
+test termination_cancels_compile_process_group_and_cleans_workspace ... ok
+test rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifier ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.64s
+

@@ -81,7 +81,9 @@ fault_root=root/("timeout-node-"+secrets.token_hex(8));fault_root.mkdir()
 with socket.socket() as stream:stream.bind(("127.0.0.1",0));port=stream.getsockname()[1]
 node_config=root/"timeout.toml"
 q=lambda value:json.dumps(str(value))
-node_config.write_text("\n".join(["schema_version=1","[node]",'id="timeout"',f'listen="127.0.0.1:{port}"',f'token_env={q(config["node"]["token_env"])}',f'work_root={q(fault_root)}',f'titan_program={q(config["node"]["titan_program"])}','environments=["backtest"]',"task_seconds=1","[node.templates.sideways-long_bias]",f'source={q(config["node"]["templates"]["sideways-long_bias"]["source"])}',f'parameters={q(config["node"]["templates"]["sideways-long_bias"]["parameters"])}'])+"\n")
+template_settings=config["node"]["templates"]["sideways-long_bias"]
+research_settings=[f"{key}={q(template_settings[key])}" for key in ("research_id","research_name") if template_settings.get(key) is not None]
+node_config.write_text("\n".join(["schema_version=1","[node]",'id="timeout"',f'listen="127.0.0.1:{port}"',f'token_env={q(config["node"]["token_env"])}',f'work_root={q(fault_root)}',f'titan_program={q(config["node"]["titan_program"])}','environments=["backtest"]',"task_seconds=1","[node.templates.sideways-long_bias]",*research_settings,f'source={q(config["node"]["templates"]["sideways-long_bias"]["source"])}',f'parameters={q(config["node"]["templates"]["sideways-long_bias"]["parameters"])}'])+"\n")
 node_config.chmod(0o600)
 log=(fault_root/"node.log").open("ab")
 process=subprocess.Popen([config["node"]["titan_program"],"console","node","--config",str(node_config)],stdout=log,stderr=log)

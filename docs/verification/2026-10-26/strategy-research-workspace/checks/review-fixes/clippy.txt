@@ -1,0 +1,21 @@
+    Checking titan-domain-types v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-domain-types)
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-core-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/hftbacktest-derive)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-market-service)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-event-engine)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/connector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-cli)
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.24s

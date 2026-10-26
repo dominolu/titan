@@ -1,0 +1,7 @@
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/crates/titan-cli)
+warning: failed to parse serde attribute
+  | 
+  | deny_unknown_fields 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.09s

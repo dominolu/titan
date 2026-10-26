@@ -1,0 +1,7 @@
+rustc --version: rustc 1.94.1 (e408947bf 2026-03-25)
+cargo --version: cargo 1.94.1 (29ea6fb6a 2026-03-24)
+node --version: v22.22.0
+pnpm --version: 10.32.1
+/home/dominolu/dev/titan/.venv/bin/python --version: Python 3.11.14
+/home/dominolu/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome --version: Google Chrome for Testing 156.0.8078.4
+uname -m: x86_64

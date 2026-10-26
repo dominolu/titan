@@ -1,0 +1,8 @@
+{
+  "last_requested_template": "build-template-a",
+  "template_after_second_request": "build-template-a",
+  "template_after_stale_first_response": "build-template-b",
+  "parameters": "{\n  \"value\": \"B\"\n}",
+  "template_available": true,
+  "stale_request_overwrote_last_selection": true
+}

@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "pageErrors": [],
+  "checks": [
+    "deploy",
+    "start-cancel-no-operation",
+    "start-confirmation",
+    "pause",
+    "pending-pause-keeps-stop-enabled",
+    "resume",
+    "stop-confirmation",
+    "readonly-controls",
+    "research-workspace-live-lifecycle"
+  ]
+}

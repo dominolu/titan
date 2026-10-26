@@ -87,6 +87,8 @@ struct ListQuery {
     to_ns: Option<String>,
     run_id: Option<String>,
     generation: Option<String>,
+    research_id: Option<String>,
+    resource_id: Option<String>,
 }
 #[derive(Deserialize)]
 struct StreamQuery {
@@ -112,6 +114,7 @@ pub fn manager_router(config: ManagerConfig) -> Result<Router> {
         .route("/api/v1/resources/{id}/log", get(resource_log))
         .route("/api/v1/resources/{id}/acknowledge", post(acknowledge))
         .route("/api/v1/resources", get(resources))
+        .route("/api/v1/research", get(research))
         .route("/api/v1/strategies", get(resources))
         .route("/api/v1/artifacts", get(resources))
         .route("/api/v1/backtests", get(resources))
@@ -276,6 +279,23 @@ async fn operations(
         ))
     }
 }
+async fn research(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<Vec<ResearchWorkspace>>> {
+    let actor = identity(&app, &headers, false)?;
+    let result = tokio::task::spawn_blocking(move || {
+        app.store.list_research(
+            &actor,
+            query.offset.unwrap_or(0).min(1_000_000),
+            query.limit.unwrap_or(20).clamp(1, 200),
+        )
+    })
+    .await
+    .context("research query worker failed")??;
+    Ok(Json(result))
+}
 async fn resources(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -290,12 +310,30 @@ async fn resources(
         "/api/v1/runs" => Some("run"),
         _ => query.kind.as_deref(),
     };
-    Ok(Json(app.store.list_resources(
-        &actor,
-        kind,
-        query.offset.unwrap_or(0).min(1_000_000),
-        query.limit.unwrap_or(100).clamp(1, 200),
-    )?))
+    if let Some(id) = &query.research_id {
+        super::checked_id(id)?;
+    }
+    let offset = query.offset.unwrap_or(0).min(1_000_000);
+    let limit = query.limit.unwrap_or(100).clamp(1, 200);
+    let kind = kind.map(str::to_owned);
+    let result = tokio::task::spawn_blocking(move || {
+        if query.research_id.is_none() && query.resource_id.is_none() {
+            return app
+                .store
+                .list_resources(&actor, kind.as_deref(), offset, limit);
+        }
+        app.store.list_resources_scoped(
+            &actor,
+            kind.as_deref(),
+            offset,
+            limit,
+            query.research_id.as_deref(),
+            query.resource_id.as_deref(),
+        )
+    })
+    .await
+    .context("resource query worker failed")??;
+    Ok(Json(result))
 }
 async fn resource(
     State(app): State<Arc<App>>,

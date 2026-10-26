@@ -1,0 +1,10 @@
+
+> titan-console@6.2.0 check /home/dominolu/dev/titan-console-pages-20261026-0099c1fb/web/console
+> pnpm typecheck && pnpm exec prettier --check src/views/console src/api/console.ts src/store/modules/console.ts src/store/resource-cache.ts
+
+
+> titan-console@6.2.0 typecheck /home/dominolu/dev/titan-console-pages-20261026-0099c1fb/web/console
+> tsc --noEmit && vue-tsc --noEmit --skipLibCheck
+
+Checking formatting...
+All matched files use Prettier code style!

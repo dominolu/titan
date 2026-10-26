@@ -11,6 +11,209 @@ fn input(key: &str) -> SubmitOperation {
         },
     }
 }
+
+#[test]
+fn research_identity_groups_aliases_without_using_source_bytes_or_runtime_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("strategy.py");
+    std::fs::write(&source, "first").unwrap();
+    let mut template = super::config::Template {
+        research_id: None,
+        research_name: Some("网格策略".into()),
+        source: source.clone(),
+        parameters: temp.path().join("parameters.json"),
+        layout: None,
+    };
+    let first = template.research_identity("build").unwrap();
+    std::fs::write(&source, "second version").unwrap();
+    assert_eq!(first, template.clone().research_identity("build").unwrap());
+    assert_ne!(first.0, template.research_identity("other").unwrap().0);
+    template.research_id = Some("grid".into());
+    assert_eq!(
+        template.research_identity("other").unwrap().0,
+        "research-grid"
+    );
+    template.research_id = Some("../invalid".into());
+    assert!(template.research_identity("build").is_err());
+    template.research_id = Some("a".repeat(119));
+    let (id, _) = template.research_identity("build").unwrap();
+    assert_eq!(id.len(), 128);
+    super::checked_id(&id).unwrap();
+    for length in [120, 128] {
+        template.research_id = Some("a".repeat(length));
+        assert!(template.research_identity("build").is_err());
+    }
+}
+
+#[test]
+fn research_scope_filters_before_paging_preserves_old_digests_and_separates_private_live_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(&temp.path().join("db")).unwrap();
+    let save = |id: &str, kind: &str, body| {
+        store
+            .save_resource(
+                Resource {
+                    id: id.into(),
+                    kind: kind.into(),
+                    node_id: "build".into(),
+                    revision: String::new(),
+                    frozen: kind != "template",
+                    digest: String::new(),
+                    body,
+                },
+                None,
+            )
+            .unwrap()
+    };
+    let template = save(
+        "build-template-neutral",
+        "template",
+        json!({"research_id":"research-grid","research_name":"网格","source_digest":"source-1"}),
+    );
+    let old = save(
+        "old-version",
+        "version",
+        json!({"template_id":"neutral","source_digest":"source-1"}),
+    );
+    save("artifact", "artifact", json!({"version_id":old.id}));
+    save("backtest", "backtest", json!({"artifact_id":"artifact"}));
+    save("report", "report", json!({"backtest_id":"backtest"}));
+    save(
+        "deployment",
+        "deployment",
+        json!({"artifact_id":"artifact","environment":"live","account":"gate"}),
+    );
+    save(
+        "run",
+        "run",
+        json!({"deployment_id":"deployment","environment":"live","account":"gate"}),
+    );
+    for n in 0..25 {
+        save(
+            &format!("foreign-{n}"),
+            "artifact",
+            json!({"research_id":"research-other"}),
+        );
+    }
+    let actor = identity(vec!["gate".into()]);
+    let listed = store
+        .list_resources_scoped(&actor, Some("artifact"), 0, 20, Some("research-grid"), None)
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "artifact");
+    assert!(
+        store
+            .list_resources_scoped(
+                &actor,
+                None,
+                0,
+                20,
+                Some("research-other"),
+                Some("artifact")
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_resources_scoped(&actor, Some("report"), 0, 20, Some("research-grid"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(store.resource(&old.id).unwrap().digest, old.digest);
+    assert!(
+        store
+            .list_resources_scoped(
+                &identity(vec![]),
+                Some("run"),
+                0,
+                20,
+                Some("research-grid"),
+                None
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("research-grid"), None)
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut changed = template;
+    changed.body["source_digest"] = "reused-alias".into();
+    store.save_resource(changed, None).unwrap();
+    assert!(
+        store
+            .list_resources_scoped(&actor, Some("version"), 0, 20, Some("research-grid"), None)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_resources_scoped(&actor, Some("version"), 0, 20, Some("unassigned"), None)
+            .unwrap()[0]
+            .id,
+        old.id
+    );
+    assert_eq!(store.resource(&old.id).unwrap().digest, old.digest);
+}
+#[test]
+fn research_catalog_does_not_expose_private_accounts_or_account_only_observers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(&temp.path().join("db")).unwrap();
+    for (id, kind, body) in [
+        (
+            "template",
+            "template",
+            json!({"research_id":"research-grid","research_name":"网格"}),
+        ),
+        (
+            "private",
+            "run",
+            json!({"research_id":"research-private","environment":"live","account":"private","mode":"trade"}),
+        ),
+        (
+            "observer",
+            "run",
+            json!({"research_id":"research-observer","environment":"live","account":"gate","mode":"observe"}),
+        ),
+        ("dataset", "dataset", json!({"research_id":"research-grid"})),
+    ] {
+        store
+            .save_resource(
+                Resource {
+                    id: id.into(),
+                    kind: kind.into(),
+                    node_id: "build".into(),
+                    revision: String::new(),
+                    frozen: false,
+                    digest: String::new(),
+                    body,
+                },
+                None,
+            )
+            .unwrap();
+    }
+    let actor = identity(vec!["gate".into()]);
+    let catalog = store.list_research(&actor, 0, 20).unwrap();
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0].id, "research-grid");
+    assert!(
+        store
+            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("research-observer"), None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .list_resources_scoped(&actor, Some("dataset"), 0, 20, Some("research-grid"), None)
+            .unwrap()
+            .is_empty()
+    );
+}
 #[test]
 fn stale_receipt_poll_cannot_undo_proven_capacity_rejection() {
     let tmp = tempfile::tempdir().unwrap();

@@ -1,0 +1,10 @@
+{
+  "pins_after_parameter_edit": [
+    "run-original",
+    "build-template-a"
+  ],
+  "run_retained": true,
+  "deployment_retained": false,
+  "deployment_was_pinned_by_run_detail": true,
+  "new_deployment_events": 101
+}

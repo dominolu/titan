@@ -1,0 +1,11 @@
+{"name": "reader-api-write-denied", "passed": true}
+{"name": "immutable-dataset-prepare-sideways", "passed": true, "sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683"}
+{"name": "manager-and-node-restart-preserve-task", "passed": true}
+{"name": "compile-sideways-neutral", "passed": true, "artifact_id": "build-artifact-1d1bad79885602d689c32361bcb0ffa966d725df3db152eb4e6d4f3f30ab068c", "metadata_schema": 3}
+{"name": "backtest-sideways-neutral-base", "passed": true, "operation_id": "fd497b541d9d3ef193848d74e3a931d6bc12625c2bb0e00b49feaf4ff672bec3", "metrics": {"net_pnl_usdt": "6.39232967427597", "max_drawdown_pct": "0.07392107182923553", "max_pending_bound_notional_usdt": "3013.0710000000004", "final_position_btc": "0.0"}}
+{"name": "verified-report-render-and-download", "passed": true}
+{"name": "engine-validation-rejection", "passed": true}
+{"name": "cancellation-confirmed-by-execution-path", "passed": true}
+{"name": "fault-injection", "passed": true, "checks": ["unproven-prepared-cache-rejected", "tampered-artifact-rejected-valid-file-restored", "private-and-symlink-files-rejected", "retained-inventory-keeps-metrics-with-failed-operation", "concurrent-node-dedup-and-real-compiler-timeout", "expired-session-rejected"]}
+{"name":"browser-e2e","passed":true}
+{"name": "browser-e2e", "passed": true}

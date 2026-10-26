@@ -157,6 +157,14 @@ pub struct Resource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct ResearchWorkspace {
+    pub id: String,
+    pub name: String,
+    pub template_count: usize,
+    pub resource_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SaveVersion {
     pub node_id: String,
@@ -230,6 +238,7 @@ pub fn export_types(directory: &std::path::Path) -> anyhow::Result<()> {
         SubmitOperation::decl(&config),
         Operation::decl(&config),
         Resource::decl(&config),
+        ResearchWorkspace::decl(&config),
         SaveVersion::decl(&config),
         Snapshot::decl(&config),
         Event::decl(&config),

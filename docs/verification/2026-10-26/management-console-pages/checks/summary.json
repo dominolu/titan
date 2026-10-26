@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "verified_at": "2026-10-26T05:53:44.026368+00:00",
+  "source_baseline": "0099c1fb566331a2ac3d43a8ef0f4b7ac586daba",
+  "source_file_count": 35,
+  "environment": "192.168.3.88; isolated source; public history and loopback fixtures only",
+  "checks": {
+    "m1": {
+      "passed": true,
+      "count": 5,
+      "pageErrors": []
+    },
+    "m1_browser": {
+      "passed": true,
+      "count": 16,
+      "pageErrors": []
+    },
+    "m1_faults": {
+      "passed": true,
+      "count": 6,
+      "pageErrors": []
+    },
+    "m2": {
+      "passed": true,
+      "count": 6,
+      "pageErrors": []
+    },
+    "m2_browser": {
+      "passed": true,
+      "count": 8,
+      "pageErrors": []
+    },
+    "m3": {
+      "passed": true,
+      "count": 21,
+      "pageErrors": []
+    },
+    "m3_browser": {
+      "passed": true,
+      "count": 8,
+      "pageErrors": []
+    }
+  },
+  "m3_remaining_orders": 0,
+  "native_binary_sha256": "fee02111897d57b7919655d654b22558fd4788890afd9f517254d37d362c043e",
+  "frontend_checks": [
+    "tsc/vue-tsc",
+    "Prettier",
+    "ESLint --max-warnings 0",
+    "cache 600 updates",
+    "precision/identity/native-status presentation",
+    "Vite production build",
+    "browser script syntax"
+  ],
+  "removed_sources": [
+    "web/console/src/views/console/index.vue",
+    "web/console/src/views/console/ObservationPanel.vue"
+  ]
+}

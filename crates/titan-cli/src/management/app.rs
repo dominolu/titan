@@ -343,7 +343,7 @@ impl App {
             &format!("{}-template-{}", input.node_id, input.template_id),
             false,
         )?;
-        let body = json!({"template_id":input.template_id,"parameters":input.parameters,"source_digest":template.body["source_digest"],"environment":"backtest"});
+        let body = json!({"research_id":template.body["research_id"],"research_name":template.body["research_name"],"template_id":input.template_id,"parameters":input.parameters,"source_digest":template.body["source_digest"],"environment":"backtest"});
         let mut frozen = false;
         let mut final_body = body.clone();
         if let Some(op_id) = &input.freeze_operation_id {
