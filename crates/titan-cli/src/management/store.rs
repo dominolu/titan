@@ -1,11 +1,34 @@
 use super::{contract::*, digest, fault, nonce, now_ns};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Duration,
+};
+
+// Only fields needed for authorization and immutable lineage. Large metadata,
+// parameters, metrics and runtime observations never enter the research scan.
+const RESEARCH_PROJECTION: &str = "json_object(
+    'id',id,'kind',kind,'node_id',node_id,'revision','','frozen',json('false'),'digest','',
+    'body',json_object(
+        'environment',json_extract(data,'$.body.environment'),
+        'account',json_extract(data,'$.body.account'),
+        'mode',json_extract(data,'$.body.mode'),
+        'research_id',json_extract(data,'$.body.research_id'),
+        'research_name',json_extract(data,'$.body.research_name'),
+        'source_digest',json_extract(data,'$.body.source_digest'),
+        'template_id',json_extract(data,'$.body.template_id'),
+        'version_id',json_extract(data,'$.body.version_id'),
+        'artifact_id',json_extract(data,'$.body.artifact_id'),
+        'backtest_id',json_extract(data,'$.body.backtest_id'),
+        'deployment_id',json_extract(data,'$.body.deployment_id')
+    ))";
 
 pub(crate) struct Store {
     db: Mutex<Connection>,
+    path: PathBuf,
     pub epoch: String,
 }
 
@@ -38,6 +61,7 @@ impl Store {
             COMMIT;")?;
         Ok(Self {
             db: Mutex::new(db),
+            path: path.canonicalize()?,
             epoch: nonce(),
         })
     }
@@ -45,6 +69,15 @@ impl Store {
         self.db
             .lock()
             .map_err(|_| anyhow::anyhow!("management store lock poisoned"))
+    }
+    fn research_connection(&self) -> Result<Connection> {
+        // WAL readers use their own snapshot, never the admission/write mutex.
+        let db = Connection::open_with_flags(
+            &self.path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        db.busy_timeout(Duration::from_secs(5))?;
+        Ok(db)
     }
     pub fn audit(&self, actor: &str, action: &str, target: &str, input: &str) -> Result<()> {
         self.connection()?.execute(
@@ -574,6 +607,53 @@ impl Store {
             resources,
         })
     }
+    pub fn list_research(
+        &self,
+        identity: &Identity,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ResearchWorkspace>> {
+        let db = self.research_connection()?;
+        let mut stmt = db.prepare(&format!("SELECT {RESEARCH_PROJECTION} FROM resources WHERE kind IN ('template','version','artifact','backtest','report','deployment','run') ORDER BY CASE WHEN kind='template' THEN 0 ELSE 1 END,rowid DESC"))?;
+        let mut memo = std::collections::HashMap::new();
+        let mut groups: std::collections::BTreeMap<String, ResearchWorkspace> = Default::default();
+        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            let item: Resource = serde_json::from_str(&row?)?;
+            let env = item.body["environment"].as_str().unwrap_or("backtest");
+            if !allowed(identity, &item.node_id, env)
+                || !account_allowed(identity, item.body["account"].as_str())
+            {
+                continue;
+            }
+            if item.kind == "run" && item.body["mode"] == "observe" {
+                continue;
+            }
+            let id = research_membership(&db, &item, 0, &mut memo)?
+                .unwrap_or_else(|| "unassigned".into());
+            let group = groups
+                .entry(id.clone())
+                .or_insert_with(|| ResearchWorkspace {
+                    id: id.clone(),
+                    name: if id == "unassigned" {
+                        "未归属的历史记录".into()
+                    } else {
+                        item.body["research_name"]
+                            .as_str()
+                            .unwrap_or("策略研究")
+                            .to_owned()
+                    },
+                    template_count: 0,
+                    resource_count: 0,
+                });
+            if item.kind == "template" {
+                group.template_count += 1;
+            } else {
+                group.resource_count += 1;
+            }
+        }
+        Ok(groups.into_values().skip(offset).take(limit).collect())
+    }
+
     pub fn list_resources(
         &self,
         identity: &Identity,
@@ -581,13 +661,25 @@ impl Store {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<Resource>> {
-        let db = self.connection()?;
-        let mut stmt = db.prepare(
-            "SELECT data FROM resources WHERE (?1 IS NULL OR kind=?1) ORDER BY rowid DESC",
-        )?;
+        self.list_resources_scoped(identity, kind, offset, limit, None, None)
+    }
+    pub fn list_resources_scoped(
+        &self,
+        identity: &Identity,
+        kind: Option<&str>,
+        offset: usize,
+        limit: usize,
+        research: Option<&str>,
+        resource_id: Option<&str>,
+    ) -> Result<Vec<Resource>> {
+        let db = self.research_connection()?;
+        let mut stmt = db.prepare(&format!(
+            "SELECT {RESEARCH_PROJECTION} FROM resources WHERE (?1 IS NULL OR kind=?1) AND (?2 IS NULL OR id=?2) ORDER BY rowid DESC",
+        ))?;
         let mut out = Vec::new();
         let mut skipped = 0;
-        for row in stmt.query_map([kind], |r| r.get::<_, String>(0))? {
+        let mut membership = std::collections::HashMap::new();
+        for row in stmt.query_map(params![kind, resource_id], |r| r.get::<_, String>(0))? {
             let item: Resource = serde_json::from_str(&row?)?;
             let env = item
                 .body
@@ -599,11 +691,39 @@ impl Store {
             {
                 continue;
             }
+            if let Some(research) = research {
+                if !matches!(
+                    item.kind.as_str(),
+                    "template"
+                        | "version"
+                        | "artifact"
+                        | "backtest"
+                        | "report"
+                        | "deployment"
+                        | "run"
+                ) {
+                    continue;
+                }
+                if item.kind == "run" && item.body["mode"] == "observe" {
+                    continue;
+                }
+                let resolved = research_membership(&db, &item, 0, &mut membership)?;
+                if (research == "unassigned" && resolved.is_some())
+                    || (research != "unassigned" && resolved.as_deref() != Some(research))
+                {
+                    continue;
+                }
+            }
             if skipped < offset {
                 skipped += 1;
                 continue;
             }
-            out.push(item);
+            // Materialize full bodies only for the authorized requested page.
+            let data: String =
+                db.query_row("SELECT data FROM resources WHERE id=?1", [&item.id], |r| {
+                    r.get(0)
+                })?;
+            out.push(serde_json::from_str(&data)?);
             if out.len() >= limit {
                 break;
             }
@@ -717,6 +837,64 @@ pub(crate) fn allowed(identity: &Identity, node: &str, environment: &str) -> boo
 pub(crate) fn account_allowed(identity: &Identity, account: Option<&str>) -> bool {
     account.is_none_or(|account| identity.accounts.iter().any(|value| value == account))
 }
+// Resolve immutable lineage without rewriting old frozen records or their digests.
+fn research_membership(
+    db: &Connection,
+    item: &Resource,
+    depth: usize,
+    memo: &mut std::collections::HashMap<String, Option<String>>,
+) -> Result<Option<String>> {
+    if let Some(value) = memo.get(&item.id) {
+        return Ok(value.clone());
+    }
+    if depth >= 12 {
+        return Ok(None);
+    }
+    memo.insert(item.id.clone(), None);
+    if let Some(id) = item.body["research_id"].as_str().filter(|v| !v.is_empty()) {
+        let value = Some(id.to_owned());
+        memo.insert(item.id.clone(), value.clone());
+        return Ok(value);
+    }
+    let parent = match item.kind.as_str() {
+        "version" => item.body["template_id"]
+            .as_str()
+            .map(|id| format!("{}-template-{id}", item.node_id)),
+        "artifact" => item.body["version_id"].as_str().map(str::to_owned),
+        "backtest" | "deployment" => item.body["artifact_id"].as_str().map(str::to_owned),
+        "report" => item.body["backtest_id"].as_str().map(str::to_owned),
+        "run" => item.body["deployment_id"].as_str().map(str::to_owned),
+        _ => None,
+    };
+    let value = if let Some(id) = parent {
+        let data: Option<String> = db
+            .query_row(
+                &format!("SELECT {RESEARCH_PROJECTION} FROM resources WHERE id=?1"),
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(data) = data {
+            let parent: Resource = serde_json::from_str(&data)?;
+            // A reused alias must not reassign old, unlabelled source versions.
+            if item.kind == "version"
+                && (item.body["source_digest"].as_str().is_none()
+                    || item.body["source_digest"] != parent.body["source_digest"])
+            {
+                None
+            } else {
+                research_membership(db, &parent, depth + 1, memo)?
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    memo.insert(item.id.clone(), value.clone());
+    Ok(value)
+}
+
 fn revision(db: &Connection) -> Result<i64> {
     Ok(db.query_row(
         "UPDATE meta SET value=value+1 WHERE key='revision' RETURNING value",
@@ -750,4 +928,67 @@ fn event(
         [seq.saturating_sub(2000)],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod research_read_tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn research_reads_do_not_take_admission_mutex_and_return_full_authorized_bodies() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(&temp.path().join("db")).unwrap());
+        let saved = store.save_resource(Resource {
+            id: "artifact".into(), kind: "artifact".into(), node_id: "build".into(),
+            revision: String::new(), frozen: true, digest: String::new(),
+            body: json!({"research_id":"research-grid","research_name":"网格", "metadata":{"schema":"must-survive-projection"},"parameters":{"quantity":"9007199254740993"}}),
+        }, None).unwrap();
+        let actor = Identity {
+            username: "reader".into(),
+            role: Role::Reader,
+            nodes: vec!["build".into()],
+            accounts: vec![],
+            environments: vec!["backtest".into()],
+        };
+        let lock = store.connection().unwrap();
+        let reader = store.clone();
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let result = reader.list_research(&actor, 0, 20).and_then(|catalog| {
+                let rows = reader.list_resources_scoped(
+                    &actor,
+                    Some("artifact"),
+                    0,
+                    20,
+                    Some("research-grid"),
+                    None,
+                )?;
+                Ok((catalog, rows))
+            });
+            tx.send(result).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(2));
+        drop(lock);
+        thread.join().unwrap();
+        let (catalog, rows) = result
+            .expect("research query waited for admission mutex")
+            .unwrap();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].resource_count, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&rows[0]).unwrap(),
+            serde_json::to_value(saved).unwrap()
+        );
+
+        // A long-lived WAL reader also cannot prevent admission writes.
+        let db = store.research_connection().unwrap();
+        db.execute_batch("BEGIN; SELECT data FROM resources;")
+            .unwrap();
+        store
+            .audit("reader", "review", "artifact", "probe")
+            .unwrap();
+        db.execute_batch("ROLLBACK").unwrap();
+    }
 }

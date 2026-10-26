@@ -1,40 +1,57 @@
-const Layout = () => import("@/layout/index.vue");
-const Console = () => import("@/views/console/index.vue");
+const Layout = () => import("@/views/console/ConsoleLayout.vue");
 export default {
   path: "/",
   name: "Home",
   component: Layout,
-  redirect: "/welcome",
+  redirect: "/runs",
   meta: { icon: "ep/monitor", title: "Titan 管理", rank: 0 },
   children: [
     {
       path: "/welcome",
       name: "Welcome",
-      component: Console,
+      component: () => import("@/views/console/LegacyResearchRoute.vue"),
       meta: { title: "策略参数", icon: "ep/set-up" }
     },
     {
       path: "/artifacts",
       name: "Artifacts",
-      component: Console,
+      component: () => import("@/views/console/LegacyResearchRoute.vue"),
       meta: { title: "构建制品", icon: "ep/box" }
     },
     {
       path: "/backtests",
       name: "Backtests",
-      component: Console,
+      component: () => import("@/views/console/LegacyResearchRoute.vue"),
       meta: { title: "历史回测", icon: "ep/data-line" }
+    },
+    {
+      path: "/research",
+      name: "Research",
+      component: () => import("@/views/console/ResearchIndex.vue"),
+      meta: { title: "策略研究", icon: "ep/set-up" }
+    },
+    {
+      path: "/research/:researchId",
+      name: "ResearchWorkspace",
+      component: () => import("@/views/console/ResearchWorkspace.vue"),
+      meta: { title: "策略研究", showLink: false }
     },
     {
       path: "/runs",
       name: "Runs",
-      component: Console,
-      meta: { title: "运行详情", icon: "ep/video-play" }
+      component: () => import("@/views/console/RunsOverview.vue"),
+      meta: { title: "运行总览", icon: "ep/video-play" }
+    },
+    {
+      path: "/runs/:id",
+      name: "RunDetail",
+      component: () => import("@/views/console/RunDetail.vue"),
+      meta: { title: "策略详情", showLink: false }
     },
     {
       path: "/accounts",
       name: "Accounts",
-      component: Console,
+      component: () => import("@/views/console/AccountRisk.vue"),
       meta: { title: "账户风险", icon: "ep/warning" }
     }
   ]

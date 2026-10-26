@@ -155,9 +155,52 @@ fn task_seconds() -> u64 {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Template {
+    /// Logical research workspace, independent of template aliases and runtime strategy IDs.
+    #[serde(default)]
+    pub research_id: Option<String>,
+    #[serde(default)]
+    pub research_name: Option<String>,
     pub source: PathBuf,
     pub parameters: PathBuf,
     pub layout: Option<PathBuf>,
+}
+
+impl Template {
+    pub(crate) fn research_identity(&self, node_id: &str) -> Result<(String, String)> {
+        let source = self.source.canonicalize()?;
+        let id = if let Some(id) = &self.research_id {
+            super::checked_id(id)?;
+            format!("research-{id}")
+        } else {
+            // Aliases of the same source share a workspace; editing bytes keeps its identity.
+            format!(
+                "source-{}",
+                super::digest(
+                    &[
+                        node_id.as_bytes(),
+                        b"\0",
+                        source.as_os_str().as_encoded_bytes(),
+                    ]
+                    .concat()
+                )
+            )
+        };
+        super::checked_id(&id)?;
+        let name = self.research_name.clone().unwrap_or_else(|| {
+            self.research_id.clone().unwrap_or_else(|| {
+                source
+                    .parent()
+                    .and_then(Path::file_name)
+                    .map(|v| v.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "策略研究".into())
+            })
+        });
+        ensure!(
+            !name.trim().is_empty() && name.len() <= 256,
+            "invalid research name"
+        );
+        Ok((id, name))
+    }
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

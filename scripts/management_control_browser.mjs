@@ -18,8 +18,18 @@ const context = await browser.newContext({
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 async function confirm() {
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/operations") &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "确定", exact: true }).click();
+  const response = await responsePromise;
+  assert.equal(response.status(), 202, await response.text());
   await page.locator(".el-drawer__close-btn:visible").click();
+  await page
+    .locator(".el-drawer__close-btn:visible")
+    .waitFor({ state: "hidden" });
 }
 async function login(name) {
   await page.goto(origin + "/#/login");
@@ -28,21 +38,28 @@ async function login(name) {
     .locator("input[autocomplete='current-password']")
     .fill(process.env.TITAN_BROWSER_PASSWORD);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.waitForURL("**/#/welcome");
+  await page.waitForURL("**/#/runs");
 }
 try {
   await login("operator");
-  await page.goto(origin + "/#/artifacts");
-  await page.getByRole("heading", { name: "构建制品", exact: true }).waitFor();
-  await page.getByText("选择已构建制品", { exact: true }).click();
+  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.getByRole("heading", { name: "受控部署", exact: true }).waitFor();
+  await page.locator(".deployment-form .el-select").nth(0).click();
   await page.getByRole("option", { name: artifact, exact: true }).click();
-  await page.getByText("选择已授权实盘绑定", { exact: true }).click();
+  await page.locator(".deployment-form .el-select").nth(1).click();
   await page
     .getByRole("option", {
       name: "live / gate / GATE_FUTURE_BTC_USDT",
       exact: true,
     })
     .click();
+  await expect(page.locator(".binding-preview")).toContainText("100");
+  await page.mouse.move(500, 100);
+  await page.screenshot({
+    path: output + "/deployment.png",
+    fullPage: true,
+    animations: "disabled",
+  });
   await page.getByRole("button", { name: "部署制品", exact: true }).click();
   await page.locator(".el-drawer__close-btn:visible").click();
   await page
@@ -65,11 +82,74 @@ try {
   });
   await confirm();
   await page.goto(origin + "/#/runs");
+  await page.getByRole("heading", { name: "运行总览", exact: true }).waitFor();
+  await page.locator(".runs-table .text-link").first().waitFor();
+  await expect(page.locator(".runs-table .state-tag").first()).toHaveText(
+    "运行中",
+    { timeout: 60000 },
+  );
+  await expect(page.locator(".risk-summary .risk-value")).not.toContainText(
+    "—",
+  );
+  await expect(page.locator(".equity-canvas")).toBeVisible({ timeout: 15000 });
+  await page.screenshot({
+    path: output + "/overview.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.locator(".live-runs-table .text-link").first().click();
   await page
     .getByRole("button", { name: "暂停", exact: true })
     .waitFor({ timeout: 60000 });
+  await expect(
+    page.getByRole("button", { name: "暂停", exact: true }),
+  ).toBeEnabled();
+  await page.screenshot({
+    path: output + "/running.png",
+    fullPage: true,
+    animations: "disabled",
+  });
+  let releasePause, pauseEntered;
+  const heldPause = new Promise((resolve) => {
+    releasePause = resolve;
+  });
+  const enteredPause = new Promise((resolve) => {
+    pauseEntered = resolve;
+  });
+  await page.route("**/api/v1/operations", async (route) => {
+    if (
+      route.request().method() !== "POST" ||
+      route.request().postDataJSON()?.action?.kind !== "pause"
+    )
+      return route.continue();
+    const response = await route.fetch();
+    pauseEntered();
+    await heldPause;
+    await route.fulfill({ response });
+  });
   await page.getByRole("button", { name: "暂停", exact: true }).click();
-  await confirm();
+  const pauseResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/v1/operations") &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "确定", exact: true }).click();
+  await enteredPause;
+  await expect(
+    page.getByRole("button", { name: "恢复运行", exact: true }),
+  ).toBeDisabled({ timeout: 15000 });
+  await expect(page.locator(".runtime-state")).toContainText("新增开仓已暂停");
+  await expect(
+    page.getByRole("button", { name: "停止", exact: true }),
+  ).toBeEnabled();
+  releasePause();
+  assert.equal((await pauseResponse).status(), 202);
+  await page.locator(".el-drawer__close-btn:visible").click();
+  await page
+    .locator(".el-drawer__close-btn:visible")
+    .waitFor({ state: "hidden" });
+  await page.unroute("**/api/v1/operations");
   await page.getByRole("button", { name: "恢复运行", exact: true }).waitFor();
   await page.screenshot({
     path: output + "/paused.png",
@@ -94,6 +174,8 @@ try {
   await page.waitForURL("**/#/login");
   await login("reader");
   await page.goto(origin + "/#/runs");
+  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.locator(".live-runs-table .text-link").first().click();
   await expect(
     page.getByRole("button", { name: "checkpoint 恢复", exact: true }),
   ).toBeDisabled();
@@ -109,9 +191,11 @@ try {
           "start-cancel-no-operation",
           "start-confirmation",
           "pause",
+          "pending-pause-keeps-stop-enabled",
           "resume",
           "stop-confirmation",
           "readonly-controls",
+          "research-workspace-live-lifecycle",
         ],
       },
       null,

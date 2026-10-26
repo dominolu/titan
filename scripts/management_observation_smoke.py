@@ -47,13 +47,16 @@ def main():
             if url.path == "/fault/recover":
                 state.update(stale=False, condition="two")
                 return self.reply(200, {})
+            if url.path == "/fault/refresh":
+                state["view_revision_probe"] = state.get("view_revision_probe", 0) + 1
+                return self.reply(200, {})
             if self.headers.get("Authorization") != "Bearer " + token:
                 return self.reply(401, {"code": "UNAUTHENTICATED"})
             if self.server.slow:
                 time.sleep(12)
                 return self.reply(200, [])
             if url.path == "/v1/catalog":
-                body = {"account": "gate", "instrument": "BTC_USDT", "worker_id": "fixture", "generation": "one", "environment": "live", "mode": "observe", "process_state": "RUNNING", "available": not state["stale"], "observation_stale": state["stale"], "observation": image, "allowed_actions": []}
+                body = {"account": "gate", "instrument": "BTC_USDT", "worker_id": "fixture", "generation": "one", "environment": "live", "mode": "observe", "process_state": "RUNNING", "available": not state["stale"], "observation_stale": state["stale"], "observation": image, "allowed_actions": [], "view_revision_probe": state.get("view_revision_probe", 0)}
                 def resource(kind, name, contents):
                     return {"id": name, "kind": kind, "node_id": "observe", "revision": "", "frozen": False, "digest": "", "body": contents}
                 return self.reply(200, [resource("run", "observe-run-fixture", body), resource("account", "observe-account-gate", body), resource("alert", "observe-alert", {"environment": "live", "account": "gate", "source": "E_fixture_diagnostics", "code": "TEST_OBSERVATION", "condition_identity": state["condition"], "active": True, "message": "synthetic source for browser verification"})])

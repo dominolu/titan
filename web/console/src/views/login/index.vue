@@ -12,7 +12,7 @@ async function login() {
   try {
     await useUserStoreHook().loginByUsername(form);
     form.password = "";
-    await router.push("/welcome");
+    await router.push("/runs");
   } catch (failure) {
     error.value = String((failure as Error).message);
   } finally {

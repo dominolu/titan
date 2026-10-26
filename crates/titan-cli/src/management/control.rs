@@ -389,6 +389,8 @@ pub(super) async fn execute(
             let runtime_sha256 = node::digest_file(&configured.runtime_config)?;
             let mut body = binding.body.clone();
             body["artifact_id"] = artifact.id.clone().into();
+            body["research_id"] = artifact.body["research_id"].clone();
+            body["research_name"] = artifact.body["research_name"].clone();
             body["artifact_digest"] = artifact.body["artifact_digest"].clone();
             body["blob_sha256"] = artifact.body["blob_sha256"].clone();
             body["operation_id"] = request.operation_id.clone().into();
@@ -1067,7 +1069,7 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
         actions.push("recover");
     }
     let safe = record.state == "STOPPED" && observation["release_proof"]["safe"] == true;
-    let body = json!({"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"strategy_id":deployment.resource.body["strategy_id"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"generation":generation,"deployment_id":spec.deployment_id,"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
+    let body = json!({"research_id":deployment.resource.body["research_id"],"research_name":deployment.resource.body["research_name"],"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"strategy_id":deployment.resource.body["strategy_id"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"generation":generation,"deployment_id":spec.deployment_id,"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
     Ok(vec![node::resource(
         config,
         "run",

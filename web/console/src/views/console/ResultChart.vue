@@ -10,6 +10,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import { http } from "@/utils/http";
 import { consoleApi } from "@/api/console";
+import { useConsoleStore } from "@/store/modules/console";
 use([
   LineChart,
   GridComponent,
@@ -18,6 +19,7 @@ use([
   CanvasRenderer
 ]);
 const props = defineProps<{ operationId: string }>();
+const store = useConsoleStore();
 const element = ref<HTMLDivElement>();
 const error = ref("");
 let chart: ECharts | null = null;
@@ -25,18 +27,26 @@ let observer: ResizeObserver | null = null;
 let generation = 0;
 async function load() {
   const current = ++generation;
+  const identity = store.generation;
+  chart?.clear();
+  error.value = "";
   if (!props.operationId || !chart) return;
   try {
     const table = await http.get<{ columns: string[]; points: string[][] }>(
       consoleApi.file(props.operationId, "history/chart.json")
     );
-    if (current !== generation || !chart) return;
+    if (current !== generation || identity !== store.generation || !chart)
+      return;
     const index = (name: string) => table.columns.indexOf(name);
     chart.setOption(
       {
         animation: false,
+        color: ["#0a8375", "#7a90aa", "#c9a569"],
         tooltip: { trigger: "axis" },
-        legend: { data: ["净权益", "实际名义持仓", "含在途名义上界"] },
+        legend: {
+          data: ["净权益", "实际名义持仓", "含在途名义上界"],
+          textStyle: { color: "#718092", fontSize: 10 }
+        },
         grid: { left: 65, right: 65, top: 50, bottom: 35 },
         xAxis: { type: "time" },
         yAxis: [
@@ -62,7 +72,8 @@ async function load() {
     );
     error.value = "";
   } catch (failure) {
-    if (current === generation) error.value = (failure as Error).message;
+    if (current === generation && identity === store.generation)
+      error.value = (failure as Error).message;
   }
 }
 onMounted(() => {
@@ -81,7 +92,7 @@ onBeforeUnmount(() => {
 </script>
 <template>
   <el-alert v-if="error" :title="error" type="warning" :closable="false" />
-  <div ref="element" style="width: 100%; height: 330px" />
+  <div ref="element" class="result-chart" />
   <p class="caption">
     曲线为有界采样展示，收益、最大回撤与最大敞口使用引擎全量指标。
   </p>
@@ -90,6 +101,6 @@ onBeforeUnmount(() => {
 .caption {
   font-size: 12px;
   color: var(--el-text-color-secondary);
-  margin: 10px 0;
+  margin: 10px 20px 18px;
 }
 </style>
