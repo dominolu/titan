@@ -154,7 +154,7 @@ fn runtime_config(
     );
     raw.managed_by_console = false;
     ensure!(
-        !raw.strategy_service.allow_unsigned_artifacts
+        !raw.strategy_service.allow_unsigned_strategies
             && !raw.strategy_service.trusted_ed25519_keys.is_empty(),
         "managed deployment requires signature trust"
     );
@@ -226,23 +226,23 @@ fn runtime_config(
         raw.market_sources.len() == 1,
         "managed market source missing"
     );
-    let artifact = deploy_root(
+    let compiled_strategy = deploy_root(
         config,
         local_id(config, &deployment.resource.id, "deployment")?,
     )?
     .join("strategy.titan");
     ensure!(
-        node::digest_file(&artifact)?
-            == deployment.resource.body["blob_sha256"]
+        node::digest_file(&compiled_strategy)?
+            == deployment.resource.body["strategy_file_sha256"]
                 .as_str()
                 .unwrap_or(""),
         "deployed blob changed"
     );
-    strategy.package.uri = Arc::from(format!("file://{}", artifact.display()));
-    let bytes = deployment.resource.body["artifact_digest"]
+    strategy.strategy_file.uri = Arc::from(format!("file://{}", compiled_strategy.display()));
+    let bytes = deployment.resource.body["compiled_strategy_digest"]
         .as_str()
-        .context("missing artifact digest")?;
-    strategy.package.expected_digest = decode_hash(bytes)?;
+        .context("missing compiled_strategy digest")?;
+    strategy.strategy_file.expected_digest = decode_hash(bytes)?;
     strategy.runtime.execution_limits = Some(ExecutionLimits {
         max_notional_tick_lots: cap.to_string(),
         max_price_deviation_bps: binding.max_price_deviation_bps,
@@ -258,7 +258,7 @@ fn runtime_config(
         strategy.runtime.stop_timeout <= Duration::from_secs(10),
         "managed stop timeout exceeds 10 seconds"
     );
-    raw.strategy_service.allowed_artifact_roots = vec![config.work_root.join("deployments")];
+    raw.strategy_service.allowed_strategy_roots = vec![config.work_root.join("deployments")];
     raw.strategy_service.checkpoint_root = Some(
         config
             .work_root
@@ -269,7 +269,7 @@ fn runtime_config(
                     .as_deref()
                     .context("canonical account identity required")?,
             )
-            .join(strategy.strategy_id.0.to_string()),
+            .join(strategy.runtime_strategy_no.0.to_string()),
     );
     Ok(raw)
 }
@@ -290,13 +290,13 @@ pub(super) async fn execute(
     ensure!(config.live_control, "live capability disabled");
     match &request.action {
         Action::Deploy {
-            artifact_id,
+            strategy_version_id,
             binding_id,
         } => {
-            let artifact = reference(request, "artifact")?;
+            let compiled_strategy = reference(request, "strategy_version")?;
             let binding = reference(request, "binding")?;
             ensure!(
-                &artifact.id == artifact_id
+                &compiled_strategy.id == strategy_version_id
                     && binding.node_id == config.id
                     && binding.body["binding_id"] == *binding_id,
                 "deployment references mismatch"
@@ -324,10 +324,10 @@ pub(super) async fn execute(
                 .join(format!(".{}", request.operation_id));
             std::fs::create_dir_all(&staged)?;
             let path = staged.join("strategy.titan");
-            if artifact.node_id == config.id {
-                let operation = artifact.body["operation_id"]
+            if compiled_strategy.node_id == config.id {
+                let operation = compiled_strategy.body["operation_id"]
                     .as_str()
-                    .context("artifact operation missing")?;
+                    .context("compiled_strategy operation missing")?;
                 checked_id(operation)?;
                 std::fs::copy(
                     super::inside(
@@ -338,18 +338,18 @@ pub(super) async fn execute(
                 )?;
             } else {
                 let source = config
-                    .artifact_sources
-                    .get(&artifact.node_id)
-                    .context("artifact source is not approved on this node")?;
+                    .strategy_sources
+                    .get(&compiled_strategy.node_id)
+                    .context("compiled_strategy source is not approved on this node")?;
                 let endpoint = reqwest::Url::parse(&source.endpoint)?;
                 ensure!(
                     endpoint.scheme() == "https"
                         || matches!(endpoint.host_str(), Some("127.0.0.1" | "localhost")),
-                    "artifact source requires TLS or authenticated tunnel"
+                    "compiled_strategy source requires TLS or authenticated tunnel"
                 );
-                let operation = artifact.body["operation_id"]
+                let operation = compiled_strategy.body["operation_id"]
                     .as_str()
-                    .context("artifact operation missing")?;
+                    .context("compiled_strategy operation missing")?;
                 checked_id(operation)?;
                 let response = reqwest::Client::builder()
                     .timeout(Duration::from_secs(30))
@@ -383,16 +383,20 @@ pub(super) async fn execute(
                 file.sync_all().await?;
             }
             ensure!(
-                node::digest_file(&path)? == artifact.body["blob_sha256"].as_str().unwrap_or(""),
-                "artifact transfer digest mismatch"
+                node::digest_file(&path)?
+                    == compiled_strategy.body["strategy_file_sha256"]
+                        .as_str()
+                        .unwrap_or(""),
+                "compiled_strategy transfer digest mismatch"
             );
             let runtime_sha256 = node::digest_file(&configured.runtime_config)?;
             let mut body = binding.body.clone();
-            body["artifact_id"] = artifact.id.clone().into();
-            body["research_id"] = artifact.body["research_id"].clone();
-            body["research_name"] = artifact.body["research_name"].clone();
-            body["artifact_digest"] = artifact.body["artifact_digest"].clone();
-            body["blob_sha256"] = artifact.body["blob_sha256"].clone();
+            body["strategy_version_id"] = compiled_strategy.id.clone().into();
+            body["strategy_id"] = compiled_strategy.body["strategy_id"].clone();
+            body["strategy_name"] = compiled_strategy.body["strategy_name"].clone();
+            body["compiled_strategy_digest"] =
+                compiled_strategy.body["compiled_strategy_digest"].clone();
+            body["strategy_file_sha256"] = compiled_strategy.body["strategy_file_sha256"].clone();
             body["operation_id"] = request.operation_id.clone().into();
             body["account_identity"] = configured.account_identity.clone().into();
             let raw: crate::ApplicationConfig =
@@ -402,9 +406,10 @@ pub(super) async fn execute(
                 .iter()
                 .find(|s| s.strategy_key.as_ref() == configured.strategy_key)
                 .context("strategy binding missing")?;
-            body["strategy_id"] = definition.strategy_id.0.to_string().into();
-            let parameters = &artifact.body["normalized_parameters"];
+            body["runtime_strategy_no"] = definition.runtime_strategy_no.0.to_string().into();
+            let parameters = &compiled_strategy.body["normalized_parameters"];
             body["stop_action"] = parameters["stop_action"].clone();
+            body["normalized_parameters"] = parameters.clone();
             let deployment = Deployment {
                 resource: node::resource(config, "deployment", &request.operation_id, true, body),
                 runtime_sha256,
@@ -412,15 +417,17 @@ pub(super) async fn execute(
             };
             // Validation needs final URI, so inspect staged bytes with the target's trust policy first.
             let trust = trust_policy(&raw)?;
-            let loader = titan_strategy_runtime::NativeArtifactLoaderV13::new(
+            let loader = titan_strategy_runtime::NativeStrategyLoaderV13::new(
                 config.work_root.join("native-cache"),
                 trust,
             );
             let loaded = loader.load(&path)?;
             ensure!(
-                hex(&loaded.manifest.artifact_digest)
-                    == artifact.body["artifact_digest"].as_str().unwrap_or(""),
-                "artifact identity mismatch"
+                hex(&loaded.manifest.compiled_strategy_digest)
+                    == compiled_strategy.body["compiled_strategy_digest"]
+                        .as_str()
+                        .unwrap_or(""),
+                "compiled_strategy identity mismatch"
             );
             ensure!(
                 matches!(loaded.manifest.cpu_baseline.as_ref(), "x86-64" | "generic"),
@@ -454,7 +461,7 @@ pub(super) async fn execute(
             );
             launch(config, request, &deployment, None, stop).await
         }
-        Action::Recover {
+        Action::Restore {
             generation,
             checkpoint_id,
             ..
@@ -479,7 +486,7 @@ pub(super) async fn execute(
                 "old worker still alive; stop before recovery"
             );
             ensure!(
-                old.body["generation"] == *generation,
+                old.body["run_generation"] == *generation,
                 "old generation changed"
             );
             let deployment = load_deployment(config, &previous.deployment_id)?;
@@ -489,11 +496,12 @@ pub(super) async fn execute(
                 node::digest_file(&checkpoint)? == *checkpoint_id,
                 "checkpoint reference changed"
             );
-            let snapshot: titan_strategy_runtime::StrategyPrivateStateSnapshot =
+            let snapshot: titan_strategy_runtime::StrategyRecoveryPoint =
                 serde_json::from_slice(&std::fs::read(&checkpoint)?)?;
             ensure!(
                 snapshot.generation.to_string() == *generation
-                    && snapshot.strategy.strategy_id == raw.strategies[0].strategy_id,
+                    && snapshot.strategy.runtime_strategy_no
+                        == raw.strategies[0].runtime_strategy_no,
                 "checkpoint generation or strategy mismatch"
             );
             launch(
@@ -502,7 +510,7 @@ pub(super) async fn execute(
                 &deployment,
                 Some(RecoveryLaunch {
                     checkpoint: checkpoint_id.clone(),
-                    generation: generation.clone(),
+                    run_generation: generation.clone(),
                     previous,
                 }),
                 stop,
@@ -542,7 +550,7 @@ pub(super) async fn execute(
                     HostQuery::Control {
                         operation_id: request.operation_id.clone(),
                         input_digest: request.input_digest.clone(),
-                        strategy_generation: generation.clone(),
+                        expected_run_generation: generation.clone(),
                         action: action.into(),
                     },
                     pid,
@@ -596,7 +604,7 @@ pub(super) async fn reconcile_receipt(config: &NodeConfig, old: Receipt) -> Resu
     );
     if matches!(
         request.action,
-        Action::Start { .. } | Action::Recover { .. }
+        Action::Start { .. } | Action::Restore { .. }
     ) {
         let path = root(config, &old.operation_id)?.join("managed.json");
         let Some(spec) = std::fs::read(path)
@@ -667,7 +675,7 @@ pub(super) async fn reconcile_receipt(config: &NodeConfig, old: Receipt) -> Resu
             HostQuery::ControlReceipt {
                 operation_id: old.operation_id.clone(),
                 input_digest: old.input_digest.clone(),
-                strategy_generation: generation.clone(),
+                expected_run_generation: generation.clone(),
                 action: action.into(),
             },
             pid,
@@ -695,8 +703,8 @@ pub(super) async fn reconcile_receipt(config: &NodeConfig, old: Receipt) -> Resu
         }
     };
     ensure!(
-        receipt["input"]
-            == json!({"id":old.operation_id,"digest":old.input_digest,"generation":generation,"action":action}),
+        crate::runtime_host::control_receipt_identity(&receipt["input"])?
+            == json!({"id":old.operation_id,"digest":old.input_digest,"expected_run_generation":generation,"action":action}),
         "engine control receipt identity changed"
     );
     let state = match receipt["state"].as_str() {
@@ -717,7 +725,7 @@ pub(super) async fn reconcile_receipt(config: &NodeConfig, old: Receipt) -> Resu
 }
 fn trust_policy(raw: &crate::ApplicationConfig) -> Result<titan_strategy_runtime::V13TrustPolicy> {
     ensure!(
-        !raw.strategy_service.allow_unsigned_artifacts
+        !raw.strategy_service.allow_unsigned_strategies
             && !raw.strategy_service.trusted_ed25519_keys.is_empty(),
         "signature trust required"
     );
@@ -738,11 +746,14 @@ fn checkpoint_path(raw: &crate::ApplicationConfig) -> Result<PathBuf> {
         .checkpoint_root
         .as_ref()
         .context("checkpoint root missing")?
-        .join(format!("strategy-{}.json", raw.strategies[0].strategy_id.0)))
+        .join(format!(
+            "strategy-{}.json",
+            raw.strategies[0].runtime_strategy_no.0
+        )))
 }
 struct RecoveryLaunch {
     checkpoint: String,
-    generation: String,
+    run_generation: String,
     previous: ManagedSpec,
 }
 async fn launch(
@@ -753,7 +764,7 @@ async fn launch(
     stop: &AtomicBool,
 ) -> Result<Value> {
     let checkpoint = recovery.as_ref().map(|r| r.checkpoint.clone());
-    let previous_generation = recovery.as_ref().map(|r| r.generation.clone());
+    let previous_generation = recovery.as_ref().map(|r| r.run_generation.clone());
     let reservation = recovery.as_ref().map_or_else(
         || request.operation_id.clone(),
         |r| r.previous.reservation_operation_id.clone(),
@@ -792,7 +803,7 @@ async fn launch(
     let spec = ManagedSpec {
         claim: HostClaim {
             run_id: id.clone(),
-            generation: generation.clone(),
+            worker_session_id: generation.clone(),
             account: binding.account.clone(),
             instrument: binding.instrument.clone(),
             binding_id: deployment.resource.body["binding_id"]
@@ -823,7 +834,7 @@ async fn launch(
                 .as_deref()
                 .context("canonical account required")?,
         )
-        .join(raw.strategies[0].strategy_id.0.to_string());
+        .join(raw.strategies[0].runtime_strategy_no.0.to_string());
     std::fs::create_dir_all(&namespace)?;
     node::atomic_json(&dir.join("managed.json"), &spec)?;
     let token = nonce();
@@ -965,7 +976,7 @@ pub(super) async fn catalog(config: &NodeConfig) -> Result<Vec<Resource>> {
         out.extend(super::live::financial_alerts(
             config,
             &spec.claim,
-            run.body["generation"].as_str().unwrap_or("unconfirmed"),
+            run.body["run_generation"].as_str().unwrap_or("unconfirmed"),
             &run.body["observation"],
         ));
         out.push(node::resource(config, "account", &binding, false, run.body));
@@ -1008,10 +1019,10 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(Value::Null);
-    let generation = strategy["generation"]
+    let generation = strategy["run_generation"]
         .as_str()
         .map(str::to_owned)
-        .or_else(|| identity["generation"].as_str().map(str::to_owned))
+        .or_else(|| identity["run_generation"].as_str().map(str::to_owned))
         .unwrap_or_else(|| "unconfirmed".into());
     let lifecycle = strategy["lifecycle"].as_str().unwrap_or("Unknown");
     let mut actions = vec![];
@@ -1038,18 +1049,20 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
                 .context("canonical account missing")?,
         )
         .join(
-            deployment.resource.body["strategy_id"]
+            deployment.resource.body["runtime_strategy_no"]
                 .as_str()
                 .context("strategy identity missing")?,
         )
         .join(format!(
             "strategy-{}.json",
-            deployment.resource.body["strategy_id"].as_str().unwrap()
+            deployment.resource.body["runtime_strategy_no"]
+                .as_str()
+                .unwrap()
         ));
     let checkpoint_generation = std::fs::read(&checkpoint)
         .ok()
         .and_then(|b| {
-            serde_json::from_slice::<titan_strategy_runtime::StrategyPrivateStateSnapshot>(&b).ok()
+            serde_json::from_slice::<titan_strategy_runtime::StrategyRecoveryPoint>(&b).ok()
         })
         .map(|s| s.generation.to_string());
     let checkpoint_id =
@@ -1066,10 +1079,10 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
             .remaining()
             .is_ok_and(|remaining| remaining > 15_000_000_000)
     {
-        actions.push("recover");
+        actions.push("restore");
     }
     let safe = record.state == "STOPPED" && observation["release_proof"]["safe"] == true;
-    let body = json!({"research_id":deployment.resource.body["research_id"],"research_name":deployment.resource.body["research_name"],"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"strategy_id":deployment.resource.body["strategy_id"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"generation":generation,"deployment_id":spec.deployment_id,"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
+    let body = json!({"strategy_id":deployment.resource.body["strategy_id"],"strategy_name":deployment.resource.body["strategy_name"],"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"runtime_strategy_no":deployment.resource.body["runtime_strategy_no"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"run_generation":generation,"deployment_id":spec.deployment_id,"strategy_version_id":deployment.resource.body["strategy_version_id"],"parameters":deployment.resource.body["normalized_parameters"],"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
     Ok(vec![node::resource(
         config,
         "run",
@@ -1085,7 +1098,8 @@ pub(super) fn managed_worker(config: NodeConfig, id: String, token: String) -> R
     ensure!(
         !spec.claim.readonly
             && spec.claim.run_id == id
-            && spec.claim.socket == host_socket(&config.work_root, &id, &spec.claim.generation),
+            && spec.claim.socket
+                == host_socket(&config.work_root, &id, &spec.claim.worker_session_id),
         "invalid managed owner claim"
     );
     let worker_id = format!("worker-{id}");
@@ -1139,7 +1153,7 @@ pub(super) fn managed_worker(config: NodeConfig, id: String, token: String) -> R
         let runtime = crate::TradingRuntime::start_managed(
             adapted,
             config.work_root.join("account-facts.sqlite3"),
-            format!("{}:{}", id, spec.claim.generation),
+            format!("{}:{}", id, spec.claim.worker_session_id),
         )?;
         let mut runtime = ManagedRuntime {
             runtime,
@@ -1174,7 +1188,7 @@ pub(super) fn managed_worker(config: NodeConfig, id: String, token: String) -> R
         let handle = service.list()[0].handle;
         node::atomic_json(
             &dir.join("runtime-identity.json"),
-            &json!({"strategy_id":handle.strategy_id.0.to_string(),"generation":handle.generation.to_string()}),
+            &json!({"runtime_strategy_no":handle.runtime_strategy_no.0.to_string(),"run_generation":handle.generation.to_string()}),
         )?;
         let prepare = service.prepare(handle)?;
         crate::core_runtime::wait_strategy_operation(

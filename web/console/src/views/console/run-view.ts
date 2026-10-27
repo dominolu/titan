@@ -97,7 +97,7 @@ export const actionLabels: Record<string, string> = {
   pause: "暂停",
   resume: "恢复运行",
   stop: "停止",
-  recover: "checkpoint 恢复"
+  restore: "从恢复点恢复"
 };
 // Native account wire statuses (not the Python strategy callback enum).
 export const orderStates: Record<string, string> = {
@@ -122,14 +122,42 @@ export function runView(
   const financial = object(observation.financial);
   const strategies = rows(observation.strategies);
   const strategy =
-    state.strategy_id != null
+    state.runtime_strategy_no != null
       ? (strategies.find(
-          s => scalarText(s.strategy_id) === scalarText(state.strategy_id)
+          s =>
+            scalarText(s.runtime_strategy_no) ===
+            scalarText(state.runtime_strategy_no)
         ) ?? {})
       : strategies.length === 1
         ? strategies[0]
         : {};
-  const business = object(strategy.business);
+  const candidate = object(strategy.business_observation);
+  const sourceGeneration = object(candidate.source).run_generation;
+  const expectedGeneration = state.run_generation ?? strategy.run_generation;
+  const validBusinessIdentity =
+    [1, 2].includes(Number(candidate.protocol_version)) &&
+    (Number(candidate.protocol_version) !== 2 ||
+      (candidate.source?.kind === "runtime_publication" &&
+        /^\d+$/.test(String(candidate.source?.publication_sequence)) &&
+        /^\d+$/.test(String(candidate.source?.callback_sequence)) &&
+        /^\d+$/.test(String(candidate.source?.captured_at_ns)))) &&
+    typeof candidate.schema_id === "string" &&
+    /^[0-9a-f]{64}$/.test(candidate.schema_hash ?? "") &&
+    expectedGeneration != null &&
+    (strategy.run_generation == null ||
+      String(strategy.run_generation) === String(expectedGeneration)) &&
+    String(sourceGeneration) === String(expectedGeneration);
+  const business =
+    candidate.available === true && !validBusinessIdentity
+      ? {
+          ...candidate,
+          available: false,
+          complete: false,
+          data: {},
+          reason: "业务观测协议或运行代次不匹配"
+        }
+      : candidate;
+  const recovery = object(strategy.recovery);
   const data = business.available === true ? object(business.data) : {};
   const instrument = rows(image.instruments).find(
     i => i.native_symbol === state.instrument
@@ -168,6 +196,13 @@ export function runView(
     financial,
     strategy,
     business,
+    businessStale:
+      !item ||
+      state.available !== true ||
+      state.observation_stale === true ||
+      connection !== "connected" ||
+      body(node).online !== true,
+    recovery,
     data,
     instrument,
     risk,
@@ -188,8 +223,7 @@ export function runView(
     actual: riskKnown ? risk.actual_notional?.amount : null,
     bound: riskKnown ? risk.pending_bound_notional?.amount : null,
     currency: risk?.currency ?? "",
-    grid: object(data.grid),
-    config: object(data.config),
+    config: object(state.parameters),
     actions: Array.isArray(state.allowed_actions)
       ? (state.allowed_actions.filter(a => a in actionLabels) as string[])
       : []

@@ -73,9 +73,9 @@ impl ExecutionObserver for StrategyExecutionResultRelay {
 #[derive(Clone)]
 pub struct StrategyCoreConfig {
     pub max_strategy_runtimes: usize,
-    pub max_artifact_cache_entries: usize,
+    pub max_strategy_cache_entries: usize,
     pub allowed_loader_types: BTreeSet<Arc<str>>,
-    pub allowed_artifact_roots: Arc<[Arc<str>]>,
+    pub allowed_strategy_roots: Arc<[Arc<str>]>,
     pub allowed_event_types: BTreeSet<(Arc<str>, u32)>,
     pub allowed_worker_policies: Vec<titan_event_engine::SubscriberRuntimeMode>,
     pub allowed_capabilities: StrategyCapabilities,
@@ -84,17 +84,17 @@ pub struct StrategyCoreConfig {
     pub max_state_capacity: usize,
     pub max_concurrent_loads: usize,
     pub checkpoint_root: Option<PathBuf>,
-    pub require_artifact_signature: bool,
-    pub trusted_artifact_keys: BTreeMap<Arc<str>, [u8; 32]>,
+    pub require_strategy_signature: bool,
+    pub trusted_strategy_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 impl Default for StrategyCoreConfig {
     fn default() -> Self {
         Self {
             max_strategy_runtimes: 128,
-            max_artifact_cache_entries: 64,
+            max_strategy_cache_entries: 64,
             allowed_loader_types: [Arc::from("native-v13")].into_iter().collect(),
-            allowed_artifact_roots: Arc::from([]),
+            allowed_strategy_roots: Arc::from([]),
             allowed_event_types: BTreeSet::new(),
             allowed_worker_policies: vec![
                 titan_event_engine::SubscriberRuntimeMode::Dedicated,
@@ -109,8 +109,8 @@ impl Default for StrategyCoreConfig {
             max_state_capacity: 1 << 20,
             max_concurrent_loads: 2,
             checkpoint_root: None,
-            require_artifact_signature: true,
-            trusted_artifact_keys: BTreeMap::new(),
+            require_strategy_signature: true,
+            trusted_strategy_keys: BTreeMap::new(),
         }
     }
 }
@@ -127,8 +127,8 @@ pub struct StrategyServiceDependencies {
 pub struct StrategyEntry {
     pub handle: StrategyHandle,
     pub definition: StrategyDefinition,
-    pub manifest: StrategyPackageManifest,
-    pub artifact_id: StrategyArtifactId,
+    pub manifest: CompiledStrategyMetadata,
+    pub compiled_strategy_digest: CompiledStrategyDigest,
     pub runtime: Arc<dyn StrategyRuntime>,
     pub lane: PrimaryAsyncLaneHandle,
     pub activation: Arc<StrategyActivationGate>,
@@ -138,8 +138,8 @@ pub struct StrategyEntry {
 
 struct DisabledSnapshotSink;
 
-impl StrategyStateSnapshotSink for DisabledSnapshotSink {
-    fn submit(&self, _snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+impl StrategyRecoveryStore for DisabledSnapshotSink {
+    fn submit(&self, _snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         Ok(())
     }
 
@@ -148,19 +148,19 @@ impl StrategyStateSnapshotSink for DisabledSnapshotSink {
     }
 }
 
-struct FileCheckpointStore {
+struct FileStrategyRecoveryStore {
     root: PathBuf,
-    sender: Mutex<Option<mpsc::SyncSender<Option<StrategyPrivateStateSnapshot>>>>,
+    sender: Mutex<Option<mpsc::SyncSender<Option<StrategyRecoveryPoint>>>>,
     writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     failed: Arc<AtomicBool>,
     pending: Arc<std::sync::atomic::AtomicUsize>,
     generation_lock: Mutex<()>,
 }
 
-impl FileCheckpointStore {
+impl FileStrategyRecoveryStore {
     fn new(root: PathBuf) -> LocalResult<Arc<Self>> {
         fs::create_dir_all(&root).map_err(|_| checkpoint_error("checkpoint_root_unavailable"))?;
-        let (sender, receiver) = mpsc::sync_channel::<Option<StrategyPrivateStateSnapshot>>(16);
+        let (sender, receiver) = mpsc::sync_channel::<Option<StrategyRecoveryPoint>>(16);
         let writer_root = root.clone();
         let failed = Arc::new(AtomicBool::new(false));
         let writer_failed = failed.clone();
@@ -191,15 +191,18 @@ impl FileCheckpointStore {
         }))
     }
 
-    fn load(&self, strategy_id: StrategyId) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
-        self.load_pinned(strategy_id, None)
+    fn load(
+        &self,
+        runtime_strategy_no: RuntimeStrategyNo,
+    ) -> LocalResult<Option<StrategyRecoveryPoint>> {
+        self.load_pinned(runtime_strategy_no, None)
     }
     fn load_pinned(
         &self,
-        strategy_id: StrategyId,
+        runtime_strategy_no: RuntimeStrategyNo,
         expected: Option<&str>,
-    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
-        let path = checkpoint_path(&self.root, strategy_id);
+    ) -> LocalResult<Option<StrategyRecoveryPoint>> {
+        let path = checkpoint_path(&self.root, runtime_strategy_no);
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && expected.is_none() => {
@@ -217,9 +220,9 @@ impl FileCheckpointStore {
                 return Err(checkpoint_error("checkpoint_reference_changed"));
             }
         }
-        let snapshot: StrategyPrivateStateSnapshot = serde_json::from_slice(&bytes)
+        let snapshot: StrategyRecoveryPoint = serde_json::from_slice(&bytes)
             .map_err(|_| checkpoint_error("checkpoint_decode_failed"))?;
-        if snapshot.strategy.strategy_id != strategy_id
+        if snapshot.strategy.runtime_strategy_no != runtime_strategy_no
             || snapshot.strategy.generation != snapshot.generation
         {
             return Err(checkpoint_error("checkpoint_identity_mismatch"));
@@ -227,12 +230,16 @@ impl FileCheckpointStore {
         Ok(Some(snapshot))
     }
 
-    fn reserve_generation(&self, strategy_id: StrategyId, minimum: u64) -> LocalResult<u64> {
+    fn reserve_generation(
+        &self,
+        runtime_strategy_no: RuntimeStrategyNo,
+        minimum: u64,
+    ) -> LocalResult<u64> {
         let _guard = self
             .generation_lock
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let path = generation_path(&self.root, strategy_id);
+        let path = generation_path(&self.root, runtime_strategy_no);
         let persisted = match fs::read(&path) {
             Ok(bytes) if bytes.len() == 8 => {
                 u64::from_le_bytes(bytes.try_into().expect("length checked"))
@@ -250,27 +257,25 @@ impl FileCheckpointStore {
                     .is_some_and(|prefix| prefix <= u64::from(u32::MAX))
             })
             .ok_or_else(|| checkpoint_error("generation_overflow"))?;
-        let temporary = self
-            .root
-            .join(format!(".strategy-{}.generation.tmp", strategy_id.0));
+        let temporary = self.root.join(format!(
+            ".strategy-{}.generation.tmp",
+            runtime_strategy_no.0
+        ));
         atomic_write(&self.root, &temporary, &path, &generation.to_le_bytes())?;
         Ok(generation)
     }
 }
 
-impl StrategyStateSnapshotSink for FileCheckpointStore {
-    fn latest(
-        &self,
-        strategy: StrategyHandle,
-    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+impl StrategyRecoveryStore for FileStrategyRecoveryStore {
+    fn latest(&self, strategy: StrategyHandle) -> LocalResult<Option<StrategyRecoveryPoint>> {
         self.check_health()?;
-        let snapshot = self.load(strategy.strategy_id)?;
+        let snapshot = self.load(strategy.runtime_strategy_no)?;
         if snapshot.as_ref().is_some_and(|s| s.strategy != strategy) {
             return Err(checkpoint_error("checkpoint_generation_changed"));
         }
         Ok(snapshot)
     }
-    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         self.check_health()?;
         let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
         let sender = sender
@@ -310,7 +315,7 @@ impl StrategyStateSnapshotSink for FileCheckpointStore {
     }
 }
 
-impl Drop for FileCheckpointStore {
+impl Drop for FileStrategyRecoveryStore {
     fn drop(&mut self) {
         if let Some(sender) = self
             .sender
@@ -331,12 +336,12 @@ impl Drop for FileCheckpointStore {
     }
 }
 
-fn checkpoint_path(root: &Path, strategy_id: StrategyId) -> PathBuf {
-    root.join(format!("strategy-{}.json", strategy_id.0))
+fn checkpoint_path(root: &Path, runtime_strategy_no: RuntimeStrategyNo) -> PathBuf {
+    root.join(format!("strategy-{}.json", runtime_strategy_no.0))
 }
 
-fn generation_path(root: &Path, strategy_id: StrategyId) -> PathBuf {
-    root.join(format!("strategy-{}.generation", strategy_id.0))
+fn generation_path(root: &Path, runtime_strategy_no: RuntimeStrategyNo) -> PathBuf {
+    root.join(format!("strategy-{}.generation", runtime_strategy_no.0))
 }
 
 fn atomic_write(root: &Path, temporary: &Path, path: &Path, bytes: &[u8]) -> LocalResult<()> {
@@ -351,12 +356,12 @@ fn atomic_write(root: &Path, temporary: &Path, path: &Path, bytes: &[u8]) -> Loc
         .map_err(|_| checkpoint_error("checkpoint_directory_sync_failed"))
 }
 
-fn write_checkpoint(root: &Path, snapshot: &StrategyPrivateStateSnapshot) -> LocalResult<()> {
+fn write_checkpoint(root: &Path, snapshot: &StrategyRecoveryPoint) -> LocalResult<()> {
     let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
-    let path = checkpoint_path(root, snapshot.strategy.strategy_id);
+    let path = checkpoint_path(root, snapshot.strategy.runtime_strategy_no);
     let temporary = root.join(format!(
         ".strategy-{}.json.tmp",
-        snapshot.strategy.strategy_id.0
+        snapshot.strategy.runtime_strategy_no.0
     ));
     let bytes =
         serde_json::to_vec(snapshot).map_err(|_| checkpoint_error("checkpoint_encode_failed"))?;
@@ -410,9 +415,9 @@ impl StrategyEntry {
 
 #[derive(Default)]
 struct StrategyRegistryState {
-    by_id: HashMap<StrategyId, Arc<StrategyEntry>>,
+    by_id: HashMap<RuntimeStrategyNo, Arc<StrategyEntry>>,
     by_key: HashMap<Arc<str>, StrategyHandle>,
-    last_generation: HashMap<StrategyId, u64>,
+    last_generation: HashMap<RuntimeStrategyNo, u64>,
 }
 
 #[derive(Default)]
@@ -429,15 +434,15 @@ struct GlobalOperation {
 pub struct StrategyServiceCore {
     config: StrategyCoreConfig,
     dependencies: StrategyServiceDependencies,
-    loaders: Arc<StrategyPackageLoaderRegistry>,
+    loaders: Arc<StrategyLoaderRegistry>,
     runtimes: Arc<StrategyRuntimeFactoryRegistry>,
-    cache: StrategyArtifactCache,
+    cache: LoadedStrategyCache,
     registry: StrategyRegistry,
     accepting: AtomicBool,
     next_operation: AtomicU64,
     operations: Mutex<titan_core_types::OperationHistory<StrategyOperationId, GlobalOperation>>,
     cold_loads: Arc<ColdLoadLimiter>,
-    checkpoints: Option<Arc<FileCheckpointStore>>,
+    checkpoints: Option<Arc<FileStrategyRecoveryStore>>,
     scheduler: crate::scheduler::Scheduler,
 }
 
@@ -484,7 +489,7 @@ impl StrategyServiceCore {
     pub fn new(
         config: StrategyCoreConfig,
         dependencies: StrategyServiceDependencies,
-        loaders: Arc<StrategyPackageLoaderRegistry>,
+        loaders: Arc<StrategyLoaderRegistry>,
         runtimes: Arc<StrategyRuntimeFactoryRegistry>,
     ) -> LocalResult<Self> {
         if config.max_strategy_runtimes == 0 {
@@ -493,12 +498,12 @@ impl StrategyServiceCore {
         if config.max_concurrent_loads == 0 {
             return Err(definition_error("max_concurrent_loads_zero"));
         }
-        let cache = StrategyArtifactCache::new(config.max_artifact_cache_entries)?;
+        let cache = LoadedStrategyCache::new(config.max_strategy_cache_entries)?;
         let max_concurrent_loads = config.max_concurrent_loads;
         let checkpoints = config
             .checkpoint_root
             .clone()
-            .map(FileCheckpointStore::new)
+            .map(FileStrategyRecoveryStore::new)
             .transpose()?;
         Ok(Self {
             config,
@@ -572,58 +577,60 @@ impl StrategyServiceCore {
         &self,
         definition: StrategyDefinition,
         generation: u64,
-        checkpoint: Option<StrategyPrivateStateSnapshot>,
+        checkpoint: Option<StrategyRecoveryPoint>,
     ) -> LocalResult<Arc<StrategyEntry>> {
         validate_definition(&self.config, &definition)?;
         let handle = StrategyHandle {
-            strategy_id: definition.strategy_id,
+            runtime_strategy_no: definition.runtime_strategy_no,
             generation,
         };
         let loader = self.loaders.create(
-            &definition.package.loader_type,
+            &definition.strategy_file.loader_type,
             StrategyLoaderContext {
-                allowed_artifact_roots: self.config.allowed_artifact_roots.clone(),
-                require_signature: self.config.require_artifact_signature,
-                ed25519_keys: self.config.trusted_artifact_keys.clone(),
+                allowed_strategy_roots: self.config.allowed_strategy_roots.clone(),
+                require_signature: self.config.require_strategy_signature,
+                ed25519_keys: self.config.trusted_strategy_keys.clone(),
             },
         )?;
         let deadline = Instant::now() + definition.runtime.startup_timeout;
         let inspect_loader = loader.clone();
-        let inspect_package = definition.package.clone();
-        let manifest = self.run_cold(deadline, move || inspect_loader.inspect(&inspect_package))?;
+        let inspect_strategy_file = definition.strategy_file.clone();
+        let manifest = self.run_cold(deadline, move || {
+            inspect_loader.inspect(&inspect_strategy_file)
+        })?;
         validate_manifest(&self.config, &definition, &manifest)?;
-        let key = ArtifactCacheKey {
-            artifact_digest: definition.package.expected_digest,
+        let key = StrategyCacheKey {
+            compiled_strategy_digest: definition.strategy_file.expected_digest,
         };
-        let artifact = if let Some(value) = self.cache.get(&key) {
+        let compiled_strategy = if let Some(value) = self.cache.get(&key) {
             value
         } else {
             let request = StrategyLoadRequest {
-                package: definition.package.clone(),
+                strategy_file: definition.strategy_file.clone(),
             };
             let load_loader = loader.clone();
             let loaded = self.run_cold(deadline, move || load_loader.load(request, deadline))?;
-            if loaded.id.digest != definition.package.expected_digest {
+            if loaded.id.digest != definition.strategy_file.expected_digest {
                 return Err(StrategyError::new(
                     StrategyErrorKind::DigestMismatch,
                     "load",
-                    "artifact_digest_mismatch",
-                    "loaded artifact digest does not match the pinned definition",
+                    "compiled_strategy_digest_mismatch",
+                    "loaded compiled_strategy digest does not match the pinned definition",
                 ));
             }
             self.cache.insert(key, loaded.clone());
             loaded
         };
-        validate_manifest(&self.config, &definition, &artifact.manifest)?;
-        if artifact.manifest != manifest {
+        validate_manifest(&self.config, &definition, &compiled_strategy.manifest)?;
+        if compiled_strategy.manifest != manifest {
             return Err(StrategyError::new(
                 StrategyErrorKind::DigestMismatch,
                 "load",
                 "manifest_changed_during_load",
-                "loaded artifact manifest does not match the inspected manifest",
+                "loaded compiled_strategy manifest does not match the inspected manifest",
             ));
         }
-        let artifact_id = artifact.id;
+        let compiled_strategy_digest = compiled_strategy.id;
         let resolved_markets = self.resolve_markets(&definition)?;
         let resolved_accounts = self.resolve_accounts(&definition)?;
         if !resolved_accounts.is_empty() && self.checkpoints.is_none() {
@@ -649,7 +656,7 @@ impl StrategyServiceCore {
         };
         let resources = ResourceScope::new(titan_core_types::ComponentIdentity::new(
             "titan.strategy.runtime",
-            format!("{}-{}", definition.strategy_id.0, generation),
+            format!("{}-{}", definition.runtime_strategy_no.0, generation),
         ));
         for binding in &resolved_accounts {
             let lease = self
@@ -704,22 +711,22 @@ impl StrategyServiceCore {
         let activation = Arc::new(StrategyActivationGate::default());
         let context = StrategyRuntimeBuildContext {
             strategy: handle,
-            artifact_id: artifact.id,
+            compiled_strategy_digest: compiled_strategy.id,
             markets: resolved_markets.clone().into(),
             accounts: resolved_accounts.clone().into(),
             execution: direct_execution.into(),
             state_snapshot_sink: self
                 .checkpoints
                 .as_ref()
-                .map(|store| store.clone() as Arc<dyn StrategyStateSnapshotSink>)
+                .map(|store| store.clone() as Arc<dyn StrategyRecoveryStore>)
                 .unwrap_or_else(|| Arc::new(DisabledSnapshotSink)),
             clock: Arc::new(SystemStrategyClock),
             metrics: Arc::new(NoopStrategyMetrics),
             resources: resources.handle(),
             activation: activation.clone(),
         };
-        let factory = self.runtimes.get(&manifest.strategy_type)?;
-        let runtime = factory.create(&definition, artifact, context)?;
+        let factory = self.runtimes.get(&manifest.runtime_type)?;
+        let runtime = factory.create(&definition, compiled_strategy, context)?;
         if let Some(execution_relay) = execution_relay {
             execution_relay.attach(&runtime);
         }
@@ -1255,7 +1262,7 @@ impl StrategyServiceCore {
                                 Arc::from("subscriber_failed")
                             };
                             warn!(
-                                strategy_id = handle.strategy_id.0,
+                                runtime_strategy_no = handle.runtime_strategy_no.0,
                                 generation = handle.generation,
                                 lane_state = ?state,
                                 reason = reason.as_ref(),
@@ -1297,7 +1304,7 @@ impl StrategyServiceCore {
             handle,
             definition,
             manifest,
-            artifact_id,
+            compiled_strategy_digest,
             runtime,
             lane,
             activation,
@@ -1322,7 +1329,7 @@ impl StrategyServiceCore {
                             StrategyErrorKind::CompileFailed,
                             "load",
                             "cold_load_panicked",
-                            "strategy package loader panicked",
+                            "strategy file loader panicked",
                         )
                     })
                     .and_then(|result| result);
@@ -1334,7 +1341,7 @@ impl StrategyServiceCore {
                     StrategyErrorKind::LoadFailed,
                     "load",
                     "cold_worker_start_failed",
-                    "strategy package cold worker could not be started",
+                    "strategy file cold worker could not be started",
                 )
             })?;
         receiver
@@ -1443,7 +1450,7 @@ impl StrategyServiceCore {
             .unwrap_or_else(|p| p.into_inner());
         let entry = state
             .by_id
-            .get(&handle.strategy_id)
+            .get(&handle.runtime_strategy_no)
             .ok_or_else(|| stale_error(handle))?;
         if entry.handle != handle {
             return Err(stale_error(handle));
@@ -1516,7 +1523,7 @@ impl StrategyAdminService for StrategyServiceCore {
             .as_ref()
             .map(|store| {
                 store.load_pinned(
-                    definition.strategy_id,
+                    definition.runtime_strategy_no,
                     definition.runtime.recovery_checkpoint_sha256.as_deref(),
                 )
             })
@@ -1532,7 +1539,7 @@ impl StrategyAdminService for StrategyServiceCore {
                 .state
                 .read()
                 .unwrap_or_else(|p| p.into_inner());
-            if state.by_id.contains_key(&definition.strategy_id)
+            if state.by_id.contains_key(&definition.runtime_strategy_no)
                 || state.by_key.contains_key(&definition.strategy_key)
             {
                 return Err(StrategyError::new(
@@ -1552,14 +1559,14 @@ impl StrategyAdminService for StrategyServiceCore {
             }
             let registry_generation = state
                 .last_generation
-                .get(&definition.strategy_id)
+                .get(&definition.runtime_strategy_no)
                 .copied()
                 .unwrap_or(0);
             let checkpoint_generation = checkpoint.as_ref().map_or(0, |value| value.generation);
             registry_generation.max(checkpoint_generation)
         };
         let generation = if let Some(store) = &self.checkpoints {
-            store.reserve_generation(definition.strategy_id, minimum_generation)?
+            store.reserve_generation(definition.runtime_strategy_no, minimum_generation)?
         } else {
             minimum_generation
                 .checked_add(1)
@@ -1577,7 +1584,7 @@ impl StrategyAdminService for StrategyServiceCore {
             .state
             .write()
             .unwrap_or_else(|p| p.into_inner());
-        if state.by_id.contains_key(&handle.strategy_id)
+        if state.by_id.contains_key(&handle.runtime_strategy_no)
             || state.by_key.contains_key(&entry.definition.strategy_key)
         {
             drop(state);
@@ -1591,11 +1598,11 @@ impl StrategyAdminService for StrategyServiceCore {
         }
         state
             .last_generation
-            .insert(handle.strategy_id, handle.generation);
+            .insert(handle.runtime_strategy_no, handle.generation);
         state
             .by_key
             .insert(entry.definition.strategy_key.clone(), handle);
-        state.by_id.insert(handle.strategy_id, entry);
+        state.by_id.insert(handle.runtime_strategy_no, entry);
         Ok(handle)
     }
 
@@ -1656,23 +1663,23 @@ impl StrategyAdminService for StrategyServiceCore {
     ) -> LocalResult<StrategyHandle> {
         self.ensure_accepting()?;
         let old = self.entry(strategy)?;
-        if definition.strategy_id != strategy.strategy_id
+        if definition.runtime_strategy_no != strategy.runtime_strategy_no
             || definition.strategy_key != old.definition.strategy_key
         {
             return Err(definition_error("replace_identity_changed"));
         }
-        if definition.definition_version <= old.definition.definition_version {
-            return Err(definition_error("definition_version_not_increased"));
+        if definition.run_config_revision <= old.definition.run_config_revision {
+            return Err(definition_error("run_config_revision_not_increased"));
         }
         let generation = if let Some(store) = &self.checkpoints {
-            store.reserve_generation(strategy.strategy_id, strategy.generation)?
+            store.reserve_generation(strategy.runtime_strategy_no, strategy.generation)?
         } else {
             strategy
                 .generation
                 .checked_add(1)
                 .ok_or_else(|| definition_error("generation_overflow"))?
         };
-        definition.strategy_id = strategy.strategy_id;
+        definition.runtime_strategy_no = strategy.runtime_strategy_no;
         let candidate = self.create_entry(definition, generation, None)?;
         if let Err(error) = self.ensure_ready(&candidate) {
             candidate.cleanup()?;
@@ -1722,7 +1729,7 @@ impl StrategyAdminService for StrategyServiceCore {
                 .unwrap_or_else(|p| p.into_inner());
             let current = state
                 .by_id
-                .get(&strategy.strategy_id)
+                .get(&strategy.runtime_strategy_no)
                 .ok_or_else(|| stale_error(strategy))?;
             if current.handle != strategy {
                 drop(state);
@@ -1736,10 +1743,12 @@ impl StrategyAdminService for StrategyServiceCore {
             state
                 .by_key
                 .insert(candidate.definition.strategy_key.clone(), candidate.handle);
-            state.by_id.insert(strategy.strategy_id, candidate.clone());
+            state
+                .by_id
+                .insert(strategy.runtime_strategy_no, candidate.clone());
             state
                 .last_generation
-                .insert(strategy.strategy_id, generation);
+                .insert(strategy.runtime_strategy_no, generation);
         }
         let retirement_deadline = Instant::now() + old.definition.runtime.stop_timeout;
         if let Ok(stop) = old.runtime.stop(retirement_deadline) {
@@ -1767,7 +1776,7 @@ impl StrategyAdminService for StrategyServiceCore {
             .state
             .write()
             .unwrap_or_else(|p| p.into_inner());
-        state.by_id.remove(&strategy.strategy_id);
+        state.by_id.remove(&strategy.runtime_strategy_no);
         state.by_key.remove(&entry.definition.strategy_key);
         Ok(self.completed_operation(Some(strategy), "removed"))
     }
@@ -1782,8 +1791,8 @@ impl StrategyAdminService for StrategyServiceCore {
             .map(|entry| StrategyInstanceSnapshot {
                 handle: entry.handle,
                 strategy_key: entry.definition.strategy_key.clone(),
-                definition_version: entry.definition.definition_version,
-                artifact_id: entry.artifact_id,
+                run_config_revision: entry.definition.run_config_revision,
+                compiled_strategy_digest: entry.compiled_strategy_digest,
                 lifecycle: entry.runtime.state().lifecycle,
                 enabled: entry.definition.enabled,
             })
@@ -1833,8 +1842,14 @@ impl StrategyService for StrategyServiceCore {
     fn release_safe(&self, strategy: StrategyHandle) -> LocalResult<bool> {
         Ok(self.entry(strategy)?.runtime.release_safe())
     }
-    fn business_snapshot(&self, strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
-        self.entry(strategy)?.runtime.business_snapshot()
+    fn recovery_status(&self, strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
+        self.entry(strategy)?.runtime.recovery_status()
+    }
+    fn business_observation(
+        &self,
+        strategy: StrategyHandle,
+    ) -> LocalResult<BusinessObservationSnapshot> {
+        self.entry(strategy)?.runtime.business_observation()
     }
     fn resolve(&self, strategy_key: &str) -> LocalResult<StrategyHandle> {
         self.registry
@@ -1888,17 +1903,17 @@ pub(crate) fn validate_definition(
         ));
     }
     if definition.strategy_key.is_empty()
-        || definition.strategy_id.0 == 0
-        || definition.definition_version == 0
+        || definition.runtime_strategy_no.0 == 0
+        || definition.run_config_revision == 0
     {
         return Err(definition_error("missing_identity"));
     }
-    if definition.package.expected_digest == [0; 32] {
-        return Err(definition_error("unpinned_artifact_digest"));
+    if definition.strategy_file.expected_digest == [0; 32] {
+        return Err(definition_error("unpinned_compiled_strategy_digest"));
     }
     if !config
         .allowed_loader_types
-        .contains(&definition.package.loader_type)
+        .contains(&definition.strategy_file.loader_type)
     {
         return Err(StrategyError::new(
             StrategyErrorKind::UnsupportedCapability,
@@ -1973,9 +1988,9 @@ pub(crate) fn validate_definition(
 pub(crate) fn validate_manifest(
     config: &StrategyCoreConfig,
     definition: &StrategyDefinition,
-    manifest: &StrategyPackageManifest,
+    manifest: &CompiledStrategyMetadata,
 ) -> LocalResult<()> {
-    if manifest.artifact_digest != definition.package.expected_digest {
+    if manifest.compiled_strategy_digest != definition.strategy_file.expected_digest {
         return Err(StrategyError::new(
             StrategyErrorKind::DigestMismatch,
             "inspect",
@@ -1988,28 +2003,28 @@ pub(crate) fn validate_manifest(
             StrategyErrorKind::AbiMismatch,
             "inspect",
             "runtime_abi_mismatch",
-            "strategy package requires an incompatible runtime ABI",
+            "strategy file requires an incompatible runtime ABI",
         ));
     }
     if manifest.subscriptions.is_empty() {
-        return Err(definition_error("artifact_subscriptions_empty"));
+        return Err(definition_error("strategy_subscriptions_empty"));
     }
     if manifest.state_byte_len == 0 || manifest.state_byte_len > config.max_state_capacity {
-        return Err(definition_error("artifact_state_capacity"));
+        return Err(definition_error("strategy_recovery_state_capacity"));
     }
     for subscription in manifest.subscriptions.iter() {
         if !supported_strategy_subscription(
             subscription.event_type.as_ref(),
             subscription.schema_version,
         ) {
-            return Err(definition_error("artifact_subscription_unsupported"));
+            return Err(definition_error("strategy_subscription_unsupported"));
         }
         if !config.allowed_event_types.is_empty()
             && !config
                 .allowed_event_types
                 .contains(&(subscription.event_type.clone(), subscription.schema_version))
         {
-            return Err(definition_error("artifact_event_not_allowed"));
+            return Err(definition_error("strategy_event_not_allowed"));
         }
     }
     let unavailable = StrategyCapabilities(StrategyCapabilities::AMEND_ORDER.0);
@@ -2026,10 +2041,10 @@ pub(crate) fn validate_manifest(
             StrategyErrorKind::UnsupportedCapability,
             "inspect",
             "package_capability_not_allowed",
-            "package capability exceeds service authorization",
+            "strategy capability exceeds service authorization",
         ));
     }
-    // V13 parameters are normalized and baked into the signed artifact. Deployment-time
+    // V13 parameters are normalized and baked into the signed compiled_strategy. Deployment-time
     // definitions cannot override them or their schema.
     Ok(())
 }
@@ -2109,7 +2124,7 @@ fn load_timeout(code: &'static str) -> StrategyError {
         StrategyErrorKind::LoadFailed,
         "load",
         code,
-        "strategy package load deadline expired",
+        "strategy file load deadline expired",
     )
 }
 fn stale_error(handle: StrategyHandle) -> StrategyError {
@@ -2143,7 +2158,7 @@ impl StrategyMetrics for NoopStrategyMetrics {}
 /// must be rejected here instead of falling through to a heuristic callback mapping.
 ///
 /// Bar/Hybrid is not part of the runnable V13 profile until one canonical producer and backtest
-/// adapter exist. Rejecting it at the service boundary prevents artifacts from compiling into a
+/// adapter exist. Rejecting it at the service boundary prevents compiled_strategies from compiling into a
 /// profile that the runtime cannot dispatch.
 pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) -> bool {
     matches!(
@@ -2178,18 +2193,18 @@ mod checkpoint_tests {
             SystemStrategyClock.now_ns()
         ));
         let strategy = StrategyHandle {
-            strategy_id: StrategyId(91),
+            runtime_strategy_no: RuntimeStrategyNo(91),
             generation: 7,
         };
-        let snapshot = StrategyPrivateStateSnapshot {
+        let snapshot = StrategyRecoveryPoint {
             checkpoint_id: 11,
             strategy,
             strategy_instance_id: 91,
-            strategy_id: Arc::from("pair-arb"),
-            strategy_version: Arc::from("13.0.0"),
+            strategy_type: Arc::from("pair-arb"),
+            source_version: Arc::from("13.0.0"),
             generation: 7,
             event_committed_sequence: 22,
-            artifact_digest: [1; 32],
+            compiled_strategy_digest: [1; 32],
             binding_digest: [2; 32],
             abi_version: STRATEGY_ABI_V13,
             state_schema_version: 3,
@@ -2206,13 +2221,13 @@ mod checkpoint_tests {
             checksum: [9; 32],
             recovery: None,
         };
-        let store = FileCheckpointStore::new(root.clone()).unwrap();
+        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
         store.submit(snapshot).unwrap();
         drop(store);
 
-        let store = FileCheckpointStore::new(root.clone()).unwrap();
-        let restored = store.load(strategy.strategy_id).unwrap().unwrap();
-        let path = checkpoint_path(&root, strategy.strategy_id);
+        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
+        let restored = store.load(strategy.runtime_strategy_no).unwrap().unwrap();
+        let path = checkpoint_path(&root, strategy.runtime_strategy_no);
         use sha2::{Digest, Sha256};
         let hash: String = Sha256::digest(std::fs::read(&path).unwrap())
             .iter()
@@ -2220,13 +2235,13 @@ mod checkpoint_tests {
             .collect();
         assert!(
             store
-                .load_pinned(strategy.strategy_id, Some(&hash))
+                .load_pinned(strategy.runtime_strategy_no, Some(&hash))
                 .unwrap()
                 .is_some()
         );
         assert_eq!(
             store
-                .load_pinned(strategy.strategy_id, Some(&"0".repeat(64)))
+                .load_pinned(strategy.runtime_strategy_no, Some(&"0".repeat(64)))
                 .unwrap_err()
                 .reason_code
                 .as_ref(),
@@ -2249,14 +2264,14 @@ mod checkpoint_tests {
             std::process::id(),
             SystemStrategyClock.now_ns()
         ));
-        let strategy_id = StrategyId(92);
-        let store = FileCheckpointStore::new(root.clone()).unwrap();
-        assert_eq!(store.reserve_generation(strategy_id, 0).unwrap(), 1);
+        let runtime_strategy_no = RuntimeStrategyNo(92);
+        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
+        assert_eq!(store.reserve_generation(runtime_strategy_no, 0).unwrap(), 1);
         drop(store);
 
-        let store = FileCheckpointStore::new(root.clone()).unwrap();
-        assert_eq!(store.reserve_generation(strategy_id, 0).unwrap(), 2);
-        assert_eq!(store.reserve_generation(strategy_id, 8).unwrap(), 9);
+        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
+        assert_eq!(store.reserve_generation(runtime_strategy_no, 0).unwrap(), 2);
+        assert_eq!(store.reserve_generation(runtime_strategy_no, 8).unwrap(), 9);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

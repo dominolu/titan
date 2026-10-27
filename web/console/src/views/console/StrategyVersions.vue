@@ -3,38 +3,40 @@ import { computed, ref, watch } from "vue";
 import { useConsoleStore } from "@/store/modules/console";
 import { consoleApi } from "@/api/console";
 import { body, raw } from "./run-view";
-import { useResearch } from "./use-research";
+import { useStrategy } from "./use-strategy";
 import { useConsoleWork } from "./use-console-work";
 import ConsoleIcon from "./ConsoleIcon.vue";
 import ConsoleDetails from "./ConsoleDetails.vue";
-import ResearchPager from "./ResearchPager.vue";
+import StrategyHistoryPager from "./StrategyHistoryPager.vue";
 const store = useConsoleStore(),
-  scope = useResearch();
+  scope = useStrategy();
 const { busy, detail, submit } = useConsoleWork();
 const query = ref(""),
   selectedVersion = ref("");
 const frozen = computed(() =>
-  scope.options("version").filter(item => item.frozen)
+  scope.options("parameter_version").filter(item => item.frozen)
 );
-const version = computed(() => scope.lookup("version", selectedVersion.value));
+const version = computed(() =>
+  scope.lookup("parameter_version", selectedVersion.value)
+);
 watch(
   () => [
     selectedVersion.value,
     detail.value && "kind" in detail.value ? detail.value.id : ""
   ],
   ids => {
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     scope.pin("builds", ids.filter(Boolean)).catch(error => {
-      if (generation === store.generation) store.error = error.message;
+      if (generation === store.sessionGeneration) store.error = error.message;
     });
   },
   { immediate: true }
 );
 const shown = computed(() =>
   scope
-    .resources("artifact")
+    .resources("strategy_version")
     .filter(row =>
-      `${row.id} ${row.node_id} ${body(row).artifact_digest}`
+      `${row.id} ${row.node_id} ${body(row).compiled_strategy_digest}`
         .toLowerCase()
         .includes(query.value.toLowerCase())
     )
@@ -45,14 +47,14 @@ const shown = computed(() =>
     <div class="card-heading">
       <div>
         <h2>构建策略版本</h2>
-        <p>编译产物归属于固定源码与参数版本，可供回测及实盘复用</p>
+        <p>策略版本归属于固定源码与参数版本，可供回测及实盘复用</p>
       </div>
       <span class="unit-tag">编译节点执行</span>
     </div>
     <div class="card-body toolbar">
       <el-select
         v-model="selectedVersion"
-        aria-label="待构建版本"
+        aria-label="待编译策略"
         placeholder="选择已冻结的参数版本"
         style="width: min(600px, 100%)"
         ><el-option
@@ -64,31 +66,36 @@ const shown = computed(() =>
         type="primary"
         :disabled="!version?.frozen || !store.writable || busy"
         @click="
-          submit({ kind: 'build', version_id: version.id }, version.node_id)
+          submit(
+            { kind: 'compile', parameter_version_id: version.id },
+            version.node_id
+          )
         "
-        >构建版本</el-button
+        >编译策略</el-button
       >
     </div>
-    <ResearchPager kind="version" />
+    <StrategyHistoryPager kind="parameter_version" />
   </section>
   <section class="console-card section-gap">
     <div class="card-heading">
       <h2>
-        编译产物
-        <span class="subtle">{{ scope.resources("artifact").length }}</span>
+        策略版本
+        <span class="subtle">{{
+          scope.resources("strategy_version").length
+        }}</span>
       </h2>
       <label class="search-box"
         ><ConsoleIcon name="search" /><input
           v-model="query"
-          aria-label="搜索构建制品"
-          placeholder="搜索制品、摘要或节点"
+          aria-label="搜索策略版本"
+          placeholder="搜索策略版本、摘要或节点"
       /></label>
     </div>
     <div class="table-scroll">
-      <table class="data-table artifacts-table">
+      <table class="data-table strategy-versions-table">
         <thead>
           <tr>
-            <th>制品</th>
+            <th>策略版本</th>
             <th>节点 / 输入版本</th>
             <th>摘要</th>
             <th>操作</th>
@@ -103,13 +110,15 @@ const shown = computed(() =>
             </td>
             <td>
               {{ row.node_id
-              }}<span class="cell-note">{{ raw(body(row).version_id) }}</span>
+              }}<span class="cell-note">{{
+                raw(body(row).parameter_version_id)
+              }}</span>
             </td>
             <td>
               <span
                 class="digest-cell"
-                :title="raw(body(row).artifact_digest)"
-                >{{ raw(body(row).artifact_digest) }}</span
+                :title="raw(body(row).compiled_strategy_digest)"
+                >{{ raw(body(row).compiled_strategy_digest) }}</span
               >
             </td>
             <td>
@@ -123,11 +132,11 @@ const shown = computed(() =>
                 >下载</a
               ><router-link
                 class="text-link"
-                :to="scope.path('backtests', { artifact: row.id })"
+                :to="scope.path('backtests', { strategy_version_id: row.id })"
                 >用于回测</router-link
               ><router-link
                 class="text-link"
-                :to="scope.path('live', { artifact: row.id })"
+                :to="scope.path('live', { strategy_version_id: row.id })"
                 >用于实盘</router-link
               >
             </td>
@@ -135,8 +144,8 @@ const shown = computed(() =>
           <tr v-if="!shown.length">
             <td colspan="4" class="compact-empty">
               {{
-                scope.resources("artifact").length
-                  ? "没有匹配的制品"
+                scope.resources("strategy_version").length
+                  ? "没有匹配的策略版本"
                   : "在策略参数页冻结版本后构建"
               }}
             </td>
@@ -145,11 +154,11 @@ const shown = computed(() =>
       </table>
     </div>
     <div class="table-footer">
-      <span>仅展示后端登记的制品 · 完整身份见来源详情</span>
+      <span>仅展示后端登记的策略版本 · 完整身份见来源详情</span>
     </div>
   </section>
 
-  <ResearchPager kind="artifact" /><ConsoleDetails
+  <StrategyHistoryPager kind="strategy_version" /><ConsoleDetails
     :item="detail"
     @close="detail = null"
   />

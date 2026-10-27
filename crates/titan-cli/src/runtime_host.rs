@@ -12,9 +12,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use titan_account_service::{AccountFactJournal, AccountService, AccountServiceCore};
-use titan_strategy_runtime::{StrategyAdminService, StrategyService, StrategyServiceCore};
+use titan_strategy_runtime::{
+    BusinessObservationSnapshot, StrategyAdminService, StrategyService, StrategyServiceCore,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+const HOST_API_VERSION: u32 = 2;
 const MAX_REQUEST: usize = 65_536;
 const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 /// A native runtime owns blocking shutdown/join operations; keep its entire lifetime off async lanes.
@@ -29,7 +32,8 @@ pub(crate) fn run_runtime_owner<T: Send>(work: impl FnOnce() -> Result<T> + Send
 #[serde(deny_unknown_fields)]
 pub struct HostClaim {
     pub run_id: String,
-    pub generation: String,
+    #[serde(alias = "generation")]
+    pub worker_session_id: String,
     pub account: String,
     pub instrument: String,
     pub binding_id: String,
@@ -37,19 +41,37 @@ pub struct HostClaim {
     pub socket: PathBuf,
     pub readonly: bool,
 }
+// Stored receipts retain their original bytes. Normalize only their identity
+// for comparison, rejecting duplicate/ambiguous spellings through serde.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ControlReceiptIdentity {
+    id: String,
+    digest: String,
+    #[serde(alias = "generation", alias = "run_generation")]
+    expected_run_generation: String,
+    action: String,
+}
+pub(crate) fn control_receipt_identity(input: &Value) -> Result<Value> {
+    let identity: ControlReceiptIdentity = serde_json::from_value(input.clone())?;
+    Ok(serde_json::to_value(identity)?)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostQuery {
     Control {
         operation_id: String,
         input_digest: String,
-        strategy_generation: String,
+        #[serde(alias = "strategy_generation")]
+        expected_run_generation: String,
         action: String,
     },
     ControlReceipt {
         operation_id: String,
         input_digest: String,
-        strategy_generation: String,
+        #[serde(alias = "strategy_generation")]
+        expected_run_generation: String,
         action: String,
     },
     Snapshot,
@@ -64,7 +86,8 @@ pub enum HostQuery {
 struct Request {
     api_version: u32,
     run_id: String,
-    generation: String,
+    #[serde(alias = "generation")]
+    worker_session_id: String,
     token: String,
     query: HostQuery,
 }
@@ -72,7 +95,8 @@ struct Request {
 struct Reply {
     api_version: u32,
     run_id: String,
-    generation: String,
+    #[serde(alias = "generation")]
+    worker_session_id: String,
     pid: String,
     start_time: String,
     payload: Option<Value>,
@@ -98,9 +122,9 @@ pub async fn query_host(
     )
     .await??;
     let request = serde_json::to_vec(&Request {
-        api_version: 1,
+        api_version: HOST_API_VERSION,
         run_id: claim.run_id.clone(),
-        generation: claim.generation.clone(),
+        worker_session_id: claim.worker_session_id.clone(),
         token: claim.token.clone(),
         query,
     })?;
@@ -117,9 +141,9 @@ pub async fn query_host(
         stream.read_exact(&mut bytes).await?;
         let reply: Reply = serde_json::from_slice(&bytes)?;
         ensure!(
-            reply.api_version == 1
+            reply.api_version == HOST_API_VERSION
                 && reply.run_id == claim.run_id
-                && reply.generation == claim.generation
+                && reply.worker_session_id == claim.worker_session_id
                 && reply.pid == pid.to_string()
                 && reply.start_time == start.to_string(),
             "worker reply identity changed"
@@ -325,10 +349,14 @@ impl State {
             .join("controls");
         std::fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{id}.json"));
-        let identity = json!({"id":id,"digest":digest,"generation":generation,"action":action});
+        let identity =
+            json!({"id":id,"digest":digest,"expected_run_generation":generation,"action":action});
         let mut receipt: Value = if path.exists() {
             let old: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-            ensure!(old["input"] == identity, "control idempotency conflict");
+            ensure!(
+                control_receipt_identity(&old["input"])? == identity,
+                "control idempotency conflict"
+            );
             old
         } else {
             ensure!(
@@ -498,13 +526,28 @@ impl State {
             for instance in service.list().iter() {
                 let state = service.state(instance.handle)?;
                 let diagnostic = service.diagnostics(instance.handle)?;
-                strategies.push(json!({"strategy_key":instance.strategy_key,"strategy_id":instance.handle.strategy_id.0.to_string(),"generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"pause_supported":service.pause_supported(instance.handle).unwrap_or(false),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"artifact_digest":hex(&instance.artifact_id.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"business":service.business_snapshot(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()}))}));
+                strategies.push(json!({"strategy_key":instance.strategy_key,"runtime_strategy_no":instance.handle.runtime_strategy_no.0.to_string(),"run_generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"pause_supported":service.pause_supported(instance.handle).unwrap_or(false),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"compiled_strategy_digest":hex(&instance.compiled_strategy_digest.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"recovery":service.recovery_status(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()})),"business_observation":service.business_observation(instance.handle).unwrap_or_else(|error|BusinessObservationSnapshot::unavailable(error.to_string()))}));
             }
         }
         let financial=self.journal.summary(&self.claim.account).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string(),"net_pnl":null,"max_drawdown":null}));
+        // Observation versions are bounded u32 contract fields. Preserve the
+        // canonical public schema bytes used by its hash; its metric values and
+        // all 64-bit source identifiers already use exact strings.
+        let observations: Vec<_> = strategies
+            .iter_mut()
+            .map(|item| {
+                item.as_object_mut()
+                    .and_then(|object| object.remove("business_observation"))
+            })
+            .collect();
         let mut snapshot = titan_domain_types::json_numbers_as_strings(
-            json!({"available":true,"source":"trading_runtime","run_id":self.claim.run_id,"generation":self.claim.generation,"account":self.claim.account,"instrument":self.claim.instrument,"mode":if self.claim.readonly{"observe"}else{"trade"},"readonly":self.claim.readonly,"process_state":"running","pid":self.pid.to_string(),"start_time":self.start.to_string(),"captured_at_ns":now(),"account_health":health,"account_diagnostics":diagnostics,"account_snapshot":image,"financial":financial,"strategies":strategies}),
+            json!({"available":true,"source":"trading_runtime","run_id":self.claim.run_id,"worker_session_id":self.claim.worker_session_id,"account":self.claim.account,"instrument":self.claim.instrument,"mode":if self.claim.readonly{"observe"}else{"trade"},"readonly":self.claim.readonly,"process_state":"running","pid":self.pid.to_string(),"start_time":self.start.to_string(),"captured_at_ns":now(),"account_health":health,"account_diagnostics":diagnostics,"account_snapshot":image,"financial":financial,"strategies":strategies}),
         );
+        if let Some(strategies) = snapshot["strategies"].as_array_mut() {
+            for (strategy, observation) in strategies.iter_mut().zip(observations) {
+                strategy["business_observation"] = observation.unwrap_or(Value::Null);
+            }
+        }
         snapshot["release_proof"] = json!({"safe":release_safe && account_flat,"source":"trading_runtime","account_epoch":snapshot["account_snapshot"]["image"]["epoch"],"captured_at_ns":snapshot["captured_at_ns"]});
         Ok(snapshot)
     }
@@ -516,9 +559,9 @@ impl State {
         let input: Request = serde_json::from_slice(&bytes)?;
         let authorized = Sha256::digest(input.token.as_bytes())
             == Sha256::digest(self.claim.token.as_bytes())
-            && input.api_version == 1
+            && matches!(input.api_version, 1 | HOST_API_VERSION)
             && input.run_id == self.claim.run_id
-            && input.generation == self.claim.generation;
+            && input.worker_session_id == self.claim.worker_session_id;
         let result: Result<Value> = if !authorized {
             Err(anyhow::anyhow!("worker identity or credential mismatch"))
         } else {
@@ -526,7 +569,7 @@ impl State {
                 HostQuery::Control {
                     operation_id,
                     input_digest,
-                    strategy_generation,
+                    expected_run_generation,
                     action,
                 } => {
                     let state = self.clone();
@@ -534,7 +577,7 @@ impl State {
                         state.control(
                             &operation_id,
                             &input_digest,
-                            &strategy_generation,
+                            &expected_run_generation,
                             &action,
                             true,
                         )
@@ -544,7 +587,7 @@ impl State {
                 HostQuery::ControlReceipt {
                     operation_id,
                     input_digest,
-                    strategy_generation,
+                    expected_run_generation,
                     action,
                 } => {
                     let state = self.clone();
@@ -552,7 +595,7 @@ impl State {
                         state.control(
                             &operation_id,
                             &input_digest,
-                            &strategy_generation,
+                            &expected_run_generation,
                             &action,
                             false,
                         )
@@ -586,9 +629,9 @@ impl State {
             Err(error) => (None, Some(error.to_string())),
         };
         let reply = serde_json::to_vec(&Reply {
-            api_version: 1,
+            api_version: input.api_version,
             run_id: self.claim.run_id.clone(),
-            generation: self.claim.generation.clone(),
+            worker_session_id: self.claim.worker_session_id.clone(),
             pid: self.pid.to_string(),
             start_time: self.start.to_string(),
             payload,
@@ -626,6 +669,26 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn control_receipt_generation_aliases_preserve_identity_and_reject_duplicates() {
+        let canonical = serde_json::json!({"id":"op","digest":"hash","expected_run_generation":"2","action":"pause"});
+        for name in ["generation", "run_generation", "expected_run_generation"] {
+            let mut historical = canonical.clone();
+            historical
+                .as_object_mut()
+                .unwrap()
+                .remove("expected_run_generation");
+            historical[name] = "2".into();
+            assert_eq!(
+                super::control_receipt_identity(&historical).unwrap(),
+                canonical
+            );
+        }
+        let mut ambiguous = canonical;
+        ambiguous["generation"] = "1".into();
+        assert!(super::control_receipt_identity(&ambiguous).is_err());
+    }
+
     use super::*;
     #[tokio::test]
     async fn async_entry_keeps_native_runtime_creation_shutdown_and_drop_on_one_sync_owner() {
@@ -651,7 +714,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let claim = HostClaim {
             run_id: "run".into(),
-            generation: "one".into(),
+            worker_session_id: "one".into(),
             account: "missing".into(),
             instrument: "BTC".into(),
             binding_id: "binding".into(),
@@ -678,7 +741,7 @@ mod tests {
                 .is_err()
         );
         bad = claim.clone();
-        bad.generation = "stale".into();
+        bad.worker_session_id = "stale".into();
         assert!(
             query_host(&bad, HostQuery::Snapshot, pid, start)
                 .await

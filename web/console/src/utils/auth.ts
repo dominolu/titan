@@ -45,7 +45,7 @@ export async function ensureSession() {
   const attempt = generation;
   if (!pending)
     pending = http
-      .get<Session>("/api/v1/session")
+      .get<Session>("/api/v2/session")
       .then(value => {
         if (attempt !== generation) throw new Error("会话已变更");
         setSession(value);

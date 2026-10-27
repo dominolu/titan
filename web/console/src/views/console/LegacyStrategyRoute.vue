@@ -12,31 +12,31 @@ onBeforeUnmount(() => {
   disposed = true;
 });
 onMounted(async () => {
-  const generation = store.generation;
+  const generation = store.sessionGeneration;
   try {
-    const items = await consoleApi.research();
-    if (disposed || generation !== store.generation) return;
+    const items = await consoleApi.strategies();
+    if (disposed || generation !== store.sessionGeneration) return;
     const tab =
       route.path === "/welcome"
         ? "parameters"
-        : route.path === "/artifacts"
-          ? "artifacts"
+        : ["/versions", "/artifacts"].includes(route.path)
+          ? "versions"
           : "backtests";
     await router.replace({
       path:
         items.length === 1
-          ? "/research/" + encodeURIComponent(items[0].id)
-          : "/research",
+          ? "/strategies/" + encodeURIComponent(items[0].id)
+          : "/strategies",
       query: { tab }
     });
   } catch (failure) {
-    if (!disposed && generation === store.generation)
+    if (!disposed && generation === store.sessionGeneration)
       error.value = (failure as Error).message;
   }
 });
 </script>
 <template>
   <p class="notice" :class="{ warning: error }">
-    {{ error || "正在打开策略研究工作区…" }}
+    {{ error || "正在打开策略详情…" }}
   </p>
 </template>

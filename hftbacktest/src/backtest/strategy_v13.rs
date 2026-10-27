@@ -1,4 +1,4 @@
-//! Bridge types for running the same signed ABI V13 artifact in HftBacktest and live Titan.
+//! Bridge types for running the same signed ABI V13 compiled_strategy in HftBacktest and live Titan.
 //!
 //! A backtest driver updates the adapter's public projections from its local/exchange processors,
 //! dispatches events at `EventPhase::StrategyCallback`, then translates returned staged commands

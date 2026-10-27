@@ -14,8 +14,8 @@ const to = ref<Date | null>(null);
 const run = ref("");
 const types = [
   ["operations", "管理操作"],
-  ["version", "参数版本"],
-  ["artifact", "制品"],
+  ["parameter_version", "参数版本"],
+  ["strategy_version", "策略版本"],
   ["backtest", "回测结果"],
   ["run", "运行实例"],
   ["account", "账户快照"],
@@ -26,7 +26,7 @@ async function load(next = 0) {
   error.value = "";
   try {
     items.value = await http.get<Array<Operation | Resource>>(
-      kind.value === "operations" ? "/api/v1/operations" : "/api/v1/resources",
+      kind.value === "operations" ? "/api/v2/operations" : "/api/v2/resources",
       {
         params: {
           kind: kind.value,

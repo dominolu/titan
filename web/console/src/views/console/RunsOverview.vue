@@ -78,13 +78,13 @@ const shown = computed(() =>
 watch(
   () => [selected.value?.id, view.value.state.deployment_id],
   async () => {
-    const identity = store.generation;
+    const identity = store.sessionGeneration;
     try {
       await pinResources(
         [selected.value?.id, view.value.state.deployment_id].filter(Boolean)
       );
     } catch (failure) {
-      if (identity === store.generation)
+      if (identity === store.sessionGeneration)
         store.error = (failure as Error).message;
     }
   },

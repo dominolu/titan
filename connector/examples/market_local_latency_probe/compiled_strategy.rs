@@ -7,7 +7,7 @@ use titan_strategy_runtime::*;
 pub const CAPACITY: usize = 2048;
 pub fn build(root: &Path) -> Result<()> {
     fs::create_dir_all(root)?;
-    // Keep the artifact state below the platform's 64 KiB bound.
+    // Keep the compiled_strategy state below the platform's 64 KiB bound.
     let size = 8 + CAPACITY * 24;
     let schema = json!({"itemsize":size,"alignment":8,"endian":"little","fields":[]});
     let mut hashed = schema.clone();
@@ -16,16 +16,17 @@ pub fn build(root: &Path) -> Result<()> {
         protocol_version: 1,
         abi_version: 13,
         abi_fingerprint: V13_ABI_FINGERPRINT,
-        strategy_id: "l2_local_latency".into(),
-        strategy_version: "1.0.0".into(),
+        strategy_type: "l2_local_latency".into(),
+        source_version: "1.0.0".into(),
         callbacks: vec!["on_depth".into()],
         callback_mask: 8,
-        state_schema_version: 1,
-        state_schema_hash: Sha256::digest(compiler_json_v13(&hashed)).into(),
+        recovery_state_schema_version: 1,
+        recovery_state_schema_hash: Sha256::digest(compiler_json_v13(&hashed)).into(),
         state_len: size,
         state_alignment: 8,
         initial_state: vec![0; size],
-        state_schema: schema,
+        recovery_state_schema: schema,
+        business_observation: None,
         parameter_schema: json!({"type":"object"}),
         subscriptions: vec![NumbaSubscriptionV13 {
             event: "depth".into(),
@@ -81,7 +82,7 @@ int32_t titan_numba_impl_on_depth(int32_t *result, void **exception, void *point
         .status()?;
     ensure!(status.success(), "probe C compilation failed");
     let library = fs::read(root.join("probe.so"))?;
-    write_artifact_v13(ArtifactBuildV13 {
+    write_compiled_strategy_v13(StrategyCompileOutputV13 {
         metadata: &meta,
         library: &library,
         source_digest: Sha256::digest(source.as_bytes()).into(),

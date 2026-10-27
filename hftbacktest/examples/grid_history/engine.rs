@@ -25,19 +25,21 @@ const VENUE: VenueId = VenueId(0);
 
 struct Layout(Value);
 impl Layout {
-    fn new(path: &Path, artifact: &StrategyArtifactV13) -> Result<Self> {
+    fn new(path: &Path, compiled_strategy: &LoadedNativeStrategyV13) -> Result<Self> {
         let value: Value = serde_json::from_slice(&fs::read(path)?)?;
         ensure!(
-            value["state_len"].as_u64() == Some(artifact.manifest.state.byte_len as u64),
-            "layout size differs from artifact"
+            value["state_len"].as_u64() == Some(compiled_strategy.manifest.state.byte_len as u64),
+            "layout size differs from compiled_strategy"
         );
         ensure!(
-            value["schema_version"].as_u64() == Some(u64::from(artifact.manifest.state.version)),
-            "layout version differs from artifact"
+            value["schema_version"].as_u64()
+                == Some(u64::from(compiled_strategy.manifest.state.version)),
+            "layout version differs from compiled_strategy"
         );
         ensure!(
-            value["schema_hash"].as_str() == Some(hex(&artifact.manifest.state.hash).as_str()),
-            "layout hash differs from artifact"
+            value["schema_hash"].as_str()
+                == Some(hex(&compiled_strategy.manifest.state.hash).as_str()),
+            "layout hash differs from compiled_strategy"
         );
         for field in value["fields"]
             .as_object()
@@ -47,7 +49,9 @@ impl Layout {
             let offset = field["offset"].as_u64().context("field offset")?;
             let size = field["size"].as_u64().context("field size")?;
             ensure!(
-                size > 0 && size <= 8 && offset + size <= artifact.manifest.state.byte_len as u64,
+                size > 0
+                    && size <= 8
+                    && offset + size <= compiled_strategy.manifest.state.byte_len as u64,
                 "layout field outside state"
             );
         }
@@ -140,7 +144,7 @@ impl Metrics {
 
 struct Replay {
     adapter: OfflineV13Adapter,
-    artifact: Arc<StrategyArtifactV13>,
+    compiled_strategy: Arc<LoadedNativeStrategyV13>,
     layout: Layout,
     coordinator: ExecutionCoordinator<RateFeeModel>,
     exchange: ExchangeAccountState,
@@ -173,12 +177,12 @@ struct Replay {
 
 impl Replay {
     fn new(
-        artifact: Arc<StrategyArtifactV13>,
+        compiled_strategy: Arc<LoadedNativeStrategyV13>,
         layout: Layout,
         output: &Path,
         model: Model,
     ) -> Result<Self> {
-        let state = artifact.initial_state.as_bytes();
+        let state = compiled_strategy.initial_state.as_bytes();
         let capital = layout.int(state, "config.allocated_capital_tick_lots") as f64 * MONEY;
         let leverage = layout.int(state, "config.leverage") as f64;
         ensure!(capital > 0.0 && leverage > 0.0, "invalid capital/leverage");
@@ -212,7 +216,7 @@ impl Replay {
         let mut local = VenueAccount::new(VENUE);
         local.set_balance(CURRENCY, capital)?;
         let adapter = OfflineV13Adapter::new(OfflineV13Config {
-            artifact: artifact.clone(),
+            compiled_strategy: compiled_strategy.clone(),
             strategy_instance_id: 1,
             generation: 1,
             command_capacity: 256,
@@ -238,7 +242,7 @@ impl Replay {
         )?;
         Ok(Self {
             adapter,
-            artifact,
+            compiled_strategy,
             layout,
             coordinator: ExecutionCoordinator::new(
                 VENUE,
@@ -967,8 +971,8 @@ impl Replay {
             .filter(|(stopped, started)| *started > 0 && stopped >= started)
             .map(|(stopped, started)| (stopped - started) as f64 / MS as f64);
         json!({ "schema_version": 1, "success": error.is_none(), "error": error,
-            "data": data_path, "strategy_version": self.artifact.manifest.strategy_version.as_ref(),
-            "artifact_digest": hex(&self.artifact.manifest.artifact_digest), "state_schema_hash": hex(&self.artifact.manifest.state.hash),
+            "data": data_path, "source_version": self.compiled_strategy.manifest.source_version.as_ref(),
+            "compiled_strategy_digest": hex(&self.compiled_strategy.manifest.compiled_strategy_digest), "state_schema_hash": hex(&self.compiled_strategy.manifest.state.hash),
             "direction": self.int("config.direction"), "initial_capital_usdt": self.initial_capital,
             "lower_usdt": self.int("config.lower_price_ticks") as f64 * TICK, "upper_usdt": self.int("config.upper_price_ticks") as f64 * TICK,
             "leverage": self.leverage, "max_notional_limit_usdt": self.int("config.max_notional_tick_lots") as f64 * MONEY,
@@ -1006,7 +1010,7 @@ fn reducing_lots(position: i64, side: u8) -> i64 {
     }
 }
 pub fn run(
-    artifact_path: &Path,
+    strategy_path: &Path,
     layout_path: &Path,
     data_path: &Path,
     output: &Path,
@@ -1014,15 +1018,15 @@ pub fn run(
 ) -> Result<Value> {
     fs::create_dir_all(output)?;
     let loader =
-        NativeArtifactLoaderV13::new(output.join("native-cache"), V13TrustPolicy::default());
-    let artifact = Arc::new(loader.load(artifact_path)?);
+        NativeStrategyLoaderV13::new(output.join("native-cache"), V13TrustPolicy::default());
+    let compiled_strategy = Arc::new(loader.load(strategy_path)?);
     ensure!(
-        artifact.manifest.strategy_id.as_ref() == "grid",
-        "this verification runner is for the grid artifact"
+        compiled_strategy.manifest.strategy_type.as_ref() == "grid",
+        "this verification runner is for the grid compiled_strategy"
     );
-    let layout = Layout::new(layout_path, &artifact)?;
+    let layout = Layout::new(layout_path, &compiled_strategy)?;
     let events = data::read(data_path)?;
-    let mut replay = Replay::new(artifact, layout, output, Model::new(stress))?;
+    let mut replay = Replay::new(compiled_strategy, layout, output, Model::new(stress))?;
     let error = replay
         .replay(&events)
         .err()

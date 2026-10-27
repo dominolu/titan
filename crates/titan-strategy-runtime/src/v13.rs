@@ -1,5 +1,8 @@
-//! Standalone native Strategy ABI V13 artifact and state runtime.
+//! Standalone native Strategy ABI V13 compiled_strategy and state runtime.
 
+use crate::observation::{
+    BusinessObservationDefinition, CompiledBusinessObservation, compile_business_observation,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -633,7 +636,7 @@ pub struct StrategyRuntimeContextV13 {
     pub reserved: u32,
 }
 
-/// Callback output flag, honored only for artifacts declaring STOP_BARRIER.
+/// Callback output flag, honored only for compiled_strategies declaring STOP_BARRIER.
 pub const V13_STOP_READY: u32 = 1;
 /// Host input: callbacks continue to consume facts, but only cancel/reduce commands are allowed.
 pub const V13_PAUSED: u32 = 2;
@@ -659,13 +662,13 @@ pub struct NativeStrategyDescriptorV13 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StateSchemaIdentityV13 {
+pub struct RecoveryStateIdentityV13 {
     pub version: u32,
     pub hash: [u8; 32],
     pub byte_len: usize,
     pub alignment: u32,
 }
-impl StateSchemaIdentityV13 {
+impl RecoveryStateIdentityV13 {
     pub fn validate_description(
         &self,
         description: &serde_json::Value,
@@ -693,12 +696,12 @@ impl StateSchemaIdentityV13 {
 pub struct AlignedStateMemoryV13 {
     words: Vec<u64>,
     byte_len: usize,
-    schema: StateSchemaIdentityV13,
+    schema: RecoveryStateIdentityV13,
 }
 
 impl AlignedStateMemoryV13 {
     pub fn from_bytes(
-        schema: StateSchemaIdentityV13,
+        schema: RecoveryStateIdentityV13,
         initial: &[u8],
     ) -> Result<Self, V13LoadError> {
         if schema.byte_len == 0
@@ -724,7 +727,7 @@ impl AlignedStateMemoryV13 {
         })
     }
 
-    pub fn schema(&self) -> StateSchemaIdentityV13 {
+    pub fn schema(&self) -> RecoveryStateIdentityV13 {
         self.schema
     }
     pub fn as_ptr(&self) -> *const u8 {
@@ -746,17 +749,17 @@ impl AlignedStateMemoryV13 {
 
 #[derive(Debug, thiserror::Error)]
 pub enum V13LoadError {
-    #[error("artifact I/O failed: {0}")]
+    #[error("compiled_strategy I/O failed: {0}")]
     Io(#[from] std::io::Error),
-    #[error("artifact CBOR is invalid: {0}")]
+    #[error("compiled_strategy CBOR is invalid: {0}")]
     Cbor(String),
-    #[error("artifact contract violation: {0}")]
+    #[error("compiled_strategy contract violation: {0}")]
     Contract(&'static str),
     #[error("state memory is invalid: {0}")]
     State(&'static str),
     #[error("native library load failed: {0}")]
     Native(#[from] libloading::Error),
-    #[error("artifact signature is invalid")]
+    #[error("compiled_strategy signature is invalid")]
     Signature,
     #[error("bundle is invalid: {0}")]
     Bundle(&'static str),
@@ -765,9 +768,9 @@ pub enum V13LoadError {
 }
 
 #[derive(Clone, Debug)]
-pub struct ArtifactManifestV13 {
-    pub strategy_id: Arc<str>,
-    pub strategy_version: Arc<str>,
+pub struct CompiledStrategyMetadataV13 {
+    pub strategy_type: Arc<str>,
+    pub source_version: Arc<str>,
     pub target_triple: Arc<str>,
     pub cpu_baseline: Arc<str>,
     pub native_library: Arc<str>,
@@ -776,16 +779,17 @@ pub struct ArtifactManifestV13 {
     pub parameters_digest: [u8; 32],
     pub subscriptions: Arc<[EventSubscriptionV13]>,
     pub capabilities: StrategyCapabilitiesV13,
-    pub state: StateSchemaIdentityV13,
-    pub state_description: Option<Arc<serde_json::Value>>,
+    pub state: RecoveryStateIdentityV13,
+    pub recovery_state_schema: Option<Arc<serde_json::Value>>,
+    pub business_observation: Option<Arc<CompiledBusinessObservation>>,
     pub initial_state: Arc<[u8]>,
-    pub native_digest: [u8; 32],
-    pub artifact_digest: [u8; 32],
-    pub signature: Option<ArtifactSignatureV13>,
+    pub native_library_sha256: [u8; 32],
+    pub compiled_strategy_digest: [u8; 32],
+    pub signature: Option<StrategySignatureV13>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ArtifactSignatureV13 {
+pub struct StrategySignatureV13 {
     pub algorithm: Arc<str>,
     pub key_id: Arc<str>,
     pub value: Arc<[u8]>,
@@ -829,15 +833,15 @@ struct NativeLibraryLeaseV13 {
 unsafe impl Send for NativeLibraryLeaseV13 {}
 unsafe impl Sync for NativeLibraryLeaseV13 {}
 
-pub struct StrategyArtifactV13 {
-    pub manifest: ArtifactManifestV13,
+pub struct LoadedNativeStrategyV13 {
+    pub manifest: CompiledStrategyMetadataV13,
     pub descriptor: NativeStrategyDescriptorV13,
     pub callbacks: CallbackRegistryV13,
     pub initial_state: AlignedStateMemoryV13,
     _lease: Arc<NativeLibraryLeaseV13>,
 }
 
-impl StrategyArtifactV13 {
+impl LoadedNativeStrategyV13 {
     pub fn instantiate(
         &self,
         strategy_instance_id: u64,
@@ -853,9 +857,9 @@ impl StrategyArtifactV13 {
             generation,
             state: self.initial_state.clone_for_instance(),
             callbacks: self.callbacks.clone(),
-            strategy_id: self.manifest.strategy_id.clone(),
-            strategy_version: self.manifest.strategy_version.clone(),
-            artifact_digest: self.manifest.artifact_digest,
+            strategy_type: self.manifest.strategy_type.clone(),
+            source_version: self.manifest.source_version.clone(),
+            compiled_strategy_digest: self.manifest.compiled_strategy_digest,
             binding_digest: [0; 32],
             lifecycle: StrategyInstanceLifecycleV13::Ready,
             command_gate_open: false,
@@ -905,9 +909,9 @@ pub struct StrategyInstanceV13 {
     pub generation: u64,
     pub state: AlignedStateMemoryV13,
     callbacks: CallbackRegistryV13,
-    strategy_id: Arc<str>,
-    strategy_version: Arc<str>,
-    artifact_digest: [u8; 32],
+    strategy_type: Arc<str>,
+    source_version: Arc<str>,
+    compiled_strategy_digest: [u8; 32],
     binding_digest: [u8; 32],
     lifecycle: StrategyInstanceLifecycleV13,
     command_gate_open: bool,
@@ -992,9 +996,9 @@ impl StrategyInstanceV13 {
             strategy_instance_id: self.strategy_instance_id,
             generation: self.generation,
             event_committed_sequence: self.event_committed_sequence,
-            strategy_id: self.strategy_id.clone(),
-            strategy_version: self.strategy_version.clone(),
-            artifact_digest: self.artifact_digest,
+            strategy_type: self.strategy_type.clone(),
+            source_version: self.source_version.clone(),
+            compiled_strategy_digest: self.compiled_strategy_digest,
             binding_digest: self.binding_digest,
             abi_version: STRATEGY_ABI_V13,
             state_schema_version: self.state.schema.version,
@@ -1020,11 +1024,11 @@ impl StrategyInstanceV13 {
                 "restore requires a stopped instance safe point",
             ));
         }
-        if snapshot.checksum != snapshot_checksum(snapshot)
+        if !snapshot.checksum_valid()
             || snapshot.strategy_instance_id != self.strategy_instance_id
-            || snapshot.strategy_id != self.strategy_id
-            || snapshot.strategy_version != self.strategy_version
-            || snapshot.artifact_digest != self.artifact_digest
+            || snapshot.strategy_type != self.strategy_type
+            || snapshot.source_version != self.source_version
+            || snapshot.compiled_strategy_digest != self.compiled_strategy_digest
             || snapshot.binding_digest != self.binding_digest
             || snapshot.abi_version != STRATEGY_ABI_V13
             || snapshot.state_schema_version != self.state.schema.version
@@ -1097,9 +1101,9 @@ pub struct StrategyStateSnapshotV13 {
     pub strategy_instance_id: u64,
     pub generation: u64,
     pub event_committed_sequence: u64,
-    pub strategy_id: Arc<str>,
-    pub strategy_version: Arc<str>,
-    pub artifact_digest: [u8; 32],
+    pub strategy_type: Arc<str>,
+    pub source_version: Arc<str>,
+    pub compiled_strategy_digest: [u8; 32],
     pub binding_digest: [u8; 32],
     pub abi_version: u32,
     pub state_schema_version: u32,
@@ -1221,11 +1225,11 @@ fn snapshot_checksum(snapshot: &StrategyStateSnapshotV13) -> [u8; 32] {
     ] {
         digest.update(value.to_le_bytes());
     }
-    digest.update((snapshot.strategy_id.len() as u64).to_le_bytes());
-    digest.update(snapshot.strategy_id.as_bytes());
-    digest.update((snapshot.strategy_version.len() as u64).to_le_bytes());
-    digest.update(snapshot.strategy_version.as_bytes());
-    digest.update(snapshot.artifact_digest);
+    digest.update((snapshot.strategy_type.len() as u64).to_le_bytes());
+    digest.update(snapshot.strategy_type.as_bytes());
+    digest.update((snapshot.source_version.len() as u64).to_le_bytes());
+    digest.update(snapshot.source_version.as_bytes());
+    digest.update(snapshot.compiled_strategy_digest);
     digest.update(snapshot.binding_digest);
     digest.update(snapshot.abi_version.to_le_bytes());
     digest.update(snapshot.state_schema_version.to_le_bytes());
@@ -1302,13 +1306,13 @@ pub fn public_state_identity_v13(
     digest.finalize().into()
 }
 
-pub struct NativeArtifactLoaderV13 {
+pub struct NativeStrategyLoaderV13 {
     cache_dir: PathBuf,
     trust: V13TrustPolicy,
     max_bundle_entry_bytes: u64,
 }
 
-impl NativeArtifactLoaderV13 {
+impl NativeStrategyLoaderV13 {
     pub fn new(cache_dir: PathBuf, trust: V13TrustPolicy) -> Self {
         Self {
             cache_dir,
@@ -1317,35 +1321,38 @@ impl NativeArtifactLoaderV13 {
         }
     }
 
-    pub fn inspect(&self, artifact_path: &Path) -> Result<ArtifactManifestV13, V13LoadError> {
-        let (manifest_bytes, library) = self.read_pair_or_bundle(artifact_path)?;
+    pub fn inspect(
+        &self,
+        strategy_path: &Path,
+    ) -> Result<CompiledStrategyMetadataV13, V13LoadError> {
+        let (manifest_bytes, library) = self.read_pair_or_bundle(strategy_path)?;
         let mut value = parse_cbor(&manifest_bytes)?;
         let signature = parse_signature(map_get(&value, "signature")?)?;
         map_remove(&mut value, "signature")?;
         let unsigned = canonical_cbor(&value)?;
-        let artifact_digest: [u8; 32] = Sha256::digest(&unsigned).into();
+        let compiled_strategy_digest: [u8; 32] = Sha256::digest(&unsigned).into();
         self.verify_signature(signature.as_ref(), &unsigned)?;
-        let manifest = parse_manifest(&value, signature, artifact_digest)?;
-        if <[u8; 32]>::from(Sha256::digest(&library)) != manifest.native_digest {
+        let manifest = parse_manifest(&value, signature, compiled_strategy_digest)?;
+        if <[u8; 32]>::from(Sha256::digest(&library)) != manifest.native_library_sha256 {
             return Err(V13LoadError::Contract("native digest mismatch"));
         }
         if manifest.target_triple.as_ref() != host_target_triple() {
             return Err(V13LoadError::Contract(
-                "artifact target does not match host",
+                "compiled_strategy target does not match host",
             ));
         }
         Ok(manifest)
     }
 
-    pub fn load(&self, artifact_path: &Path) -> Result<StrategyArtifactV13, V13LoadError> {
-        let manifest = self.inspect(artifact_path)?;
-        let (_, library_bytes) = self.read_pair_or_bundle(artifact_path)?;
+    pub fn load(&self, strategy_path: &Path) -> Result<LoadedNativeStrategyV13, V13LoadError> {
+        let manifest = self.inspect(strategy_path)?;
+        let (_, library_bytes) = self.read_pair_or_bundle(strategy_path)?;
         fs::create_dir_all(&self.cache_dir)?;
         let cached = self
             .cache_dir
-            .join(format!("{}.so", hex(&manifest.native_digest)));
+            .join(format!("{}.so", hex(&manifest.native_library_sha256)));
         let cache_valid = match fs::read(&cached) {
-            Ok(bytes) => <[u8; 32]>::from(Sha256::digest(&bytes)) == manifest.native_digest,
+            Ok(bytes) => <[u8; 32]>::from(Sha256::digest(&bytes)) == manifest.native_library_sha256,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(error.into()),
         };
@@ -1395,7 +1402,7 @@ impl NativeArtifactLoaderV13 {
         }
         let initial_state =
             AlignedStateMemoryV13::from_bytes(manifest.state, &manifest.initial_state)?;
-        Ok(StrategyArtifactV13 {
+        Ok(LoadedNativeStrategyV13 {
             manifest,
             descriptor,
             callbacks: CallbackRegistryV13 { callbacks },
@@ -1406,7 +1413,7 @@ impl NativeArtifactLoaderV13 {
 
     fn verify_signature(
         &self,
-        signature: Option<&ArtifactSignatureV13>,
+        signature: Option<&StrategySignatureV13>,
         payload: &[u8],
     ) -> Result<(), V13LoadError> {
         let Some(signature) = signature else {
@@ -1507,7 +1514,7 @@ const CALLBACK_NAMES: [&str; V13_CALLBACK_COUNT] = [
 
 fn validate_descriptor(
     descriptor: &NativeStrategyDescriptorV13,
-    manifest: &ArtifactManifestV13,
+    manifest: &CompiledStrategyMetadataV13,
 ) -> Result<(), V13LoadError> {
     if descriptor.struct_size as usize != std::mem::size_of::<NativeStrategyDescriptorV13>()
         || descriptor.abi_version != STRATEGY_ABI_V13
@@ -1526,13 +1533,35 @@ fn validate_descriptor(
     Ok(())
 }
 
+// Verify original signed bytes before adapting historical field names.
+fn manifest_field<'a>(value: &'a CborValue, name: &str) -> Result<&'a CborValue, V13LoadError> {
+    let legacy = match name {
+        "strategy_format_version" => "artifact_format_version",
+        "strategy_type" => "strategy_id",
+        "source_version" => "strategy_version",
+        "recovery_state_schema" => "state_schema",
+        "recovery_state_schema_version" => "state_schema_version",
+        "recovery_state_schema_hash" => "state_schema_hash",
+        "native_library_sha256" => "native_digest",
+        other => other,
+    };
+    if name != legacy && map_get(value, name).is_ok() && map_get(value, legacy).is_ok() {
+        return Err(V13LoadError::Contract(
+            "ambiguous strategy metadata aliases",
+        ));
+    }
+    map_get(value, name).or_else(|_| map_get(value, legacy))
+}
+
 fn parse_manifest(
     value: &CborValue,
-    signature: Option<ArtifactSignatureV13>,
-    artifact_digest: [u8; 32],
-) -> Result<ArtifactManifestV13, V13LoadError> {
-    if value_u64(map_get(value, "artifact_format_version")?)? != 1
-        || value_u64(map_get(value, "abi_version")?)? != 13
+    signature: Option<StrategySignatureV13>,
+    compiled_strategy_digest: [u8; 32],
+) -> Result<CompiledStrategyMetadataV13, V13LoadError> {
+    if !matches!(
+        value_u64(manifest_field(value, "strategy_format_version")?)?,
+        1 | 2
+    ) || value_u64(map_get(value, "abi_version")?)? != 13
         || value_bytes32(map_get(value, "abi_fingerprint")?)? != V13_ABI_FINGERPRINT
     {
         return Err(V13LoadError::Contract("manifest ABI identity mismatch"));
@@ -1638,23 +1667,39 @@ fn parse_manifest(
             "account subscription lacks capability",
         ));
     }
-    let state = StateSchemaIdentityV13 {
-        version: value_u64(map_get(value, "state_schema_version")?)? as u32,
-        hash: value_bytes32(map_get(value, "state_schema_hash")?)?,
+    let state = RecoveryStateIdentityV13 {
+        version: value_u64(manifest_field(value, "recovery_state_schema_version")?)? as u32,
+        hash: value_bytes32(manifest_field(value, "recovery_state_schema_hash")?)?,
         byte_len: state_len,
         alignment: value_u64(map_get(value, "state_alignment")?)? as u32,
     };
-    let state_description = map_get(value, "state_schema")
+    let recovery_state_schema = manifest_field(value, "recovery_state_schema")
         .ok()
         .map(cbor_to_json)
         .transpose()?
         .map(Arc::new);
-    if let Some(description) = &state_description {
+    if let Some(description) = &recovery_state_schema {
         state.validate_description(description)?;
     }
-    Ok(ArtifactManifestV13 {
-        strategy_id: Arc::from(value_text(map_get(value, "strategy_id")?)?),
-        strategy_version: Arc::from(value_text(map_get(value, "strategy_version")?)?),
+    let observation = map_get(value, "business_observation")
+        .ok()
+        .filter(|v| !matches!(v, CborValue::Null))
+        .map(|value| {
+            let definition: BusinessObservationDefinition =
+                serde_json::from_value(cbor_to_json(value)?).map_err(|_| {
+                    V13LoadError::Contract("invalid business observation declaration")
+                })?;
+            let description = recovery_state_schema
+                .as_ref()
+                .ok_or(V13LoadError::Contract(
+                    "business observation lacks recovery description",
+                ))?;
+            compile_business_observation(&definition, description, state).map(Arc::new)
+        })
+        .transpose()?;
+    Ok(CompiledStrategyMetadataV13 {
+        strategy_type: Arc::from(value_text(manifest_field(value, "strategy_type")?)?),
+        source_version: Arc::from(value_text(manifest_field(value, "source_version")?)?),
         target_triple: Arc::from(value_text(map_get(value, "target_triple")?)?),
         cpu_baseline: Arc::from(value_text(map_get(value, "cpu_baseline")?)?),
         native_library: Arc::from(value_text(map_get(value, "native_library")?)?),
@@ -1664,19 +1709,20 @@ fn parse_manifest(
         subscriptions: subscriptions.into(),
         capabilities,
         state,
-        state_description,
+        recovery_state_schema,
+        business_observation: observation,
         initial_state: initial_state.into(),
-        native_digest: value_bytes32(map_get(value, "native_digest")?)?,
-        artifact_digest,
+        native_library_sha256: value_bytes32(manifest_field(value, "native_library_sha256")?)?,
+        compiled_strategy_digest,
         signature,
     })
 }
 
-fn parse_signature(value: &CborValue) -> Result<Option<ArtifactSignatureV13>, V13LoadError> {
+fn parse_signature(value: &CborValue) -> Result<Option<StrategySignatureV13>, V13LoadError> {
     if matches!(value, CborValue::Null) {
         return Ok(None);
     }
-    Ok(Some(ArtifactSignatureV13 {
+    Ok(Some(StrategySignatureV13 {
         algorithm: Arc::from(value_text(map_get(value, "algorithm")?)?),
         key_id: Arc::from(value_text(map_get(value, "key_id")?)?),
         value: value_bytes(map_get(value, "value")?)?.into(),
@@ -2015,6 +2061,89 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires explicit previous-binary synthetic recovery and signed strategy fixtures"]
+    fn historical_recovery_point_loads_original_native_strategy() {
+        use crate::*;
+        let bytes =
+            std::fs::read(std::env::var("TITAN_TEST_PREVIOUS_RECOVERY_POINT").unwrap()).unwrap();
+        let point: StrategyRecoveryPoint = serde_json::from_slice(&bytes).unwrap();
+        assert!(point.native_snapshot().checksum_valid());
+        let key = std::env::var("TITAN_TEST_PREVIOUS_PUBLIC_KEY").unwrap();
+        let key: Vec<u8> = (0..key.len())
+            .step_by(2)
+            .map(|offset| u8::from_str_radix(&key[offset..offset + 2], 16).unwrap())
+            .collect();
+        let mut trust = V13TrustPolicy {
+            require_signature: true,
+            ..Default::default()
+        };
+        trust
+            .ed25519_keys
+            .insert("acceptance".into(), key.try_into().unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let loader = NativeStrategyLoaderV13::new(root.path().into(), trust);
+        let compiled = loader
+            .load(std::path::Path::new(
+                &std::env::var("TITAN_TEST_PREVIOUS_STRATEGY_FILE").unwrap(),
+            ))
+            .unwrap();
+        let config = StrategyInstanceConfigV13 {
+            strategy_instance_id: 77,
+            markets: vec![(0, 1)],
+            accounts: vec![(0, 1)],
+            routing_keys: vec![1, 1],
+            max_commands_per_callback: 64,
+            max_handler_duration: std::time::Duration::from_secs(5),
+        };
+        let mut native = compiled
+            .instantiate_with_config(&config, point.generation + 1)
+            .unwrap();
+        native.bind_resolved_routes(
+            &[ResolvedMarketBinding {
+                source_stream: titan_market_service::SourceStreamId(2),
+                local_market_no: 0,
+                local_asset_no: 0,
+                source: titan_market_service::MarketSourceHandle {
+                    source_id: titan_market_service::MarketSourceId(1),
+                    generation: 1,
+                },
+                asset_id: 1,
+                data_mode: StrategyDataMode::Tick,
+            }],
+            &[ResolvedAccountBinding {
+                local_account_no: 0,
+                account: titan_account_service::AccountHandle {
+                    account_id: titan_account_service::AccountId(1),
+                    generation: 1,
+                },
+                tradable_assets: Arc::from([StrategyTradableAsset {
+                    local_asset_no: 0,
+                    asset_id: 1,
+                }]),
+            }],
+        );
+        let snapshot = point.native_snapshot();
+        native.restore_state(&snapshot).unwrap();
+        assert_eq!(native.state.as_bytes(), point.state_bytes.as_ref());
+        assert!(!native.command_gate_open());
+        assert_eq!(native.lifecycle, StrategyInstanceLifecycleV13::Restoring);
+        let mut successor = compiled
+            .instantiate_with_config(&config, point.generation + 1)
+            .unwrap();
+        // An unbound instance and a tampered source remain incompatible.
+        assert!(successor.restore_state(&snapshot).is_err());
+        let mut bad = snapshot;
+        let mut state = bad.state_bytes.to_vec();
+        state[0] ^= 1;
+        bad.state_bytes = state.into();
+        assert!(!bad.checksum_valid());
+        println!(
+            "previous-binary signed grid and recovery bytes loaded unchanged; state schema {}, ABI {}; trading gate remains closed",
+            point.state_schema_version, point.abi_version
+        );
+    }
+
+    #[test]
     fn recovery_bindings_cover_execution_asset_routes_and_ignore_session_generations() {
         let mut account = crate::ResolvedAccountBinding {
             local_account_no: 0,
@@ -2042,7 +2171,7 @@ mod tests {
 
     #[test]
     fn aligned_state_is_independent_and_hides_tail_padding() {
-        let schema = StateSchemaIdentityV13 {
+        let schema = RecoveryStateIdentityV13 {
             version: 1,
             hash: [7; 32],
             byte_len: 13,

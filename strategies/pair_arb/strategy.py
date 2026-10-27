@@ -52,7 +52,7 @@ state_dtype = record(pair=pair_dtype, slot=slot_dtype,
                      order_refs=array(order_ref_dtype, MAX_ORDER_REFS))
 
 SPEC = StrategySpec(
-    strategy_id="pair_arb", strategy_version="3.1.0", state_schema_version=4,
+    strategy_type="pair_arb", source_version="3.1.0", recovery_state_schema_version=4,
     parameters=(
         IntParam("left_asset_no", required=False, default=0, minimum=0),
         IntParam("right_asset_no", required=False, default=1, minimum=0),

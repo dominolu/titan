@@ -9,6 +9,7 @@ import RunAlerts from "./RunAlerts.vue";
 import FactHistory from "./FactHistory.vue";
 import AccountSnapshot from "./AccountSnapshot.vue";
 import HostLog from "./HostLog.vue";
+import BusinessObservationPanel from "./BusinessObservationPanel.vue";
 import OperationsPanel from "./OperationsPanel.vue";
 import { useResourcePins } from "./use-resource-pins";
 const store = useConsoleStore();
@@ -42,16 +43,16 @@ watch(
   },
   { immediate: true }
 );
-watch([selected, () => body(item.value).generation], () => {
+watch([selected, () => body(item.value).worker_session_id], () => {
   tab.value = "summary";
   diagnostics.value = false;
 });
 watch(
   selected,
   id => {
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     pinResources([id]).catch(error => {
-      if (generation === store.generation) store.error = error.message;
+      if (generation === store.sessionGeneration) store.error = error.message;
     });
   },
   { immediate: true }
@@ -95,7 +96,7 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
       <div>
         <strong>{{ view.status }}</strong
         >{{ raw(view.state.account) }} / {{ raw(view.state.instrument) }} ·
-        {{ item.node_id }} · 代次 {{ raw(view.state.generation) }}
+        {{ item.node_id }} · 代次 {{ raw(view.state.run_generation) }}
       </div>
       <span>最后采样 {{ time(view.observation.captured_at_ns, true) }}</span>
     </div>
@@ -150,7 +151,7 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
           ['orders', '当前订单'],
           ['history', '平台事实历史'],
           ['financial', '权益与费用'],
-          ['strategies', '策略与 checkpoint']
+          ['strategies', '策略与恢复点']
         ]"
         :key="value"
         :class="{ active: tab === value }"
@@ -271,7 +272,7 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
     />
     <FactHistory
       v-if="tab === 'history'"
-      :key="item.id + ':' + view.state.generation"
+      :key="item.id + ':' + view.state.run_generation"
       :item="item"
     />
     <section v-if="tab === 'financial'" class="console-card">
@@ -328,7 +329,7 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
     </section>
     <section v-if="tab === 'strategies'" class="console-card">
       <div class="card-heading">
-        <h2>网格业务状态 / checkpoint</h2>
+        <h2>策略业务观测与恢复信息</h2>
         <span class="subtle">业务快照与账户事实分别展示</span>
       </div>
       <div
@@ -350,7 +351,14 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
           命令通道 {{ raw(strategy.command_gate_open) }} / 激活门
           {{ raw(strategy.activation_gate_open) }}
         </p>
-        <pre>{{ pretty(strategy) }}</pre>
+        <BusinessObservationPanel
+          :observation="strategy.business_observation ?? {}"
+          :stale="view.stale"
+        />
+        <details class="secondary-details">
+          <summary>恢复信息</summary>
+          <pre>{{ pretty(strategy.recovery) }}</pre>
+        </details>
       </details>
     </section>
     <RunAlerts :item="item" />

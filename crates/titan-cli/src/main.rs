@@ -50,10 +50,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run a V13 artifact backtest or a configured Core Live strategy in an isolated worker.
+    /// Run a V13 compiled_strategy backtest or a configured Core Live strategy in an isolated worker.
     Run {
         /// `.titan` path for backtest; configured strategy_key for live.
-        #[arg(value_name = "ARTIFACT_OR_STRATEGY_KEY")]
+        #[arg(value_name = "STRATEGY_FILE_OR_KEY")]
         strategy: String,
         #[arg(short = 'e', long = "env", value_enum)]
         env: Environment,
@@ -78,9 +78,9 @@ enum Commands {
         #[arg(long)]
         registry: PathBuf,
     },
-    /// Validate a V13 artifact/backtest trace or Core Live deployment without starting Python.
+    /// Validate a V13 compiled_strategy/backtest trace or Core Live deployment without starting Python.
     Validate {
-        #[arg(value_name = "ARTIFACT_OR_STRATEGY_KEY")]
+        #[arg(value_name = "STRATEGY_FILE_OR_KEY")]
         strategy: String,
         #[arg(short = 'e', long = "env", value_enum)]
         env: Environment,
@@ -153,7 +153,7 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// List compiled ABI V13 artifacts without importing strategy Python.
+    /// List compiled ABI V13 compiled_strategies without importing strategy Python.
     Ls {
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
         trusted_keys: Vec<String>,
@@ -162,9 +162,9 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Show one compiled ABI V13 artifact manifest.
+    /// Show one compiled ABI V13 compiled_strategy manifest.
     Show {
-        artifact: PathBuf,
+        compiled_strategy: PathBuf,
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
         trusted_keys: Vec<String>,
         #[arg(long)]
@@ -172,9 +172,9 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Validate one compiled ABI V13 artifact, including native digest and signature policy.
+    /// Validate one compiled ABI V13 compiled_strategy, including native digest and signature policy.
     Validate {
-        artifact: PathBuf,
+        compiled_strategy: PathBuf,
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
         trusted_keys: Vec<String>,
         #[arg(long)]
@@ -182,7 +182,7 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Compile an ABI V13 strategy to a native artifact.
+    /// Compile an ABI V13 strategy to a native compiled_strategy.
     Compile {
         #[arg(long, value_name = "strategy.py")]
         strategy: PathBuf,
@@ -192,9 +192,9 @@ enum StrategyCommands {
         target: Option<String>,
         #[arg(long, default_value = "x86-64")]
         cpu_baseline: String,
-        #[arg(long, default_value = "pair", value_parser = ["pair", "bundle"])]
-        artifact_format: String,
-        #[arg(long, value_name = "ARTIFACT")]
+        #[arg(long, alias = "artifact-format", default_value = "pair", value_parser = ["pair", "bundle"])]
+        strategy_format: String,
+        #[arg(long, value_name = "STRATEGY_FILE")]
         output: Option<PathBuf>,
         #[arg(long, value_name = "PRIVATE_KEY")]
         signing_key: Option<PathBuf>,
@@ -315,10 +315,14 @@ struct RunSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StrategyRunSpec {
-    strategy_id: String,
-    strategy_version: String,
-    artifact: PathBuf,
-    artifact_digest: String,
+    #[serde(alias = "strategy_id")]
+    strategy_key: String,
+    #[serde(alias = "strategy_version")]
+    source_version: String,
+    #[serde(alias = "artifact")]
+    compiled_strategy: PathBuf,
+    #[serde(alias = "artifact_digest")]
+    compiled_strategy_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -338,7 +342,7 @@ struct BacktestConfig {
     #[serde(default = "default_command_capacity")]
     command_capacity: usize,
     #[serde(default)]
-    allow_unsigned_artifact: bool,
+    allow_unsigned_strategy: bool,
     #[serde(default)]
     trusted_ed25519_keys: BTreeMap<String, String>,
 }
@@ -415,7 +419,7 @@ enum BackendSpec {
     Backtest {
         data: PathBuf,
         command_capacity: usize,
-        allow_unsigned_artifact: bool,
+        allow_unsigned_strategy: bool,
         trusted_ed25519_keys: BTreeMap<String, String>,
     },
     CoreLive {
@@ -601,13 +605,13 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
                     })?
                     .flatten()
                 {
-                    let artifacts = deployment.path().join("artifacts");
-                    if !artifacts.is_dir() {
+                    let compiled_strategies = deployment.path().join("compiled_strategies");
+                    if !compiled_strategies.is_dir() {
                         continue;
                     }
-                    for entry in fs::read_dir(&artifacts)
+                    for entry in fs::read_dir(&compiled_strategies)
                         .map_err(|source| CliError::Read {
-                            path: artifacts.clone(),
+                            path: compiled_strategies.clone(),
                             source,
                         })?
                         .flatten()
@@ -620,8 +624,12 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
                     }
                 }
             }
-            catalog
-                .sort_by_key(|value| value["strategy_id"].as_str().unwrap_or_default().to_owned());
+            catalog.sort_by_key(|value| {
+                value["strategy_type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            });
             if json {
                 println!(
                     "{}",
@@ -636,24 +644,24 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
                 for item in catalog {
                     println!(
                         "{}\t{}\t{}\t{}\t{}",
-                        item["strategy_id"].as_str().unwrap_or("-"),
-                        item["strategy_version"].as_str().unwrap_or("-"),
+                        item["strategy_type"].as_str().unwrap_or("-"),
+                        item["source_version"].as_str().unwrap_or("-"),
                         item["abi_version"].as_u64().unwrap_or_default(),
                         item["signed"].as_bool().unwrap_or(false),
-                        item["artifact"].as_str().unwrap_or("-"),
+                        item["compiled_strategy"].as_str().unwrap_or("-"),
                     );
                 }
             }
             Ok(())
         }
         StrategyCommands::Show {
-            artifact,
+            compiled_strategy,
             trusted_keys,
             require_signature,
             json,
         } => {
             let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            let manifest = v13_manifest_json(&artifact, trust)?;
+            let manifest = v13_manifest_json(&compiled_strategy, trust)?;
             if json {
                 println!(
                     "{}",
@@ -672,22 +680,22 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             Ok(())
         }
         StrategyCommands::Validate {
-            artifact,
+            compiled_strategy,
             trusted_keys,
             require_signature,
             json,
         } => {
             let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            let manifest = v13_manifest_json(&artifact, trust)?;
+            let manifest = v13_manifest_json(&compiled_strategy, trust)?;
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "schema_version": 1,
                         "valid": true,
-                        "strategy_id": manifest["strategy_id"],
-                        "strategy_version": manifest["strategy_version"],
-                        "artifact_digest": manifest["artifact_digest"]
+                        "strategy_type": manifest["strategy_type"],
+                        "source_version": manifest["source_version"],
+                        "compiled_strategy_digest": manifest["compiled_strategy_digest"]
                     })
                 );
             } else {
@@ -700,7 +708,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             parameters,
             target,
             cpu_baseline,
-            artifact_format,
+            strategy_format,
             output,
             signing_key,
             key_id,
@@ -710,7 +718,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             parameters: &parameters,
             target: target.as_deref(),
             cpu_baseline: &cpu_baseline,
-            artifact_format: &artifact_format,
+            strategy_format: &strategy_format,
             output: output.as_deref(),
             signing_key: signing_key.as_deref(),
             key_id: key_id.as_deref(),
@@ -727,33 +735,34 @@ fn v13_manifest_json(
         path: path.into(),
         source,
     })?;
-    let manifest = inspect_v13_artifact_with_policy(&path, trust)?;
+    let manifest = inspect_compiled_strategy_with_policy(&path, trust)?;
     Ok(serde_json::json!({
-        "strategy_id": manifest.strategy_id,
-        "strategy_version": manifest.strategy_version,
+        "strategy_type": manifest.strategy_type,
+        "source_version": manifest.source_version,
         "abi_version": 13,
-        "artifact_digest": hex_digest(&manifest.artifact_digest),
-        "native_digest": hex_digest(&manifest.native_digest),
+        "compiled_strategy_digest": hex_digest(&manifest.compiled_strategy_digest),
+        "native_library_sha256": hex_digest(&manifest.native_library_sha256),
         "target_triple": manifest.target_triple,
         "cpu_baseline": manifest.cpu_baseline,
         "callback_mask": manifest.callback_mask,
         "state_len": manifest.state.byte_len,
         "state_alignment": manifest.state.alignment,
-        "state_schema_version": manifest.state.version,
-        "state_schema_hash": hex_digest(&manifest.state.hash),
+        "recovery_state_schema_version": manifest.state.version,
+        "recovery_state_schema_hash": hex_digest(&manifest.state.hash),
+        "business_observation_schema": manifest.business_observation.as_ref().map(|v| serde_json::json!({"schema":v.schema,"schema_hash":v.schema_hash})),
         "signed": manifest.signature.is_some(),
         "key_id": manifest.signature.as_ref().map(|value| value.key_id.as_ref()),
-        "artifact": path,
+        "compiled_strategy": path,
     }))
 }
 
-fn inspect_v13_artifact_with_policy(
+fn inspect_compiled_strategy_with_policy(
     path: &Path,
     trust: titan_strategy_runtime::V13TrustPolicy,
-) -> Result<titan_strategy_runtime::ArtifactManifestV13, CliError> {
-    use titan_strategy_runtime::NativeArtifactLoaderV13;
+) -> Result<titan_strategy_runtime::CompiledStrategyMetadataV13, CliError> {
+    use titan_strategy_runtime::NativeStrategyLoaderV13;
     let loader =
-        NativeArtifactLoaderV13::new(std::env::temp_dir().join("titan-cli-v13-inspect"), trust);
+        NativeStrategyLoaderV13::new(std::env::temp_dir().join("titan-cli-v13-inspect"), trust);
     loader
         .inspect(path)
         .map_err(|error| CliError::Engine(error.to_string()))
@@ -794,7 +803,7 @@ fn cli_trust_policy(
 }
 
 fn backtest_trust_policy(
-    allow_unsigned_artifact: bool,
+    allow_unsigned_strategy: bool,
     trusted_ed25519_keys: &BTreeMap<String, String>,
 ) -> Result<titan_strategy_runtime::V13TrustPolicy, CliError> {
     let ed25519_keys = trusted_ed25519_keys
@@ -809,14 +818,14 @@ fn backtest_trust_policy(
                 })
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    if !allow_unsigned_artifact && ed25519_keys.is_empty() {
+    if !allow_unsigned_strategy && ed25519_keys.is_empty() {
         return Err(CliError::Engine(
-            "backtest requires trusted_ed25519_keys unless allow_unsigned_artifact is explicitly enabled"
+            "backtest requires trusted_ed25519_keys unless allow_unsigned_strategy is explicitly enabled"
                 .into(),
         ));
     }
     Ok(titan_strategy_runtime::V13TrustPolicy {
-        require_signature: !allow_unsigned_artifact,
+        require_signature: !allow_unsigned_strategy,
         ed25519_keys,
     })
 }
@@ -843,7 +852,7 @@ struct CompileV13Request<'a> {
     parameters: &'a str,
     target: Option<&'a str>,
     cpu_baseline: &'a str,
-    artifact_format: &'a str,
+    strategy_format: &'a str,
     output: Option<&'a Path>,
     signing_key: Option<&'a Path>,
     key_id: Option<&'a str>,
@@ -858,9 +867,9 @@ fn compile_v13_strategy(request: CompileV13Request<'_>) -> Result<(), CliError> 
     } else {
         println!(
             "{}\t{}\t{}",
-            value["strategy_id"].as_str().unwrap_or("-"),
-            value["strategy_version"].as_str().unwrap_or("-"),
-            value["artifact_digest"].as_str().unwrap_or("-")
+            value["strategy_type"].as_str().unwrap_or("-"),
+            value["source_version"].as_str().unwrap_or("-"),
+            value["compiled_strategy_digest"].as_str().unwrap_or("-")
         );
         if let Some(paths) = value["paths"].as_array() {
             for path in paths.iter().filter_map(serde_json::Value::as_str) {
@@ -927,15 +936,15 @@ fn resolve_run_spec(
             "backtest.command_capacity must be positive".into(),
         ));
     }
-    let artifact = fs::canonicalize(strategy_target).map_err(|source| CliError::Read {
+    let compiled_strategy = fs::canonicalize(strategy_target).map_err(|source| CliError::Read {
         path: PathBuf::from(strategy_target),
         source,
     })?;
     let trust = backtest_trust_policy(
-        backend.allow_unsigned_artifact,
+        backend.allow_unsigned_strategy,
         &backend.trusted_ed25519_keys,
     )?;
-    let manifest = inspect_v13_artifact_with_policy(&artifact, trust)?;
+    let manifest = inspect_compiled_strategy_with_policy(&compiled_strategy, trust)?;
     let data = resolve_path(base, &backend.data)?;
 
     let spec = RunSpec {
@@ -945,15 +954,15 @@ fn resolve_run_spec(
         config_path,
         config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
         strategy: StrategyRunSpec {
-            strategy_id: manifest.strategy_id.to_string(),
-            strategy_version: manifest.strategy_version.to_string(),
-            artifact,
-            artifact_digest: hex_digest(&manifest.artifact_digest),
+            strategy_key: manifest.strategy_type.to_string(),
+            source_version: manifest.source_version.to_string(),
+            compiled_strategy,
+            compiled_strategy_digest: hex_digest(&manifest.compiled_strategy_digest),
         },
         backend: BackendSpec::Backtest {
             data,
             command_capacity: backend.command_capacity,
-            allow_unsigned_artifact: backend.allow_unsigned_artifact,
+            allow_unsigned_strategy: backend.allow_unsigned_strategy,
             trusted_ed25519_keys: backend.trusted_ed25519_keys,
         },
         history_capacity: config.history_capacity,
@@ -990,16 +999,17 @@ fn resolve_core_live_run_spec(
         .strategies
         .first()
         .ok_or_else(|| CliError::Engine(format!("strategy {strategy_name} is not enabled")))?;
-    let artifact = definition
-        .package
+    let compiled_strategy = definition
+        .strategy_file
         .uri
         .strip_prefix("file://")
-        .ok_or_else(|| CliError::Engine("V13 artifact URI must use file://".into()))?;
-    let artifact = fs::canonicalize(artifact).map_err(|source| CliError::Read {
-        path: PathBuf::from(artifact),
-        source,
-    })?;
-    let manifest = inspect_v13_artifact_with_policy(&artifact, trust)?;
+        .ok_or_else(|| CliError::Engine("V13 compiled_strategy URI must use file://".into()))?;
+    let compiled_strategy =
+        fs::canonicalize(compiled_strategy).map_err(|source| CliError::Read {
+            path: PathBuf::from(compiled_strategy),
+            source,
+        })?;
+    let manifest = inspect_compiled_strategy_with_policy(&compiled_strategy, trust)?;
     let spec = RunSpec {
         schema_version: RUN_SPEC_VERSION,
         environment: Environment::Live,
@@ -1007,10 +1017,10 @@ fn resolve_core_live_run_spec(
         config_path,
         config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
         strategy: StrategyRunSpec {
-            strategy_id: definition.strategy_key.to_string(),
-            strategy_version: manifest.strategy_version.to_string(),
-            artifact,
-            artifact_digest: hex_digest(&manifest.artifact_digest),
+            strategy_key: definition.strategy_key.to_string(),
+            source_version: manifest.source_version.to_string(),
+            compiled_strategy,
+            compiled_strategy_digest: hex_digest(&manifest.compiled_strategy_digest),
         },
         backend: BackendSpec::CoreLive {
             strategy_key: definition.strategy_key.to_string(),
@@ -1047,20 +1057,20 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
     if spec.schema_version != RUN_SPEC_VERSION {
         return Err(CliError::Schema(spec.schema_version));
     }
-    if spec.strategy.strategy_id.is_empty() || spec.strategy.strategy_version.is_empty() {
+    if spec.strategy.strategy_key.is_empty() || spec.strategy.source_version.is_empty() {
         return Err(CliError::Engine(
             "resolved strategy identity must not be empty".into(),
         ));
     }
-    if spec.strategy.artifact_digest.len() != 64
+    if spec.strategy.compiled_strategy_digest.len() != 64
         || !spec
             .strategy
-            .artifact_digest
+            .compiled_strategy_digest
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(CliError::Engine(
-            "resolved V13 artifact digest is invalid".into(),
+            "resolved V13 compiled_strategy digest is invalid".into(),
         ));
     }
     if spec.history_capacity == 0 {
@@ -1070,7 +1080,7 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
         BackendSpec::Backtest {
             data,
             command_capacity,
-            allow_unsigned_artifact,
+            allow_unsigned_strategy,
             trusted_ed25519_keys,
         } => {
             if spec.environment != Environment::Backtest {
@@ -1086,7 +1096,7 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
             if *command_capacity == 0 || !data.is_file() {
                 return Err(CliError::Engine("invalid V13 trace backtest input".into()));
             }
-            backtest_trust_policy(*allow_unsigned_artifact, trusted_ed25519_keys)?;
+            backtest_trust_policy(*allow_unsigned_strategy, trusted_ed25519_keys)?;
         }
         BackendSpec::CoreLive { strategy_key } => {
             if spec.environment != Environment::Live {
@@ -1094,7 +1104,7 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
                     "Core live backend requires live environment".into(),
                 ));
             }
-            if strategy_key.is_empty() || strategy_key != &spec.strategy.strategy_id {
+            if strategy_key.is_empty() || strategy_key != &spec.strategy.strategy_key {
                 return Err(CliError::Engine(
                     "Core live strategy identity is inconsistent".into(),
                 ));
@@ -1134,8 +1144,8 @@ fn controller(
     registry.create(crate::registry::NewRun {
         id: &run_id,
         owner_token: &owner_token,
-        strategy_id: &spec.strategy.strategy_id,
-        strategy_version: &spec.strategy.strategy_version,
+        strategy_id: &spec.strategy.strategy_key,
+        strategy_version: &spec.strategy.source_version,
         environment: spec.environment.as_str(),
         event_mode: spec.event_mode.as_str(),
         spec_path: &spec_path,
@@ -1300,11 +1310,11 @@ fn v13_backtest_worker(
     spec: &RunSpec,
     stop: Arc<AtomicBool>,
 ) -> Result<(), CliError> {
-    use titan_strategy_runtime::{NativeArtifactLoaderV13, OfflineV13Adapter, StagedCommandV13};
+    use titan_strategy_runtime::{NativeStrategyLoaderV13, OfflineV13Adapter, StagedCommandV13};
     let BackendSpec::Backtest {
         data,
         command_capacity,
-        allow_unsigned_artifact,
+        allow_unsigned_strategy,
         trusted_ed25519_keys,
     } = &spec.backend
     else {
@@ -1327,25 +1337,27 @@ fn v13_backtest_worker(
             trace.schema_version
         )));
     }
-    let trust = backtest_trust_policy(*allow_unsigned_artifact, trusted_ed25519_keys)?;
-    let loader = NativeArtifactLoaderV13::new(
+    let trust = backtest_trust_policy(*allow_unsigned_strategy, trusted_ed25519_keys)?;
+    let loader = NativeStrategyLoaderV13::new(
         registry_path()
             .parent()
             .unwrap_or(Path::new("."))
-            .join("artifact-cache"),
+            .join("compiled_strategy-cache"),
         trust,
     );
-    let artifact = loader
-        .load(&spec.strategy.artifact)
+    let compiled_strategy = loader
+        .load(&spec.strategy.compiled_strategy)
         .map_err(|error| CliError::Engine(error.to_string()))?;
-    if hex_digest(&artifact.manifest.artifact_digest) != spec.strategy.artifact_digest {
+    if hex_digest(&compiled_strategy.manifest.compiled_strategy_digest)
+        != spec.strategy.compiled_strategy_digest
+    {
         return Err(CliError::Engine(
-            "V13 artifact digest changed after run resolution".into(),
+            "V13 compiled_strategy digest changed after run resolution".into(),
         ));
     }
     let initial = trace.initial;
     let mut adapter = OfflineV13Adapter::new(titan_strategy_runtime::OfflineV13Config {
-        artifact: Arc::new(artifact),
+        compiled_strategy: Arc::new(compiled_strategy),
         strategy_instance_id: 1,
         generation: 1,
         command_capacity: *command_capacity,
@@ -1438,9 +1450,9 @@ fn v13_backtest_worker(
     let result = serde_json::json!({
         "schema_version": 1,
         "run_id": run_id,
-        "strategy_id": spec.strategy.strategy_id,
-        "strategy_version": spec.strategy.strategy_version,
-        "artifact_digest": spec.strategy.artifact_digest,
+        "strategy_id": spec.strategy.strategy_key,
+        "strategy_version": spec.strategy.source_version,
+        "compiled_strategy_digest": spec.strategy.compiled_strategy_digest,
         "environment": spec.environment,
         "event_mode": spec.event_mode,
         "config_sha256": spec.config_sha256,
@@ -1494,25 +1506,30 @@ fn core_live_worker(
         &bytes,
         Some((strategy_key, spec.event_mode)),
     )?;
-    let manifest =
-        inspect_v13_artifact_with_policy(&spec.strategy.artifact, adapted.v13_trust_policy())?;
-    if hex_digest(&manifest.artifact_digest) != spec.strategy.artifact_digest
-        || manifest.strategy_version.as_ref() != spec.strategy.strategy_version
+    let manifest = inspect_compiled_strategy_with_policy(
+        &spec.strategy.compiled_strategy,
+        adapted.v13_trust_policy(),
+    )?;
+    if hex_digest(&manifest.compiled_strategy_digest) != spec.strategy.compiled_strategy_digest
+        || manifest.source_version.as_ref() != spec.strategy.source_version
     {
         return Err(CliError::Engine(
-            "strategy artifact changed after run resolution".into(),
+            "strategy compiled_strategy changed after run resolution".into(),
         ));
     }
     let definition = adapted
         .strategies
         .first_mut()
         .ok_or_else(|| CliError::Engine("selected strategy missing".into()))?;
-    if definition.package.expected_digest != manifest.artifact_digest {
+    if definition.strategy_file.expected_digest != manifest.compiled_strategy_digest {
         return Err(CliError::Engine(
-            "configured artifact identity differs from validated plan".into(),
+            "configured compiled_strategy identity differs from validated plan".into(),
         ));
     }
-    definition.package.uri = Arc::from(format!("file://{}", spec.strategy.artifact.display()));
+    definition.strategy_file.uri = Arc::from(format!(
+        "file://{}",
+        spec.strategy.compiled_strategy.display()
+    ));
     let mut runtime = titan_cli::TradingRuntime::start(adapted)
         .map_err(|error| CliError::Engine(error.to_string()))?;
     registry.transition(run_id, token, "READY")?;
@@ -1523,11 +1540,11 @@ fn core_live_worker(
         "schema_version": 1,
         "run_id": run_id,
         "strategy_id": strategy_key,
-        "strategy_version": spec.strategy.strategy_version,
+        "strategy_version": spec.strategy.source_version,
         "environment": spec.environment,
         "event_mode": spec.event_mode,
         "config_sha256": spec.config_sha256,
-        "artifact_digest": spec.strategy.artifact_digest,
+        "compiled_strategy_digest": spec.strategy.compiled_strategy_digest,
         "returns": [],
         "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
         "status": "STOPPED"
@@ -1557,8 +1574,8 @@ fn write_result_bundle(
     let manifest = BundleManifest {
         schema_version: 1,
         run_id: run_id.into(),
-        strategy_id: spec.strategy.strategy_id.clone(),
-        strategy_version: spec.strategy.strategy_version.clone(),
+        strategy_id: spec.strategy.strategy_key.clone(),
+        strategy_version: spec.strategy.source_version.clone(),
         abi_fingerprint: hex_digest(&titan_strategy_runtime::V13_ABI_FINGERPRINT),
         committed_at_ns: now_ns(),
         files: vec![BundleFile {
@@ -2311,7 +2328,7 @@ mod cli_v13_tests {
             "x86_64-unknown-linux-gnu",
             "--cpu-baseline",
             "x86-64-v2",
-            "--artifact-format",
+            "--strategy-format",
             "bundle",
             "--output",
             "pair.titan",
@@ -2321,7 +2338,7 @@ mod cli_v13_tests {
             command:
                 StrategyCommands::Compile {
                     strategy,
-                    artifact_format,
+                    strategy_format,
                     output,
                     ..
                 },
@@ -2330,7 +2347,7 @@ mod cli_v13_tests {
             panic!("unexpected command");
         };
         assert_eq!(strategy, PathBuf::from("strategy.py"));
-        assert_eq!(artifact_format, "bundle");
+        assert_eq!(strategy_format, "bundle");
         assert_eq!(output, Some(PathBuf::from("pair.titan")));
     }
 

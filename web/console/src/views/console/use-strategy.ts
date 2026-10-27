@@ -13,9 +13,9 @@ import { body } from "./run-view";
 import { useResourcePins } from "./use-resource-pins";
 
 const kinds = [
-  "template",
-  "version",
-  "artifact",
+  "parameter_preset",
+  "parameter_version",
+  "strategy_version",
   "backtest",
   "report",
   "deployment",
@@ -28,13 +28,13 @@ type Page = {
   error: string;
   sequence: number;
 };
-const key: InjectionKey<ReturnType<typeof createResearch>> =
-  Symbol("research-workspace");
+const key: InjectionKey<ReturnType<typeof createStrategy>> =
+  Symbol("strategy-workspace");
 
-function createResearch(id: string) {
+function createStrategy(id: string) {
   const store = useConsoleStore();
   const pinResources = useResourcePins();
-  const identity = store.generation;
+  const identity = store.sessionGeneration;
   const pages = reactive<Record<string, Page>>(
     Object.fromEntries(
       kinds.map(kind => [
@@ -46,7 +46,7 @@ function createResearch(id: string) {
   const selected = reactive<Record<string, Resource[]>>({});
   const ready = ref(false);
   let disposed = false;
-  const active = () => !disposed && identity === store.generation;
+  const active = () => !disposed && identity === store.sessionGeneration;
   const latest = (item: Resource) => {
     const current =
       store.resources.find(
@@ -54,8 +54,8 @@ function createResearch(id: string) {
           row.id === item.id && BigInt(row.revision) >= BigInt(item.revision)
       ) ?? item;
     return kinds.includes(current.kind) &&
-      typeof body(current).research_id === "string" &&
-      body(current).research_id !== id
+      typeof body(current).strategy_id === "string" &&
+      body(current).strategy_id !== id
       ? undefined
       : current;
   };
@@ -85,7 +85,7 @@ function createResearch(id: string) {
     page.pending = true;
     page.error = "";
     try {
-      const items = await consoleApi.researchResources(id, kind, offset);
+      const items = await consoleApi.strategyResources(id, kind, offset);
       if (!active() || sequence !== page.sequence) return;
       page.items = items;
       page.offset = offset;
@@ -112,7 +112,7 @@ function createResearch(id: string) {
           .flat()
           .find(item => item.id === resourceId);
       const item =
-        known ?? (await consoleApi.researchResources(id, "", 0, resourceId))[0];
+        known ?? (await consoleApi.strategyResources(id, "", 0, resourceId))[0];
       if (!active() || pinSequences.get(owner) !== sequence) return;
       if (!item || item.id !== resourceId)
         throw new Error("所选资源不属于当前策略或无权限；不会替换为其他资源");
@@ -161,11 +161,11 @@ function createResearch(id: string) {
   ]);
   const name = computed(
     () =>
-      all.value.map(item => body(item).research_name).find(Boolean) ??
+      all.value.map(item => body(item).strategy_name).find(Boolean) ??
       (id === "unassigned" ? "未归属的历史记录" : "策略工作区")
   );
   const path = (tab: string, selection?: Record<string, string>) => ({
-    path: "/research/" + encodeURIComponent(id),
+    path: "/strategies/" + encodeURIComponent(id),
     query: { tab, ...selection }
   });
   const operationIds = computed(
@@ -177,8 +177,8 @@ function createResearch(id: string) {
       if (operationIds.value.has(op.id)) return true;
       const input = op.input;
       const references = [
-        "version_id",
-        "artifact_id",
+        "parameter_version_id",
+        "strategy_version_id",
         "backtest_id",
         "deployment_id",
         "run_id"
@@ -192,10 +192,10 @@ function createResearch(id: string) {
           )
         ) ||
         (input.kind === "describe" &&
-          options("template").some(
+          options("parameter_preset").some(
             item =>
               item.node_id === op.node_id &&
-              body(item).template_id === input.template_id
+              body(item).parameter_preset_id === input.parameter_preset_id
           )) ||
         (input.kind === "prepare" &&
           Object.values(selected)
@@ -238,13 +238,13 @@ function createResearch(id: string) {
     all
   };
 }
-export function provideResearch(id: string) {
-  const value = createResearch(id);
+export function provideStrategy(id: string) {
+  const value = createStrategy(id);
   provide(key, value);
   return value;
 }
-export function useResearch() {
+export function useStrategy() {
   const value = inject(key);
-  if (!value) throw new Error("策略研究上下文缺失");
+  if (!value) throw new Error("策略上下文缺失");
   return value;
 }

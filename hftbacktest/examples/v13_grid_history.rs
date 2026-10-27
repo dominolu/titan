@@ -30,8 +30,13 @@ enum Command {
     Run {
         #[arg(long)]
         run_id: Option<String>,
-        #[arg(long)]
-        artifact: PathBuf,
+        #[arg(
+            long = "strategy-file",
+            alias = "strategy",
+            alias = "compiled-strategy",
+            alias = "artifact"
+        )]
+        compiled_strategy: PathBuf,
         #[arg(long)]
         layout: PathBuf,
         #[arg(long)]
@@ -52,24 +57,24 @@ fn main() -> Result<()> {
         } => data::prepare(&trades, &quotes, &funding, &output),
         Command::Run {
             run_id,
-            artifact,
+            compiled_strategy,
             layout,
             data,
             output,
             stress,
         } => {
-            let result = engine::run(&artifact, &layout, &data, &output, stress)?;
+            let result = engine::run(&compiled_strategy, &layout, &data, &output, stress)?;
             write_chart(&output)?;
             if let Some(run_id) = run_id {
                 use sha2::{Digest, Sha256};
-                let inspected = titan_strategy_runtime::NativeArtifactLoaderV13::new(
+                let inspected = titan_strategy_runtime::NativeStrategyLoaderV13::new(
                     output.join("inspect-cache"),
                     titan_strategy_runtime::V13TrustPolicy {
                         require_signature: false,
                         ed25519_keys: Default::default(),
                     },
                 )
-                .inspect(&artifact)?;
+                .inspect(&compiled_strategy)?;
                 let mut files = Vec::new();
                 for entry in std::fs::read_dir(&output)? {
                     let entry = entry?;
@@ -99,10 +104,12 @@ fn main() -> Result<()> {
                         .duration_since(std::time::UNIX_EPOCH)?
                         .as_nanos(),
                 )?;
+                // ResultBundle v1 freezes these two historical source keys.
+                // Keep report compatibility while sourcing canonical strategy metadata.
                 std::fs::write(
                     output.join("manifest.json"),
                     serde_json::to_vec_pretty(
-                        &serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":inspected.strategy_id,"strategy_version":inspected.strategy_version,"abi_fingerprint":fingerprint,"committed_at_ns":committed_at_ns,"files":files}),
+                        &serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":inspected.strategy_type,"strategy_version":inspected.source_version,"abi_fingerprint":fingerprint,"committed_at_ns":committed_at_ns,"files":files}),
                     )?,
                 )?;
             }

@@ -19,7 +19,7 @@ trace = {
 }
 (root / "trace.json").write_text(json.dumps(trace))
 config = root / "backtest.toml"
-config.write_text('schema_version = 1\n[backtest]\ndata = "trace.json"\ncommand_capacity = 8\nallow_unsigned_artifact = true\n')
+config.write_text('schema_version = 1\n[backtest]\ndata = "trace.json"\ncommand_capacity = 8\nallow_unsigned_strategy = true\n')
 run = subprocess.run([str(binary), "run", str(root / "v13_smoke.titan"), "-e", "backtest", "-m", "tick", "-c", str(config), "--json"], text=True, capture_output=True, timeout=30)
 assert run.returncode == 0, (run.stdout, run.stderr)
 records = []

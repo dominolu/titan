@@ -303,7 +303,7 @@ async fn catalog(
             let resource: Resource = serde_json::from_slice(&bytes).map_err(anyhow::Error::from)?;
             super::require(
                 resource.node_id == config.id
-                    && matches!(resource.kind.as_str(), "artifact" | "deployment"),
+                    && matches!(resource.kind.as_str(), "strategy_version" | "deployment"),
                 "invalid published resource",
             )?;
             let operation = resource.body["operation_id"]
@@ -318,11 +318,11 @@ async fn catalog(
 }
 fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
     let mut out = Vec::new();
-    for (id, template) in &config.templates {
-        let (research_id, research_name) = template.research_identity(&config.id)?;
+    for (id, template) in &config.parameter_presets {
+        let (strategy_id, strategy_name) = template.strategy_identity(&config.id)?;
         let source = std::fs::read(&template.source)?;
         let parameters: Value = serde_json::from_slice(&std::fs::read(&template.parameters)?)?;
-        out.push(resource(config,"template",id,false,json!({"research_id":research_id,"research_name":research_name,"template_id":id,"parameters":parameters,"source_digest":digest(&source),"environment":"backtest"})));
+        out.push(resource(config,"parameter_preset",id,false,json!({"strategy_id":strategy_id,"strategy_name":strategy_name,"parameter_preset_id":id,"parameters":parameters,"source_digest":digest(&source),"environment":"backtest"})));
     }
     for (id, dataset) in &config.datasets {
         let input_sha256 = json!({"trades":digest_file(&dataset.trades)?,"quotes":digest_file(&dataset.quotes)?,"funding":digest_file(&dataset.funding)?});
@@ -340,15 +340,17 @@ pub(crate) fn resource(
     frozen: bool,
     body: Value,
 ) -> Resource {
-    Resource {
-        id: format!("{}-{kind}-{id}", config.id),
+    let mut resource = super::legacy::resource(Resource {
+        id: format!("{}-{}-{id}", config.id, super::legacy::id_tag(kind)),
         kind: kind.into(),
         node_id: config.id.clone(),
         revision: String::new(),
         frozen,
-        digest: digest(&titan_strategy_runtime::compiler_json_v13(&body)),
+        digest: String::new(),
         body,
-    }
+    });
+    resource.digest = digest(&titan_strategy_runtime::compiler_json_v13(&resource.body));
+    resource
 }
 async fn accept(
     State(state): State<NodeState>,
@@ -358,7 +360,7 @@ async fn accept(
     let config = &state.0;
     authenticate(config, &headers)?;
     super::require(
-        input.api_version == API_VERSION,
+        matches!(input.api_version, 1 | API_VERSION),
         "unsupported node protocol",
     )?;
     if input.action.environment() == "live" && !config.live_control {
@@ -661,7 +663,7 @@ pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Res
     {
         for item in items {
             let resource: Resource = serde_json::from_value(item.clone())?;
-            if matches!(resource.kind.as_str(), "artifact" | "deployment") {
+            if matches!(resource.kind.as_str(), "strategy_version" | "deployment") {
                 checked_id(&resource.id)?;
                 std::fs::create_dir_all(config.work_root.join("published"))?;
                 atomic_json(
@@ -710,16 +712,16 @@ async fn execute(
     let id = &request.operation_id;
     match &request.action {
         Action::Describe {
-            template_id,
+            parameter_preset_id,
             parameters,
         } => {
             let template = config
-                .templates
-                .get(template_id)
+                .parameter_presets
+                .get(parameter_preset_id)
                 .context("unknown template")?;
             let source = std::fs::read(&template.source)?;
             ensure!(
-                reference(request, "template")?.body["source_digest"].as_str()
+                reference(request, "parameter_preset")?.body["source_digest"].as_str()
                     == Some(digest(&source).as_str()),
                 "template source changed"
             );
@@ -733,22 +735,22 @@ async fn execute(
                 .arg("--json");
             run_command(config, cmd, dir, stop).await
         }
-        Action::Build { .. } => {
-            let version = reference(request, "version")?;
+        Action::Compile { .. } => {
+            let version = reference(request, "parameter_version")?;
             ensure!(version.frozen, "parameter version is not frozen");
-            let template_id = version.body["template_id"]
+            let parameter_preset_id = version.body["parameter_preset_id"]
                 .as_str()
                 .context("missing template")?;
             let template = config
-                .templates
-                .get(template_id)
+                .parameter_presets
+                .get(parameter_preset_id)
                 .context("unknown template")?;
-            let (research_id, research_name) = template.research_identity(&config.id)?;
+            let (strategy_id, strategy_name) = template.strategy_identity(&config.id)?;
             ensure!(
-                version.body["research_id"]
+                version.body["strategy_id"]
                     .as_str()
-                    .is_none_or(|id| id == research_id),
-                "research template identity changed"
+                    .is_none_or(|id| id == strategy_id),
+                "strategy template identity changed"
             );
             let source = std::fs::read(&template.source)?;
             ensure!(
@@ -765,7 +767,7 @@ async fn execute(
                 .arg(dir.join("strategy.py"))
                 .arg("--parameters")
                 .arg(dir.join("parameters.json"))
-                .args(["--artifact-format", "bundle", "--output"])
+                .args(["--strategy-format", "bundle", "--output"])
                 .arg(dir.join("strategy.titan"))
                 .arg("--json");
             if let (Some(key), Some(key_id)) = (&config.signing_key, &config.signing_key_id) {
@@ -779,14 +781,14 @@ async fn execute(
             let metadata = &actual["metadata"];
             let layout = history_layout(metadata)?;
             atomic_json(&dir.join("layout.json"), &layout)?;
-            let artifact = resource(
+            let compiled_strategy = resource(
                 config,
-                "artifact",
+                "strategy_version",
                 id,
                 true,
-                json!({"research_id":research_id,"research_name":research_name,"environment":"backtest","operation_id":id,"artifact_digest":actual["artifact_digest"],"blob_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"version_id":version.id,"template_id":template_id,"metadata":metadata,"normalized_parameters":actual["normalized_parameters"]}),
+                json!({"strategy_id":strategy_id,"strategy_name":strategy_name,"environment":"backtest","operation_id":id,"compiled_strategy_digest":actual["compiled_strategy_digest"],"strategy_file_sha256":digest(&std::fs::read(dir.join("strategy.titan"))?),"parameter_version_id":version.id,"parameter_preset_id":parameter_preset_id,"metadata":metadata,"normalized_parameters":actual["normalized_parameters"]}),
             );
-            Ok(json!({"compiler":actual,"resources":[artifact]}))
+            Ok(json!({"compiler":actual,"resources":[compiled_strategy]}))
         }
         Action::Prepare { dataset_id } => {
             let dataset = config.datasets.get(dataset_id).context("unknown dataset")?;
@@ -840,21 +842,23 @@ async fn execute(
             dataset_id, stress, ..
         } => {
             config.datasets.get(dataset_id).context("unknown dataset")?;
-            let artifact = reference(request, "artifact")?;
+            let compiled_strategy = reference(request, "strategy_version")?;
             ensure!(
-                artifact.node_id == config.id,
-                "backtest artifact is on another node"
+                compiled_strategy.node_id == config.id,
+                "backtest compiled_strategy is on another node"
             );
             let source = directory(
                 config,
-                artifact.body["operation_id"]
+                compiled_strategy.body["operation_id"]
                     .as_str()
-                    .context("missing artifact operation")?,
+                    .context("missing compiled_strategy operation")?,
             )?;
             ensure!(
                 digest_file(&source.join("strategy.titan"))?
-                    == artifact.body["blob_sha256"].as_str().unwrap_or(""),
-                "artifact content changed"
+                    == compiled_strategy.body["strategy_file_sha256"]
+                        .as_str()
+                        .unwrap_or(""),
+                "compiled_strategy content changed"
             );
             let dataset_ref = reference(request, "dataset")?;
             let preparation = dataset_ref.body["prepared_operation_id"]
@@ -887,7 +891,7 @@ async fn execute(
                     .as_ref()
                     .context("history runner unavailable")?,
             );
-            cmd.args(["run", "--artifact"])
+            cmd.args(["run", "--strategy-file"])
                 .arg(source.join("strategy.titan"))
                 .arg("--layout")
                 .arg(source.join("layout.json"))
@@ -916,7 +920,7 @@ async fn execute(
                 "backtest",
                 id,
                 true,
-                json!({"research_id":artifact.body["research_id"],"research_name":artifact.body["research_name"],"operation_id":id,"artifact_id":artifact.id,"dataset_id":dataset_id,"data_sha256":prepared_sha256,"input_sha256":dataset_ref.body["input_sha256"],"quality":dataset_ref.body.get("quality"),"stress":stress,"business_success":success,"metrics":precise(metrics),"environment":"backtest"}),
+                json!({"strategy_id":compiled_strategy.body["strategy_id"],"strategy_name":compiled_strategy.body["strategy_name"],"operation_id":id,"strategy_version_id":compiled_strategy.id,"dataset_id":dataset_id,"data_sha256":prepared_sha256,"input_sha256":dataset_ref.body["input_sha256"],"quality":dataset_ref.body.get("quality"),"stress":stress,"business_success":success,"metrics":precise(metrics),"environment":"backtest"}),
             );
             Ok(json!({"business_success":success,"resources":[record]}))
         }
@@ -932,7 +936,7 @@ async fn execute(
                 .env("TITAN_HOME", &config.work_root);
             let result = run_command(config, cmd, dir, stop).await?;
             Ok(
-                json!({"report":result,"resources":[resource(config,"report",id,true,json!({"research_id":backtest.body["research_id"],"research_name":backtest.body["research_name"],"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
+                json!({"report":result,"resources":[resource(config,"report",id,true,json!({"strategy_id":backtest.body["strategy_id"],"strategy_name":backtest.body["strategy_name"],"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
             )
         }
         _ => super::control::execute(config, request, stop).await,
@@ -1104,15 +1108,15 @@ fn history_layout(metadata: &Value) -> Result<Value> {
     }
     let mut fields = serde_json::Map::new();
     visit(
-        metadata["state_schema"]["fields"]
+        metadata["recovery_state_schema"]["fields"]
             .as_array()
             .context("missing state schema")?,
         "",
         0,
         &mut fields,
     )?;
-    let hash: Vec<u8> = serde_json::from_value(metadata["state_schema_hash"].clone())?;
+    let hash: Vec<u8> = serde_json::from_value(metadata["recovery_state_schema_hash"].clone())?;
     Ok(
-        json!({"state_len":metadata["state_len"],"schema_version":metadata["state_schema_version"],"schema_hash":hex(&hash),"fields":fields}),
+        json!({"state_len":metadata["state_len"],"schema_version":metadata["recovery_state_schema_version"],"schema_hash":hex(&hash),"fields":fields}),
     )
 }

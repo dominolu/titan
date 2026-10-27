@@ -1,4 +1,4 @@
-//! Orchestrates disposable Numba workers; all platform and artifact policy stays in Rust.
+//! Orchestrates disposable Numba workers; all platform and compiled_strategy policy stays in Rust.
 use super::{CliError, CompileV13Request, hex_digest};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -17,8 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 use titan_strategy_runtime::{
-    ArtifactBuildV13, NumbaMetadataV13, V13_ABI_FINGERPRINT, compiler_host_target_v13,
-    compiler_json_v13, validate_compile_target_v13, write_artifact_v13,
+    NumbaMetadataV13, StrategyCompileOutputV13, V13_ABI_FINGERPRINT, compiler_host_target_v13,
+    compiler_json_v13, validate_compile_target_v13, write_compiled_strategy_v13,
 };
 
 fn failed(error: impl std::fmt::Display) -> CliError {
@@ -301,8 +301,8 @@ pub(super) fn compile(request: &CompileV13Request<'_>) -> Result<serde_json::Val
         .ok_or_else(|| failed("--output is required"))?;
     let target = request.target.unwrap_or(compiler_host_target_v13());
     validate_compile_target_v13(target, request.cpu_baseline).map_err(failed)?;
-    if !matches!(request.artifact_format, "pair" | "bundle") {
-        return Err(failed("invalid artifact format"));
+    if !matches!(request.strategy_format, "pair" | "bundle") {
+        return Err(failed("invalid compiled_strategy format"));
     }
     if request.signing_key.is_some() != request.key_id.is_some()
         || request.key_id.is_some_and(|id| id.trim().is_empty())
@@ -318,7 +318,7 @@ pub(super) fn compile(request: &CompileV13Request<'_>) -> Result<serde_json::Val
     let mut seed = request.signing_key.map(read_seed).transpose()?;
     let result = compile_inner(request, output, target, seed.as_ref(), &stop, false);
     if let Some(seed) = &mut seed {
-        // Keep key bytes out of the Python worker, its request, logs and artifact metadata.
+        // Keep key bytes out of the Python worker, its request, logs and compiled_strategy metadata.
         for byte in seed {
             unsafe {
                 std::ptr::write_volatile(byte, 0);
@@ -465,7 +465,7 @@ fn compile_inner(
         let object = work.join(format!("{callback}.o"));
         link.arg(object);
     }
-    // Each artifact must resolve its own native dependencies. A Python or large Rust host may
+    // Each compiled_strategy must resolve its own native dependencies. A Python or large Rust host may
     // already have libm loaded and otherwise hide missing DT_NEEDED entries until deployment.
     link.arg(descriptor_object).args(["-Wl,-z,defs", "-lm"]);
     run_tool(&mut link, &work, "link", Duration::from_secs(30), stop)?;
@@ -474,22 +474,22 @@ fn compile_inner(
     if stop.load(Ordering::Acquire) {
         return Err(failed("compilation interrupted"));
     }
-    let artifact = write_artifact_v13(ArtifactBuildV13 {
+    let compiled_strategy = write_compiled_strategy_v13(StrategyCompileOutputV13 {
         metadata: &metadata,
         library: &library,
         source_digest: Sha256::digest(&source).into(),
         parameters_digest: Sha256::digest(compiler_json_v13(&parameters)).into(),
         target_triple: target,
         cpu_baseline: request.cpu_baseline,
-        bundle: request.artifact_format == "bundle",
+        bundle: request.strategy_format == "bundle",
         output,
         signing: request.key_id.zip(seed),
     })
     .map_err(failed)?;
     Ok(
-        serde_json::json!({"strategy_id":artifact.manifest.strategy_id,"strategy_version":artifact.manifest.strategy_version,
-        "artifact_digest":hex_digest(&artifact.manifest.artifact_digest),"native_digest":hex_digest(&artifact.manifest.native_digest),
-        "paths":artifact.paths,"metadata":metadata,"normalized_parameters":normalized}),
+        serde_json::json!({"strategy_type":compiled_strategy.manifest.strategy_type,"source_version":compiled_strategy.manifest.source_version,
+        "compiled_strategy_digest":hex_digest(&compiled_strategy.manifest.compiled_strategy_digest),"native_library_sha256":hex_digest(&compiled_strategy.manifest.native_library_sha256),
+        "paths":compiled_strategy.paths,"metadata":metadata,"normalized_parameters":normalized}),
     )
 }
 
@@ -506,7 +506,7 @@ pub(super) fn describe(strategy: &Path, parameters: &Path) -> Result<serde_json:
         parameters: &parameters,
         target: None,
         cpu_baseline: "x86-64",
-        artifact_format: "bundle",
+        strategy_format: "bundle",
         output: Some(&output),
         signing_key: None,
         key_id: None,

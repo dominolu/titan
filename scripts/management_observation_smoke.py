@@ -107,24 +107,24 @@ def main():
         raise AssertionError("observation verification timed out")
     checks = []
     try:
-        session = wait(lambda: call("/api/v1/session", {"username": "operator", "password": password}))
-        resources = wait(lambda: [r for r in call("/api/v1/snapshot")["resources"] if r["kind"] == "account"])
+        session = wait(lambda: call("/api/v2/session", {"username": "operator", "password": password}))
+        resources = wait(lambda: [r for r in call("/api/v2/snapshot")["resources"] if r["kind"] == "account"])
         assert resources[0]["body"]["observation"] == image
         checks += ["E-image-propagates-without-financial-transformation", "slow-node-does-not-block-other-node"]
-        history = call("/api/v1/resources/observe-run-fixture/history?generation=one&kind=order&limit=20")
+        history = call("/api/v2/resources/observe-run-fixture/history?generation=one&kind=order&limit=20")
         assert len(history["items"]) == 2
         for path, data, expected in [
-            ("/api/v1/resources/observe-run-fixture/history?generation=stale", None, 409),
-            ("/api/v1/operations", {"idempotency_key": "readonly-node", "node_id": "observe", "action": {"kind": "pause", "run_id": "observe-run-fixture", "generation": "one"}}, 403),
+            ("/api/v2/resources/observe-run-fixture/history?generation=stale", None, 409),
+            ("/api/v2/operations", {"idempotency_key": "readonly-node", "node_id": "observe", "action": {"kind": "pause", "run_id": "observe-run-fixture", "generation": "one"}}, 403),
         ]:
             try: call(path, data, session["csrf_token"]); raise AssertionError("unsafe request accepted")
             except error.HTTPError as failure: assert failure.code == expected
         checks += ["old-generation-rejected", "readonly-node-control-rejected"]
         hidden = request.build_opener(request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-        call("/api/v1/session", {"username": "hidden", "password": password}, who=hidden)
-        assert not any(r["kind"] in ("run", "account", "alert") for r in call("/api/v1/snapshot", who=hidden)["resources"])
+        call("/api/v2/session", {"username": "hidden", "password": password}, who=hidden)
+        assert not any(r["kind"] in ("run", "account", "alert") for r in call("/api/v2/snapshot", who=hidden)["resources"])
         for suffix in ("history", "log"):
-            try: call("/api/v1/resources/observe-run-fixture/" + suffix, who=hidden); raise AssertionError("unauthorized account query accepted")
+            try: call("/api/v2/resources/observe-run-fixture/" + suffix, who=hidden); raise AssertionError("unauthorized account query accepted")
             except error.HTTPError as failure: assert failure.code == 403
         checks += ["unauthorized-account-is-hidden"]
         if args.browser:

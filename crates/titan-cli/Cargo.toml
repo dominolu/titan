@@ -40,7 +40,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio-util = { version = "0.7", features = ["io"] }
 rand = "0.8"
 argon2 = "0.5"
-ts-rs = { version = "12", features = ["serde-json-impl"] }
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

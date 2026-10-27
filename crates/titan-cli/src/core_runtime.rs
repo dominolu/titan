@@ -21,7 +21,7 @@ use titan_market_service::{
 };
 use titan_strategy_runtime::{
     NativeV13LoaderFactory, NativeV13RuntimeFactory, StrategyAdminService, StrategyCoreConfig,
-    StrategyDataMode, StrategyDefinition, StrategyOperationState, StrategyPackageLoaderRegistry,
+    StrategyDataMode, StrategyDefinition, StrategyLoaderRegistry, StrategyOperationState,
     StrategyRecoveryPolicy, StrategyRuntimeFactoryRegistry, StrategyServiceCore,
     StrategyServiceDependencies, V13TrustPolicy,
 };
@@ -107,12 +107,12 @@ impl Default for AccountServiceConfig {
 #[serde(deny_unknown_fields)]
 #[derive(Default)]
 pub struct StrategyServiceConfig {
-    #[serde(default)]
-    pub allowed_artifact_roots: Vec<PathBuf>,
+    #[serde(default, alias = "allowed_artifact_roots")]
+    pub allowed_strategy_roots: Vec<PathBuf>,
     #[serde(default)]
     pub checkpoint_root: Option<PathBuf>,
-    #[serde(default)]
-    pub allow_unsigned_artifacts: bool,
+    #[serde(default, alias = "allow_unsigned_artifacts")]
+    pub allow_unsigned_strategies: bool,
     #[serde(default)]
     pub trusted_ed25519_keys: BTreeMap<String, String>,
 }
@@ -156,8 +156,8 @@ impl AdaptedConfiguration {
         self.strategy_bootstrap
             .as_ref()
             .map(|bootstrap| V13TrustPolicy {
-                require_signature: bootstrap.config.require_artifact_signature,
-                ed25519_keys: bootstrap.config.trusted_artifact_keys.clone(),
+                require_signature: bootstrap.config.require_strategy_signature,
+                ed25519_keys: bootstrap.config.trusted_strategy_keys.clone(),
             })
             .unwrap_or_default()
     }
@@ -499,7 +499,7 @@ impl TradingRuntime {
         let account_startup_timeout =
             std::time::Duration::from_millis(account_service.startup_timeout_ms);
         let strategy = if let Some(bootstrap) = strategy_bootstrap {
-            let loaders = Arc::new(StrategyPackageLoaderRegistry::default());
+            let loaders = Arc::new(StrategyLoaderRegistry::default());
             loaders
                 .register(Arc::new(NativeV13LoaderFactory))
                 .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
@@ -955,22 +955,22 @@ fn adapt_strategies(
     if strategies.is_empty() {
         return Ok(None);
     }
-    if !bootstrap.allow_unsigned_artifacts && bootstrap.trusted_ed25519_keys.is_empty() {
+    if !bootstrap.allow_unsigned_strategies && bootstrap.trusted_ed25519_keys.is_empty() {
         return Err(ConfigurationError::Invalid(
-            "strategy_service requires trusted_ed25519_keys unless allow_unsigned_artifacts is explicitly enabled for development".into(),
+            "strategy_service requires trusted_ed25519_keys unless allow_unsigned_strategies is explicitly enabled for development".into(),
         ));
     }
-    let mut allowed_roots = Vec::with_capacity(bootstrap.allowed_artifact_roots.len());
-    for root in bootstrap.allowed_artifact_roots {
+    let mut allowed_roots = Vec::with_capacity(bootstrap.allowed_strategy_roots.len());
+    for root in bootstrap.allowed_strategy_roots {
         allowed_roots.push(canonical_config_path(
             config_directory,
             &root,
-            "artifact root",
+            "compiled_strategy root",
         )?);
     }
     if !strategies.is_empty() && allowed_roots.is_empty() {
         return Err(ConfigurationError::Invalid(
-            "strategy_service requires at least one allowed_artifact_roots entry".into(),
+            "strategy_service requires at least one allowed_strategy_roots entry".into(),
         ));
     }
     let checkpoint_root = if let Some(path) = bootstrap.checkpoint_root {
@@ -1003,14 +1003,14 @@ fn adapt_strategies(
                 definition.strategy_key
             )));
         }
-        if definition.package.loader_type.as_ref() != "native-v13" {
+        if definition.strategy_file.loader_type.as_ref() != "native-v13" {
             return Err(ConfigurationError::Invalid(format!(
                 "strategy {} uses unsupported production loader {}",
-                definition.strategy_key, definition.package.loader_type
+                definition.strategy_key, definition.strategy_file.loader_type
             )));
         }
         let relative = definition
-            .package
+            .strategy_file
             .uri
             .strip_prefix("file://")
             .ok_or_else(|| {
@@ -1023,7 +1023,7 @@ fn adapt_strategies(
             canonical_config_path(config_directory, Path::new(relative), "strategy package")?;
         if !package_root.is_file() {
             return Err(ConfigurationError::Invalid(format!(
-                "strategy artifact {} is not a file",
+                "strategy compiled_strategy {} is not a file",
                 package_root.display()
             )));
         }
@@ -1032,21 +1032,21 @@ fn adapt_strategies(
             .any(|root| package_root.starts_with(root))
         {
             return Err(ConfigurationError::Invalid(format!(
-                "strategy package {} is outside allowed_artifact_roots",
+                "strategy package {} is outside allowed_strategy_roots",
                 package_root.display()
             )));
         }
-        definition.package.uri = Arc::from(format!("file://{}", package_root.display()));
+        definition.strategy_file.uri = Arc::from(format!("file://{}", package_root.display()));
     }
     let config = StrategyCoreConfig {
-        allowed_artifact_roots: allowed_roots
+        allowed_strategy_roots: allowed_roots
             .iter()
             .map(|root| Arc::from(root.to_string_lossy().as_ref()))
             .collect::<Vec<_>>()
             .into(),
         checkpoint_root,
-        require_artifact_signature: !bootstrap.allow_unsigned_artifacts,
-        trusted_artifact_keys: bootstrap
+        require_strategy_signature: !bootstrap.allow_unsigned_strategies,
+        trusted_strategy_keys: bootstrap
             .trusted_ed25519_keys
             .into_iter()
             .map(|(key_id, encoded)| {
@@ -1329,7 +1329,7 @@ mod tests {
         validate_account_source_capacity(&config.event_engine, &config.accounts).unwrap();
         assert_eq!(config.strategies.len(), 1);
         assert_eq!(
-            config.strategies[0].package.loader_type.as_ref(),
+            config.strategies[0].strategy_file.loader_type.as_ref(),
             "native-v13"
         );
         let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb_v13");
@@ -1387,8 +1387,8 @@ config = {}
     fn live_strategy(data_mode: StrategyDataMode) -> StrategyDefinition {
         StrategyDefinition {
             strategy_key: Arc::from("freeze-test"),
-            strategy_id: titan_strategy_runtime::StrategyId(99),
-            package: titan_strategy_runtime::StrategyPackageRef {
+            runtime_strategy_no: titan_strategy_runtime::RuntimeStrategyNo(99),
+            strategy_file: titan_strategy_runtime::StrategyFileRef {
                 loader_type: Arc::from("native-v13"),
                 uri: Arc::from("file:///unused"),
                 expected_digest: [1; 32],
@@ -1406,7 +1406,7 @@ config = {}
             runtime: titan_strategy_runtime::StrategyRuntimeSpec::default(),
             recovery: titan_strategy_runtime::StrategyRecoveryPolicy::Fresh,
             enabled: true,
-            definition_version: 1,
+            run_config_revision: 1,
         }
     }
 

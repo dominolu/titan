@@ -73,7 +73,7 @@ def main():
             if result.returncode:
                 raise SystemExit(f"native compilation failed for {name}: {result.stdout}{result.stderr}")
             runs.append({"name": name, "regime": regime, "date": day, "direction": direction,
-                         "parameters": str(parameters_path), "artifact": str(artifact), "data": str(args.data / (day + ".bin"))})
+                         "parameters": str(parameters_path), "strategy_version": str(artifact), "data": str(args.data / (day + ".bin"))})
             print("compiled", name, flush=True)
     (args.output / "runs.json").write_text(json.dumps(runs, indent=2))
 

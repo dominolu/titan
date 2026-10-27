@@ -27,9 +27,9 @@ impl StrategyClock for Clock {
 struct Metrics;
 impl StrategyMetrics for Metrics {}
 #[derive(Default)]
-struct Sink(Mutex<Vec<StrategyPrivateStateSnapshot>>);
-impl StrategyStateSnapshotSink for Sink {
-    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+struct Sink(Mutex<Vec<StrategyRecoveryPoint>>);
+impl StrategyRecoveryStore for Sink {
+    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         self.0.lock().unwrap().push(snapshot);
         Ok(())
     }
@@ -177,10 +177,10 @@ fn position(runtime: &Arc<dyn StrategyRuntime>, qty: i64, version: u64) {
 }
 fn main() {
     let path = std::fs::canonicalize(PathBuf::from(
-        std::env::args_os().nth(1).expect("grid artifact"),
+        std::env::args_os().nth(1).expect("grid compiled_strategy"),
     ))
     .unwrap();
-    let manifest = NativeArtifactLoaderV13::new(
+    let manifest = NativeStrategyLoaderV13::new(
         std::env::temp_dir().join("grid-stop-cache"),
         V13TrustPolicy::default(),
     )
@@ -191,15 +191,15 @@ fn main() {
             .capabilities
             .contains(StrategyCapabilitiesV13::STOP_BARRIER)
     );
-    let package = StrategyPackageRef {
+    let package = StrategyFileRef {
         loader_type: "native-v13".into(),
         uri: format!("file://{}", path.display()).into(),
-        expected_digest: manifest.artifact_digest,
+        expected_digest: manifest.compiled_strategy_digest,
         signature_ref: None,
     };
-    let artifact = NativeV13LoaderFactory
+    let compiled_strategy = NativeV13LoaderFactory
         .create(StrategyLoaderContext {
-            allowed_artifact_roots: Arc::from([Arc::from(
+            allowed_strategy_roots: Arc::from([Arc::from(
                 path.parent().unwrap().to_str().unwrap(),
             )]),
             require_signature: false,
@@ -208,23 +208,23 @@ fn main() {
         .unwrap()
         .load(
             StrategyLoadRequest {
-                package: package.clone(),
+                strategy_file: package.clone(),
             },
             Instant::now() + Duration::from_secs(5),
         )
         .unwrap();
-    offline_stop(artifact.native.clone());
+    offline_stop(compiled_strategy.native.clone());
     let definition = StrategyDefinition {
         strategy_key: "grid-stop".into(),
-        strategy_id: StrategyId(42),
-        package,
+        runtime_strategy_no: RuntimeStrategyNo(42),
+        strategy_file: package,
         markets: Arc::from([]),
         accounts: Arc::from([]),
         risk_scope: RiskScopeRef("offline".into()),
         runtime: Default::default(),
         recovery: StrategyRecoveryPolicy::Fresh,
         enabled: true,
-        definition_version: 1,
+        run_config_revision: 1,
     };
     let account = account::AccountHandle {
         account_id: account::AccountId(8),
@@ -242,13 +242,13 @@ fn main() {
     let runtime = NativeV13RuntimeFactory
         .create(
             &definition,
-            artifact.clone(),
+            compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
                 strategy: StrategyHandle {
-                    strategy_id: StrategyId(42),
+                    runtime_strategy_no: RuntimeStrategyNo(42),
                     generation: 1,
                 },
-                artifact_id: artifact.id,
+                compiled_strategy_digest: compiled_strategy.id,
                 markets: Arc::from([ResolvedMarketBinding {
                     source_stream: titan_market_service::SourceStreamId(2),
                     local_market_no: 0,
@@ -377,7 +377,7 @@ fn main() {
     wait(&runtime, checkpoint);
     recovery_probe(
         &definition,
-        artifact.clone(),
+        compiled_strategy.clone(),
         sink.0.lock().unwrap().last().unwrap().clone(),
     );
     assert!(runtime.pause_supported());
@@ -463,8 +463,8 @@ fn main() {
 
 fn recovery_probe(
     definition: &StrategyDefinition,
-    artifact: StrategyArtifact,
-    snapshot: StrategyPrivateStateSnapshot,
+    compiled_strategy: LoadedStrategy,
+    snapshot: StrategyRecoveryPoint,
 ) {
     let outcomes: Vec<_> = snapshot
         .orders_list
@@ -493,13 +493,13 @@ fn recovery_probe(
         let runtime = NativeV13RuntimeFactory
             .create(
                 definition,
-                artifact.clone(),
+                compiled_strategy.clone(),
                 StrategyRuntimeBuildContext {
                     strategy: StrategyHandle {
-                        strategy_id: StrategyId(42),
+                        runtime_strategy_no: RuntimeStrategyNo(42),
                         generation: 2,
                     },
-                    artifact_id: artifact.id,
+                    compiled_strategy_digest: compiled_strategy.id,
                     markets: Arc::from([ResolvedMarketBinding {
                         source_stream: titan_market_service::SourceStreamId(2),
                         local_market_no: 0,
@@ -621,9 +621,9 @@ fn offline_state(
     );
 }
 
-fn offline_stop(artifact: Arc<StrategyArtifactV13>) {
+fn offline_stop(compiled_strategy: Arc<LoadedNativeStrategyV13>) {
     let mut adapter = OfflineV13Adapter::new(OfflineV13Config {
-        artifact,
+        compiled_strategy,
         strategy_instance_id: 91,
         generation: 1,
         command_capacity: 64,

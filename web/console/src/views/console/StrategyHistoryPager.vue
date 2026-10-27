@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useResearch } from "./use-research";
+import { useStrategy } from "./use-strategy";
 const props = defineProps<{ kind: string }>();
-const scope = useResearch();
+const scope = useStrategy();
 const page = computed(() => scope.pages[props.kind]);
 </script>
 <template>
-  <div class="research-pager" :data-kind="kind">
+  <div class="strategy-pager" :data-kind="kind">
     <span v-if="page.error" class="warning-text">{{ page.error }}</span
     ><span v-else class="subtle"
       >策略内查询 · 第 {{ Math.floor(page.offset / 20) + 1 }} 页</span

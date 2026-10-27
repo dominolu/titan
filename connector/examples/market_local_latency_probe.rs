@@ -1,7 +1,7 @@
 //! Receive-to-native-strategy benchmark using the real MarketService, EventEngine PRIMARY async
 //! lane and NativeV13Runtime. Public data only; the strategy has no account or execution binding.
-#[path = "market_local_latency_probe/artifact.rs"]
-mod artifact;
+#[path = "market_local_latency_probe/compiled_strategy.rs"]
+mod compiled_strategy;
 use anyhow::{Result, ensure};
 use chrono::Utc;
 use market::{MarketAdminService, MarketService};
@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use strategy::{StrategyRuntimeFactory, StrategyStateSnapshotSink};
+use strategy::{StrategyRecoveryStore, StrategyRuntimeFactory};
 use titan_core_types::{
     ActivationGate, ApiVersion, ComponentIdentity, EventPublisher, EventQos, ResourceScope,
 };
@@ -54,9 +54,9 @@ impl strategy::StrategyClock for Clock {
 struct Metrics;
 impl strategy::StrategyMetrics for Metrics {}
 #[derive(Default)]
-struct Sink(Mutex<Option<strategy::StrategyPrivateStateSnapshot>>);
-impl StrategyStateSnapshotSink for Sink {
-    fn submit(&self, value: strategy::StrategyPrivateStateSnapshot) -> strategy::LocalResult<()> {
+struct Sink(Mutex<Option<strategy::StrategyRecoveryPoint>>);
+impl StrategyRecoveryStore for Sink {
+    fn submit(&self, value: strategy::StrategyRecoveryPoint) -> strategy::LocalResult<()> {
         *self.0.lock().unwrap() = Some(value);
         Ok(())
     }
@@ -86,7 +86,7 @@ fn stats(mut values: Vec<f64>) -> Value {
     let p = |q: f64| values[((n as f64 * q).ceil() as usize).saturating_sub(1)];
     json!({"n":n,"min":values[0],"mean":values.iter().sum::<f64>()/n as f64,"p50":p(0.5),"p95":p(0.95),"p99":p(0.99),"max":values[n-1],"negative":values.iter().filter(|v|**v<0.0).count()})
 }
-fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> {
+fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> {
     fs::create_dir_all(output)?;
     let (connector_type, symbol, tick, lot, mut config) = match venue {
         "gate-legacy" | "gate-borrowed" => (
@@ -152,13 +152,13 @@ fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> 
         enabled: true,
         definition_version: 1,
     })?;
-    let loader = strategy::NativeArtifactLoaderV13::new(
+    let loader = strategy::NativeStrategyLoaderV13::new(
         output.join("cache"),
         strategy::V13TrustPolicy::default(),
     );
-    let native = Arc::new(loader.load(artifact)?);
-    let id = strategy::StrategyArtifactId {
-        digest: native.manifest.artifact_digest,
+    let native = Arc::new(loader.load(compiled_strategy)?);
+    let id = strategy::CompiledStrategyDigest {
+        digest: native.manifest.compiled_strategy_digest,
     };
     let subscription = strategy::StrategySubscriptionSpec {
         event_type: Arc::from(market::DEPTH_BATCH_EVENT),
@@ -166,14 +166,14 @@ fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> 
         routing_keys: Arc::from([1]),
         qos: EventQos::ReliableOrdered,
     };
-    let package = strategy::StrategyPackageRef {
+    let package = strategy::StrategyFileRef {
         loader_type: Arc::from("native-v13"),
-        uri: Arc::from(artifact.to_string_lossy().as_ref()),
+        uri: Arc::from(compiled_strategy.to_string_lossy().as_ref()),
         expected_digest: id.digest,
         signature_ref: None,
     };
     let handle = strategy::StrategyHandle {
-        strategy_id: strategy::StrategyId(777),
+        runtime_strategy_no: strategy::RuntimeStrategyNo(777),
         generation: 1,
     };
     let runtime_config = strategy::StrategyRuntimeSpec {
@@ -182,41 +182,41 @@ fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> 
     };
     let definition = strategy::StrategyDefinition {
         strategy_key: Arc::from("no-order-latency"),
-        strategy_id: handle.strategy_id,
-        package,
+        runtime_strategy_no: handle.runtime_strategy_no,
+        strategy_file: package,
         markets: Arc::from([]),
         accounts: Arc::from([]),
         risk_scope: strategy::RiskScopeRef(Arc::from("no-orders")),
         runtime: runtime_config,
         recovery: strategy::StrategyRecoveryPolicy::Fresh,
         enabled: true,
-        definition_version: 1,
+        run_config_revision: 1,
     };
     let sink = Arc::new(Sink::default());
     let scope = ResourceScope::new(ComponentIdentity::new("probe", "strategy"));
-    let native_artifact = strategy::StrategyArtifact {
+    let native_strategy = strategy::LoadedStrategy {
         id,
-        manifest: strategy::StrategyPackageManifest {
-            strategy_type: Arc::from("native-v13"),
-            package_version: "1.0.0".parse()?,
+        manifest: strategy::CompiledStrategyMetadata {
+            runtime_type: Arc::from("native-v13"),
+            source_version: "1.0.0".parse()?,
             runtime_abi: ApiVersion::new(1, 0),
             parameter_schema: Arc::new(json!({})),
             parameter_schema_version: 1,
-            state_schema_version: 1,
+            recovery_state_schema_version: 1,
             state_byte_len: native.manifest.state.byte_len,
             callbacks: strategy::StrategyCallbackMask(8),
             capabilities: strategy::StrategyCapabilities::READ_DEPTH,
             subscriptions: Arc::from([subscription]),
-            artifact_digest: id.digest,
+            compiled_strategy_digest: id.digest,
         },
         native,
     };
     let runtime = strategy::NativeV13RuntimeFactory.create(
         &definition,
-        native_artifact,
+        native_strategy,
         strategy::StrategyRuntimeBuildContext {
             strategy: handle,
-            artifact_id: id,
+            compiled_strategy_digest: id,
             markets: Arc::from([strategy::ResolvedMarketBinding {
                 source_stream: markets.source_stream(source)?,
                 local_market_no: 0,
@@ -305,7 +305,7 @@ fn run(artifact: &Path, venue: &str, seconds: u64, output: &Path) -> Result<()> 
     let state = &snapshot.state_bytes;
     let word = |offset: usize| u64::from_le_bytes(state[offset..offset + 8].try_into().unwrap());
     let n = word(0) as usize;
-    ensure!(n <= artifact::CAPACITY, "probe state overflow");
+    ensure!(n <= compiled_strategy::CAPACITY, "probe state overflow");
     let mut csv = fs::File::create(output.join("samples.csv"))?;
     writeln!(csv, "receive_ns,strategy_entry_ns,depth_levels,latency_ns")?;
     let mut latencies = Vec::new();
@@ -352,12 +352,12 @@ fn main() -> Result<()> {
         .with_max_level(tracing::Level::WARN)
         .try_init();
     let args: Vec<_> = std::env::args().collect();
-    if args.len() == 3 && args[1] == "--build-artifact" {
-        return artifact::build(Path::new(&args[2]));
+    if args.len() == 3 && args[1] == "--build-compiled_strategy" {
+        return compiled_strategy::build(Path::new(&args[2]));
     }
     ensure!(
         args.len() == 5,
-        "usage: market_local_latency_probe ARTIFACT VENUE SECONDS OUTPUT_DIR; build the artifact on the build server with --build-artifact DIR"
+        "usage: market_local_latency_probe ARTIFACT VENUE SECONDS OUTPUT_DIR; build the compiled_strategy on the build server with --build-compiled_strategy DIR"
     );
     let seconds: u64 = args[3].parse()?;
     ensure!((3..=120).contains(&seconds), "duration must be 3..120");

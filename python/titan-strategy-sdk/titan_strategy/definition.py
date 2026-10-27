@@ -11,6 +11,7 @@ from typing import Mapping
 import numpy as np
 
 from .parameters import Parameter, parameter_json_schema, validate_parameters
+from .observation import BusinessObservationSpec
 from .types import EventKind, EventQos
 
 
@@ -65,22 +66,47 @@ class EventSubscription:
             raise ValueError(f"{kind.name.lower()} must use RELIABLE_ORDERED QoS")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class StrategySpec:
-    strategy_id: str
-    strategy_version: str
-    state_schema_version: int
+    strategy_type: str
+    source_version: str
+    recovery_state_schema_version: int
     parameters: tuple[Parameter, ...] = ()
     subscriptions: tuple[EventSubscription, ...] = ()
     capabilities: Capability = Capability.NONE
 
+    def __init__(self, strategy_type=None, source_version=None, recovery_state_schema_version=None,
+                 parameters=(), subscriptions=(), capabilities=Capability.NONE, **legacy):
+        for name, old, value in (("strategy_type", "strategy_id", strategy_type),
+                                 ("source_version", "strategy_version", source_version),
+                                 ("recovery_state_schema_version", "state_schema_version", recovery_state_schema_version)):
+            if old in legacy:
+                if value is not None:
+                    raise TypeError(f"{name} supplied twice")
+                value = legacy.pop(old)
+            if value is None:
+                raise TypeError(f"missing {name}")
+            object.__setattr__(self, name, value)
+        if legacy:
+            raise TypeError(f"unknown strategy fields: {sorted(legacy)}")
+        object.__setattr__(self, "parameters", parameters)
+        object.__setattr__(self, "subscriptions", subscriptions)
+        object.__setattr__(self, "capabilities", capabilities)
+        self.__post_init__()
+
+    # Read-only aliases for existing strategy sources; new declarations use the
+    # explicit type/source/recovery names above. Native V13 field names stay fixed.
+    strategy_id = property(lambda self: self.strategy_type)
+    strategy_version = property(lambda self: self.source_version)
+    state_schema_version = property(lambda self: self.recovery_state_schema_version)
+
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.strategy_id):
-            raise ValueError("strategy_id must be lowercase snake_case")
-        if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?", self.strategy_version):
-            raise ValueError("strategy_version must be semantic version text")
-        if isinstance(self.state_schema_version, bool) or self.state_schema_version <= 0:
-            raise ValueError("state_schema_version must be positive")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.strategy_type):
+            raise ValueError("strategy_type must be lowercase snake_case")
+        if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?", self.source_version):
+            raise ValueError("source_version must be semantic version text")
+        if isinstance(self.recovery_state_schema_version, bool) or self.recovery_state_schema_version <= 0:
+            raise ValueError("recovery_state_schema_version must be positive")
         parameters = tuple(self.parameters)
         subscriptions = tuple(self.subscriptions)
         if len({parameter.name for parameter in parameters}) != len(parameters):
@@ -112,8 +138,11 @@ class StrategyDefinition:
     state: np.ndarray
     handlers: Mapping[str, object]
     metadata: Mapping[str, object] = field(default_factory=dict)
+    business_observation: BusinessObservationSpec | None = None
 
     def __post_init__(self) -> None:
+        if self.business_observation is not None and not isinstance(self.business_observation, BusinessObservationSpec):
+            raise TypeError("business_observation must be a BusinessObservationSpec")
         if not isinstance(self.state, np.ndarray) or self.state.shape != (1,):
             raise TypeError("state must be a length-one ndarray")
         if self.state.dtype.fields is None or not self.state.flags.c_contiguous:
@@ -131,7 +160,7 @@ class StrategyDefinition:
     def __reduce__(self):
         return (
             StrategyDefinition,
-            (self.spec, self.state, dict(self.handlers), dict(self.metadata)),
+            (self.spec, self.state, dict(self.handlers), dict(self.metadata), self.business_observation),
         )
 
 

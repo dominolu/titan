@@ -1,8 +1,8 @@
 schema_version = 1
 
 [strategy_service]
-allowed_artifact_roots = ["artifacts"]
-allow_unsigned_artifacts = true
+allowed_strategy_roots = ["artifacts"]
+allow_unsigned_strategies = true
 
 [[strategies]]
 strategy_key = "event_counter"

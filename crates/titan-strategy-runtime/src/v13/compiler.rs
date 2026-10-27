@@ -1,5 +1,6 @@
-//! Rust-owned artifact contracts, native descriptor generation and publication.
+//! Rust-owned compiled_strategy contracts, native descriptor generation and publication.
 use super::*;
+use crate::observation::{BusinessObservationDefinition, compile_business_observation};
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -10,16 +11,23 @@ pub struct NumbaMetadataV13 {
     pub protocol_version: u32,
     pub abi_version: u32,
     pub abi_fingerprint: [u8; 32],
-    pub strategy_id: String,
-    pub strategy_version: String,
+    #[serde(alias = "strategy_id")]
+    pub strategy_type: String,
+    #[serde(alias = "strategy_version")]
+    pub source_version: String,
     pub callbacks: Vec<String>,
     pub callback_mask: u64,
-    pub state_schema_version: u32,
-    pub state_schema_hash: [u8; 32],
+    #[serde(alias = "state_schema_version")]
+    pub recovery_state_schema_version: u32,
+    #[serde(alias = "state_schema_hash")]
+    pub recovery_state_schema_hash: [u8; 32],
     pub state_len: usize,
     pub state_alignment: u32,
     pub initial_state: Vec<u8>,
-    pub state_schema: serde_json::Value,
+    #[serde(alias = "state_schema")]
+    pub recovery_state_schema: serde_json::Value,
+    #[serde(default)]
+    pub business_observation: Option<BusinessObservationDefinition>,
     pub parameter_schema: serde_json::Value,
     pub subscriptions: Vec<NumbaSubscriptionV13>,
     pub capabilities: Vec<String>,
@@ -116,24 +124,24 @@ fn cbor_map(values: impl IntoIterator<Item = (&'static str, CborValue)>) -> Cbor
 
 impl NumbaMetadataV13 {
     pub fn validate(&self) -> Result<(), V13LoadError> {
-        if self.protocol_version != 1
+        if !matches!(self.protocol_version, 1 | 2)
             || self.abi_version != 13
             || self.abi_fingerprint != V13_ABI_FINGERPRINT
         {
             return Err(V13LoadError::Contract("Numba bridge ABI/protocol mismatch"));
         }
-        let id = self.strategy_id.as_bytes();
+        let id = self.strategy_type.as_bytes();
         if id.is_empty()
             || id.len() > 64
             || !id[0].is_ascii_lowercase()
             || !id
                 .iter()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
-            || semver::Version::parse(&self.strategy_version).is_err()
+            || semver::Version::parse(&self.source_version).is_err()
         {
             return Err(V13LoadError::Contract("invalid strategy identity"));
         }
-        if self.state_schema_version == 0
+        if self.recovery_state_schema_version == 0
             || self.state_len == 0
             || self.state_len > 65_536
             || self.initial_state.len() != self.state_len
@@ -143,13 +151,25 @@ impl NumbaMetadataV13 {
         {
             return Err(V13LoadError::Contract("invalid compiler state layout"));
         }
-        StateSchemaIdentityV13 {
-            version: self.state_schema_version,
-            hash: self.state_schema_hash,
+        RecoveryStateIdentityV13 {
+            version: self.recovery_state_schema_version,
+            hash: self.recovery_state_schema_hash,
             byte_len: self.state_len,
             alignment: self.state_alignment,
         }
-        .validate_description(&self.state_schema)?;
+        .validate_description(&self.recovery_state_schema)?;
+        if let Some(observation) = &self.business_observation {
+            compile_business_observation(
+                observation,
+                &self.recovery_state_schema,
+                RecoveryStateIdentityV13 {
+                    version: self.recovery_state_schema_version,
+                    hash: self.recovery_state_schema_hash,
+                    byte_len: self.state_len,
+                    alignment: self.state_alignment,
+                },
+            )?;
+        }
         let mut mask = 0;
         for callback in &self.callbacks {
             let index = CALLBACK_NAMES
@@ -203,8 +223,8 @@ impl NumbaMetadataV13 {
 #define TITAN_EXPORT __attribute__((visibility("default")))
 struct NativeStrategyDescriptor {{
   uint32_t struct_size; uint32_t abi_version; uint8_t abi_fingerprint[32];
-  uint32_t state_schema_version; uint32_t state_alignment; uint64_t state_len;
-  uint8_t state_schema_hash[32]; uint64_t callback_mask;
+  uint32_t recovery_state_schema_version; uint32_t state_alignment; uint64_t state_len;
+  uint8_t recovery_state_schema_hash[32]; uint64_t callback_mask;
 }};
 static const struct NativeStrategyDescriptor DESCRIPTOR = {{
   sizeof(struct NativeStrategyDescriptor), 13, {{{fingerprint}}},
@@ -215,16 +235,16 @@ TITAN_EXPORT const struct NativeStrategyDescriptor *titan_strategy_descriptor(vo
 {callbacks}
 "#,
             fingerprint = bytes(&V13_ABI_FINGERPRINT),
-            version = self.state_schema_version,
+            version = self.recovery_state_schema_version,
             alignment = self.state_alignment,
             len = self.state_len,
-            hash = bytes(&self.state_schema_hash),
+            hash = bytes(&self.recovery_state_schema_hash),
             mask = self.callback_mask
         ))
     }
 }
 
-pub struct ArtifactBuildV13<'a> {
+pub struct StrategyCompileOutputV13<'a> {
     pub metadata: &'a NumbaMetadataV13,
     pub library: &'a [u8],
     pub source_digest: [u8; 32],
@@ -235,16 +255,16 @@ pub struct ArtifactBuildV13<'a> {
     pub output: &'a Path,
     pub signing: Option<(&'a str, &'a [u8; 32])>,
 }
-pub struct CompiledArtifactV13 {
+pub struct CompiledStrategyV13 {
     pub paths: Vec<PathBuf>,
-    pub manifest: ArtifactManifestV13,
+    pub manifest: CompiledStrategyMetadataV13,
 }
 
 /// Publication is staged on the destination filesystem. A pair's manifest is committed last;
 /// failure rolls back prior files. Bundle replacement is one rename.
-pub fn write_artifact_v13(
-    input: ArtifactBuildV13<'_>,
-) -> Result<CompiledArtifactV13, V13LoadError> {
+pub fn write_compiled_strategy_v13(
+    input: StrategyCompileOutputV13<'_>,
+) -> Result<CompiledStrategyV13, V13LoadError> {
     let meta = input.metadata;
     meta.validate()?;
     validate_compile_target_v13(input.target_triple, input.cpu_baseline)?;
@@ -258,19 +278,23 @@ pub fn write_artifact_v13(
         base.file_name()
     }
     .and_then(|v| v.to_str())
-    .ok_or(V13LoadError::Contract("invalid artifact output name"))?;
+    .ok_or(V13LoadError::Contract(
+        "invalid compiled_strategy output name",
+    ))?;
     if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
-        return Err(V13LoadError::Contract("unsafe artifact output name"));
+        return Err(V13LoadError::Contract(
+            "unsafe compiled_strategy output name",
+        ));
     }
     let library_name = format!("{stem}.so");
     let manifest_name = format!("{stem}.manifest.cbor");
-    let native_digest: [u8; 32] = Sha256::digest(input.library).into();
+    let native_library_sha256: [u8; 32] = Sha256::digest(input.library).into();
     let mut value = cbor_map([
-        ("artifact_format_version", CborValue::Integer(1)),
-        ("strategy_id", CborValue::Text(meta.strategy_id.clone())),
+        ("strategy_format_version", CborValue::Integer(2)),
+        ("strategy_type", CborValue::Text(meta.strategy_type.clone())),
         (
-            "strategy_version",
-            CborValue::Text(meta.strategy_version.clone()),
+            "source_version",
+            CborValue::Text(meta.source_version.clone()),
         ),
         ("abi_version", CborValue::Integer(13)),
         (
@@ -285,12 +309,12 @@ pub fn write_artifact_v13(
             CborValue::Integer(meta.callback_mask.into()),
         ),
         (
-            "state_schema_version",
-            CborValue::Integer(meta.state_schema_version.into()),
+            "recovery_state_schema_version",
+            CborValue::Integer(meta.recovery_state_schema_version.into()),
         ),
         (
-            "state_schema_hash",
-            CborValue::Bytes(meta.state_schema_hash.to_vec()),
+            "recovery_state_schema_hash",
+            CborValue::Bytes(meta.recovery_state_schema_hash.to_vec()),
         ),
         ("state_len", CborValue::Integer(meta.state_len as i128)),
         (
@@ -301,7 +325,17 @@ pub fn write_artifact_v13(
             "initial_state",
             CborValue::Bytes(meta.initial_state.clone()),
         ),
-        ("state_schema", json_cbor(&meta.state_schema)?),
+        (
+            "recovery_state_schema",
+            json_cbor(&meta.recovery_state_schema)?,
+        ),
+        (
+            "business_observation",
+            json_cbor(
+                &serde_json::to_value(&meta.business_observation)
+                    .map_err(|_| V13LoadError::Contract("invalid business observation"))?,
+            )?,
+        ),
         ("parameter_schema", json_cbor(&meta.parameter_schema)?),
         (
             "subscriptions",
@@ -322,10 +356,13 @@ pub fn write_artifact_v13(
             CborValue::Bytes(input.parameters_digest.to_vec()),
         ),
         ("build", json_cbor(&meta.build)?),
-        ("native_digest", CborValue::Bytes(native_digest.to_vec())),
+        (
+            "native_library_sha256",
+            CborValue::Bytes(native_library_sha256.to_vec()),
+        ),
     ]);
     let unsigned = canonical_cbor(&value)?;
-    let artifact_digest = Sha256::digest(&unsigned).into();
+    let compiled_strategy_digest = Sha256::digest(&unsigned).into();
     let mut trust = V13TrustPolicy::default();
     let signature = if let Some((id, seed)) = input.signing {
         if id.trim().is_empty() {
@@ -336,7 +373,7 @@ pub fn write_artifact_v13(
         trust
             .ed25519_keys
             .insert(Arc::from(id), key.verifying_key().to_bytes());
-        Some(ArtifactSignatureV13 {
+        Some(StrategySignatureV13 {
             algorithm: Arc::from("ed25519"),
             key_id: Arc::from(id),
             value: key.sign(&unsigned).to_bytes().to_vec().into(),
@@ -345,7 +382,7 @@ pub fn write_artifact_v13(
         None
     };
     // Reuse the runtime's contract checks before any destination is touched.
-    let parsed = parse_manifest(&value, signature.clone(), artifact_digest)?;
+    let parsed = parse_manifest(&value, signature.clone(), compiled_strategy_digest)?;
     let signature_value = signature.as_ref().map_or(CborValue::Null, |s| {
         cbor_map([
             ("algorithm", CborValue::Text(s.algorithm.to_string())),
@@ -362,7 +399,7 @@ pub fn write_artifact_v13(
         .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let staging = tempfile::Builder::new()
-        .prefix(".titan-artifact-")
+        .prefix(".titan-compiled_strategy-")
         .tempdir_in(parent)?;
     let manifest_bytes = canonical_cbor(&value)?;
     let names = if input.bundle {
@@ -397,13 +434,13 @@ pub fn write_artifact_v13(
     let inspect_path = staging
         .path()
         .join(if input.bundle { &names[0] } else { &names[1] });
-    NativeArtifactLoaderV13::new(staging.path().join("cache"), trust).inspect(&inspect_path)?;
+    NativeStrategyLoaderV13::new(staging.path().join("cache"), trust).inspect(&inspect_path)?;
     // Refuse directories and symlinks before moving either member of a pair.
     for name in &names {
         match fs::symlink_metadata(parent.join(name)) {
             Ok(info) if !info.file_type().is_file() => {
                 return Err(V13LoadError::Contract(
-                    "artifact destination is not a regular file",
+                    "compiled_strategy destination is not a regular file",
                 ));
             }
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
@@ -439,11 +476,11 @@ pub fn write_artifact_v13(
         }
         if let Some(restore) = rollback_error {
             let recovery = staging.keep();
-            return Err(std::io::Error::other(format!("artifact publication failed: {error}; rollback failed: {restore}; retained backups in {}", recovery.display())).into());
+            return Err(std::io::Error::other(format!("compiled_strategy publication failed: {error}; rollback failed: {restore}; retained backups in {}", recovery.display())).into());
         }
         return Err(error.into());
     }
-    Ok(CompiledArtifactV13 {
+    Ok(CompiledStrategyV13 {
         paths: published,
         manifest: parsed,
     })
@@ -460,16 +497,17 @@ mod tests {
             protocol_version: 1,
             abi_version: 13,
             abi_fingerprint: V13_ABI_FINGERPRINT,
-            strategy_id: "sample".into(),
-            strategy_version: "1.0.0".into(),
+            strategy_type: "sample".into(),
+            source_version: "1.0.0".into(),
             callbacks: vec!["on_tick".into()],
             callback_mask: 2,
-            state_schema_version: 1,
-            state_schema_hash: Sha256::digest(compiler_json_v13(&hashed)).into(),
+            recovery_state_schema_version: 1,
+            recovery_state_schema_hash: Sha256::digest(compiler_json_v13(&hashed)).into(),
             state_len: 8,
             state_alignment: 8,
             initial_state: vec![0; 8],
-            state_schema: schema,
+            recovery_state_schema: schema,
+            business_observation: None,
             parameter_schema: serde_json::json!({"type":"object"}),
             subscriptions: vec![NumbaSubscriptionV13 {
                 event: "bbo".into(),
@@ -485,8 +523,8 @@ mod tests {
         metadata: &'a NumbaMetadataV13,
         output: &'a Path,
         bundle: bool,
-    ) -> ArtifactBuildV13<'a> {
-        ArtifactBuildV13 {
+    ) -> StrategyCompileOutputV13<'a> {
+        StrategyCompileOutputV13 {
             metadata,
             library: b"unit-test native bytes",
             source_digest: [1; 32],
@@ -507,18 +545,18 @@ mod tests {
         let seed = [9; 32];
         let mut pair_input = build(&meta, &pair, false);
         pair_input.signing = Some(("test-key", &seed));
-        let pair = write_artifact_v13(pair_input).unwrap();
+        let pair = write_compiled_strategy_v13(pair_input).unwrap();
         let mut bundle_input = build(&meta, &bundle, true);
         bundle_input.signing = Some(("test-key", &seed));
-        let first = write_artifact_v13(bundle_input).unwrap();
+        let first = write_compiled_strategy_v13(bundle_input).unwrap();
         assert_eq!(
-            pair.manifest.artifact_digest,
-            first.manifest.artifact_digest
+            pair.manifest.compiled_strategy_digest,
+            first.manifest.compiled_strategy_digest
         );
         let bytes = fs::read(&bundle).unwrap();
         let mut again = build(&meta, &bundle, true);
         again.signing = Some(("test-key", &seed));
-        write_artifact_v13(again).unwrap();
+        write_compiled_strategy_v13(again).unwrap();
         assert_eq!(fs::read(&bundle).unwrap(), bytes);
         let mut trust = V13TrustPolicy {
             require_signature: true,
@@ -528,11 +566,11 @@ mod tests {
             Arc::from("test-key"),
             SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
         );
-        let loader = NativeArtifactLoaderV13::new(root.path().join("cache"), trust);
+        let loader = NativeStrategyLoaderV13::new(root.path().join("cache"), trust);
         loader.inspect(&bundle).unwrap();
         loader.inspect(&pair.paths[1]).unwrap();
         assert!(
-            NativeArtifactLoaderV13::new(root.path().join("cache"), V13TrustPolicy::default())
+            NativeStrategyLoaderV13::new(root.path().join("cache"), V13TrustPolicy::default())
                 .inspect(&bundle)
                 .is_err()
         );
@@ -559,12 +597,12 @@ mod tests {
         let old_library = root.path().join("sample.so");
         fs::write(&old_library, b"previous").unwrap();
         fs::create_dir(root.path().join("sample.manifest.cbor")).unwrap();
-        assert!(write_artifact_v13(build(&meta, &output, false)).is_err());
+        assert!(write_compiled_strategy_v13(build(&meta, &output, false)).is_err());
         assert_eq!(fs::read(old_library).unwrap(), b"previous");
         meta.callback_mask |= 1 << 63;
         assert!(meta.validate().is_err());
         meta = metadata();
-        meta.state_schema_hash[0] ^= 1;
+        meta.recovery_state_schema_hash[0] ^= 1;
         assert!(meta.validate().is_err());
         meta = metadata();
         meta.callbacks = vec!["../../injection".into()];
@@ -574,23 +612,23 @@ mod tests {
         assert!(meta.validate().is_err());
     }
     #[test]
-    fn native_digest_and_required_signature_are_checked_by_rust() {
+    fn native_library_sha256_and_required_signature_are_checked_by_rust() {
         let root = tempfile::tempdir().unwrap();
         let meta = metadata();
         let output = root.path().join("sample");
-        let artifact = write_artifact_v13(build(&meta, &output, false)).unwrap();
-        let required = NativeArtifactLoaderV13::new(
+        let compiled_strategy = write_compiled_strategy_v13(build(&meta, &output, false)).unwrap();
+        let required = NativeStrategyLoaderV13::new(
             root.path().join("cache"),
             V13TrustPolicy {
                 require_signature: true,
                 ..Default::default()
             },
         );
-        assert!(required.inspect(&artifact.paths[1]).is_err());
-        fs::write(&artifact.paths[0], b"corrupt").unwrap();
+        assert!(required.inspect(&compiled_strategy.paths[1]).is_err());
+        fs::write(&compiled_strategy.paths[0], b"corrupt").unwrap();
         assert!(
-            NativeArtifactLoaderV13::new(root.path().join("cache"), V13TrustPolicy::default())
-                .inspect(&artifact.paths[1])
+            NativeStrategyLoaderV13::new(root.path().join("cache"), V13TrustPolicy::default())
+                .inspect(&compiled_strategy.paths[1])
                 .is_err()
         );
         assert!(validate_compile_target_v13("wrong-target", "generic").is_err());

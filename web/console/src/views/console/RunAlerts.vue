@@ -23,14 +23,14 @@ const alerts = computed(() =>
   )
 );
 async function acknowledge(row: Resource) {
-  const identity = store.generation;
+  const identity = store.sessionGeneration;
   busy.value = row.id;
   try {
     const result = await consoleApi.acknowledge(row);
-    if (disposed || identity !== store.generation) return;
+    if (disposed || identity !== store.sessionGeneration) return;
     store.mergeResource(result);
   } catch (failure) {
-    if (!disposed && identity === store.generation)
+    if (!disposed && identity === store.sessionGeneration)
       ElMessage.error((failure as Error).message);
   } finally {
     busy.value = "";

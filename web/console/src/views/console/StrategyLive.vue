@@ -7,15 +7,15 @@ import { body, raw, pretty, runView, decimal } from "./run-view";
 import { useConsoleWork } from "./use-console-work";
 import ConsoleIcon from "./ConsoleIcon.vue";
 import ConsoleDetails from "./ConsoleDetails.vue";
-import { useResearch } from "./use-research";
-import ResearchPager from "./ResearchPager.vue";
+import { useStrategy } from "./use-strategy";
+import StrategyHistoryPager from "./StrategyHistoryPager.vue";
 import RunDetail from "./RunDetail.vue";
 import { useRoute, useRouter } from "vue-router";
 const store = useConsoleStore();
-const scope = useResearch(),
+const scope = useStrategy(),
   route = useRoute(),
   router = useRouter();
-const artifacts = computed(() => scope.options("artifact"));
+const strategyVersions = computed(() => scope.options("strategy_version"));
 const nodes = computed(() =>
   store.resources.filter(row => row.kind === "node")
 );
@@ -29,7 +29,7 @@ const selectedRun = computed(() =>
 );
 const selectionError = ref("");
 const { busy, detail, submit } = useConsoleWork();
-const selectedArtifact = ref(""),
+const selectedStrategyVersion = ref(""),
   selectedBinding = ref("");
 const confirming = ref(false);
 let disposed = false;
@@ -37,27 +37,27 @@ onBeforeUnmount(() => {
   disposed = true;
 });
 watch(
-  () => [route.query.run, route.query.artifact],
+  () => [route.query.run, route.query.strategy_version_id],
   async () => {
     selectionError.value = "";
     const runId = String(route.query.run ?? ""),
-      artifactId = String(route.query.artifact ?? "");
-    const generation = store.generation;
-    if (artifactId) selectedArtifact.value = "";
+      strategyVersionId = String(route.query.strategy_version_id ?? "");
+    const generation = store.sessionGeneration;
+    if (strategyVersionId) selectedStrategyVersion.value = "";
     try {
-      await scope.pin("live-link", [runId, artifactId].filter(Boolean));
+      await scope.pin("live-link", [runId, strategyVersionId].filter(Boolean));
       if (
-        generation !== store.generation ||
+        generation !== store.sessionGeneration ||
         runId !== String(route.query.run ?? "") ||
-        artifactId !== String(route.query.artifact ?? "")
+        strategyVersionId !== String(route.query.strategy_version_id ?? "")
       )
         return;
-      if (artifactId) selectedArtifact.value = artifactId;
+      if (strategyVersionId) selectedStrategyVersion.value = strategyVersionId;
     } catch (failure) {
       if (
-        generation === store.generation &&
+        generation === store.sessionGeneration &&
         runId === String(route.query.run ?? "") &&
-        artifactId === String(route.query.artifact ?? "")
+        strategyVersionId === String(route.query.strategy_version_id ?? "")
       )
         selectionError.value = (failure as Error).message;
     }
@@ -77,17 +77,17 @@ watch(selectedBinding, id => {
 const binding = computed(() =>
   bindings.value.find(row => row.id === selectedBinding.value)
 );
-const artifact = computed(() =>
-  scope.lookup("artifact", selectedArtifact.value)
+const strategyVersion = computed(() =>
+  scope.lookup("strategy_version", selectedStrategyVersion.value)
 );
 const deployments = computed(() => scope.resources("deployment"));
 watch(
   () => [
-    selectedArtifact.value,
+    selectedStrategyVersion.value,
     detail.value && "kind" in detail.value ? detail.value.id : ""
   ],
   ids => {
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     scope
       .pin(
         "live-form",
@@ -96,7 +96,7 @@ watch(
           .filter(id => id !== selectedBinding.value) as string[]
       )
       .catch(error => {
-        if (!disposed && generation === store.generation)
+        if (!disposed && generation === store.sessionGeneration)
           store.error = error.message;
       });
   },
@@ -109,11 +109,11 @@ const bindingFor = (item: Resource) =>
       body(row).binding_id === body(item).binding_id
   );
 async function deploy() {
-  if (!artifact.value || !binding.value) return;
+  if (!strategyVersion.value || !binding.value) return;
   await submit(
     {
       kind: "deploy",
-      artifact_id: artifact.value.id,
+      strategy_version_id: strategyVersion.value.id,
       binding_id: body(binding.value).binding_id
     },
     binding.value.node_id
@@ -122,7 +122,7 @@ async function deploy() {
 async function startDeployment(item: Resource) {
   if (!store.writable || busy.value || confirming.value || !bindingFor(item))
     return;
-  const generation = store.generation,
+  const generation = store.sessionGeneration,
     identity = JSON.stringify(item),
     bindingIdentity = JSON.stringify(bindingFor(item));
   const state = body(item);
@@ -144,7 +144,7 @@ async function startDeployment(item: Resource) {
   if (
     !confirmed ||
     disposed ||
-    generation !== store.generation ||
+    generation !== store.sessionGeneration ||
     !store.writable ||
     !current ||
     JSON.stringify(current) !== identity ||
@@ -168,8 +168,8 @@ async function startDeployment(item: Resource) {
   <template v-else>
     <section class="metric-grid">
       <article class="metric-card">
-        <p>可部署编译产物</p>
-        <strong>{{ artifacts.length }}<small>当前页</small></strong
+        <p>可部署策略版本</p>
+        <strong>{{ strategyVersions.length }}<small>当前页</small></strong
         ><span>固定策略版本与摘要</span>
       </article>
       <article class="metric-card">
@@ -193,19 +193,19 @@ async function startDeployment(item: Resource) {
         <div class="card-heading">
           <div>
             <h2>受控部署</h2>
-            <p>选择构建制品与已授权的目标绑定</p>
+            <p>选择策略版本与已授权的目标绑定</p>
           </div>
-          <span class="unit-tag">固定制品身份</span>
+          <span class="unit-tag">固定策略版本身份</span>
         </div>
         <div class="card-body">
           <div class="form-stack">
-            <label class="field-label">构建制品</label
+            <label class="field-label">策略版本</label
             ><el-select
-              v-model="selectedArtifact"
-              aria-label="部署制品"
-              placeholder="选择已构建制品"
+              v-model="selectedStrategyVersion"
+              aria-label="部署策略版本"
+              placeholder="选择已策略版本"
               ><el-option
-                v-for="item in artifacts"
+                v-for="item in strategyVersions"
                 :key="item.id"
                 :value="item.id"
                 :label="item.id" /></el-select
@@ -249,44 +249,46 @@ async function startDeployment(item: Resource) {
           <span>部署不会自动启动策略</span
           ><el-button
             type="primary"
-            :disabled="!store.writable || busy || !artifact || !binding"
+            :disabled="!store.writable || busy || !strategyVersion || !binding"
             @click="deploy"
-            >部署制品</el-button
+            >部署策略版本</el-button
           >
         </div>
       </section>
       <aside class="console-card context-card">
         <div class="card-heading">
-          <h2>制品来源</h2>
+          <h2>策略版本来源</h2>
           <ConsoleIcon name="box" />
         </div>
         <dl class="risk-lines">
           <div>
             <dt>构建节点</dt>
-            <dd>{{ raw(artifact?.node_id) }}</dd>
+            <dd>{{ raw(strategyVersion?.node_id) }}</dd>
           </div>
           <div>
             <dt>输入版本</dt>
-            <dd>{{ raw(body(artifact).version_id) }}</dd>
+            <dd>{{ raw(body(strategyVersion).parameter_version_id) }}</dd>
           </div>
         </dl>
         <div class="context-note">
           <strong>部署前核对身份</strong>
           <p>
             节点校验签名、ABI
-            与制品摘要，启动前确认账户风险边界。执行结果见同一管理操作回执。
+            与编译内容校验值，启动前确认账户风险边界。执行结果见同一管理操作回执。
           </p>
         </div>
         <details open class="secondary-details">
-          <summary>制品 SHA256</summary>
-          <p class="digest-text">{{ raw(body(artifact).artifact_digest) }}</p>
+          <summary>策略版本 SHA256</summary>
+          <p class="digest-text">
+            {{ raw(body(strategyVersion).compiled_strategy_digest) }}
+          </p>
         </details>
         <button
-          v-if="artifact"
+          v-if="strategyVersion"
           class="text-link card-link"
-          @click="detail = artifact"
+          @click="detail = strategyVersion"
         >
-          查看完整制品来源 →
+          查看完整策略版本来源 →
         </button>
       </aside>
     </div>
@@ -340,14 +342,14 @@ async function startDeployment(item: Resource) {
             </tr>
             <tr v-if="!deployments.length">
               <td colspan="4" class="compact-empty">
-                尚无部署版本；选择制品与绑定后提交部署。
+                尚无部署版本；选择策略版本与绑定后提交部署。
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </section>
-    <ResearchPager kind="deployment" />
+    <StrategyHistoryPager kind="deployment" />
     <section class="console-card section-gap">
       <div class="card-heading">
         <h2>策略实盘实例</h2>
@@ -376,7 +378,7 @@ async function startDeployment(item: Resource) {
                   >{{ entry.view.stale ? "最后确认 · " : ""
                   }}{{ entry.view.status }}</span
                 ><span class="cell-note"
-                  >代次 {{ raw(entry.view.state.generation) }}</span
+                  >代次 {{ raw(entry.view.state.run_generation) }}</span
                 >
               </td>
               <td>{{ decimal(entry.view.bound) }} {{ entry.view.currency }}</td>
@@ -399,7 +401,7 @@ async function startDeployment(item: Resource) {
         </table>
       </div>
     </section>
-    <ResearchPager kind="run" />
+    <StrategyHistoryPager kind="run" />
   </template>
   <ConsoleDetails :item="detail" @close="detail = null" />
 </template>

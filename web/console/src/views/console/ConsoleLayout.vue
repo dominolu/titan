@@ -27,7 +27,7 @@ watch(
 );
 const navigation = [
   { path: "/runs", label: "运行总览", icon: "monitor" },
-  { path: "/research", label: "策略研究", icon: "settings" },
+  { path: "/strategies", label: "策略管理", icon: "settings" },
   { path: "/accounts", label: "账户风险", icon: "shield" }
 ];
 const nodes = computed(() => store.resources.filter(r => r.kind === "node"));

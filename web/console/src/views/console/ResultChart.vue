@@ -27,7 +27,7 @@ let observer: ResizeObserver | null = null;
 let generation = 0;
 async function load() {
   const current = ++generation;
-  const identity = store.generation;
+  const identity = store.sessionGeneration;
   chart?.clear();
   error.value = "";
   if (!props.operationId || !chart) return;
@@ -35,7 +35,11 @@ async function load() {
     const table = await http.get<{ columns: string[]; points: string[][] }>(
       consoleApi.file(props.operationId, "history/chart.json")
     );
-    if (current !== generation || identity !== store.generation || !chart)
+    if (
+      current !== generation ||
+      identity !== store.sessionGeneration ||
+      !chart
+    )
       return;
     const index = (name: string) => table.columns.indexOf(name);
     chart.setOption(
@@ -72,7 +76,7 @@ async function load() {
     );
     error.value = "";
   } catch (failure) {
-    if (current === generation && identity === store.generation)
+    if (current === generation && identity === store.sessionGeneration)
       error.value = (failure as Error).message;
   }
 }

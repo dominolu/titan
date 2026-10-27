@@ -1,7 +1,7 @@
 use std::{ffi::c_void, path::PathBuf};
 
 use titan_strategy_runtime::{
-    NativeArtifactLoaderV13, StrategyRuntimeContextV13, TitanMarketView, TitanSubmitOrderRequest,
+    NativeStrategyLoaderV13, StrategyRuntimeContextV13, TitanMarketView, TitanSubmitOrderRequest,
     V13EventKind, V13TrustPolicy,
 };
 
@@ -22,9 +22,11 @@ unsafe extern "C" fn submit(
 fn main() {
     let manifest = PathBuf::from(std::env::args_os().nth(1).expect("manifest path"));
     let cache = PathBuf::from(std::env::args_os().nth(2).expect("cache path"));
-    let loader = NativeArtifactLoaderV13::new(cache, V13TrustPolicy::default());
-    let artifact = loader.load(&manifest).expect("load V13 artifact");
-    let mut instance = artifact.instantiate(42, 1).expect("instantiate artifact");
+    let loader = NativeStrategyLoaderV13::new(cache, V13TrustPolicy::default());
+    let compiled_strategy = loader.load(&manifest).expect("load V13 compiled_strategy");
+    let mut instance = compiled_strategy
+        .instantiate(42, 1)
+        .expect("instantiate compiled_strategy");
     instance.start().expect("start V13 instance");
     let markets = [TitanMarketView {
         asset_no: 0,
@@ -49,7 +51,7 @@ fn main() {
     assert_eq!(&words[..5], &[5, 77, 0, 0, 3]);
     instance.update_checkpoint_boundary(7, [9; 32]);
     let snapshot = instance.freeze_state(1).expect("freeze checkpoint");
-    let mut successor = artifact
+    let mut successor = compiled_strategy
         .instantiate(42, 2)
         .expect("instantiate successor generation");
     successor
@@ -60,5 +62,5 @@ fn main() {
         .expect("reconcile successor generation");
     assert_eq!(successor.state.as_bytes(), instance.state.as_bytes());
     assert!(!successor.command_gate_open());
-    println!("V13 native artifact smoke passed: {words:?}");
+    println!("V13 native compiled_strategy smoke passed: {words:?}");
 }

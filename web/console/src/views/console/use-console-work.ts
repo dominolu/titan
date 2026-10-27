@@ -17,13 +17,14 @@ export function useConsoleWork() {
     accepted?: (value: T) => void
   ) {
     if (busy.value || !store.writable) return;
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     busy.value = true;
     try {
       const result = await request();
-      if (!disposed && generation === store.generation) accepted?.(result);
+      if (!disposed && generation === store.sessionGeneration)
+        accepted?.(result);
     } catch (failure) {
-      if (!disposed && generation === store.generation)
+      if (!disposed && generation === store.sessionGeneration)
         ElMessage.error((failure as Error).message);
     } finally {
       if (!disposed) busy.value = false;

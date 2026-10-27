@@ -1,18 +1,20 @@
 use std::path::PathBuf;
 
 use titan_strategy_runtime::{
-    CallbackCommandStagingV13, NativeArtifactLoaderV13, StagedCommandV13,
+    CallbackCommandStagingV13, NativeStrategyLoaderV13, StagedCommandV13,
     StrategyRuntimeContextV13, TitanAccountView, TitanFillView, TitanMarketView, TitanPositionView,
     TitanTickView, V13EventKind, V13TrustPolicy,
 };
 
 fn main() {
-    let artifact_path = PathBuf::from(std::env::args_os().nth(1).expect("artifact path"));
+    let strategy_path = PathBuf::from(std::env::args_os().nth(1).expect("compiled_strategy path"));
     let cache = PathBuf::from(std::env::args_os().nth(2).expect("cache path"));
-    let artifact = NativeArtifactLoaderV13::new(cache, V13TrustPolicy::default())
-        .load(&artifact_path)
-        .expect("load pair-arb artifact");
-    let mut instance = artifact.instantiate(91, 1).expect("instantiate pair-arb");
+    let compiled_strategy = NativeStrategyLoaderV13::new(cache, V13TrustPolicy::default())
+        .load(&strategy_path)
+        .expect("load pair-arb compiled_strategy");
+    let mut instance = compiled_strategy
+        .instantiate(91, 1)
+        .expect("instantiate pair-arb");
     let markets = [
         TitanMarketView {
             asset_no: 0,
@@ -137,10 +139,10 @@ fn main() {
         command => panic!("expected hedge submit, got {command:?}"),
     }
     // Native recovery callback is command-free and accepts a host-established new session.
-    let mut original = artifact.instantiate(92, 1).unwrap();
+    let mut original = compiled_strategy.instantiate(92, 1).unwrap();
     original.invoke(V13EventKind::Start, &mut context).unwrap();
     let snapshot = original.freeze_state(1).unwrap();
-    let mut recovered = artifact.instantiate(92, 2).unwrap();
+    let mut recovered = compiled_strategy.instantiate(92, 2).unwrap();
     recovered.restore_state(&snapshot).unwrap();
     let new_accounts = accounts.map(|mut account| {
         account.account_epoch = 2;

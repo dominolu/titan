@@ -135,7 +135,7 @@ impl LiveNode {
             let spec = ObserverSpec {
                 claim: HostClaim {
                     run_id: id.clone(),
-                    generation: generation.clone(),
+                    worker_session_id: generation.clone(),
                     account: binding.account.clone(),
                     instrument: binding.instrument.clone(),
                     binding_id: binding_id.clone(),
@@ -275,21 +275,21 @@ impl LiveNode {
             } else {
                 record.state.as_str()
             };
-        let body = json!({"account":spec.claim.account,"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"worker_id":spec.claim.run_id,"generation":spec.claim.generation,"environment":"live","mode":"observe","process_state":process_state,"available":available,"observation_stale":!available,"reason":reason,"observation":snapshot,"allowed_actions":[]});
+        let body = json!({"account":spec.claim.account,"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"worker_id":spec.claim.run_id,"worker_session_id":spec.claim.worker_session_id,"environment":"live","mode":"observe","process_state":process_state,"available":available,"observation_stale":!available,"reason":reason,"observation":snapshot,"allowed_actions":[]});
         let mut resources = vec![
             node::resource(&self.config, "run", &spec.claim.run_id, false, body.clone()),
             node::resource(&self.config, "account", &spec.claim.binding_id, false, body),
         ];
         if !available {
-            resources.push(node::resource(&self.config,"alert",&format!("observer-{}",spec.claim.binding_id),false,json!({"account":spec.claim.account,"environment":"live","source":"node_worker_identity","code":"OBSERVATION_UNAVAILABLE","worker_id":spec.claim.run_id,"generation":spec.claim.generation,"condition_identity":format!("{}:unavailable",spec.claim.generation),"message":reason,"active":true})));
+            resources.push(node::resource(&self.config,"alert",&format!("observer-{}",spec.claim.binding_id),false,json!({"account":spec.claim.account,"environment":"live","source":"node_worker_identity","code":"OBSERVATION_UNAVAILABLE","worker_id":spec.claim.run_id,"worker_session_id":spec.claim.worker_session_id,"condition_identity":format!("{}:unavailable",spec.claim.worker_session_id),"message":reason,"active":true})));
         } else {
-            resources.push(node::resource(&self.config,"alert",&format!("observer-{}",spec.claim.binding_id),false,json!({"account":spec.claim.account,"environment":"live","source":"node_worker_identity","code":"OBSERVATION_UNAVAILABLE","condition_identity":format!("{}:unavailable",spec.claim.generation),"active":false})));
+            resources.push(node::resource(&self.config,"alert",&format!("observer-{}",spec.claim.binding_id),false,json!({"account":spec.claim.account,"environment":"live","source":"node_worker_identity","code":"OBSERVATION_UNAVAILABLE","condition_identity":format!("{}:unavailable",spec.claim.worker_session_id),"active":false})));
         }
         if let Some(snapshot) = snapshot.as_ref() {
             resources.extend(financial_alerts(
                 &self.config,
                 &spec.claim,
-                &spec.claim.generation,
+                &spec.claim.worker_session_id,
                 snapshot,
             ));
         }
@@ -332,7 +332,7 @@ impl LiveNode {
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             return Ok(
-                json!({"items":items,"recording":{"active":false,"history_complete":false},"source":{"worker_id":id,"generation":spec.claim.generation,"scope":"account","persisted":true}}),
+                json!({"items":items,"recording":{"active":false,"history_complete":false},"source":{"worker_id":id,"worker_session_id":spec.claim.worker_session_id,"scope":"account","persisted":true}}),
             );
         };
         let mut result = query_host(
@@ -346,7 +346,7 @@ impl LiveNode {
             start,
         )
         .await?;
-        result["source"] = json!({"worker_id":id,"generation":spec.claim.generation,"pid":pid.to_string(),"start_time":start.to_string(),"scope":"account","persisted":false});
+        result["source"] = json!({"worker_id":id,"worker_session_id":spec.claim.worker_session_id,"pid":pid.to_string(),"start_time":start.to_string(),"scope":"account","persisted":false});
         Ok(result)
     }
 }
@@ -356,7 +356,8 @@ pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> R
     ensure!(
         spec.claim.readonly
             && spec.claim.run_id == id
-            && spec.claim.socket == host_socket(&config.work_root, &id, &spec.claim.generation),
+            && spec.claim.socket
+                == host_socket(&config.work_root, &id, &spec.claim.worker_session_id),
         "invalid observation claim"
     );
     let reg = node::registry(&config)?;
@@ -429,7 +430,7 @@ pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> R
         let mut runtime = crate::TradingRuntime::start_observed(
             adapted,
             config.work_root.join("account-facts.sqlite3"),
-            format!("{}:{}", id, spec.claim.generation),
+            format!("{}:{}", id, spec.claim.worker_session_id),
         )?;
         let mut host = WorkerHost::start(
             spec.claim.clone(),
@@ -484,7 +485,7 @@ pub(super) fn financial_alerts(
                 continue;
             };
             let key = digest(code.as_bytes());
-            resources.push(node::resource(config,"alert",&format!("{}-{}",claim.binding_id,&key[..16]),false,json!({"account":claim.account,"environment":"live","source":"account_fact_journal","code":code,"condition_identity":format!("{generation}:{code}"),"active":diagnostic["active"].as_bool().unwrap_or(true),"message":diagnostic["detail"],"worker_id":claim.run_id,"generation":generation})));
+            resources.push(node::resource(config,"alert",&format!("{}-{}",claim.binding_id,&key[..16]),false,json!({"account":claim.account,"environment":"live","source":"account_fact_journal","code":code,"condition_identity":format!("{generation}:{code}"),"active":diagnostic["active"].as_bool().unwrap_or(true),"message":diagnostic["detail"],"worker_id":claim.run_id,"run_generation":generation})));
         }
     }
     resources

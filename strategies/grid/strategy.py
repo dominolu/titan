@@ -10,6 +10,7 @@ from numba import njit
 
 from titan_strategy.definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
 from titan_strategy.parameters import EnumParam, FloatParam, IntParam
+from titan_strategy.observation import BusinessObservationSpec, Equals, ObservationField
 from titan_strategy.state import array, float64, int64, new_state, record, uint8, uint32, uint64
 from titan_strategy.types import EventKind, EventQos
 
@@ -71,13 +72,35 @@ retired_dtype = record(order_id=uint64, applied_lots=int64, side=uint8)
 state_dtype = record(config=config_dtype, grid=grid_dtype, refs=array(ref_dtype, MAX_REFS),
                      retired=array(retired_dtype, MAX_RETIRED))
 
+# Only this projection depends on the private recovery layout. Public field names,
+# units and meanings remain stable when the recovery structure changes.
+GRID_OBSERVATION = BusinessObservationSpec(
+    schema_id="titan.grid", schema_version=1,
+    fields=(
+        ObservationField("phase", "enum", "state", "grid.status", label="网格业务阶段",
+                         enum_mapping=tuple(enumerate(("created", "warming", "initializing", "running",
+                             "resetting", "paused", "stopping", "stopped", "error", "reconciling"), 1))),
+        ObservationField("anchor_ticks", "decimal", "price_tick", "grid.anchor_ticks",
+                         label="网格锚点", valid_when=Equals("grid.initialized", 1)),
+        ObservationField("completed_pairs", "uint64", "count", "grid.completed_pairs", label="完成配对"),
+        ObservationField("paired_lots", "uint64", "quantity_lot", "grid.paired_lots", label="配对数量"),
+        ObservationField("paired_gross_tick_lots", "decimal", "tick_lot", "grid.grid_profit_tick_lots",
+                         label="配对毛收益", description="未计手续费与资金费，不是策略净收益"),
+        ObservationField("expected_inventory_lots", "int64", "quantity_lot", "grid.expected_position_lots",
+                         label="策略期望库存", description="实际持仓由平台账户服务确认"),
+        ObservationField("last_market_at_ns", "int64", "ns", "grid.market_ts_ns", label="最后处理行情时间"),
+        ObservationField("last_error", "uint64", "code", "grid.last_error", label="业务错误码"),
+
+    ),
+)
+
 
 def integer(name, default, minimum=0, maximum=SAFE_INTEGER):
     return IntParam(name, required=False, default=default, minimum=minimum, maximum=maximum)
 
 
 SPEC = StrategySpec(
-    strategy_id="grid", strategy_version="1.2.1", state_schema_version=3,
+    strategy_type="grid", source_version="1.2.1", recovery_state_schema_version=3,
     parameters=(
         integer("account_no", 0, maximum=2**32 - 1),
         integer("asset_no", 0, maximum=2**32 - 1),
@@ -1007,4 +1030,4 @@ def build(parameters):
         "on_position": on_position, "on_balance": on_balance,
         "on_account_state": on_account_state, "on_timer": on_timer, "on_stop": on_stop,
     }
-    return StrategyDefinition(SPEC, state, handlers, {"description": "Bounded linear-contract grid; platform owns net accounting"})
+    return StrategyDefinition(SPEC, state, handlers, {"description": "Bounded linear-contract grid; platform owns net accounting"}, business_observation=GRID_OBSERVATION)

@@ -6,47 +6,50 @@ fn input(key: &str) -> SubmitOperation {
         idempotency_key: key.into(),
         node_id: "build".into(),
         action: Action::Describe {
-            template_id: "grid".into(),
+            parameter_preset_id: "grid".into(),
             parameters: json!({"order_qty_lots":2}),
         },
     }
 }
 
 #[test]
-fn research_identity_groups_aliases_without_using_source_bytes_or_runtime_ids() {
+fn strategy_identity_groups_aliases_without_using_source_bytes_or_runtime_ids() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("strategy.py");
     std::fs::write(&source, "first").unwrap();
-    let mut template = super::config::Template {
-        research_id: None,
-        research_name: Some("网格策略".into()),
+    let mut template = super::config::StrategyParameterPreset {
+        strategy_id: None,
+        legacy_research_id: None,
+        strategy_name: Some("网格策略".into()),
         source: source.clone(),
         parameters: temp.path().join("parameters.json"),
         layout: None,
     };
-    let first = template.research_identity("build").unwrap();
+    let first = template.strategy_identity("build").unwrap();
     std::fs::write(&source, "second version").unwrap();
-    assert_eq!(first, template.clone().research_identity("build").unwrap());
-    assert_ne!(first.0, template.research_identity("other").unwrap().0);
-    template.research_id = Some("grid".into());
-    assert_eq!(
-        template.research_identity("other").unwrap().0,
-        "research-grid"
-    );
-    template.research_id = Some("../invalid".into());
-    assert!(template.research_identity("build").is_err());
-    template.research_id = Some("a".repeat(119));
-    let (id, _) = template.research_identity("build").unwrap();
+    assert_eq!(first, template.clone().strategy_identity("build").unwrap());
+    assert_ne!(first.0, template.strategy_identity("other").unwrap().0);
+    template.strategy_id = Some("grid".into());
+    assert_eq!(template.strategy_identity("other").unwrap().0, "grid");
+    template.strategy_id = Some("../invalid".into());
+    assert!(template.strategy_identity("build").is_err());
+    template.strategy_id = Some("a".repeat(128));
+    assert_eq!(template.strategy_identity("build").unwrap().0.len(), 128);
+    template.strategy_id = Some("a".repeat(129));
+    assert!(template.strategy_identity("build").is_err());
+    template.strategy_id = None;
+    template.legacy_research_id = Some("a".repeat(119));
+    let (id, _) = template.strategy_identity("build").unwrap();
     assert_eq!(id.len(), 128);
     super::checked_id(&id).unwrap();
     for length in [120, 128] {
-        template.research_id = Some("a".repeat(length));
-        assert!(template.research_identity("build").is_err());
+        template.legacy_research_id = Some("a".repeat(length));
+        assert!(template.strategy_identity("build").is_err());
     }
 }
 
 #[test]
-fn research_scope_filters_before_paging_preserves_old_digests_and_separates_private_live_records() {
+fn strategy_scope_filters_before_paging_preserves_old_digests_and_separates_private_live_records() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(&temp.path().join("db")).unwrap();
     let save = |id: &str, kind: &str, body| {
@@ -57,7 +60,7 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
                     kind: kind.into(),
                     node_id: "build".into(),
                     revision: String::new(),
-                    frozen: kind != "template",
+                    frozen: kind != "parameter_preset",
                     digest: String::new(),
                     body,
                 },
@@ -67,21 +70,29 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
     };
     let template = save(
         "build-template-neutral",
-        "template",
-        json!({"research_id":"research-grid","research_name":"网格","source_digest":"source-1"}),
+        "parameter_preset",
+        json!({"strategy_id":"strategy-grid","strategy_name":"网格","source_digest":"source-1"}),
     );
     let old = save(
         "old-version",
-        "version",
-        json!({"template_id":"neutral","source_digest":"source-1"}),
+        "parameter_version",
+        json!({"parameter_preset_id":"neutral","source_digest":"source-1"}),
     );
-    save("artifact", "artifact", json!({"version_id":old.id}));
-    save("backtest", "backtest", json!({"artifact_id":"artifact"}));
+    save(
+        "strategy_version",
+        "strategy_version",
+        json!({"parameter_version_id":old.id}),
+    );
+    save(
+        "backtest",
+        "backtest",
+        json!({"strategy_version_id":"strategy_version"}),
+    );
     save("report", "report", json!({"backtest_id":"backtest"}));
     save(
         "deployment",
         "deployment",
-        json!({"artifact_id":"artifact","environment":"live","account":"gate"}),
+        json!({"strategy_version_id":"strategy_version","environment":"live","account":"gate"}),
     );
     save(
         "run",
@@ -91,16 +102,23 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
     for n in 0..25 {
         save(
             &format!("foreign-{n}"),
-            "artifact",
-            json!({"research_id":"research-other"}),
+            "strategy_version",
+            json!({"strategy_id":"strategy-other"}),
         );
     }
     let actor = identity(vec!["gate".into()]);
     let listed = store
-        .list_resources_scoped(&actor, Some("artifact"), 0, 20, Some("research-grid"), None)
+        .list_resources_scoped(
+            &actor,
+            Some("strategy_version"),
+            0,
+            20,
+            Some("strategy-grid"),
+            None,
+        )
         .unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, "artifact");
+    assert_eq!(listed[0].id, "strategy_version");
     assert!(
         store
             .list_resources_scoped(
@@ -108,15 +126,15 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
                 None,
                 0,
                 20,
-                Some("research-other"),
-                Some("artifact")
+                Some("strategy-other"),
+                Some("strategy_version")
             )
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .list_resources_scoped(&actor, Some("report"), 0, 20, Some("research-grid"), None)
+            .list_resources_scoped(&actor, Some("report"), 0, 20, Some("strategy-grid"), None)
             .unwrap()
             .len(),
         1
@@ -129,7 +147,7 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
                 Some("run"),
                 0,
                 20,
-                Some("research-grid"),
+                Some("strategy-grid"),
                 None
             )
             .unwrap()
@@ -137,7 +155,7 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
     );
     assert_eq!(
         store
-            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("research-grid"), None)
+            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("strategy-grid"), None)
             .unwrap()
             .len(),
         1
@@ -147,13 +165,27 @@ fn research_scope_filters_before_paging_preserves_old_digests_and_separates_priv
     store.save_resource(changed, None).unwrap();
     assert!(
         store
-            .list_resources_scoped(&actor, Some("version"), 0, 20, Some("research-grid"), None)
+            .list_resources_scoped(
+                &actor,
+                Some("parameter_version"),
+                0,
+                20,
+                Some("strategy-grid"),
+                None
+            )
             .unwrap()
             .is_empty()
     );
     assert_eq!(
         store
-            .list_resources_scoped(&actor, Some("version"), 0, 20, Some("unassigned"), None)
+            .list_resources_scoped(
+                &actor,
+                Some("parameter_version"),
+                0,
+                20,
+                Some("unassigned"),
+                None
+            )
             .unwrap()[0]
             .id,
         old.id
@@ -166,21 +198,21 @@ fn research_catalog_does_not_expose_private_accounts_or_account_only_observers()
     let store = Store::open(&temp.path().join("db")).unwrap();
     for (id, kind, body) in [
         (
-            "template",
-            "template",
-            json!({"research_id":"research-grid","research_name":"网格"}),
+            "parameter_preset",
+            "parameter_preset",
+            json!({"strategy_id":"strategy-grid","strategy_name":"网格"}),
         ),
         (
             "private",
             "run",
-            json!({"research_id":"research-private","environment":"live","account":"private","mode":"trade"}),
+            json!({"strategy_id":"strategy-private","environment":"live","account":"private","mode":"trade"}),
         ),
         (
             "observer",
             "run",
-            json!({"research_id":"research-observer","environment":"live","account":"gate","mode":"observe"}),
+            json!({"strategy_id":"strategy-observer","environment":"live","account":"gate","mode":"observe"}),
         ),
-        ("dataset", "dataset", json!({"research_id":"research-grid"})),
+        ("dataset", "dataset", json!({"strategy_id":"strategy-grid"})),
     ] {
         store
             .save_resource(
@@ -198,18 +230,18 @@ fn research_catalog_does_not_expose_private_accounts_or_account_only_observers()
             .unwrap();
     }
     let actor = identity(vec!["gate".into()]);
-    let catalog = store.list_research(&actor, 0, 20).unwrap();
+    let catalog = store.list_strategies(&actor, 0, 20).unwrap();
     assert_eq!(catalog.len(), 1);
-    assert_eq!(catalog[0].id, "research-grid");
+    assert_eq!(catalog[0].id, "strategy-grid");
     assert!(
         store
-            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("research-observer"), None)
+            .list_resources_scoped(&actor, Some("run"), 0, 20, Some("strategy-observer"), None)
             .unwrap()
             .is_empty()
     );
     assert!(
         store
-            .list_resources_scoped(&actor, Some("dataset"), 0, 20, Some("research-grid"), None)
+            .list_resources_scoped(&actor, Some("dataset"), 0, 20, Some("strategy-grid"), None)
             .unwrap()
             .is_empty()
     );
@@ -527,7 +559,7 @@ fn frozen_resources_and_optimistic_revisions_are_enforced() {
     let store = Store::open(&tmp.path().join("db")).unwrap();
     let resource = Resource {
         id: nonce(),
-        kind: "version".into(),
+        kind: "parameter_version".into(),
         node_id: "build".into(),
         revision: String::new(),
         frozen: false,
@@ -554,7 +586,7 @@ fn materialized_request_does_not_drift_with_catalog_changes() {
     let store = Store::open(&tmp.path().join("db")).unwrap();
     let resource = Resource {
         id: nonce(),
-        kind: "template".into(),
+        kind: "parameter_preset".into(),
         node_id: "build".into(),
         revision: String::new(),
         frozen: false,
@@ -860,7 +892,7 @@ fn failed_unactivated_recovery_keeps_predecessor_retryable_without_releasing_the
     let recovery = SubmitOperation {
         idempotency_key: "recover-one".into(),
         node_id: "live".into(),
-        action: Action::Recover {
+        action: Action::Restore {
             run_id: predecessor.clone(),
             generation: "1".into(),
             checkpoint_id: "hash".into(),
@@ -882,7 +914,7 @@ fn failed_unactivated_recovery_keeps_predecessor_retryable_without_releasing_the
         revision: String::new(),
         digest: String::new(),
         frozen: false,
-        body: json!({"generation":"unconfirmed","predecessor_run_id":predecessor,"admission_operation_id":failed.id,"observation":{"source":"runtime_owner","run_id":failed.id,"start_admission_absent":true}}),
+        body: json!({"run_generation":"unconfirmed","predecessor_run_id":predecessor,"admission_operation_id":failed.id,"observation":{"source":"runtime_owner","run_id":failed.id,"start_admission_absent":true}}),
     };
     store.save_resource(candidate.clone(), None).unwrap();
     let db = rusqlite::Connection::open(&path).unwrap();
@@ -920,7 +952,7 @@ fn failed_unactivated_recovery_keeps_predecessor_retryable_without_releasing_the
         .unwrap();
     let mut confirmed = candidate.clone();
     confirmed.id = format!("live-run-{}", accepted.id);
-    confirmed.body = json!({"generation":"3","predecessor_run_id":predecessor,"admission_operation_id":accepted.id});
+    confirmed.body = json!({"run_generation":"3","predecessor_run_id":predecessor,"admission_operation_id":accepted.id});
     store.save_resource(confirmed.clone(), None).unwrap();
     store.save_resource(candidate, None).unwrap();
     let owner: (String, String) = db
@@ -953,16 +985,16 @@ fn recovery_transfers_occupancy_without_an_old_snapshot_releasing_the_new_owner(
         .unwrap();
     let old_run = format!("live-run-{}", old.id);
     let recovery = SubmitOperation {
-        idempotency_key: "recover".into(),
+        idempotency_key: "restore".into(),
         node_id: "live".into(),
-        action: Action::Recover {
+        action: Action::Restore {
             run_id: old_run.clone(),
             generation: "1".into(),
             checkpoint_id: "digest".into(),
         },
     };
     store
-        .accept("operator", &recovery, vec![], "recover", Some("binding"))
+        .accept("operator", &recovery, vec![], "restore", Some("binding"))
         .unwrap();
     store
         .save_resource(
@@ -1066,7 +1098,7 @@ fn imported_artifact_download_uses_existing_resource_authorization() {
         .save_resource(
             Resource {
                 id: "imported".into(),
-                kind: "artifact".into(),
+                kind: "strategy_version".into(),
                 node_id: "build".into(),
                 revision: String::new(),
                 frozen: true,
@@ -1095,5 +1127,33 @@ fn imported_artifact_download_uses_existing_resource_authorization() {
             .unwrap()
             .status,
         403
+    );
+}
+
+#[test]
+fn historical_request_hash_accepts_only_the_same_canonical_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let request = input("legacy-key");
+    let hash = super::legacy::request_digest(&request).unwrap();
+    let first = store
+        .accept("operator", &request, vec![], &hash, None)
+        .unwrap();
+    let canonical = super::digest(&titan_strategy_runtime::compiler_json_v13(
+        &serde_json::to_value(&request).unwrap(),
+    ));
+    let retry = store
+        .accept("operator", &request, vec![], &canonical, None)
+        .unwrap();
+    assert_eq!(first.id, retry.id);
+    let mut changed = request;
+    changed.action = Action::Describe {
+        parameter_preset_id: "other".into(),
+        parameters: json!({"order_qty_lots":2}),
+    };
+    assert!(
+        store
+            .accept("operator", &changed, vec![], "different", None)
+            .is_err()
     );
 }

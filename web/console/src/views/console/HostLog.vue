@@ -16,8 +16,8 @@ let sequence = 0,
 watch(
   [
     () => props.item?.id,
-    () => body(props.item).generation,
-    () => store.generation
+    () => body(props.item).run_generation ?? body(props.item).worker_session_id,
+    () => store.sessionGeneration
   ],
   () => {
     sequence++;
@@ -35,15 +35,16 @@ onBeforeUnmount(() => {
 async function load(next = false) {
   if (!props.item || busy.value) return;
   const item = props.item,
-    generation = store.generation,
-    runGeneration = body(item).generation,
+    generation = store.sessionGeneration,
+    runGeneration = body(item).run_generation ?? body(item).worker_session_id,
     request = ++sequence;
   const active = () =>
     !disposed &&
     request === sequence &&
-    generation === store.generation &&
+    generation === store.sessionGeneration &&
     item.id === props.item?.id &&
-    runGeneration === body(props.item).generation;
+    runGeneration ===
+      (body(props.item).run_generation ?? body(props.item).worker_session_id);
   busy.value = true;
   try {
     const result = await consoleApi.log(item, next ? offset.value : 0);

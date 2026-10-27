@@ -14,7 +14,7 @@ state_dtype = record(
     fast_mean=float64, slow_mean=float64,
 )
 SPEC = StrategySpec(
-    strategy_id="dual_ma", strategy_version="2.0.0", state_schema_version=1,
+    strategy_type="dual_ma", source_version="2.0.0", recovery_state_schema_version=1,
     parameters=(IntParam("fast", required=False, default=2, minimum=1),
                 IntParam("slow", required=False, default=4, minimum=2, maximum=MAX_WINDOW)),
     subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),),

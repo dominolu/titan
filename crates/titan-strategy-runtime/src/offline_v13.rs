@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    CallbackCommandStagingV13, StagedCommandV13, StrategyArtifactV13, StrategyCapabilitiesV13,
+    CallbackCommandStagingV13, LoadedNativeStrategyV13, StagedCommandV13, StrategyCapabilitiesV13,
     StrategyInstanceV13, StrategyRuntimeContextV13, TitanAccountStateEventView, TitanAccountView,
     TitanActiveOrderView, TitanBalanceEventView, TitanBalanceView, TitanCancelEventView,
     TitanDepthView, TitanFillView, TitanMarketView, TitanOrderEventView, TitanPositionEventView,
@@ -12,7 +12,7 @@ use crate::{
 ///
 /// It deliberately owns only strategy-visible projections and command staging. Matching, latency,
 /// fees and exchange semantics remain the responsibility of the backtest engine. This keeps the
-/// exact same signed `.titan` artifact and callback contract in offline and live execution.
+/// exact same signed `.titan` compiled_strategy and callback contract in offline and live execution.
 pub struct OfflineV13Adapter {
     instance: StrategyInstanceV13,
     staging: CallbackCommandStagingV13,
@@ -27,7 +27,7 @@ pub struct OfflineV13Adapter {
 }
 
 pub struct OfflineV13Config {
-    pub artifact: Arc<StrategyArtifactV13>,
+    pub compiled_strategy: Arc<LoadedNativeStrategyV13>,
     pub strategy_instance_id: u64,
     pub generation: u64,
     pub command_capacity: usize,
@@ -41,7 +41,7 @@ pub struct OfflineV13Config {
 impl OfflineV13Adapter {
     pub fn new(config: OfflineV13Config) -> Result<Self, V13LoadError> {
         let OfflineV13Config {
-            artifact,
+            compiled_strategy,
             strategy_instance_id,
             generation,
             command_capacity,
@@ -53,13 +53,13 @@ impl OfflineV13Adapter {
         } = config;
 
         Ok(Self {
-            stop_barrier: artifact
+            stop_barrier: compiled_strategy
                 .manifest
                 .capabilities
                 .contains(StrategyCapabilitiesV13::STOP_BARRIER),
             stopping: false,
             stopped: false,
-            instance: artifact.instantiate(strategy_instance_id, generation)?,
+            instance: compiled_strategy.instantiate(strategy_instance_id, generation)?,
             staging: CallbackCommandStagingV13::new(
                 command_capacity,
                 strategy_instance_id,

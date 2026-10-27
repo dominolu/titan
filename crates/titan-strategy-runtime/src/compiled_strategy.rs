@@ -7,51 +7,51 @@ use std::{
 use crate::*;
 
 #[derive(Clone)]
-pub struct StrategyArtifact {
-    pub id: StrategyArtifactId,
-    pub manifest: StrategyPackageManifest,
-    pub native: Arc<StrategyArtifactV13>,
+pub struct LoadedStrategy {
+    pub id: CompiledStrategyDigest,
+    pub manifest: CompiledStrategyMetadata,
+    pub native: Arc<LoadedNativeStrategyV13>,
 }
 
 #[derive(Clone)]
 pub struct StrategyLoaderContext {
-    pub allowed_artifact_roots: Arc<[Arc<str>]>,
+    pub allowed_strategy_roots: Arc<[Arc<str>]>,
     pub require_signature: bool,
     pub ed25519_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 #[derive(Clone)]
 pub struct StrategyLoadRequest {
-    pub package: StrategyPackageRef,
+    pub strategy_file: StrategyFileRef,
 }
 
-pub trait StrategyPackageLoaderFactory: Send + Sync {
+pub trait StrategyLoaderFactory: Send + Sync {
     fn loader_type(&self) -> &str;
     fn create(
         &self,
         context: StrategyLoaderContext,
-    ) -> Result<Arc<dyn StrategyPackageLoader>, StrategyError>;
+    ) -> Result<Arc<dyn StrategyLoader>, StrategyError>;
 }
 
-pub trait StrategyPackageLoader: Send + Sync {
+pub trait StrategyLoader: Send + Sync {
     fn inspect(
         &self,
-        package: &StrategyPackageRef,
-    ) -> Result<StrategyPackageManifest, StrategyError>;
+        strategy_file: &StrategyFileRef,
+    ) -> Result<CompiledStrategyMetadata, StrategyError>;
     fn load(
         &self,
         request: StrategyLoadRequest,
         deadline: Instant,
-    ) -> Result<StrategyArtifact, StrategyError>;
+    ) -> Result<LoadedStrategy, StrategyError>;
 }
 
 #[derive(Default)]
-pub struct StrategyPackageLoaderRegistry {
-    factories: RwLock<HashMap<Arc<str>, Arc<dyn StrategyPackageLoaderFactory>>>,
+pub struct StrategyLoaderRegistry {
+    factories: RwLock<HashMap<Arc<str>, Arc<dyn StrategyLoaderFactory>>>,
 }
 
-impl StrategyPackageLoaderRegistry {
-    pub fn register(&self, factory: Arc<dyn StrategyPackageLoaderFactory>) -> LocalResult<()> {
+impl StrategyLoaderRegistry {
+    pub fn register(&self, factory: Arc<dyn StrategyLoaderFactory>) -> LocalResult<()> {
         let key: Arc<str> = Arc::from(factory.loader_type());
         if key.is_empty() {
             return Err(StrategyError::new(
@@ -78,7 +78,7 @@ impl StrategyPackageLoaderRegistry {
         &self,
         loader_type: &str,
         context: StrategyLoaderContext,
-    ) -> LocalResult<Arc<dyn StrategyPackageLoader>> {
+    ) -> LocalResult<Arc<dyn StrategyLoader>> {
         self.factories
             .read()
             .unwrap_or_else(|p| p.into_inner())
@@ -96,67 +96,67 @@ impl StrategyPackageLoaderRegistry {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ArtifactCacheKey {
-    pub artifact_digest: [u8; 32],
+pub struct StrategyCacheKey {
+    pub compiled_strategy_digest: [u8; 32],
 }
 
-struct CachedArtifact {
-    artifact: StrategyArtifact,
+struct CachedStrategy {
+    compiled_strategy: LoadedStrategy,
     last_used: u64,
 }
 
-struct ArtifactCacheState {
-    values: BTreeMap<ArtifactCacheKey, CachedArtifact>,
+struct StrategyCacheState {
+    values: BTreeMap<StrategyCacheKey, CachedStrategy>,
     clock: u64,
 }
 
-pub struct StrategyArtifactCache {
+pub struct LoadedStrategyCache {
     capacity: usize,
-    state: Mutex<ArtifactCacheState>,
+    state: Mutex<StrategyCacheState>,
 }
 
-impl StrategyArtifactCache {
+impl LoadedStrategyCache {
     pub fn new(capacity: usize) -> LocalResult<Self> {
         if capacity == 0 {
             return Err(StrategyError::new(
                 StrategyErrorKind::InvalidDefinition,
-                "artifact_cache",
+                "strategy_cache",
                 "zero_capacity",
-                "artifact cache capacity must be positive",
+                "compiled_strategy cache capacity must be positive",
             ));
         }
         Ok(Self {
             capacity,
-            state: Mutex::new(ArtifactCacheState {
+            state: Mutex::new(StrategyCacheState {
                 values: BTreeMap::new(),
                 clock: 0,
             }),
         })
     }
 
-    pub fn get(&self, key: &ArtifactCacheKey) -> Option<StrategyArtifact> {
+    pub fn get(&self, key: &StrategyCacheKey) -> Option<LoadedStrategy> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         state.clock = state.clock.wrapping_add(1);
         let clock = state.clock;
         state.values.get_mut(key).map(|cached| {
             cached.last_used = clock;
-            cached.artifact.clone()
+            cached.compiled_strategy.clone()
         })
     }
 
-    pub fn insert(&self, key: ArtifactCacheKey, artifact: StrategyArtifact) {
+    pub fn insert(&self, key: StrategyCacheKey, compiled_strategy: LoadedStrategy) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if !state.values.contains_key(&key) {
             while state.values.len() >= self.capacity {
                 let victim = state
                     .values
                     .iter()
-                    .filter(|(_, cached)| Arc::strong_count(&cached.artifact.native) == 1)
+                    .filter(|(_, cached)| Arc::strong_count(&cached.compiled_strategy.native) == 1)
                     .min_by_key(|(_, cached)| cached.last_used)
                     .map(|(key, _)| key.clone());
                 let Some(victim) = victim else {
-                    // Every cached artifact is still leased by a live runtime. Keep the
-                    // cache bounded and let this artifact live only in its instance.
+                    // Every cached compiled_strategy is still leased by a live runtime. Keep the
+                    // cache bounded and let this compiled_strategy live only in its instance.
                     return;
                 };
                 state.values.remove(&victim);
@@ -166,8 +166,8 @@ impl StrategyArtifactCache {
         let clock = state.clock;
         state.values.insert(
             key,
-            CachedArtifact {
-                artifact,
+            CachedStrategy {
+                compiled_strategy,
                 last_used: clock,
             },
         );
@@ -188,7 +188,7 @@ impl StrategyArtifactCache {
 
 pub struct NativeV13LoaderFactory;
 
-impl StrategyPackageLoaderFactory for NativeV13LoaderFactory {
+impl StrategyLoaderFactory for NativeV13LoaderFactory {
     fn loader_type(&self) -> &str {
         "native-v13"
     }
@@ -196,7 +196,7 @@ impl StrategyPackageLoaderFactory for NativeV13LoaderFactory {
     fn create(
         &self,
         context: StrategyLoaderContext,
-    ) -> Result<Arc<dyn StrategyPackageLoader>, StrategyError> {
+    ) -> Result<Arc<dyn StrategyLoader>, StrategyError> {
         Ok(Arc::new(NativeV13Loader { context }))
     }
 }
@@ -206,27 +206,27 @@ struct NativeV13Loader {
 }
 
 impl NativeV13Loader {
-    fn artifact_path(&self, package: &StrategyPackageRef) -> LocalResult<std::path::PathBuf> {
-        let raw = package
-            .uri
-            .strip_prefix("file://")
-            .ok_or_else(|| artifact_error("v13_uri", "V13 artifact URI must use file://"))?;
-        let path = std::fs::canonicalize(raw)
-            .map_err(|_| artifact_error("v13_path", "V13 artifact path cannot be resolved"))?;
-        let allowed = self.context.allowed_artifact_roots.iter().any(|root| {
+    fn strategy_path(&self, strategy_file: &StrategyFileRef) -> LocalResult<std::path::PathBuf> {
+        let raw = strategy_file.uri.strip_prefix("file://").ok_or_else(|| {
+            strategy_load_error("v13_uri", "V13 compiled_strategy URI must use file://")
+        })?;
+        let path = std::fs::canonicalize(raw).map_err(|_| {
+            strategy_load_error("v13_path", "V13 compiled_strategy path cannot be resolved")
+        })?;
+        let allowed = self.context.allowed_strategy_roots.iter().any(|root| {
             std::fs::canonicalize(root.as_ref()).is_ok_and(|root| path.starts_with(root))
         });
         if !allowed {
-            return Err(artifact_error(
-                "artifact_root_denied",
-                "V13 artifact is outside allowed roots",
+            return Err(strategy_load_error(
+                "strategy_root_denied",
+                "V13 compiled_strategy is outside allowed roots",
             ));
         }
         Ok(path)
     }
 
-    fn loader(&self) -> NativeArtifactLoaderV13 {
-        NativeArtifactLoaderV13::new(
+    fn loader(&self) -> NativeStrategyLoaderV13 {
+        NativeStrategyLoaderV13::new(
             std::env::temp_dir().join("titan-native-v13-cache"),
             V13TrustPolicy {
                 require_signature: self.context.require_signature,
@@ -236,9 +236,10 @@ impl NativeV13Loader {
     }
 }
 
-fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManifest> {
-    let package_version = semver::Version::parse(&value.strategy_version)
-        .map_err(|_| artifact_error("strategy_version", "V13 strategy version is not semver"))?;
+fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStrategyMetadata> {
+    let source_version = semver::Version::parse(&value.source_version).map_err(|_| {
+        strategy_load_error("strategy_version", "V13 strategy version is not semver")
+    })?;
     let mut capabilities = 0_u64;
     if value
         .capabilities
@@ -305,35 +306,34 @@ fn manifest_v13(value: &ArtifactManifestV13) -> LocalResult<StrategyPackageManif
             subscriptions.push(subscription);
         }
     }
-    Ok(StrategyPackageManifest {
-        strategy_type: Arc::from("native-v13"),
-        package_version,
+    Ok(CompiledStrategyMetadata {
+        runtime_type: Arc::from("native-v13"),
+        source_version,
         runtime_abi: titan_core_types::ApiVersion::new(13, 0),
         parameter_schema: value.parameter_schema.clone(),
         parameter_schema_version: 1,
-        state_schema_version: value.state.version,
+        recovery_state_schema_version: value.state.version,
         state_byte_len: value.state.byte_len,
         callbacks: StrategyCallbackMask(value.callback_mask as u32),
         capabilities: StrategyCapabilities(capabilities),
         subscriptions: subscriptions.into(),
-        artifact_digest: value.artifact_digest,
+        compiled_strategy_digest: value.compiled_strategy_digest,
     })
 }
 
-impl StrategyPackageLoader for NativeV13Loader {
+impl StrategyLoader for NativeV13Loader {
     fn inspect(
         &self,
-        package: &StrategyPackageRef,
-    ) -> Result<StrategyPackageManifest, StrategyError> {
-        let path = self.artifact_path(package)?;
-        let value = self
-            .loader()
-            .inspect(&path)
-            .map_err(|_| artifact_error("v13_inspect", "V13 artifact inspection failed"))?;
-        if value.artifact_digest != package.expected_digest {
-            return Err(artifact_error(
-                "artifact_digest_mismatch",
-                "V13 artifact digest does not match deployment pin",
+        strategy_file: &StrategyFileRef,
+    ) -> Result<CompiledStrategyMetadata, StrategyError> {
+        let path = self.strategy_path(strategy_file)?;
+        let value = self.loader().inspect(&path).map_err(|_| {
+            strategy_load_error("v13_inspect", "V13 compiled_strategy inspection failed")
+        })?;
+        if value.compiled_strategy_digest != strategy_file.expected_digest {
+            return Err(strategy_load_error(
+                "compiled_strategy_digest_mismatch",
+                "V13 compiled_strategy digest does not match deployment pin",
             ));
         }
         manifest_v13(&value)
@@ -343,36 +343,37 @@ impl StrategyPackageLoader for NativeV13Loader {
         &self,
         request: StrategyLoadRequest,
         deadline: Instant,
-    ) -> Result<StrategyArtifact, StrategyError> {
+    ) -> Result<LoadedStrategy, StrategyError> {
         if Instant::now() >= deadline {
-            return Err(artifact_error(
+            return Err(strategy_load_error(
                 "v13_load_deadline",
                 "V13 load deadline expired",
             ));
         }
-        let path = self.artifact_path(&request.package)?;
-        let artifact = self
-            .loader()
-            .load(&path)
-            .map_err(|_| artifact_error("v13_load", "V13 native artifact load failed"))?;
-        if artifact.manifest.artifact_digest != request.package.expected_digest {
-            return Err(artifact_error(
-                "artifact_digest_mismatch",
-                "V13 artifact digest does not match deployment pin",
+        let path = self.strategy_path(&request.strategy_file)?;
+        let compiled_strategy = self.loader().load(&path).map_err(|_| {
+            strategy_load_error("v13_load", "V13 native compiled_strategy load failed")
+        })?;
+        if compiled_strategy.manifest.compiled_strategy_digest
+            != request.strategy_file.expected_digest
+        {
+            return Err(strategy_load_error(
+                "compiled_strategy_digest_mismatch",
+                "V13 compiled_strategy digest does not match deployment pin",
             ));
         }
-        let manifest = manifest_v13(&artifact.manifest)?;
-        Ok(StrategyArtifact {
-            id: StrategyArtifactId {
-                digest: manifest.artifact_digest,
+        let manifest = manifest_v13(&compiled_strategy.manifest)?;
+        Ok(LoadedStrategy {
+            id: CompiledStrategyDigest {
+                digest: manifest.compiled_strategy_digest,
             },
             manifest,
-            native: Arc::new(artifact),
+            native: Arc::new(compiled_strategy),
         })
     }
 }
 
-fn artifact_error(code: &'static str, message: &'static str) -> StrategyError {
+fn strategy_load_error(code: &'static str, message: &'static str) -> StrategyError {
     StrategyError::new(
         StrategyErrorKind::LoadFailed,
         "native_v13_loader",
