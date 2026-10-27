@@ -37,13 +37,13 @@ export const useUserStore = defineStore("pure-user", {
       this.loginDay = value;
     },
     async loginByUsername(data: { username: string; password: string }) {
-      const session = await http.post<Session>("/api/v1/session", { data });
+      const session = await http.post<Session>("/api/v2/session", { data });
       setSession(session);
       return session;
     },
     async logOut() {
       try {
-        await http.request("delete", "/api/v1/session");
+        await http.request("delete", "/api/v2/session");
       } finally {
         this.username = "";
         this.roles = [];

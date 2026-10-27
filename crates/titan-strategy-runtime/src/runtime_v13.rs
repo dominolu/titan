@@ -22,17 +22,17 @@ const PUBLIC_CAPACITY: usize = 1_024;
 pub struct NativeV13RuntimeFactory;
 
 impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
-    fn strategy_type(&self) -> &str {
+    fn runtime_type(&self) -> &str {
         "native-v13"
     }
 
     fn create(
         &self,
         definition: &StrategyDefinition,
-        artifact: StrategyArtifact,
+        compiled_strategy: LoadedStrategy,
         context: StrategyRuntimeBuildContext,
     ) -> Result<Arc<dyn StrategyRuntime>, StrategyError> {
-        let artifact = artifact.native;
+        let compiled_strategy = compiled_strategy.native;
         let routing_keys = context
             .markets
             .iter()
@@ -45,7 +45,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             )
             .collect();
         let config = StrategyInstanceConfigV13 {
-            strategy_instance_id: u64::from(definition.strategy_id.0),
+            strategy_instance_id: u64::from(definition.runtime_strategy_no.0),
             markets: context
                 .markets
                 .iter()
@@ -61,7 +61,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
             max_handler_duration: definition.runtime.max_handler_duration,
         };
         let generation = context.strategy.generation;
-        let mut instance = artifact
+        let mut instance = compiled_strategy
             .instantiate_with_config(&config, generation)
             .map_err(|_| v13_runtime_error("v13_instantiate_failed"))?;
         instance.bind_resolved_routes(&context.markets, &context.accounts);
@@ -92,12 +92,24 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
         Ok(Arc::new(NativeV13Runtime {
             core: Arc::new(NativeV13Core {
                 execution_limits: definition.runtime.execution_limits.clone(),
-                pause_safe: artifact
+                pause_safe: compiled_strategy
                     .manifest
                     .capabilities
                     .contains(StrategyCapabilitiesV13::PAUSE_SAFE),
-                state_description: artifact.manifest.state_description.clone(),
-                state_identity: artifact.manifest.state,
+                business_observation: compiled_strategy
+                    .manifest
+                    .business_observation
+                    .as_ref()
+                    .map(|plan| {
+                        BusinessObservationPublisher::new(
+                            plan.clone(),
+                            context.strategy,
+                            compiled_strategy.manifest.state,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|_| v13_runtime_error("business_observation_identity_mismatch"))?,
+                state_identity: compiled_strategy.manifest.state,
                 context,
                 inner: Mutex::new(NativeV13Inner {
                     lifecycle: StrategyLifecycle::Defined,
@@ -139,11 +151,11 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     last_error: None,
                     stop_called: false,
                     stop_ready: false,
-                    recovery_order_results: artifact
+                    recovery_order_results: compiled_strategy
                         .manifest
                         .capabilities
                         .contains(StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS),
-                    stop_barrier: artifact
+                    stop_barrier: compiled_strategy
                         .manifest
                         .capabilities
                         .contains(StrategyCapabilitiesV13::STOP_BARRIER),
@@ -155,6 +167,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                 stop_request: Mutex::new(None),
                 next_operation: AtomicU64::new(1),
                 async_failure: AtomicBool::new(false),
+                stopped: AtomicBool::new(false),
                 operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
                     value.state == StrategyOperationState::Pending
                 })),
@@ -170,14 +183,17 @@ pub struct NativeV13Runtime {
 struct NativeV13Core {
     pause_safe: bool,
     execution_limits: Option<ExecutionLimits>,
-    state_description: Option<Arc<serde_json::Value>>,
-    state_identity: StateSchemaIdentityV13,
+    business_observation: Option<BusinessObservationPublisher>,
+    state_identity: RecoveryStateIdentityV13,
     context: StrategyRuntimeBuildContext,
     inner: Mutex<NativeV13Inner>,
     lane: OnceLock<PrimaryAsyncLaneHandle>,
     stop_request: Mutex<Option<StrategyOperationId>>,
     next_operation: AtomicU64,
     async_failure: AtomicBool,
+    // REST completions can arrive after the lane has shut down. A successfully
+    // stopped run no longer needs them to close any execution boundary.
+    stopped: AtomicBool,
     operations:
         Mutex<titan_core_types::OperationHistory<StrategyOperationId, StrategyOperationSnapshot>>,
 }
@@ -310,7 +326,7 @@ impl NativeV13Runtime {
                 },
             );
         let core = self.core.clone();
-        lane.submit_safe_point(move || {
+        let admission = lane.submit_safe_point(move || {
             let result = action(&core);
             let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
             let snapshot = operations.get_mut(&id).expect("operation exists");
@@ -326,8 +342,18 @@ impl NativeV13Runtime {
                     Ok(())
                 }
             }
-        })
-        .map_err(|_| v13_runtime_error("control_queue_full"))?;
+        });
+        if admission.is_err() {
+            let mut operations = self
+                .core
+                .operations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let snapshot = operations.get_mut(&id).expect("operation exists");
+            snapshot.state = StrategyOperationState::Failed;
+            snapshot.detail = Arc::from("control_queue_full");
+            return Err(v13_runtime_error("control_queue_full"));
+        }
         Ok(id)
     }
 
@@ -451,6 +477,7 @@ impl EventHandler for NativeV13Runtime {
             fail_runtime(&self.core, &mut inner, error.reason_code);
             return Err(v13_core_error());
         }
+        publish_business_observation(&self.core, &inner, false);
         Ok(())
     }
 }
@@ -1070,7 +1097,7 @@ fn client_order_prefix(strategy: StrategyHandle) -> [u8; 8] {
     digest.update(b"titan.strategy.direct-order.v13");
     // Ownership survives process restarts and strategy replacement. Uniqueness between
     // generations is carried by the generation-prefixed V13 order id.
-    digest.update(strategy.strategy_id.0.to_le_bytes());
+    digest.update(strategy.runtime_strategy_no.0.to_le_bytes());
     digest.finalize()[..8].try_into().unwrap()
 }
 pub(crate) fn client_order_id(
@@ -1628,15 +1655,15 @@ fn checkpoint_state(
     let result = core
         .context
         .state_snapshot_sink
-        .submit(StrategyPrivateStateSnapshot {
+        .submit(StrategyRecoveryPoint {
             checkpoint_id: snapshot.checkpoint_id,
             strategy: core.context.strategy,
             strategy_instance_id: snapshot.strategy_instance_id,
-            strategy_id: snapshot.strategy_id,
-            strategy_version: snapshot.strategy_version,
+            strategy_type: snapshot.strategy_type,
+            source_version: snapshot.source_version,
             generation: snapshot.generation,
             event_committed_sequence: snapshot.event_committed_sequence,
-            artifact_digest: snapshot.artifact_digest,
+            compiled_strategy_digest: snapshot.compiled_strategy_digest,
             binding_digest: snapshot.binding_digest,
             abi_version: snapshot.abi_version,
             state_schema_version: snapshot.state_schema_version,
@@ -1650,9 +1677,7 @@ fn checkpoint_state(
             recovery: Some(recovery),
         });
     if result.is_err() {
-        core.context.activation.close();
-        inner.lifecycle = StrategyLifecycle::Failed;
-        inner.last_error = Some(Arc::from("checkpoint_submit_failed"));
+        fail_runtime(core, inner, Arc::from("checkpoint_submit_failed"));
     }
     if result.is_ok() {
         inner.checkpoint_dirty = false;
@@ -1691,16 +1716,45 @@ fn prune_terminal_history(inner: &mut NativeV13Inner) {
     }
 }
 
+fn publish_business_observation(core: &NativeV13Core, inner: &NativeV13Inner, force: bool) {
+    if !matches!(
+        inner.lifecycle,
+        StrategyLifecycle::Running
+            | StrategyLifecycle::Paused
+            | StrategyLifecycle::Stopping
+            | StrategyLifecycle::Stopped
+    ) {
+        return;
+    }
+    if let Some(publisher) = &core.business_observation {
+        if force {
+            publisher.request();
+        }
+        publisher.publish(
+            inner.instance.state.as_bytes(),
+            inner.callback_count,
+            || core.context.clock.now_ns(),
+        );
+    }
+}
+
 fn fail_runtime(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<str>) {
+    if let Some(publisher) = &core.business_observation {
+        publisher.invalidate();
+    }
     tracing::warn!(
-        strategy_id = core.context.strategy.strategy_id.0,
+        runtime_strategy_no = core.context.strategy.runtime_strategy_no.0,
         generation = core.context.strategy.generation,
         reason_code = reason.as_ref(),
         "strategy runtime failed"
     );
-    core.context.activation.close();
+    core.context.activation.invalidate();
     inner.lifecycle = StrategyLifecycle::Failed;
     inner.last_error.get_or_insert_with(|| reason.clone());
+    fail_pending_stop(core, inner, reason);
+}
+
+fn fail_pending_stop(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<str>) {
     if let Some(id) = inner.stop_operation.take()
         && let Some(operation) = core
             .operations
@@ -1743,6 +1797,8 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
     core.context.activation.close();
     inner.instance.stop();
     inner.lifecycle = StrategyLifecycle::Stopped;
+    core.stopped.store(true, Ordering::Release);
+    publish_business_observation(core, inner, true);
     if let Some(operation_id) = inner.stop_operation.take()
         && let Some(operation) = core
             .operations
@@ -1856,39 +1912,31 @@ impl StrategyRuntime for NativeV13Runtime {
             && inner.awaiting_fills.is_empty()
             && (self.core.execution_limits.is_none() || inner.inventory.confirmed(&inner.positions))
     }
-    fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
-        let Some(schema) = &self.core.state_description else {
-            return Ok(
-                serde_json::json!({"available":false,"reason":"artifact has no typed state description"}),
-            );
-        };
-        let Some(snapshot) = self
-            .core
-            .context
-            .state_snapshot_sink
-            .latest(self.core.context.strategy)?
-        else {
-            return Ok(serde_json::json!({"available":false,"reason":"no committed checkpoint"}));
-        };
+    fn recovery_status(&self) -> LocalResult<serde_json::Value> {
         let identity = &self.core.state_identity;
-        if snapshot.strategy != self.core.context.strategy
-            || snapshot.artifact_digest != self.core.context.artifact_id.digest
-            || snapshot.state_schema_version != identity.version
-            || snapshot.state_schema_hash != identity.hash
-            || snapshot.state_alignment != identity.alignment
-            || snapshot.state_bytes.len() != identity.byte_len
-            || !snapshot.native_snapshot().checksum_valid()
-        {
-            return Err(v13_runtime_error(
-                "business_checkpoint_identity_or_checksum_mismatch",
+        Ok(
+            serde_json::json!({"available":true,"state_schema_version":identity.version,
+            "state_schema_hash":identity.hash.iter().map(|v|format!("{v:02x}")).collect::<String>()}),
+        )
+    }
+    fn business_observation(&self) -> LocalResult<BusinessObservationSnapshot> {
+        let Some(publisher) = &self.core.business_observation else {
+            return Ok(BusinessObservationSnapshot::unavailable(
+                "business observation not declared",
             ));
-        }
-        if !(snapshot.orders_list.is_empty() && snapshot.orders_list_checksum == [0; 32])
-            && orders_list_checksum(&snapshot.orders_list) != snapshot.orders_list_checksum
+        };
+        if self.core.async_failure.load(Ordering::Acquire)
+            || self
+                .core
+                .lane
+                .get()
+                .is_some_and(|lane| lane.health().state == SubscriberState::Failed)
         {
-            return Err(v13_runtime_error("orders_list_checksum_mismatch"));
+            publisher.invalidate();
         }
-        crate::observation::business_view(&snapshot, schema)
+        publisher
+            .snapshot()
+            .map_err(|_| v13_runtime_error("business_observation_projection_failed"))
     }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()> {
         self.core
@@ -2059,7 +2107,7 @@ impl StrategyRuntime for NativeV13Runtime {
         inner.recovery_orders = seed.recovery_orders.to_vec();
         Ok(())
     }
-    fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+    fn restore_state(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
         let result = (|| {
             if inner.lifecycle != StrategyLifecycle::Defined {
@@ -2100,7 +2148,7 @@ impl StrategyRuntime for NativeV13Runtime {
                     &inner.active_orders,
                     &inner.recovery_orders,
                 );
-                // Callback opt-in preserves strict behavior for existing artifacts.
+                // Callback opt-in preserves strict behavior for existing compiled_strategies.
                 if inner.instance.has_callback(V13EventKind::Recover) {
                     reconcile_recovery(baseline, &current, &mut restored_orders)
                         .map_err(v13_runtime_error)?;
@@ -2189,6 +2237,8 @@ impl StrategyRuntime for NativeV13Runtime {
                 .and_then(|_| finish_stop_if_drained(&core, &mut inner));
             if let Err(error) = &result {
                 fail_runtime(&core, &mut inner, error.reason_code.clone());
+            } else {
+                publish_business_observation(&core, &inner, false);
             }
             result.map_err(|_| EngineError::SafePointPanicked)
         })
@@ -2225,6 +2275,9 @@ impl StrategyRuntime for NativeV13Runtime {
         .map_err(|_| v13_runtime_error("control_queue_full"))
     }
     fn execution_result(&self, result: ObservedExecutionResult) -> LocalResult<()> {
+        if self.core.stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let lane = self
             .core
             .lane
@@ -2244,11 +2297,15 @@ impl StrategyRuntime for NativeV13Runtime {
                 );
                 return Err(EngineError::SafePointPanicked);
             }
+            publish_business_observation(&core, &inner, false);
             Ok(())
         });
         if queued.is_err() {
-            self.core.context.activation.close();
+            self.core.context.activation.invalidate();
             self.core.async_failure.store(true, Ordering::Release);
+            if let Some(publisher) = &self.core.business_observation {
+                publisher.invalidate();
+            }
             // Local rejection observers may run inside commit_commands while it owns inner.
             if let Ok(mut inner) = self.core.inner.try_lock() {
                 fail_runtime(
@@ -2303,12 +2360,16 @@ impl StrategyRuntime for NativeV13Runtime {
                 return Err(v13_runtime_error("active_order_state_invalid"));
             }
             NativeV13Runtime::invoke(&mut inner, core, V13EventKind::Start, 1, |_| {})?;
-            inner
-                .instance
-                .start()
-                .map_err(|_| v13_runtime_error("v13_start_failed"))?;
-            core.context.activation.open();
+            if inner.instance.start().is_err() {
+                fail_runtime(core, &mut inner, Arc::from("v13_start_failed"));
+                return Err(v13_runtime_error("v13_start_failed"));
+            }
+            if !core.context.activation.open() {
+                fail_runtime(core, &mut inner, Arc::from("activation_invalidated"));
+                return Err(v13_runtime_error("activation_invalidated"));
+            }
             inner.lifecycle = StrategyLifecycle::Running;
+            publish_business_observation(core, &inner, true);
             Ok(())
         })
     }
@@ -2349,19 +2410,31 @@ impl StrategyRuntime for NativeV13Runtime {
             {
                 return Err(v13_runtime_error("account_not_ready"));
             }
-            core.context.activation.open();
+            if !core.context.activation.open() {
+                fail_runtime(core, &mut inner, Arc::from("activation_invalidated"));
+                return Err(v13_runtime_error("activation_invalidated"));
+            }
             inner.lifecycle = StrategyLifecycle::Running;
             Ok(())
         })
     }
     fn invalidate(&self, reason: Arc<str>) -> LocalResult<StrategyOperationId> {
-        self.core.context.activation.close();
+        self.core.context.activation.invalidate();
+        // Invalidation must not wait behind the callback lock or depend on control
+        // queue admission, just as closing the activation gate does not.
+        if let Some(publisher) = &self.core.business_observation {
+            publisher.invalidate();
+        }
         self.schedule(move |core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+            // Closing again is idempotent and preserves the terminal gate state
+            // established before control queue admission.
+            core.context.activation.close();
             if inner.lifecycle != StrategyLifecycle::Failed {
                 inner.lifecycle = StrategyLifecycle::Invalidated;
             }
-            inner.last_error.get_or_insert(reason);
+            inner.last_error.get_or_insert_with(|| reason.clone());
+            fail_pending_stop(core, &mut inner, reason);
             Ok(())
         })
     }
@@ -2415,6 +2488,7 @@ impl StrategyRuntime for NativeV13Runtime {
                     core.context.activation.close();
                     inner.instance.stop();
                     inner.lifecycle = StrategyLifecycle::Stopped;
+                    core.stopped.store(true, Ordering::Release);
                     return Ok(());
                 }
                 if !matches!(
@@ -2427,7 +2501,10 @@ impl StrategyRuntime for NativeV13Runtime {
                 inner.stop_ready = false;
                 inner.stop_operation = Some(id);
                 inner.stop_deadline = Some(deadline);
-                core.context.activation.open();
+                if !core.context.activation.open() {
+                    fail_runtime(&core, &mut inner, Arc::from("activation_invalidated"));
+                    return Err(v13_runtime_error("activation_invalidated"));
+                }
                 if !inner.stop_called {
                     NativeV13Runtime::invoke(&mut inner, &core, V13EventKind::Stop, 1, |_| {})?;
                     inner.stop_called = true;
@@ -2439,12 +2516,16 @@ impl StrategyRuntime for NativeV13Runtime {
                 core.context.activation.close();
                 inner.lifecycle = StrategyLifecycle::Failed;
                 inner.last_error = Some(error.reason_code.clone());
+                if let Some(publisher) = &core.business_observation {
+                    publisher.invalidate();
+                }
                 let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
                 let operation = operations.get_mut(&id).expect("operation exists");
                 operation.state = StrategyOperationState::Failed;
                 operation.detail = error.reason_code;
                 return Err(EngineError::SafePointPanicked);
             }
+            publish_business_observation(&core, &inner, true);
             if inner.lifecycle == StrategyLifecycle::Stopped {
                 let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
                 let operation = operations.get_mut(&id).expect("operation exists");
@@ -2473,7 +2554,11 @@ impl StrategyRuntime for NativeV13Runtime {
     ) -> LocalResult<StrategyOperationId> {
         self.schedule(move |core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            checkpoint_state(core, &mut inner, request.checkpoint_id)
+            let result = checkpoint_state(core, &mut inner, request.checkpoint_id);
+            if let Err(error) = &result {
+                fail_runtime(core, &mut inner, error.reason_code.clone());
+            }
+            result
         })
     }
     fn state(&self) -> StrategyRuntimeStateSnapshot {
@@ -2799,11 +2884,11 @@ mod tests {
     #[test]
     fn client_order_ownership_is_stable_across_generations() {
         let first = StrategyHandle {
-            strategy_id: StrategyId(42),
+            runtime_strategy_no: RuntimeStrategyNo(42),
             generation: 1,
         };
         let second = StrategyHandle {
-            strategy_id: StrategyId(42),
+            runtime_strategy_no: RuntimeStrategyNo(42),
             generation: 2,
         };
         let encoded = client_order_id(first, 7);

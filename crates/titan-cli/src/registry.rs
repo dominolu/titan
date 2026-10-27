@@ -537,7 +537,7 @@ mod tests {
     fn owner_token_guards_state_and_dead_workers_reconcile_to_stale() {
         let path = path("owner");
         let registry = Registry::open(&path).unwrap();
-        let artifact = path.with_extension("json");
+        let compiled_strategy = path.with_extension("json");
         registry
             .create(crate::registry::NewRun {
                 id: "run",
@@ -549,8 +549,8 @@ mod tests {
                 spec_path: Path::new("spec.json"),
                 config_path: Path::new("config.toml"),
                 config_sha256: "digest",
-                result_path: &artifact,
-                log_path: &artifact,
+                result_path: &compiled_strategy,
+                log_path: &compiled_strategy,
             })
             .unwrap();
         assert!(!registry.running("run", "wrong", u32::MAX).unwrap());
@@ -576,7 +576,7 @@ mod tests {
     fn terminal_state_cannot_be_reclaimed_by_a_reused_pid() {
         let path = path("pid-reuse");
         let registry = Registry::open(&path).unwrap();
-        let artifact = path.with_extension("json");
+        let compiled_strategy = path.with_extension("json");
         registry
             .create(crate::registry::NewRun {
                 id: "run",
@@ -588,8 +588,8 @@ mod tests {
                 spec_path: Path::new("spec.json"),
                 config_path: Path::new("config.toml"),
                 config_sha256: "digest",
-                result_path: &artifact,
-                log_path: &artifact,
+                result_path: &compiled_strategy,
+                log_path: &compiled_strategy,
             })
             .unwrap();
         assert!(
@@ -619,7 +619,7 @@ mod tests {
     fn fresh_starting_run_survives_reconciliation() {
         let path = path("starting-grace");
         let registry = Registry::open(&path).unwrap();
-        let artifact = path.with_extension("json");
+        let compiled_strategy = path.with_extension("json");
         registry
             .create(crate::registry::NewRun {
                 id: "run",
@@ -631,8 +631,8 @@ mod tests {
                 spec_path: Path::new("spec.json"),
                 config_path: Path::new("config.toml"),
                 config_sha256: "digest",
-                result_path: &artifact,
-                log_path: &artifact,
+                result_path: &compiled_strategy,
+                log_path: &compiled_strategy,
             })
             .unwrap();
         registry.reconcile().unwrap();
@@ -652,7 +652,7 @@ mod tests {
     fn report_owner_token_serializes_generation_and_guards_completion() {
         let path = path("report-owner");
         let registry = Registry::open(&path).unwrap();
-        let artifact = path.with_extension("json");
+        let compiled_strategy = path.with_extension("json");
         registry
             .create(crate::registry::NewRun {
                 id: "run",
@@ -664,8 +664,8 @@ mod tests {
                 spec_path: Path::new("spec.json"),
                 config_path: Path::new("config.toml"),
                 config_sha256: "digest",
-                result_path: &artifact,
-                log_path: &artifact,
+                result_path: &compiled_strategy,
+                log_path: &compiled_strategy,
             })
             .unwrap();
         registry
@@ -732,7 +732,7 @@ mod tests {
     fn unspawned_starting_run_can_be_cancelled() {
         let path = path("cancel");
         let registry = Registry::open(&path).unwrap();
-        let artifact = path.with_extension("json");
+        let compiled_strategy = path.with_extension("json");
         registry
             .create(crate::registry::NewRun {
                 id: "run",
@@ -744,8 +744,8 @@ mod tests {
                 spec_path: Path::new("spec.json"),
                 config_path: Path::new("config.toml"),
                 config_sha256: "digest",
-                result_path: &artifact,
-                log_path: &artifact,
+                result_path: &compiled_strategy,
+                log_path: &compiled_strategy,
             })
             .unwrap();
         assert_eq!(

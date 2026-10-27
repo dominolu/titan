@@ -1,0 +1,15 @@
+{
+  "baseline": "638bae69324114e8a2447f648c8b7ced832196bb",
+  "repository_kind": "isolated source snapshot without .git",
+  "server": "192.168.3.88",
+  "verified_at_utc": "2026-10-27T03:55:36.803758+00:00",
+  "cargo_config": "server-owned rsproxy mirror; excluded from synchronized source",
+  "deleted_files_absent": true,
+  "deleted_file_count": 8,
+  "file_counts": {
+    "source-sha256.txt": 118,
+    "all-source-sha256.txt": 1294
+  },
+  "source_manifest_sha256": "4319e8208a49e30accc551773634433103f2e0a76d8bf9872dfd0263539a7e3c",
+  "binary_sha256": "65f8a1b1a9b326c757704ddabf7fba8780b0331a5a3eaaeab6da6ceac9512acc"
+}

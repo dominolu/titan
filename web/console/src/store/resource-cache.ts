@@ -1,9 +1,14 @@
 import type { Resource } from "@/api/console";
 
-const catalogKinds = new Set(["template", "dataset", "binding", "node"]);
+const catalogKinds = new Set([
+  "parameter_preset",
+  "dataset",
+  "binding",
+  "node"
+]);
 const resourceKinds = new Set([
-  "version",
-  "artifact",
+  "parameter_version",
+  "strategy_version",
   "deployment",
   "backtest",
   "report",

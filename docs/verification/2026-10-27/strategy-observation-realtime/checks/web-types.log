@@ -1,0 +1,4 @@
+
+> titan-console@6.2.0 typecheck /home/dominolu/dev/titan-observation-realtime-20261027-638bae69/web/console
+> tsc --noEmit && vue-tsc --noEmit --skipLibCheck
+

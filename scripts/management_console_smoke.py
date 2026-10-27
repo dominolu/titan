@@ -11,7 +11,7 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--matrix", action="store_true")
     parser.add_argument("--browser", action="store_true")
-    parser.add_argument("--reuse", action="store_true", help="Reuse frozen artifacts in the same private fixture and execute the matrix again")
+    parser.add_argument("--reuse", action="store_true", help="Reuse frozen strategy versions in the same private fixture and execute the matrix again")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=args.reuse)
     args.output.chmod(0o700)
@@ -39,8 +39,8 @@ def main():
     cases = [(regime, direction) for regime in days for direction in ("neutral", "long_bias", "short_bias")]
     for regime, direction in cases:
         template = f"{regime}-{direction}"
-        config += [f"[node.templates.{template}]", 'research_id="grid"', 'research_name="网格策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / (template + '.parameters.json'))}"]
-    config += ["[node.templates.foreign-grid]", 'research_id="other-strategy"', 'research_name="隔离测试策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / 'sideways-neutral.parameters.json')}"]
+        config += [f"[node.parameter_presets.{template}]", 'strategy_id="grid"', 'strategy_name="网格策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / (template + '.parameters.json'))}"]
+    config += ["[node.parameter_presets.foreign-grid]", 'strategy_id="other-strategy"', 'strategy_name="隔离测试策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / 'sideways-neutral.parameters.json')}"]
     for regime, day in days.items():
         config += [f"[node.datasets.{regime}]", f"regime = {quote(regime)}", f"trades = {quote(args.data / ('BTCUSDT-aggTrades-' + day + '.csv'))}", f"quotes = {quote(args.data / ('BTCUSDT-bookTicker-' + day + '.csv'))}", f"funding = {quote(args.data / ('BTCUSDT-fundingRate-' + day[:7] + '.csv'))}"]
     config_path = root / "console.toml"; config_path.write_text("\n".join(config) + "\n"); config_path.chmod(0o600)
@@ -75,19 +75,19 @@ def main():
         print(json.dumps(shown),flush=True)
     try:
         node_process=start("node"); manager_process=start("manager")
-        session = wait(lambda: call("/api/v1/session", {"username": "operator", "password": password}))
+        session = wait(lambda: call("/api/v2/session", {"username": "operator", "password": password}))
         csrf = session["csrf_token"]
-        reader_session = call("/api/v1/session", {"username": "reader", "password": password}, who=reader)
-        wait(lambda: len(call("/api/v1/snapshot")["resources"]) >= 12, 600)
+        reader_session = call("/api/v2/session", {"username": "reader", "password": password}, who=reader)
+        wait(lambda: len(call("/api/v2/snapshot")["resources"]) >= 12, 600)
         try:
-            call("/api/v1/operations", {"idempotency_key": "denied", "node_id": "build", "action": {"kind": "prepare", "dataset_id": "sideways"}}, who=reader, csrf=reader_session["csrf_token"])
+            call("/api/v2/operations", {"idempotency_key": "denied", "node_id": "build", "action": {"kind": "prepare", "dataset_id": "sideways"}}, who=reader, csrf=reader_session["csrf_token"])
             raise AssertionError("reader could submit a write")
         except error.HTTPError as failure: assert failure.code == 403
         record("reader-api-write-denied")
         def submit(action, key=None):
-            return call("/api/v1/operations", {"idempotency_key": key or secrets.token_hex(16), "node_id": "build", "action": action}, csrf=csrf)
+            return call("/api/v2/operations", {"idempotency_key": key or secrets.token_hex(16), "node_id": "build", "action": action}, csrf=csrf)
         def completed(op, success=True):
-            actual = wait(lambda: (item if item["state"] in ("succeeded", "failed", "cancelled") else None) if (item := call("/api/v1/operations/" + op["id"])) else None, 900)
+            actual = wait(lambda: (item if item["state"] in ("succeeded", "failed", "cancelled") else None) if (item := call("/api/v2/operations/" + op["id"])) else None, 900)
             assert actual["state"] == ("succeeded" if success else "failed"), actual
             return actual
         def find_resource(operation, kind):
@@ -107,14 +107,14 @@ def main():
             assert expected<=found.keys(),found.keys()
             for key in sorted(expected):
                 prior=found[key]
-                rerun=completed(submit({"kind":"backtest","artifact_id":prior["body"]["artifact_id"],"dataset_id":key[0],"stress":key[2]}))
+                rerun=completed(submit({"kind":"backtest","strategy_version_id":prior["body"]["strategy_version_id"],"dataset_id":key[0],"stress":key[2]}))
                 item=find_resource(rerun,"backtest")
                 assert item["body"]["metrics"]["final_position_btc"]=="0.0"
                 record("matrix-replay-"+str(key),operation_id=rerun["id"],metrics=item["body"]["metrics"])
         for regime, direction in selected:
             name = f"{regime}-{direction}"
             parameters = json.loads((args.parameters / (name + ".parameters.json")).read_text())
-            action = {"kind": "describe", "template_id": name, "parameters": parameters}
+            action = {"kind": "describe", "parameter_preset_id": name, "parameters": parameters}
             op = submit(action, "validate-" + name)
             assert submit(action, "validate-" + name)["id"] == op["id"]
             try:
@@ -122,40 +122,40 @@ def main():
                 raise AssertionError("changed idempotency input was accepted")
             except error.HTTPError as failure: assert failure.code == 409
             validation = completed(op)
-            version = call("/api/v1/parameter-versions", {"node_id": "build", "template_id": name, "parameters": parameters, "expected_revision": None, "freeze_operation_id": op["id"]}, csrf=csrf)
+            version = call("/api/v2/parameter-versions", {"node_id": "build", "parameter_preset_id": name, "parameters": parameters, "expected_revision": None, "freeze_operation_id": op["id"]}, csrf=csrf)
             assert version["frozen"]
             try:
-                call("/api/v1/parameter-versions/" + version["id"], {"node_id": "build", "template_id": name, "parameters": parameters, "expected_revision": version["revision"], "freeze_operation_id": None}, method="PATCH", csrf=csrf)
+                call("/api/v2/parameter-versions/" + version["id"], {"node_id": "build", "parameter_preset_id": name, "parameters": parameters, "expected_revision": version["revision"], "freeze_operation_id": None}, method="PATCH", csrf=csrf)
                 raise AssertionError("frozen version was mutable")
             except error.HTTPError as failure: assert failure.code == 409
-            building=submit({"kind": "build", "version_id": version["id"]})
+            building=submit({"kind": "compile", "parameter_version_id": version["id"]})
             if regime=="sideways" and direction=="neutral":
-                wait(lambda: call("/api/v1/operations/"+building["id"])["state"] in ("running","succeeded"))
+                wait(lambda: call("/api/v2/operations/"+building["id"])["state"] in ("running","succeeded"))
                 for process in (manager_process,node_process):
                     process.send_signal(signal.SIGINT);process.wait(timeout=10)
                 node_process=start("node");manager_process=start("manager")
-                wait(lambda: call("/api/v1/operations/"+building["id"]))
+                wait(lambda: call("/api/v2/operations/"+building["id"]))
                 record("manager-and-node-restart-preserve-task")
             built = completed(building)
             with sqlite3.connect(root/"node/runs.sqlite3") as db:
                 assert db.execute("SELECT COUNT(*) FROM runs WHERE id=?",(building["id"],)).fetchone()[0]==1
-            artifact = find_resource(built, "artifact")
-            record("compile-" + name, artifact_id=artifact["id"], metadata_schema=validation["result"]["metadata"]["state_schema_version"])
+            strategy_version = find_resource(built, "strategy_version")
+            record("compile-" + name, strategy_version_id=strategy_version["id"], metadata_schema=validation["result"]["metadata"]["recovery_state_schema_version"])
             for stress in ((False, True) if args.matrix else (False,)):
-                backtest = completed(submit({"kind": "backtest", "artifact_id": artifact["id"], "dataset_id": regime, "stress": stress}))
+                backtest = completed(submit({"kind": "backtest", "strategy_version_id": strategy_version["id"], "dataset_id": regime, "stress": stress}))
                 result = find_resource(backtest, "backtest")
                 record("backtest-" + name + ("-stress" if stress else "-base"), operation_id=backtest["id"], metrics=result["body"]["metrics"])
                 if not results[-1]["metrics"]["success"]: raise AssertionError("history engine did not complete safely")
                 if regime == "sideways" and direction == "neutral" and not stress:
                     report = completed(submit({"kind": "report", "backtest_id": result["id"]}))
-                    with operator.open(origin + "/api/v1/files/" + report["id"] + "/report.html") as response:
+                    with operator.open(origin + "/api/v2/files/" + report["id"] + "/report.html") as response:
                         assert b"Verified ResultBundle" in response.read()
                     record("verified-report-render-and-download")
-        invalid = submit({"kind": "describe", "template_id": "sideways-neutral", "parameters": {"unexpected": 1}})
+        invalid = submit({"kind": "describe", "parameter_preset_id": "sideways-neutral", "parameters": {"unexpected": 1}})
         completed(invalid, success=False); record("engine-validation-rejection")
         pending=submit({"kind":"prepare","dataset_id":"sideways"})
-        call("/api/v1/operations/"+pending["id"]+"/cancel",{},csrf=csrf)
-        cancelled=wait(lambda:(item if item["state"]=="cancelled" else None) if (item:=call("/api/v1/operations/"+pending["id"])) else None)
+        call("/api/v2/operations/"+pending["id"]+"/cancel",{},csrf=csrf)
+        cancelled=wait(lambda:(item if item["state"]=="cancelled" else None) if (item:=call("/api/v2/operations/"+pending["id"])) else None)
         assert cancelled["cancel_requested"];record("cancellation-confirmed-by-execution-path")
         if args.browser:
             subprocess.run(["node",str(args.repo/"scripts/management_browser_smoke.mjs"),origin,str(root/"browser")],env=dict(env,TITAN_BROWSER_PASSWORD=password),check=True,timeout=600)

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -50,18 +50,22 @@ impl OperationState {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Describe {
-        template_id: String,
+        #[serde(alias = "template_id")]
+        parameter_preset_id: String,
         #[ts(type = "unknown")]
         parameters: Value,
     },
-    Build {
-        version_id: String,
+    #[serde(alias = "build")]
+    Compile {
+        #[serde(alias = "version_id")]
+        parameter_version_id: String,
     },
     Prepare {
         dataset_id: String,
     },
     Backtest {
-        artifact_id: String,
+        #[serde(alias = "artifact_id")]
+        strategy_version_id: String,
         dataset_id: String,
         stress: bool,
     },
@@ -69,7 +73,8 @@ pub enum Action {
         backtest_id: String,
     },
     Deploy {
-        artifact_id: String,
+        #[serde(alias = "artifact_id")]
+        strategy_version_id: String,
         binding_id: String,
     },
     Start {
@@ -77,19 +82,25 @@ pub enum Action {
     },
     Pause {
         run_id: String,
+        #[serde(rename = "expected_run_generation", alias = "generation")]
         generation: String,
     },
     Resume {
         run_id: String,
+        #[serde(rename = "expected_run_generation", alias = "generation")]
         generation: String,
     },
     Stop {
         run_id: String,
+        #[serde(rename = "expected_run_generation", alias = "generation")]
         generation: String,
     },
-    Recover {
+    #[serde(alias = "recover")]
+    Restore {
         run_id: String,
+        #[serde(rename = "expected_run_generation", alias = "generation")]
         generation: String,
+        #[serde(rename = "recovery_point_sha256", alias = "checkpoint_id")]
         checkpoint_id: String,
     },
 }
@@ -98,7 +109,7 @@ impl Action {
     pub fn environment(&self) -> &'static str {
         match self {
             Self::Describe { .. }
-            | Self::Build { .. }
+            | Self::Compile { .. }
             | Self::Prepare { .. }
             | Self::Backtest { .. }
             | Self::Report { .. } => "backtest",
@@ -110,7 +121,7 @@ impl Action {
             Self::Pause { run_id, generation }
             | Self::Resume { run_id, generation }
             | Self::Stop { run_id, generation }
-            | Self::Recover {
+            | Self::Restore {
                 run_id, generation, ..
             } => Some((run_id, generation)),
             _ => None,
@@ -124,6 +135,17 @@ pub struct SubmitOperation {
     pub idempotency_key: String,
     pub node_id: String,
     pub action: Action,
+}
+
+/// Public v2 request. The optional strategy hint is checked against the fixed
+/// action reference before using the existing authorization/admission path.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StrategyOperationRequest {
+    pub idempotency_key: String,
+    pub node_id: String,
+    #[ts(type = "Action & { strategy_id?: string }")]
+    pub action: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -144,7 +166,7 @@ pub struct Operation {
     pub revision: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct Resource {
     pub id: String,
     pub kind: String,
@@ -156,11 +178,36 @@ pub struct Resource {
     pub body: Value,
 }
 
+impl<'de> Deserialize<'de> for Resource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct StoredResource {
+            id: String,
+            kind: String,
+            node_id: String,
+            revision: String,
+            frozen: bool,
+            digest: String,
+            body: Value,
+        }
+        let value = StoredResource::deserialize(deserializer)?;
+        Ok(super::legacy::resource(Self {
+            id: value.id,
+            kind: value.kind,
+            node_id: value.node_id,
+            revision: value.revision,
+            frozen: value.frozen,
+            digest: value.digest,
+            body: value.body,
+        }))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-pub struct ResearchWorkspace {
+pub struct StrategySummary {
     pub id: String,
     pub name: String,
-    pub template_count: usize,
+    pub parameter_preset_count: usize,
     pub resource_count: usize,
 }
 
@@ -168,7 +215,7 @@ pub struct ResearchWorkspace {
 #[serde(deny_unknown_fields)]
 pub struct SaveVersion {
     pub node_id: String,
-    pub template_id: String,
+    pub parameter_preset_id: String,
     #[ts(type = "unknown")]
     pub parameters: Value,
     pub expected_revision: Option<String>,
@@ -221,6 +268,29 @@ pub struct ApiError {
     pub request_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct StrategyRunSnapshot {
+    pub strategy_id: String,
+    pub strategy_version_id: Option<String>,
+    pub run_id: String,
+    pub run_generation: Option<String>,
+    pub revision: String,
+    pub sampled_at_ns: Option<String>,
+    pub available: bool,
+    #[ts(type = "unknown")]
+    pub runtime: Value,
+    #[ts(type = "unknown")]
+    pub account: Value,
+    #[ts(type = "unknown")]
+    pub financial: Value,
+    #[ts(type = "unknown")]
+    pub risk: Value,
+    #[ts(type = "unknown")]
+    pub business_observation: Value,
+    #[ts(type = "unknown")]
+    pub recovery: Value,
+}
+
 pub fn export_types(directory: &std::path::Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(directory)?;
     let mut source = String::from("// Generated from Rust management DTOs. Do not edit.\n");
@@ -236,9 +306,11 @@ pub fn export_types(directory: &std::path::Path) -> anyhow::Result<()> {
         OperationState::decl(&config),
         Action::decl(&config),
         SubmitOperation::decl(&config),
+        StrategyOperationRequest::decl(&config),
         Operation::decl(&config),
         Resource::decl(&config),
-        ResearchWorkspace::decl(&config),
+        StrategySummary::decl(&config),
+        StrategyRunSnapshot::decl(&config),
         SaveVersion::decl(&config),
         Snapshot::decl(&config),
         Event::decl(&config),

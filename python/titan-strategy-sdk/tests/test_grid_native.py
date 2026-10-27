@@ -141,7 +141,7 @@ class TestGridNative(unittest.TestCase):
                 data["events"] = trace["events"][:2]
             (directory / "trace.json").write_text(json.dumps(data))
             config = directory / "backtest.toml"
-            config.write_text('schema_version = 1\n[backtest]\ndata = "trace.json"\ncommand_capacity = 64\nallow_unsigned_artifact = true\n')
+            config.write_text('schema_version = 1\n[backtest]\ndata = "trace.json"\ncommand_capacity = 64\nallow_unsigned_strategy = true\n')
             environment = dict(os.environ, TITAN_HOME=str(directory / "home"))
             result = subprocess.run([self.binary, "run", self.manifest_path, "-e", "backtest",
                                      "-m", "tick", "-c", str(config), "--json"],

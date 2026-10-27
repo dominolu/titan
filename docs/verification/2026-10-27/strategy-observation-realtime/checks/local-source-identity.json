@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "checked_modified_files": 119,
+  "deleted_paths_absent": true,
+  "source_manifest_sha256": "8418894dfcce77a244baf4c5bcc9408f5c25d4e167537fae9fa4965a3005d4c5",
+  "checked_at_utc": "2026-10-27T04:32:22.069855+00:00",
+  "method": "read-only byte SHA256 comparison; no local build, formatting or project tests"
+}

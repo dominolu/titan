@@ -1,0 +1,1 @@
+pnpm exec eslint src/views/console src/api/console.ts src/store/modules/console.ts src/store/resource-cache.ts src/router/modules/home.ts src/utils/auth.ts src/utils/http/index.ts src/views/login/index.vue --max-warnings 0

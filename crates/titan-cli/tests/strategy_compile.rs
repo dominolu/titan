@@ -20,7 +20,7 @@ fn success(output: std::process::Output) -> serde_json::Value {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn native_math_artifact_loads_in_a_clean_host_without_preloaded_libm() {
+fn native_math_strategy_loads_in_a_clean_host_without_preloaded_libm() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -54,7 +54,7 @@ def build(parameters):
             source.to_str().unwrap(),
             "--parameters",
             parameters.to_str().unwrap(),
-            "--artifact-format",
+            "--strategy-format",
             "pair",
             "--output",
             directory.path().join("math").to_str().unwrap(),
@@ -139,7 +139,7 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
                 "strategies/v13_smoke/strategy.py",
                 "--parameters",
                 "strategies/v13_smoke/parameters.json",
-                "--artifact-format",
+                "--strategy-format",
                 format,
                 "--output",
                 path.to_str().unwrap(),
@@ -154,10 +154,13 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
     let pair_result = compile(&pair, "pair");
     let bundle_result = compile(&bundle, "bundle");
     assert_eq!(
-        pair_result["artifact_digest"],
-        bundle_result["artifact_digest"]
+        pair_result["compiled_strategy_digest"],
+        bundle_result["compiled_strategy_digest"]
     );
-    assert_eq!(pair_result["native_digest"], bundle_result["native_digest"]);
+    assert_eq!(
+        pair_result["native_library_sha256"],
+        bundle_result["native_library_sha256"]
+    );
     let before = fs::read(&bundle).unwrap();
     compile(&bundle, "bundle");
     assert_eq!(fs::read(&bundle).unwrap(), before);
@@ -187,7 +190,7 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
         .status
         .success()
     );
-    // Failed compilation must not replace a prior, verified artifact.
+    // Failed compilation must not replace a prior, verified compiled_strategy.
     let rejected = cli(
         &root,
         &[
@@ -199,7 +202,7 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
             "strategies/v13_smoke/parameters.json",
             "--output",
             bundle.to_str().unwrap(),
-            "--artifact-format",
+            "--strategy-format",
             "bundle",
             "--json",
         ],
@@ -272,7 +275,7 @@ fn termination_cancels_compile_process_group_and_cleans_workspace() {
             "strategies/v13_smoke/strategy.py",
             "--parameters",
             "strategies/v13_smoke/parameters.json",
-            "--artifact-format",
+            "--strategy-format",
             "bundle",
             "--output",
             output.to_str().unwrap(),

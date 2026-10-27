@@ -1,0 +1,17 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-observation-audit-20261027-638bae69/crates/titan-strategy-runtime)
+    Finished `release` profile [optimized] target(s) in 19.31s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/release/deps/titan_strategy_runtime-9687483dab367a12)
+
+running 1 test
+{"capture_max_ns":6069,"capture_p50_ns":275,"capture_p99_ns":322,"fields":8,"hot_path_allocations":0,"idle_ns_per_callback":1.25103,"max_scalar_bytes":128,"probe":"business_observation_publication"}
+{"capture_max_ns":35299,"capture_p50_ns":2270,"capture_p99_ns":3305,"fields":64,"hot_path_allocations":0,"idle_ns_per_callback":1.76825,"max_scalar_bytes":1024,"probe":"business_observation_publication"}
+test observation::tests::publication_performance_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.03s
+
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/release/deps/observation_boundaries-bd0dbcf2e36121f3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

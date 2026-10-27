@@ -1,0 +1,19 @@
+{
+  "original_source": "/home/dominolu/dev/titan-observation-realtime-20261027-638bae69",
+  "runtime_regressions_failed": 8,
+  "run_generation_ui_regression_failed": true,
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "titan-strategy-runtime",
+    "--test",
+    "observation_boundaries",
+    "--",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "returncode": 101
+}

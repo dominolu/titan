@@ -1,0 +1,10 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-observation-realtime-20261027-638bae69/crates/titan-strategy-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.96s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_strategy_runtime-4446fdaee0c4c558)
+
+running 1 test
+previous-binary signed grid and recovery bytes loaded unchanged; state schema 3, ABI 13; trading gate remains closed
+test v13::tests::historical_recovery_point_loads_original_native_strategy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.01s
+

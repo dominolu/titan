@@ -31,17 +31,18 @@ export const useConsoleStore = defineStore("titan-console", {
     ready: false,
     owner: "",
     role: "",
-    generation: 0,
+    sessionGeneration: 0,
     receivedAt: 0,
     refreshSequence: 0
   }),
   getters: {
     writable: state => state.role === "operator",
-    templates: state =>
-      state.resources.filter(item => item.kind === "template"),
-    versions: state => state.resources.filter(item => item.kind === "version"),
-    artifacts: state =>
-      state.resources.filter(item => item.kind === "artifact"),
+    parameterPresets: state =>
+      state.resources.filter(item => item.kind === "parameter_preset"),
+    parameterVersions: state =>
+      state.resources.filter(item => item.kind === "parameter_version"),
+    strategyVersions: state =>
+      state.resources.filter(item => item.kind === "strategy_version"),
     datasets: state => state.resources.filter(item => item.kind === "dataset"),
     backtests: state =>
       state.resources.filter(item => item.kind === "backtest"),
@@ -61,10 +62,13 @@ export const useConsoleStore = defineStore("titan-console", {
       );
     },
     async refresh() {
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       const sequence = ++this.refreshSequence;
       const snapshot: Snapshot = await consoleApi.snapshot();
-      if (generation !== this.generation || sequence !== this.refreshSequence)
+      if (
+        generation !== this.sessionGeneration ||
+        sequence !== this.refreshSequence
+      )
         return;
       const [epoch, revision] = snapshot.cursor.split(":");
       const [oldEpoch, oldRevision] = this.cursor.split(":");
@@ -110,15 +114,15 @@ export const useConsoleStore = defineStore("titan-console", {
       this.owner = session?.identity.username ?? "";
       this.role = session?.identity.role ?? "";
       if (stream || poll) return;
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       this.pending = parseExact(
         sessionStorage.getItem(this.key()) ?? "[]"
       ).slice(0, 32);
       await this.refresh();
-      if (generation !== this.generation) return;
+      if (generation !== this.sessionGeneration) return;
       for (const item of [...this.pending]) {
         const existing = await consoleApi.find(item.idempotency_key);
-        if (generation !== this.generation) return;
+        if (generation !== this.sessionGeneration) return;
         if (existing) {
           this.mergeOperation(existing);
           this.pending = this.pending.filter(
@@ -140,13 +144,14 @@ export const useConsoleStore = defineStore("titan-console", {
         }, 1000);
     },
     connect() {
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       if (stream) stream.close();
       stream = new EventSource(
-        "/api/v1/events?cursor=" + encodeURIComponent(this.cursor)
+        "/api/v2/events?cursor=" + encodeURIComponent(this.cursor)
       );
       const source = stream;
-      const active = () => generation === this.generation && stream === source;
+      const active = () =>
+        generation === this.sessionGeneration && stream === source;
       stream.onopen = () => {
         if (!active()) return;
         this.connection = "connected";
@@ -182,13 +187,14 @@ export const useConsoleStore = defineStore("titan-console", {
         stream?.close();
         stream = null;
         reconnect = setTimeout(() => {
-          if (generation !== this.generation || stream) return;
+          if (generation !== this.sessionGeneration || stream) return;
           this.refresh()
             .then(() => {
-              if (generation === this.generation && !stream) this.connect();
+              if (generation === this.sessionGeneration && !stream)
+                this.connect();
             })
             .catch(error => {
-              if (generation === this.generation) {
+              if (generation === this.sessionGeneration) {
                 this.error = error.message;
                 this.fallback();
               }
@@ -205,12 +211,13 @@ export const useConsoleStore = defineStore("titan-console", {
       };
     },
     fallback() {
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       if (!poll)
         poll = setInterval(
           () =>
             this.refresh().catch(error => {
-              if (generation === this.generation) this.error = error.message;
+              if (generation === this.sessionGeneration)
+                this.error = error.message;
             }),
           3000
         );
@@ -224,13 +231,13 @@ export const useConsoleStore = defineStore("titan-console", {
     },
     online() {
       if (!this.ready) return;
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       this.refresh()
         .then(() => {
-          if (generation === this.generation && !stream) this.connect();
+          if (generation === this.sessionGeneration && !stream) this.connect();
         })
         .catch(error => {
-          if (generation === this.generation) {
+          if (generation === this.sessionGeneration) {
             this.error = error.message;
             this.fallback();
           }
@@ -259,12 +266,12 @@ export const useConsoleStore = defineStore("titan-console", {
         throw new Error("固定资源已达上限，请关闭不再使用的详情");
       this.resourcePinOwners = owners;
       this.pinnedResourceIds = pinned;
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       for (const id of wanted) {
         if (this.resources.some(item => item.id === id)) continue;
         const item = await consoleApi.resource(id);
         if (
-          generation !== this.generation ||
+          generation !== this.sessionGeneration ||
           !this.resourcePinOwners[owner]?.includes(id)
         )
           return;
@@ -311,10 +318,10 @@ export const useConsoleStore = defineStore("titan-console", {
       return this.retry(request);
     },
     async retry(request: SubmitOperation) {
-      const generation = this.generation;
+      const generation = this.sessionGeneration;
       try {
         const operation = await consoleApi.submit(request);
-        if (generation !== this.generation) return operation;
+        if (generation !== this.sessionGeneration) return operation;
         this.mergeOperation(operation);
         this.pending = this.pending.filter(
           item => item.idempotency_key !== request.idempotency_key
@@ -322,7 +329,7 @@ export const useConsoleStore = defineStore("titan-console", {
         this.remember();
         return operation;
       } catch (error) {
-        if (generation !== this.generation) throw error;
+        if (generation !== this.sessionGeneration) throw error;
         const status = (error as any).response?.status;
         if (status >= 400 && status < 500 && status !== 408) {
           this.pending = this.pending.filter(
@@ -335,7 +342,7 @@ export const useConsoleStore = defineStore("titan-console", {
       }
     },
     clear() {
-      this.generation++;
+      this.sessionGeneration++;
       stream?.close();
       stream = null;
       if (poll) clearInterval(poll);

@@ -22,9 +22,9 @@ const replacement = (source, name, target) =>
   source
     .replaceAll(JSON.stringify(name), JSON.stringify(target))
     .replaceAll("'" + name + "'", JSON.stringify(target));
-globalThis.__researchTestVue = vue;
-globalThis.__researchTestPinia = pinia;
-globalThis.__researchTestApi = {};
+globalThis.__strategyTestVue = vue;
+globalThis.__strategyTestPinia = pinia;
+globalThis.__strategyTestApi = {};
 globalThis.document = { visibilityState: "hidden" };
 globalThis.window = { addEventListener() {} };
 globalThis.sessionStorage = {
@@ -41,9 +41,9 @@ const exportsUrl = (name, value) =>
         .map((key) => `export const ${key}=v[${JSON.stringify(key)}];`)
         .join(""),
   );
-const vueUrl = exportsUrl("__researchTestVue", vue),
-  piniaUrl = exportsUrl("__researchTestPinia", pinia);
-const apiUrl = url("export const consoleApi=globalThis.__researchTestApi;");
+const vueUrl = exportsUrl("__strategyTestVue", vue),
+  piniaUrl = exportsUrl("__strategyTestPinia", pinia);
+const apiUrl = url("export const consoleApi=globalThis.__strategyTestApi;");
 const authUrl = url(
   'export const getSession=()=>({identity:{username:"operator"}});',
 );
@@ -82,7 +82,7 @@ const bodyUrl = url(
   'export const body=r=>r?.body??{};export const pretty=v=>JSON.stringify(v??null,null,2);export const raw=v=>String(v??"—");export const operationLabels={};',
 );
 let scopeCode = transpile(
-  await read("web/console/src/views/console/use-research.ts"),
+  await read("web/console/src/views/console/use-strategy.ts"),
 );
 for (const [name, target] of [
   ["vue", vueUrl],
@@ -93,7 +93,7 @@ for (const [name, target] of [
 ])
   scopeCode = replacement(scopeCode, name, target);
 const scopeUrl = url(scopeCode),
-  { provideResearch } = await import(scopeUrl);
+  { provideStrategy } = await import(scopeUrl);
 const { descriptor } = parse(
   await read("web/console/src/views/console/StrategyParameters.vue"),
 );
@@ -108,7 +108,7 @@ for (const [name, target] of [
 ])
   workCode = replacement(workCode, name, target);
 let parameterCode = transpile(
-  compileScript(descriptor, { id: "research-regression" }).content,
+  compileScript(descriptor, { id: "strategy-regression" }).content,
 );
 for (const [name, target] of [
   ["vue", vueUrl],
@@ -118,7 +118,7 @@ for (const [name, target] of [
   ["@/utils/precision", precisionUrl],
   ["./run-view", bodyUrl],
   ["./use-console-work", url(workCode)],
-  ["./use-research", scopeUrl],
+  ["./use-strategy", scopeUrl],
 ])
   parameterCode = replacement(parameterCode, name, target);
 parameterCode = parameterCode.replace(
@@ -133,22 +133,22 @@ const resource = (id, kind, body) => ({
   revision: "1",
   digest: "fixture",
   frozen: false,
-  body: { research_id: "research-grid", ...body },
+  body: { strategy_id: "strategy-grid", ...body },
 });
-const a = resource("build-template-a", "template", {
-  template_id: "a",
+const a = resource("build-template-a", "parameter_preset", {
+  parameter_preset_id: "a",
   parameters: { value: "A" },
 });
-const b = resource("build-template-b", "template", {
-  template_id: "b",
+const b = resource("build-template-b", "parameter_preset", {
+  parameter_preset_id: "b",
   parameters: { value: "B" },
 });
-const rowA = resource("version-a", "version", {
-  template_id: "a",
+const rowA = resource("version-a", "parameter_version", {
+  parameter_preset_id: "a",
   parameters: { value: "A" },
 });
-const rowB = resource("version-b", "version", {
-  template_id: "b",
+const rowB = resource("version-b", "parameter_version", {
+  parameter_preset_id: "b",
   parameters: { value: "B" },
 });
 const deployment = resource("deployment-original", "deployment", {
@@ -188,14 +188,14 @@ async function mount() {
   store.clear();
   store.role = "operator";
   const delay = deferred();
-  globalThis.__researchTestApi.resource = async (id) => {
+  globalThis.__strategyTestApi.resource = async (id) => {
     const item = [a, b, rowA, rowB, deployment, run].find(
       (row) => row.id === id,
     );
     if (!item) throw new Error("unknown fixture");
     return item;
   };
-  globalThis.__researchTestApi.researchResources = async (
+  globalThis.__strategyTestApi.strategyResources = async (
     _id,
     kind,
     _offset,
@@ -208,8 +208,8 @@ async function mount() {
     if (selectedId === a.id) return [a];
     return (
       {
-        template: [a],
-        version: [rowA, rowB],
+        parameter_preset: [a],
+        parameter_version: [rowA, rowB],
         run: [run],
         deployment: [deployment],
       }[kind] ?? []
@@ -230,7 +230,7 @@ async function mount() {
   };
   const Root = {
     setup() {
-      scope = provideResearch("research-grid");
+      scope = provideStrategy("strategy-grid");
       return () => vue.h("div", [vue.h(Editor), vue.h(Live)]);
     },
   };
@@ -247,7 +247,7 @@ async function mount() {
   delay.resolve();
   await first;
   await tick();
-  assert.equal(state.selectedTemplate.value, a.id);
+  assert.equal(state.selectedPreset.value, a.id);
   assert.equal(JSON.parse(state.parameters.value).value, "A");
   assert.equal(state.draft.value.id, rowA.id);
   app.unmount();
@@ -275,7 +275,7 @@ for (const end of ["session", "unmount"]) {
   delay.resolve();
   await pending;
   await tick();
-  assert.equal(state.selectedTemplate.value, a.id);
+  assert.equal(state.selectedPreset.value, a.id);
   assert.equal(JSON.parse(state.parameters.value).value, "A");
   assert.equal(state.draft.value, null);
   if (end === "session") app.unmount();
@@ -317,7 +317,7 @@ for (const end of ["session", "unmount"]) {
   assert.deepEqual(store.resourcePinOwners, {});
   assert.deepEqual(store.pinnedResourceIds, []);
   const delay = deferred();
-  globalThis.__researchTestApi.resource = async () => {
+  globalThis.__strategyTestApi.resource = async () => {
     await delay.promise;
     return b;
   };

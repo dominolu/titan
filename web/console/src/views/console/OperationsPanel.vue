@@ -25,15 +25,15 @@ onBeforeUnmount(() => {
   disposed = true;
 });
 async function cancel(id: string) {
-  const identity = store.generation;
+  const identity = store.sessionGeneration;
   busy.value = id;
   try {
     const result = await consoleApi.cancel(id);
-    if (disposed || identity !== store.generation) return;
+    if (disposed || identity !== store.sessionGeneration) return;
     store.mergeOperation(result);
     ElMessage.success("取消请求已受理，等待执行确认");
   } catch (failure) {
-    if (!disposed && identity === store.generation)
+    if (!disposed && identity === store.sessionGeneration)
       ElMessage.error((failure as Error).message);
   } finally {
     busy.value = "";

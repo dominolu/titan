@@ -18,7 +18,7 @@ export function useFactHistory(
   async function load(next = offset.value) {
     const source = item.value;
     const current = ++sequence,
-      generation = store.generation,
+      generation = store.sessionGeneration,
       wasAvailable = available();
     if (!source) {
       items.value = [];
@@ -30,10 +30,12 @@ export function useFactHistory(
     const active = () =>
       !disposed &&
       current === sequence &&
-      generation === store.generation &&
+      generation === store.sessionGeneration &&
       source.id === item.value?.id &&
-      (source.body as any)?.generation ===
-        (item.value?.body as any)?.generation;
+      ((source.body as any)?.run_generation ??
+        (source.body as any)?.worker_session_id) ===
+        ((item.value?.body as any)?.run_generation ??
+          (item.value?.body as any)?.worker_session_id);
     try {
       const result = await consoleApi.history(source, kind.value, next);
       if (!active()) return;
@@ -61,9 +63,11 @@ export function useFactHistory(
   watch(
     [
       () => item.value?.id,
-      () => (item.value?.body as any)?.generation,
+      () =>
+        (item.value?.body as any)?.run_generation ??
+        (item.value?.body as any)?.worker_session_id,
       kind,
-      () => store.generation
+      () => store.sessionGeneration
     ],
     () => {
       sequence++;

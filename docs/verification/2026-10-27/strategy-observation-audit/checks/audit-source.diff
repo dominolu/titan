@@ -1,0 +1,1206 @@
+--- previous/crates/titan-strategy-runtime/src/observation.rs
++++ current/crates/titan-strategy-runtime/src/observation.rs
+@@ -442,6 +442,10 @@
+         if !self.requested.load(Ordering::Acquire) {
+             return false;
+         }
++        // Initialization and recovery seeding are not a successful running callback.
++        if callback_sequence == 0 {
++            return false;
++        }
+         if self.invalid.load(Ordering::Acquire) {
+             return false;
+         }
+@@ -455,6 +459,9 @@
+             return false;
+         }
+         self.requested.swap(false, Ordering::AcqRel);
++        // Call external code before making the frame odd. An unwinding clock must
++        // not strand readers on a permanently incomplete publication.
++        let captured_at_ns = now();
+         self.frame.version.store(version + 1, Ordering::SeqCst);
+         for (index, item) in self.plan.reads.iter().enumerate() {
+             self.frame.values[index].store(item.read.raw(bytes), Ordering::SeqCst);
+@@ -465,7 +472,9 @@
+         self.frame
+             .callback_sequence
+             .store(callback_sequence, Ordering::SeqCst);
+-        self.frame.captured_at_ns.store(now(), Ordering::SeqCst);
++        self.frame
++            .captured_at_ns
++            .store(captured_at_ns, Ordering::SeqCst);
+         self.frame.version.store(version + 2, Ordering::SeqCst);
+         true
+     }
+@@ -705,6 +714,72 @@
+         assert!(!publisher.publish(&bytes, 4, || panic!("failed runtime")));
+     }
+     #[test]
++    fn no_callback_does_not_publish_or_consume_the_initial_request() {
++        let publisher = publisher(1);
++        assert!(!publisher.publish(&[0; 16], 0, || panic!("no callback")));
++        assert!(!publisher.snapshot().unwrap().available);
++        assert!(publisher.publish(&[0; 16], 1, || 1));
++    }
++    #[test]
++    fn request_during_capture_remains_pending_for_the_next_boundary() {
++        let publisher = Arc::new(publisher(1));
++        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
++        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
++        let writer = {
++            let publisher = publisher.clone();
++            std::thread::spawn(move || {
++                assert!(publisher.publish(&[0; 16], 1, || {
++                    entered_tx.send(()).unwrap();
++                    release_rx
++                        .recv_timeout(std::time::Duration::from_secs(5))
++                        .unwrap();
++                    1
++                }));
++            })
++        };
++        entered_rx
++            .recv_timeout(std::time::Duration::from_secs(5))
++            .unwrap();
++        // This request is after the writer claimed the previous batch. It must
++        // survive even when that writer has not completed its capture yet.
++        for _ in 0..100 {
++            publisher.request();
++        }
++        release_tx.send(()).unwrap();
++        writer.join().unwrap();
++        assert!(publisher.publish(&[0; 16], 2, || 2));
++        assert!(!publisher.publish(&[0; 16], 3, || panic!("requests not coalesced")));
++    }
++    #[test]
++    fn busy_reads_are_bounded_and_invalidation_wins_over_an_inflight_writer() {
++        let publisher = publisher(64);
++        assert!(publisher.publish(&[0; 16], 1, || 1));
++        publisher.frame.version.store(3, Ordering::SeqCst);
++        assert!(!publisher.snapshot().unwrap().available);
++        publisher.frame.version.store(2, Ordering::SeqCst);
++        assert!(publisher.publish(&[0; 16], 2, || {
++            publisher.invalidate();
++            2
++        }));
++        assert!(!publisher.snapshot().unwrap().available);
++        assert!(!publisher.publish(&[0; 16], 3, || panic!("invalidated writer")));
++    }
++    #[test]
++    fn panicking_clock_does_not_leave_an_incomplete_frame() {
++        let publisher = publisher(1);
++        assert!(publisher.publish(&[0; 16], 1, || 1));
++        publisher.request();
++        assert!(
++            std::panic::catch_unwind(|| {
++                publisher.publish(&[0; 16], 2, || panic!("injected clock panic"));
++            })
++            .is_err()
++        );
++        assert_eq!(publisher.frame.version.load(Ordering::SeqCst), 2);
++        assert!(publisher.snapshot().unwrap().available);
++        assert!(publisher.publish(&[0; 16], 3, || 3));
++    }
++    #[test]
+     fn stopped_reader_cannot_block_the_writer_or_terminal_publication() {
+         let publisher = Arc::new(publisher(64));
+         let first = Arc::new(std::sync::Barrier::new(2));
+@@ -737,37 +812,62 @@
+     #[test]
+     fn concurrent_readers_only_see_whole_published_frames() {
+         let publisher = Arc::new(publisher(64));
++        let mut initial = [0; 16];
++        initial[..8].copy_from_slice(&1u64.to_le_bytes());
++        assert!(publisher.publish(&initial, 1, || 1));
+         let finished = Arc::new(AtomicBool::new(false));
++        let started = Arc::new(std::sync::Barrier::new(4));
+         let readers: Vec<_> = (0..3)
+             .map(|_| {
+                 let publisher = publisher.clone();
+                 let finished = finished.clone();
++                let started = started.clone();
+                 std::thread::spawn(move || {
++                    assert!(publisher.snapshot().unwrap().available);
++                    let mut observed = 1;
++                    started.wait();
+                     while !finished.load(Ordering::Acquire) {
+                         let value = publisher.snapshot().unwrap();
+                         if value.available {
+-                            let expected = value.source.unwrap().callback_sequence.unwrap();
+-                            assert!(
+-                                value
+-                                    .data
+-                                    .values()
+-                                    .all(|v| v.as_str() == Some(expected.as_str()))
+-                            );
++                            observed += 1;
++                            let source = value.source.unwrap();
++                            let expected = source.callback_sequence.unwrap();
++                            assert_eq!(source.captured_at_ns.as_deref(), Some(expected.as_str()));
++                            let nullable = expected.parse::<u64>().unwrap() % 2 == 0;
++                            assert!(value.data.values().all(|v| if nullable {
++                                v.is_null()
++                            } else {
++                                v.as_str() == Some(expected.as_str())
++                            }));
+                         }
+                     }
++                    observed
+                 })
+             })
+             .collect();
+-        for sequence in 1..20000u64 {
++        // Give every reader an actual accepted initial sample; a vacuous stress
++        // run with no accepted frames would not validate the seqlock.
++        started.wait();
++        for sequence in 2..20000u64 {
+             let mut bytes = [0; 16];
+             bytes[..8].copy_from_slice(&sequence.to_le_bytes());
++            bytes[8] = u8::from(sequence % 2 == 0);
+             publisher.request();
+             publisher.publish(&bytes, sequence, || sequence as i64);
++            if sequence % 127 == 0 {
++                // Readers are allowed to return busy under continuous writes.
++                // Periodic stable windows make accepted updates non-vacuous even
++                // on a single CPU, alongside the overlapping-copy stress above.
++                std::thread::sleep(std::time::Duration::from_micros(50));
++            }
+         }
+         finished.store(true, Ordering::Release);
+-        for reader in readers {
+-            reader.join().unwrap();
+-        }
++        let observed: usize = readers
++            .into_iter()
++            .map(|reader| reader.join().unwrap())
++            .sum();
++        assert!(observed > 3, "no concurrent update was accepted");
++        println!("coherent concurrent observations accepted: {observed}");
+     }
+     #[test]
+     fn publication_performance_probe() {
+--- previous/crates/titan-strategy-runtime/src/runtime_v13.rs
++++ current/crates/titan-strategy-runtime/src/runtime_v13.rs
+@@ -167,6 +167,7 @@
+                 stop_request: Mutex::new(None),
+                 next_operation: AtomicU64::new(1),
+                 async_failure: AtomicBool::new(false),
++                stopped: AtomicBool::new(false),
+                 operations: Mutex::new(titan_core_types::OperationHistory::new(|value| {
+                     value.state == StrategyOperationState::Pending
+                 })),
+@@ -190,6 +191,9 @@
+     stop_request: Mutex<Option<StrategyOperationId>>,
+     next_operation: AtomicU64,
+     async_failure: AtomicBool,
++    // REST completions can arrive after the lane has shut down. A successfully
++    // stopped run no longer needs them to close any execution boundary.
++    stopped: AtomicBool,
+     operations:
+         Mutex<titan_core_types::OperationHistory<StrategyOperationId, StrategyOperationSnapshot>>,
+ }
+@@ -322,7 +326,7 @@
+                 },
+             );
+         let core = self.core.clone();
+-        lane.submit_safe_point(move || {
++        let admission = lane.submit_safe_point(move || {
+             let result = action(&core);
+             let mut operations = core.operations.lock().unwrap_or_else(|p| p.into_inner());
+             let snapshot = operations.get_mut(&id).expect("operation exists");
+@@ -338,8 +342,18 @@
+                     Ok(())
+                 }
+             }
+-        })
+-        .map_err(|_| v13_runtime_error("control_queue_full"))?;
++        });
++        if admission.is_err() {
++            let mut operations = self
++                .core
++                .operations
++                .lock()
++                .unwrap_or_else(|p| p.into_inner());
++            let snapshot = operations.get_mut(&id).expect("operation exists");
++            snapshot.state = StrategyOperationState::Failed;
++            snapshot.detail = Arc::from("control_queue_full");
++            return Err(v13_runtime_error("control_queue_full"));
++        }
+         Ok(id)
+     }
+ 
+@@ -1663,9 +1677,7 @@
+             recovery: Some(recovery),
+         });
+     if result.is_err() {
+-        core.context.activation.close();
+-        inner.lifecycle = StrategyLifecycle::Failed;
+-        inner.last_error = Some(Arc::from("checkpoint_submit_failed"));
++        fail_runtime(core, inner, Arc::from("checkpoint_submit_failed"));
+     }
+     if result.is_ok() {
+         inner.checkpoint_dirty = false;
+@@ -1705,6 +1717,15 @@
+ }
+ 
+ fn publish_business_observation(core: &NativeV13Core, inner: &NativeV13Inner, force: bool) {
++    if !matches!(
++        inner.lifecycle,
++        StrategyLifecycle::Running
++            | StrategyLifecycle::Paused
++            | StrategyLifecycle::Stopping
++            | StrategyLifecycle::Stopped
++    ) {
++        return;
++    }
+     if let Some(publisher) = &core.business_observation {
+         if force {
+             publisher.request();
+@@ -1727,9 +1748,13 @@
+         reason_code = reason.as_ref(),
+         "strategy runtime failed"
+     );
+-    core.context.activation.close();
++    core.context.activation.invalidate();
+     inner.lifecycle = StrategyLifecycle::Failed;
+     inner.last_error.get_or_insert_with(|| reason.clone());
++    fail_pending_stop(core, inner, reason);
++}
++
++fn fail_pending_stop(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<str>) {
+     if let Some(id) = inner.stop_operation.take()
+         && let Some(operation) = core
+             .operations
+@@ -1772,6 +1797,7 @@
+     core.context.activation.close();
+     inner.instance.stop();
+     inner.lifecycle = StrategyLifecycle::Stopped;
++    core.stopped.store(true, Ordering::Release);
+     publish_business_observation(core, inner, true);
+     if let Some(operation_id) = inner.stop_operation.take()
+         && let Some(operation) = core
+@@ -1899,6 +1925,15 @@
+                 "business observation not declared",
+             ));
+         };
++        if self.core.async_failure.load(Ordering::Acquire)
++            || self
++                .core
++                .lane
++                .get()
++                .is_some_and(|lane| lane.health().state == SubscriberState::Failed)
++        {
++            publisher.invalidate();
++        }
+         publisher
+             .snapshot()
+             .map_err(|_| v13_runtime_error("business_observation_projection_failed"))
+@@ -2240,6 +2275,9 @@
+         .map_err(|_| v13_runtime_error("control_queue_full"))
+     }
+     fn execution_result(&self, result: ObservedExecutionResult) -> LocalResult<()> {
++        if self.core.stopped.load(Ordering::Acquire) {
++            return Ok(());
++        }
+         let lane = self
+             .core
+             .lane
+@@ -2263,8 +2301,11 @@
+             Ok(())
+         });
+         if queued.is_err() {
+-            self.core.context.activation.close();
++            self.core.context.activation.invalidate();
+             self.core.async_failure.store(true, Ordering::Release);
++            if let Some(publisher) = &self.core.business_observation {
++                publisher.invalidate();
++            }
+             // Local rejection observers may run inside commit_commands while it owns inner.
+             if let Ok(mut inner) = self.core.inner.try_lock() {
+                 fail_runtime(
+@@ -2319,11 +2360,14 @@
+                 return Err(v13_runtime_error("active_order_state_invalid"));
+             }
+             NativeV13Runtime::invoke(&mut inner, core, V13EventKind::Start, 1, |_| {})?;
+-            inner
+-                .instance
+-                .start()
+-                .map_err(|_| v13_runtime_error("v13_start_failed"))?;
+-            core.context.activation.open();
++            if inner.instance.start().is_err() {
++                fail_runtime(core, &mut inner, Arc::from("v13_start_failed"));
++                return Err(v13_runtime_error("v13_start_failed"));
++            }
++            if !core.context.activation.open() {
++                fail_runtime(core, &mut inner, Arc::from("activation_invalidated"));
++                return Err(v13_runtime_error("activation_invalidated"));
++            }
+             inner.lifecycle = StrategyLifecycle::Running;
+             publish_business_observation(core, &inner, true);
+             Ok(())
+@@ -2366,22 +2410,31 @@
+             {
+                 return Err(v13_runtime_error("account_not_ready"));
+             }
+-            core.context.activation.open();
++            if !core.context.activation.open() {
++                fail_runtime(core, &mut inner, Arc::from("activation_invalidated"));
++                return Err(v13_runtime_error("activation_invalidated"));
++            }
+             inner.lifecycle = StrategyLifecycle::Running;
+             Ok(())
+         })
+     }
+     fn invalidate(&self, reason: Arc<str>) -> LocalResult<StrategyOperationId> {
+-        self.core.context.activation.close();
++        self.core.context.activation.invalidate();
++        // Invalidation must not wait behind the callback lock or depend on control
++        // queue admission, just as closing the activation gate does not.
++        if let Some(publisher) = &self.core.business_observation {
++            publisher.invalidate();
++        }
+         self.schedule(move |core| {
+             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
++            // Closing again is idempotent and preserves the terminal gate state
++            // established before control queue admission.
++            core.context.activation.close();
+             if inner.lifecycle != StrategyLifecycle::Failed {
+                 inner.lifecycle = StrategyLifecycle::Invalidated;
+             }
+-            inner.last_error.get_or_insert(reason);
+-            if let Some(publisher) = &core.business_observation {
+-                publisher.invalidate();
+-            }
++            inner.last_error.get_or_insert_with(|| reason.clone());
++            fail_pending_stop(core, &mut inner, reason);
+             Ok(())
+         })
+     }
+@@ -2435,6 +2488,7 @@
+                     core.context.activation.close();
+                     inner.instance.stop();
+                     inner.lifecycle = StrategyLifecycle::Stopped;
++                    core.stopped.store(true, Ordering::Release);
+                     return Ok(());
+                 }
+                 if !matches!(
+@@ -2447,7 +2501,10 @@
+                 inner.stop_ready = false;
+                 inner.stop_operation = Some(id);
+                 inner.stop_deadline = Some(deadline);
+-                core.context.activation.open();
++                if !core.context.activation.open() {
++                    fail_runtime(&core, &mut inner, Arc::from("activation_invalidated"));
++                    return Err(v13_runtime_error("activation_invalidated"));
++                }
+                 if !inner.stop_called {
+                     NativeV13Runtime::invoke(&mut inner, &core, V13EventKind::Stop, 1, |_| {})?;
+                     inner.stop_called = true;
+@@ -2497,7 +2554,11 @@
+     ) -> LocalResult<StrategyOperationId> {
+         self.schedule(move |core| {
+             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
+-            checkpoint_state(core, &mut inner, request.checkpoint_id)
++            let result = checkpoint_state(core, &mut inner, request.checkpoint_id);
++            if let Err(error) = &result {
++                fail_runtime(core, &mut inner, error.reason_code.clone());
++            }
++            result
+         })
+     }
+     fn state(&self) -> StrategyRuntimeStateSnapshot {
+--- previous/crates/titan-strategy-runtime/src/runtime.rs
++++ current/crates/titan-strategy-runtime/src/runtime.rs
+@@ -2,7 +2,7 @@
+     collections::BTreeMap,
+     sync::{
+         Arc,
+-        atomic::{AtomicBool, Ordering},
++        atomic::{AtomicU8, Ordering},
+     },
+     time::Instant,
+ };
+@@ -16,16 +16,55 @@
+ use crate::*;
+ 
+ #[derive(Default)]
+-pub struct StrategyActivationGate(AtomicBool);
++pub struct StrategyActivationGate(AtomicU8);
+ impl StrategyActivationGate {
+-    pub fn open(&self) {
+-        self.0.store(true, Ordering::Release);
++    pub fn open(&self) -> bool {
++        // 0 = closed, 1 = open, 2 = permanently invalidated for this run.
++        matches!(
++            self.0
++                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire),
++            Ok(_) | Err(1)
++        )
+     }
+     pub fn close(&self) {
+-        self.0.store(false, Ordering::Release);
++        let _ = self
++            .0
++            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
++    }
++    pub fn invalidate(&self) {
++        self.0.store(2, Ordering::Release);
+     }
+     pub fn is_open(&self) -> bool {
+-        self.0.load(Ordering::Acquire)
++        self.0.load(Ordering::Acquire) == 1
++    }
++}
++
++#[cfg(test)]
++mod activation_tests {
++    use super::*;
++    #[test]
++    fn invalidation_cannot_be_undone_by_a_late_open_or_close() {
++        let gate = Arc::new(StrategyActivationGate::default());
++        assert!(gate.open());
++        gate.close();
++        assert!(!gate.is_open());
++        assert!(gate.open());
++        gate.invalidate();
++        let workers: Vec<_> = (0..4)
++            .map(|_| {
++                let gate = gate.clone();
++                std::thread::spawn(move || {
++                    for _ in 0..1000 {
++                        gate.close();
++                        assert!(!gate.open());
++                        assert!(!gate.is_open());
++                    }
++                })
++            })
++            .collect();
++        for worker in workers {
++            worker.join().unwrap();
++        }
+     }
+ }
+ 
+--- previous/crates/titan-strategy-runtime/tests/observation_boundaries.rs
++++ current/crates/titan-strategy-runtime/tests/observation_boundaries.rs
+@@ -0,0 +1,551 @@
++//! Explicit, non-live tests against an original signed grid strategy.
++//! Run by verify_observation_recovery_compat.py on the build server.
++use std::{
++    collections::BTreeMap,
++    path::PathBuf,
++    sync::{
++        Arc, Mutex,
++        atomic::{AtomicBool, Ordering},
++        mpsc::{Receiver, SyncSender, sync_channel},
++    },
++    time::{Duration, Instant},
++};
++use titan_account_service as account;
++use titan_core_types::{ComponentIdentity, ResourceScope};
++use titan_event_engine::{
++    EventClass, EventEngine, EventEngineConfig, PoolKind, PrimaryAsyncLaneConfig,
++    PrimaryAsyncLaneHandle, PrimarySubscriptionSpec, SafePointTicket,
++};
++use titan_market_service::BBO_EVENT;
++use titan_strategy_runtime::*;
++
++#[derive(Default)]
++struct Store {
++    fail_submit: AtomicBool,
++    fail_flush: AtomicBool,
++}
++fn injected() -> StrategyError {
++    StrategyError::new(
++        StrategyErrorKind::Internal,
++        "test",
++        "injected",
++        "injected recovery failure",
++    )
++}
++impl StrategyRecoveryStore for Store {
++    fn submit(&self, _: StrategyRecoveryPoint) -> LocalResult<()> {
++        if self.fail_submit.load(Ordering::Acquire) {
++            Err(injected())
++        } else {
++            Ok(())
++        }
++    }
++    fn flush(&self, _: Instant) -> LocalResult<()> {
++        if self.fail_flush.load(Ordering::Acquire) {
++            Err(injected())
++        } else {
++            Ok(())
++        }
++    }
++}
++struct Clock {
++    block: AtomicBool,
++    entered: SyncSender<()>,
++    release: Mutex<Receiver<()>>,
++}
++impl StrategyClock for Clock {
++    fn now_ns(&self) -> i64 {
++        if self.block.swap(false, Ordering::AcqRel) {
++            self.entered.send(()).unwrap();
++            self.release
++                .lock()
++                .unwrap()
++                .recv_timeout(Duration::from_secs(10))
++                .unwrap();
++        }
++        1_000_000_000
++    }
++}
++struct Metrics;
++impl StrategyMetrics for Metrics {}
++struct Harness {
++    runtime: Arc<dyn StrategyRuntime>,
++    lane: PrimaryAsyncLaneHandle,
++    engine: EventEngine,
++    store: Arc<Store>,
++    clock: Arc<Clock>,
++    clock_entered: Receiver<()>,
++    clock_release: SyncSender<()>,
++    _scope: ResourceScope,
++    _root: tempfile::TempDir,
++}
++impl Harness {
++    fn new() -> Self {
++        let path = PathBuf::from(std::env::var("TITAN_TEST_PREVIOUS_STRATEGY_FILE").unwrap());
++        let key = std::env::var("TITAN_TEST_PREVIOUS_PUBLIC_KEY").unwrap();
++        let key: Vec<u8> = (0..key.len())
++            .step_by(2)
++            .map(|offset| u8::from_str_radix(&key[offset..offset + 2], 16).unwrap())
++            .collect();
++        let key: [u8; 32] = key.try_into().unwrap();
++        let keys = BTreeMap::from([(Arc::from("acceptance"), key)]);
++        let root = tempfile::tempdir().unwrap();
++        let inspect = NativeStrategyLoaderV13::new(
++            root.path().into(),
++            V13TrustPolicy {
++                require_signature: true,
++                ed25519_keys: BTreeMap::from([("acceptance".into(), key)]),
++            },
++        )
++        .inspect(&path)
++        .unwrap();
++        let file = StrategyFileRef {
++            loader_type: Arc::from("native-v13"),
++            uri: Arc::from(format!("file://{}", path.display())),
++            expected_digest: inspect.compiled_strategy_digest,
++            signature_ref: None,
++        };
++        let loader = NativeV13LoaderFactory
++            .create(StrategyLoaderContext {
++                allowed_strategy_roots: Arc::from([Arc::from(
++                    path.parent().unwrap().to_str().unwrap(),
++                )]),
++                require_signature: true,
++                ed25519_keys: keys,
++            })
++            .unwrap();
++        let compiled = loader
++            .load(
++                StrategyLoadRequest {
++                    strategy_file: file.clone(),
++                },
++                Instant::now() + Duration::from_secs(10),
++            )
++            .unwrap();
++        assert!(compiled.native.manifest.business_observation.is_some());
++        let definition = StrategyDefinition {
++            strategy_key: Arc::from("observation-boundaries"),
++            runtime_strategy_no: RuntimeStrategyNo(77),
++            strategy_file: file,
++            markets: Arc::from([]),
++            accounts: Arc::from([]),
++            risk_scope: RiskScopeRef(Arc::from("synthetic")),
++            runtime: StrategyRuntimeSpec {
++                checkpoint_interval: Duration::from_secs(60),
++                ..Default::default()
++            },
++            recovery: StrategyRecoveryPolicy::Fresh,
++            enabled: true,
++            run_config_revision: 1,
++        };
++        let scope = ResourceScope::new(ComponentIdentity::new("test", "observation-boundaries"));
++        let store = Arc::new(Store::default());
++        let (entered_tx, entered_rx) = sync_channel(1);
++        let (release_tx, release_rx) = sync_channel(1);
++        let clock = Arc::new(Clock {
++            block: AtomicBool::new(false),
++            entered: entered_tx,
++            release: Mutex::new(release_rx),
++        });
++        let runtime = NativeV13RuntimeFactory
++            .create(
++                &definition,
++                compiled.clone(),
++                StrategyRuntimeBuildContext {
++                    strategy: StrategyHandle {
++                        runtime_strategy_no: RuntimeStrategyNo(77),
++                        generation: 1,
++                    },
++                    compiled_strategy_digest: compiled.id,
++                    markets: Arc::from([ResolvedMarketBinding {
++                        source_stream: titan_market_service::SourceStreamId(2),
++                        local_market_no: 0,
++                        local_asset_no: 0,
++                        source: titan_market_service::MarketSourceHandle {
++                            source_id: titan_market_service::MarketSourceId(1),
++                            generation: 1,
++                        },
++                        asset_id: 1,
++                        data_mode: StrategyDataMode::Tick,
++                    }]),
++                    accounts: Arc::from([ResolvedAccountBinding {
++                        local_account_no: 0,
++                        account: account::AccountHandle {
++                            account_id: account::AccountId(1),
++                            generation: 1,
++                        },
++                        tradable_assets: Arc::from([StrategyTradableAsset {
++                            local_asset_no: 0,
++                            asset_id: 1,
++                        }]),
++                    }]),
++                    execution: Arc::from([]),
++                    state_snapshot_sink: store.clone(),
++                    clock: clock.clone(),
++                    metrics: Arc::new(Metrics),
++                    resources: scope.handle(),
++                    activation: Arc::new(StrategyActivationGate::default()),
++                },
++            )
++            .unwrap();
++        runtime
++            .seed_public_state(StrategyPublicStateSeedV13 {
++                accounts: Arc::from([TitanAccountView {
++                    state: 4,
++                    account_epoch: 1,
++                    ..Default::default()
++                }]),
++                positions: Arc::from([TitanPositionView::default()]),
++                balances: Arc::from([TitanBalanceView {
++                    currency_no: 1,
++                    total_units: 1_000_000,
++                    available_units: 1_000_000,
++                    ..Default::default()
++                }]),
++                ..Default::default()
++            })
++            .unwrap();
++        let engine = EventEngine::new(EventEngineConfig::default()).unwrap();
++        engine
++            .handle()
++            .register_event(BBO_EVENT, 1, EventClass::Market, PoolKind::MarketBatch)
++            .unwrap();
++        engine.start().unwrap();
++        let lane = engine
++            .handle()
++            .register_primary_async_lane(
++                &[PrimarySubscriptionSpec {
++                    event_type: Arc::from(BBO_EVENT),
++                    schema_version: 1,
++                    qos: titan_core_types::EventQos::Latest,
++                    routing_keys: Arc::from([1]),
++                }],
++                PrimaryAsyncLaneConfig {
++                    control_capacity: 4,
++                    ..Default::default()
++                },
++                runtime.clone(),
++            )
++            .unwrap();
++        runtime.attach_lane(lane.clone()).unwrap();
++        Self {
++            runtime,
++            lane,
++            engine,
++            store,
++            clock,
++            clock_entered: entered_rx,
++            clock_release: release_tx,
++            _scope: scope,
++            _root: root,
++        }
++    }
++    fn wait(&self, id: StrategyOperationId) -> StrategyOperationSnapshot {
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            let operation = self.runtime.operation(id);
++            if operation.state != StrategyOperationState::Pending {
++                return operation;
++            }
++            assert!(
++                Instant::now() < deadline,
++                "operation stuck: {}",
++                operation.detail
++            );
++            std::thread::yield_now();
++        }
++    }
++    fn start(&self) {
++        assert_eq!(
++            self.wait(self.runtime.prepare().unwrap()).state,
++            StrategyOperationState::Succeeded
++        );
++        let started = self.wait(self.runtime.start().unwrap());
++        assert_eq!(
++            started.state,
++            StrategyOperationState::Succeeded,
++            "{}",
++            started.detail
++        );
++        assert!(self.runtime.business_observation().unwrap().available);
++    }
++    fn settle(&self) {
++        let deadline = Instant::now() + Duration::from_secs(10);
++        loop {
++            if let Ok(ticket) = self.lane.submit_safe_point(|| Ok(())) {
++                ticket.wait(deadline).unwrap();
++                return;
++            }
++            assert!(Instant::now() < deadline, "control queue did not drain");
++            std::thread::yield_now();
++        }
++    }
++    fn fill_control_queue(&self) {
++        for _ in 0..4 {
++            self.lane.submit_safe_point(|| Ok(())).unwrap();
++        }
++    }
++    fn hold_control(&self) -> (SyncSender<()>, SafePointTicket) {
++        let (entered_tx, entered_rx) = sync_channel(1);
++        let (release_tx, release_rx) = sync_channel(1);
++        let ticket = self
++            .lane
++            .submit_safe_point(move || {
++                entered_tx.send(()).unwrap();
++                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
++                Ok(())
++            })
++            .unwrap();
++        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
++        (release_tx, ticket)
++    }
++}
++impl Drop for Harness {
++    fn drop(&mut self) {
++        let _ = self.engine.stop();
++    }
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_never_started_and_stopped_frames() {
++    let never_started = Harness::new();
++    assert!(
++        !never_started
++            .runtime
++            .business_observation()
++            .unwrap()
++            .available
++    );
++    assert_eq!(
++        never_started
++            .wait(
++                never_started
++                    .runtime
++                    .stop(Instant::now() + Duration::from_secs(5))
++                    .unwrap()
++            )
++            .state,
++        StrategyOperationState::Succeeded
++    );
++    assert!(
++        !never_started
++            .runtime
++            .business_observation()
++            .unwrap()
++            .available
++    );
++    let running = Harness::new();
++    running.start();
++    let before = running
++        .runtime
++        .business_observation()
++        .unwrap()
++        .source
++        .unwrap();
++    let stop = running
++        .runtime
++        .stop(Instant::now() + Duration::from_secs(5))
++        .unwrap();
++    assert_eq!(running.wait(stop).state, StrategyOperationState::Succeeded);
++    assert_eq!(
++        running.runtime.state().lifecycle,
++        StrategyLifecycle::Stopped
++    );
++    let terminal = running.runtime.business_observation().unwrap();
++    assert!(terminal.available);
++    assert_ne!(
++        terminal.source.as_ref().unwrap().publication_sequence,
++        before.publication_sequence
++    );
++    assert_eq!(
++        running
++            .runtime
++            .stop(Instant::now() + Duration::from_secs(5))
++            .unwrap(),
++        stop
++    );
++    running.runtime.fire_timer(1).unwrap();
++    running.settle();
++    assert_eq!(
++        serde_json::to_value(terminal.source).unwrap(),
++        serde_json::to_value(running.runtime.business_observation().unwrap().source).unwrap()
++    );
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame() {
++    let harness = Harness::new();
++    harness.start();
++    let stop = harness
++        .runtime
++        .stop(Instant::now() + Duration::from_secs(5))
++        .unwrap();
++    assert_eq!(harness.wait(stop).state, StrategyOperationState::Succeeded);
++    let terminal = harness.runtime.business_observation().unwrap();
++    harness.engine.stop().unwrap();
++    assert!(harness.runtime.execution_result(rejected_result()).is_ok());
++    let after = harness.runtime.business_observation().unwrap();
++    assert!(after.available);
++    assert_eq!(after.data, terminal.data);
++    assert_eq!(
++        serde_json::to_value(after.source).unwrap(),
++        serde_json::to_value(terminal.source).unwrap()
++    );
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_checkpoint_and_stop_failure_invalidate() {
++    for stop_failure in [false, true] {
++        let harness = Harness::new();
++        harness.start();
++        let id = if stop_failure {
++            harness.store.fail_flush.store(true, Ordering::Release);
++            harness
++                .runtime
++                .stop(Instant::now() + Duration::from_secs(5))
++                .unwrap()
++        } else {
++            harness.store.fail_submit.store(true, Ordering::Release);
++            harness
++                .runtime
++                .freeze_state(StrategyStateSnapshotRequest { checkpoint_id: 7 })
++                .unwrap()
++        };
++        assert_eq!(harness.wait(id).state, StrategyOperationState::Failed);
++        assert_eq!(harness.runtime.state().lifecycle, StrategyLifecycle::Failed);
++        assert!(!harness.runtime.state().activation_gate_open);
++        assert!(!harness.runtime.business_observation().unwrap().available);
++    }
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_control_rejection_finishes_operation_without_failing_strategy() {
++    let harness = Harness::new();
++    harness.start();
++    let (release, ticket) = harness.hold_control();
++    harness.fill_control_queue();
++    assert!(
++        harness
++            .runtime
++            .freeze_state(StrategyStateSnapshotRequest { checkpoint_id: 7 })
++            .is_err()
++    );
++    assert_eq!(
++        harness.runtime.operation(StrategyOperationId(3)).state,
++        StrategyOperationState::Failed
++    );
++    assert!(harness.runtime.business_observation().unwrap().available);
++    release.send(()).unwrap();
++    ticket
++        .wait(Instant::now() + Duration::from_secs(5))
++        .unwrap();
++    harness.settle();
++    assert_eq!(
++        harness.runtime.state().lifecycle,
++        StrategyLifecycle::Running
++    );
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_invalidation_survives_control_rejection() {
++    let harness = Harness::new();
++    harness.start();
++    let (release, ticket) = harness.hold_control();
++    harness.fill_control_queue();
++    assert!(harness.runtime.invalidate(Arc::from("injected")).is_err());
++    assert!(!harness.runtime.business_observation().unwrap().available);
++    assert!(!harness.runtime.state().activation_gate_open);
++    release.send(()).unwrap();
++    ticket
++        .wait(Instant::now() + Duration::from_secs(5))
++        .unwrap();
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_execution_rejection_while_callback_owns_state() {
++    let harness = Harness::new();
++    harness.start();
++    harness.clock.block.store(true, Ordering::Release);
++    harness.runtime.fire_timer(1).unwrap();
++    harness
++        .clock_entered
++        .recv_timeout(Duration::from_secs(10))
++        .unwrap();
++    harness.fill_control_queue();
++    let result = harness.runtime.execution_result(rejected_result());
++    assert!(result.is_err());
++    // The writer still owns its state lock. Reading must already be unavailable
++    // and must not wait for that lock or for a subsequent callback.
++    assert!(!harness.runtime.business_observation().unwrap().available);
++    harness.clock_release.send(()).unwrap();
++    harness.settle();
++    assert_eq!(harness.runtime.state().lifecycle, StrategyLifecycle::Failed);
++}
++
++fn rejected_result() -> account::ObservedExecutionResult {
++    account::ObservedExecutionResult {
++        task_id: 1,
++        account: account::AccountHandle {
++            account_id: account::AccountId(1),
++            generation: 1,
++        },
++        asset_id: account::AssetId(1),
++        request_kind: account::ExecutionRequestKind::Submit,
++        client_order_id: None,
++        outcome: account::ObservedExecutionOutcome::Rejected(account::DirectExecutionError {
++            exchange: "synthetic",
++            code: "injected".into(),
++            message: "injected".into(),
++            outcome_unknown: false,
++        }),
++    }
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_invalidation_after_inflight_start_closes_reopened_gate() {
++    invalidation_during_start(false);
++}
++
++#[test]
++#[ignore = "requires explicit original signed synthetic grid fixture"]
++fn observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start() {
++    invalidation_during_start(true);
++}
++
++fn invalidation_during_start(queue_full: bool) {
++    let harness = Harness::new();
++    assert_eq!(
++        harness.wait(harness.runtime.prepare().unwrap()).state,
++        StrategyOperationState::Succeeded
++    );
++    harness.clock.block.store(true, Ordering::Release);
++    let start = harness.runtime.start().unwrap();
++    harness
++        .clock_entered
++        .recv_timeout(Duration::from_secs(10))
++        .unwrap();
++    if queue_full {
++        harness.fill_control_queue();
++    }
++    let invalidation = harness
++        .runtime
++        .invalidate(Arc::from("injected during Start"));
++    assert_eq!(invalidation.is_err(), queue_full);
++    assert!(!harness.runtime.business_observation().unwrap().available);
++    harness.clock_release.send(()).unwrap();
++    assert_eq!(harness.wait(start).state, StrategyOperationState::Failed);
++    if let Ok(id) = invalidation {
++        assert_eq!(harness.wait(id).state, StrategyOperationState::Succeeded);
++    }
++    harness.settle();
++    assert_eq!(harness.runtime.state().lifecycle, StrategyLifecycle::Failed);
++    assert!(!harness.runtime.state().activation_gate_open);
++    assert!(!harness.runtime.business_observation().unwrap().available);
++}
+--- previous/crates/titan-cli/src/management/v2.rs
++++ current/crates/titan-cli/src/management/v2.rs
+@@ -194,6 +194,21 @@
+         json!({"available":true,"schema":schema,"schema_hash":super::digest(&titan_strategy_runtime::compiler_json_v13(schema))}),
+     ))
+ }
++fn snapshot_instance(body: &Value) -> Option<&Value> {
++    let generation = body
++        .get("run_generation")
++        .or_else(|| body.get("generation"))?;
++    body["observation"]["strategies"]
++        .as_array()?
++        .iter()
++        .find(|item| {
++            item["runtime_strategy_no"] == body["runtime_strategy_no"]
++                && item
++                    .get("run_generation")
++                    .or_else(|| item.get("generation"))
++                    == Some(generation)
++        })
++}
+ async fn run_snapshot(
+     State(app): State<Arc<App>>,
+     headers: HeaderMap,
+@@ -203,11 +218,7 @@
+     let run = scoped(&app, &actor, &strategy, "run", &id)?;
+     let body = &run.body;
+     let observed = &body["observation"];
+-    let instance = observed["strategies"].as_array().and_then(|items| {
+-        items
+-            .iter()
+-            .find(|item| item["runtime_strategy_no"] == body["runtime_strategy_no"])
+-    });
++    let instance = snapshot_instance(body);
+     let unavailable =
+         json!({"available":false,"complete":false,"reason":"runtime observation unavailable"});
+     let business = instance
+@@ -403,6 +414,21 @@
+ mod tests {
+     use super::*;
+     #[test]
++    fn run_snapshot_selects_both_strategy_number_and_run_generation() {
++        let mut body = json!({"runtime_strategy_no":"77","run_generation":"2","observation":{"strategies":[
++            {"runtime_strategy_no":"77","run_generation":"1","marker":"old"},
++            {"runtime_strategy_no":"78","run_generation":"2","marker":"other"},
++            {"runtime_strategy_no":"77","run_generation":"2","marker":"current"}
++        ]}});
++        assert_eq!(snapshot_instance(&body).unwrap()["marker"], "current");
++        body["run_generation"] = json!("3");
++        assert!(snapshot_instance(&body).is_none());
++        body.as_object_mut().unwrap().remove("run_generation");
++        assert!(snapshot_instance(&body).is_none());
++        body["generation"] = json!("2");
++        assert_eq!(snapshot_instance(&body).unwrap()["marker"], "current");
++    }
++    #[test]
+     fn historical_streams_use_canonical_names_without_exporting_private_state() {
+         let mut value = json!({"payload":{"id":"old-artifact-id","kind":"artifact","node_id":"n","revision":"2","frozen":true,"digest":"original","body":{"research_id":"grid","artifact_digest":"signed","observation":{"strategies":[{"strategy_key":"grid","lifecycle":"Running","strategy_id":"77","generation":"1","business":{"data":{"grid":{"internal":1}}}}]}}}});
+         public_response(&mut value);
+--- previous/web/console/src/views/console/run-view.ts
++++ current/web/console/src/views/console/run-view.ts
+@@ -133,7 +133,7 @@
+         : {};
+   const candidate = object(strategy.business_observation);
+   const sourceGeneration = object(candidate.source).run_generation;
+-  const expectedGeneration = strategy.run_generation ?? state.run_generation;
++  const expectedGeneration = state.run_generation ?? strategy.run_generation;
+   const validBusinessIdentity =
+     [1, 2].includes(Number(candidate.protocol_version)) &&
+     (Number(candidate.protocol_version) !== 2 ||
+@@ -144,6 +144,8 @@
+     typeof candidate.schema_id === "string" &&
+     /^[0-9a-f]{64}$/.test(candidate.schema_hash ?? "") &&
+     expectedGeneration != null &&
++    (strategy.run_generation == null ||
++      String(strategy.run_generation) === String(expectedGeneration)) &&
+     String(sourceGeneration) === String(expectedGeneration);
+   const business =
+     candidate.available === true && !validBusinessIdentity
+--- previous/scripts/management_run_view_test.mjs
++++ current/scripts/management_run_view_test.mjs
+@@ -167,6 +167,9 @@
+ realtimeBusiness.protocol_version=2;
+ realtimeBusiness.source={kind:"runtime_publication",run_generation:"1",publication_sequence:"9007199254740993",callback_sequence:"18446744073709551614",captured_at_ns:"1793070000000000000"};
+ assert.equal(runView(realtime,"connected",nodes).business.available,true);
++const wrongRun=structuredClone(realtime);
++wrongRun.body.run_generation="2";
++assert.equal(runView(wrongRun,"connected",nodes).business.available,false);
+ assert.equal(gridObservationCompatible({...contract,protocol_version:2}),true);
+ realtimeBusiness.source.kind="recovery_point";
+ assert.equal(runView(realtime,"connected",nodes).business.available,false);
+--- previous/scripts/verify_observation_recovery_compat.py
++++ current/scripts/verify_observation_recovery_compat.py
+@@ -23,6 +23,10 @@
+ command = ["cargo", "test", "--locked", "-p", "titan-strategy-runtime",
+            "historical_recovery_point_loads_original_native_strategy", "--", "--ignored", "--nocapture"]
+ subprocess.run(command, cwd=args.repo, env=env, check=True)
++boundary_command = ["cargo", "test", "--locked", "-p", "titan-strategy-runtime",
++                    "--test", "observation_boundaries", "--", "--ignored", "--nocapture", "--test-threads=1"]
++subprocess.run(boundary_command, cwd=args.repo, env=env, check=True)
+ assert before == {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+ args.output.write_text(json.dumps({"passed": True, "original_files_unchanged": True,
+-                                  "inputs_sha256": before, "command": command}, indent=2))
++                                  "inputs_sha256": before, "command": command,
++                                  "boundary_command": boundary_command}, indent=2))
+--- previous/docs/strategy_observation_protocol.md
++++ current/docs/strategy_observation_protocol.md
+@@ -1,6 +1,8 @@
+ # 策略身份、业务观测协议与恢复状态结构
+ 
+ 日期：2026-10-27。实现基线：`638bae69324114e8a2447f648c8b7ced832196bb`。当前实时发布与恢复兼容结果见[本轮验证记录](verification/2026-10-27/strategy-observation-realtime/README.md)，前一阶段见[观测协议解耦记录](verification/2026-10-27/strategy-observation/README.md)。
++
++恢复存储后续按[数据持久化设计](data_persistence_design.md)统一迁入节点本地 SQLite，[实施计划](data_persistence_implementation_plan.md)尚待执行。本文所述当前实现仍使用恢复文件；迁移保留原始载荷字节和 SHA256，公开业务观测继续独立发布，不改从恢复 BLOB 读取。
+ 
+ ## 1. 统一定义
+ 
+@@ -22,7 +24,7 @@
+ | 策略文件校验值 | `strategy_file_sha256` | 策略传输文件完整字节 SHA256 |
+ | 原生库校验值 | `native_library_sha256` | 动态库字节 SHA256 |
+ | 恢复点序号 | `recovery_sequence` | 恢复点的内部序号 |
+-| 恢复点文件校验值 | `recovery_point_sha256` | 固定恢复文件字节，用于从恢复点恢复 |
++| 恢复点内容校验值 | `recovery_point_sha256` | 固定恢复载荷原始字节；当前为文件，计划迁入 SQLite BLOB 后保留同一字节含义 |
+ 
+ 当前参数会编译进 Numba 原生程序，因此源码版本号不能唯一确定可运行策略版本。原有参数记录和成功编译记录分别映射为参数版本、策略版本，保留历史 ID 与引用。参数预设只是节点登记的策略输入预设。
+ 
+@@ -37,6 +39,12 @@
+ 业务观测独立从成功回调边界发布到该运行的预分配内存槽位，不读取恢复文件，也不调用恢复点提交或 flush。私有投影在加载时解析成有界标量读取计划；发布仅复制声明的值和有效条件，不复制整个私有状态，不执行 JSON、字符串格式化、SHA256、文件或网络操作。
+ 
+ 宿主冷采样请求会合并为一个待发布标志。没有请求时，成功边界只检查一个原子标志；有请求时，交易线程以原子标量更新最多 64 个字段及其条件，总原始载荷上限 1 KiB。所有载荷字和帧版本使用顺序一致原子操作，读取前后相同的偶数版本才接受该帧；冷读取最多重试 8 次，持续冲突时明确报告忙并等待下次采样。写方没有锁或重试，不等待读取方，最终 Stop 帧也不会因读取方暂停而丢失。Start 和最终 Stop 发布边界快照，失败回调使观测不可用。未执行新回调时，重复读取不能推进发布序号。
++
++发布方由运行时现有的回调所有权串行化。值、有效条件、成功回调水位、采集时间和帧版本都参与同一顺序一致原子序列，冷路径只在确认完整后格式化自己的本地副本；它们不会混用相邻帧。取时发生在标记写入开始之前，取时异常不会留下永久未完成帧。初始化、恢复就绪阶段和回调水位为 0 时不发布；未启动即停止也不伪造业务观测。
++
++请求的合并点是发布方认领待发布标志的原子交换。此前的请求合并进本次采集，此后的请求保留到下一成功边界；重复水位不消费请求。最后一次成功停止会强制请求发布，随后重复读取保留相同来源。手动恢复点提交失败、停止持久化失败、执行结果入队失败或运行失效都会撤销该运行的观测可用性。执行结果拒绝和失效请求不依赖回调锁或控制队列受理来撤销观测；终止失效后的交易门在本运行代次内不可重开，排队中的 Start、Resume 或 Stop 不能撤销失效。被队列拒绝的控制操作结束为失败，不永久停留在待处理状态。
++
++成功停止后，执行边界已经排空。即使执行通道随后关闭，迟到的执行回执也不再把已停止运行改成失败或撤销终态观测；停止完成前仍保留执行结果可靠处理和拒绝时失败关闭的约束。
+ 
+ 恢复点仍按原周期及指令持久化、恢复、停止屏障提交和 flush。观测不改变这些条件，不修改恢复文件结构和 checksum，也不向恢复文件写入观测帧。恢复后以新的运行代次重新发布，观测帧不参与恢复或交易准入证明。恢复写入故障继续遵循原有交易门失败语义。
+ 
+@@ -119,6 +127,8 @@
+ 
+ 快照是采样视图，不是完整事件账本。请求合并可以跳过中间回调，不能据此判断成交历史丢失。页面根据运行代次和资源修订拒绝迟到数据，分别判断账户和业务观测质量，不从任一展示值推导交易准入。
+ 
++运行快照接口同时匹配策略运行编号和所查询运行的代次；页面也以运行记录的代次校验业务来源。相同运行编号不能跨代次复用观测。原子帧保证业务字段及其来源在同一采集边界内一致，通用运行、账户和业务观测仍是各自带水位的采样，不能把它们当作全局同一事务的事实。管理器收到失效状态之前的缓存仍按采样及连接新鲜度展示，不承诺失效瞬间已刷新所有远端页面。
++
+ ## 6. 页面与兼容边界
+ 
+ 策略列表 → 策略详情 → 参数 / 策略版本 / 回测与报告 / 实盘运行。运行详情使用通用运行、账户、风险和操作组件；业务区域由通用容器选择 `titan.grid/v1` 面板。专用面板按公开字段名、类型和单位检查兼容性。未知 schema 使用有界字段展示，不读取内部布局。
+--- previous/docs/memory/engineering.md
++++ current/docs/memory/engineering.md
+@@ -227,3 +227,9 @@
+ - SSE 复验必须携带初始快照游标，并区分 `update` 对象和 `watermark` 标量。旧控制回执先保留原文件，再对身份字段作只读规范化核对；不得仅改节点预期键名而遗漏宿主写入端。报告 v1 的冻结源码字段通过显式适配保留，不随管理 DTO 改名而破坏既有报告。
+ 
+ - [独立实时发布与恢复兼容验收](../verification/2026-10-27/strategy-observation-realtime/README.md)：本轮全工作区 585 项 Rust、2 项 doctest、SDK 115 项、报告 5 项、前端门禁、网格 26 项流程及 10 项浏览器通过。恢复周期维持 60 秒，连续新业务值等待最长 1.181 秒且恢复文件 SHA256 未变；旧签名策略与旧恢复点直接加载、字节还原和错误身份拒绝单独通过。64 值及 64 条件的优化发布微基准 P99 约 1.346 微秒、零堆分配；该原语微基准不代表完整回调或生产 SLA。全部非实盘验证，无真实账户连接或部署。
++
++- 发布请求的认领点是原子交换；认领之后到达的请求必须留给下一成功边界。重复回调水位不认领请求，未启动、恢复就绪和回调水位 0 不发布。业务帧的值、条件和来源共同校验，不能只测试值相等而遗漏有效条件或时间水位。取时等外部调用放在帧版本变为奇数之前。
++- 失败路径须统一撤销观测：特别核对手动恢复点提交、停止 flush、执行结果队列拒绝和失效控制队列拒绝。关闭交易门不能只是可逆的 bool 写入；终止失效必须在同一原子状态上阻止迟到的 Start、Resume、Stop 及回滚路径重开，且不能依赖失效操作成功入队。拒绝的控制操作须结束，失效须结束待完成的停止操作。
++- 查询和页面校验都以运行记录的代次为准，同时匹配策略运行编号；不能用候选观测自身的代次替代查询运行的身份。业务帧一致不等于运行、账户和观测的全局事务一致。
++- 成功停止和通道关闭后，迟到执行回执不得把已经排空的运行重新标为失败或撤销终态观测；停止完成前的队列拒绝仍须失败关闭。异步完成侧用运行级原子停止标志识别该边界，避免为了检查生命周期而重入回调持有的锁。
++- 本轮发现、修复及验证证据见[业务观测发布全面复核](../verification/2026-10-27/strategy-observation-audit/README.md)，不以此前验收记录代替本轮结果。
+--- previous/web/console/src/generated/management.ts
++++ current/web/console/src/generated/management.ts
+@@ -1,6 +1,6 @@
+ // Generated from Rust management DTOs. Do not edit.
+ export const API_VERSION = 2;
+-export const EXPECTED_BUILD = "1037f026bc48f08499e3b917f1ccc28f7b1bb7591e1206d7948ffed80edf6e70";
++export const EXPECTED_BUILD = "afa29604b3e2456c2bf27abe673a8eeea3c8805edf421d2d144ec5d45a23fb2a";
+ export type Role = "reader" | "operator";
+ export type Identity = { username: string, role: Role, nodes: Array<string>, accounts: Array<string>, environments: Array<string>, };
+ export type Session = { identity: Identity, csrf_token: string, expires_at_ns: string, api_version: number, build: string, };

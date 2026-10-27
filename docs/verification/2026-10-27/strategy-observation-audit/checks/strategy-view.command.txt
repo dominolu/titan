@@ -1,0 +1,1 @@
+node scripts/management_research_view_test.mjs

@@ -196,8 +196,10 @@ impl App {
                         .downcast_ref::<super::Fault>()
                         .is_some_and(|f| f.status == 404) =>
             {
-                let artifact = self.store.artifact_for_operation(id)?;
-                Ok(self.resource(identity, &artifact.id, false)?.node_id)
+                let compiled_strategy = self.store.strategy_version_for_operation(id)?;
+                Ok(self
+                    .resource(identity, &compiled_strategy.id, false)?
+                    .node_id)
             }
             Err(error) => Err(error),
         }
@@ -221,7 +223,7 @@ impl App {
             .store
             .by_key(&identity.username, &input.idempotency_key)?
         {
-            if hash != payload {
+            if hash != payload && hash != super::legacy::request_digest(&input)? {
                 return Err(fault(
                     409,
                     "IDEMPOTENCY_CONFLICT",
@@ -250,27 +252,32 @@ impl App {
             "node role does not allow this action"
         );
         let ids: Vec<String> = match &input.action {
-            Action::Describe { template_id, .. } => {
-                vec![format!("{}-template-{template_id}", input.node_id)]
+            Action::Describe {
+                parameter_preset_id,
+                ..
+            } => {
+                vec![format!("{}-template-{parameter_preset_id}", input.node_id)]
             }
-            Action::Build { version_id } => vec![version_id.clone()],
+            Action::Compile {
+                parameter_version_id,
+            } => vec![parameter_version_id.clone()],
             Action::Prepare { dataset_id } => {
                 vec![format!("{}-dataset-{dataset_id}", input.node_id)]
             }
             Action::Backtest {
-                artifact_id,
+                strategy_version_id,
                 dataset_id,
                 ..
             } => vec![
-                artifact_id.clone(),
+                strategy_version_id.clone(),
                 format!("{}-dataset-{dataset_id}", input.node_id),
             ],
             Action::Report { backtest_id } => vec![backtest_id.clone()],
             Action::Deploy {
-                artifact_id,
+                strategy_version_id,
                 binding_id,
             } => vec![
-                artifact_id.clone(),
+                strategy_version_id.clone(),
                 format!("{}-binding-{binding_id}", input.node_id),
             ],
             Action::Start { deployment_id } => vec![deployment_id.clone()],
@@ -299,19 +306,19 @@ impl App {
             }
             resources.push(resource);
         }
-        if matches!(input.action, Action::Build { .. }) {
+        if matches!(input.action, Action::Compile { .. }) {
             ensure!(
-                resources[0].kind == "version" && resources[0].frozen,
+                resources[0].kind == "parameter_version" && resources[0].frozen,
                 "build requires a frozen parameter version"
             );
         }
         if let Some((_, generation)) = input.action.run() {
             ensure!(
-                resources[0].body["generation"].as_str() == Some(generation),
+                resources[0].body["run_generation"].as_str() == Some(generation),
                 "run generation changed"
             );
         }
-        let occupancy = if matches!(input.action, Action::Start { .. } | Action::Recover { .. }) {
+        let occupancy = if matches!(input.action, Action::Start { .. } | Action::Restore { .. }) {
             let body = &resources[0].body;
             Some(serde_json::to_string(&json!([
                 body["account_identity"]
@@ -340,10 +347,10 @@ impl App {
         ensure!(input.parameters.is_object(), "parameters must be an object");
         let template = self.resource(
             identity,
-            &format!("{}-template-{}", input.node_id, input.template_id),
+            &format!("{}-template-{}", input.node_id, input.parameter_preset_id),
             false,
         )?;
-        let body = json!({"research_id":template.body["research_id"],"research_name":template.body["research_name"],"template_id":input.template_id,"parameters":input.parameters,"source_digest":template.body["source_digest"],"environment":"backtest"});
+        let body = json!({"strategy_id":template.body["strategy_id"],"strategy_name":template.body["strategy_name"],"parameter_preset_id":input.parameter_preset_id,"parameters":input.parameters,"source_digest":template.body["source_digest"],"environment":"backtest"});
         let mut frozen = false;
         let mut final_body = body.clone();
         if let Some(op_id) = &input.freeze_operation_id {
@@ -353,14 +360,14 @@ impl App {
                 "validation operation has not succeeded"
             );
             let Action::Describe {
-                template_id,
+                parameter_preset_id,
                 parameters,
             } = &op.input
             else {
                 anyhow::bail!("freeze requires a describe/validate result");
             };
             ensure!(
-                template_id == &input.template_id
+                parameter_preset_id == &input.parameter_preset_id
                     && parameters == &input.parameters
                     && op.node_id == input.node_id,
                 "validation does not match these inputs"
@@ -377,7 +384,7 @@ impl App {
         if let Some(id) = id {
             let old = self.resource(identity, id, true)?;
             ensure!(
-                old.kind == "version" && old.node_id == input.node_id,
+                old.kind == "parameter_version" && old.node_id == input.node_id,
                 "incorrect resource type"
             );
             ensure!(
@@ -387,7 +394,7 @@ impl App {
         }
         let resource = Resource {
             id: id.map(str::to_owned).unwrap_or_else(nonce),
-            kind: "version".into(),
+            kind: "parameter_version".into(),
             node_id: input.node_id,
             revision: String::new(),
             frozen,

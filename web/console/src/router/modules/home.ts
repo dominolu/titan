@@ -9,32 +9,35 @@ export default {
     {
       path: "/welcome",
       name: "Welcome",
-      component: () => import("@/views/console/LegacyResearchRoute.vue"),
+      component: () => import("@/views/console/LegacyStrategyRoute.vue"),
       meta: { title: "策略参数", icon: "ep/set-up" }
     },
     {
-      path: "/artifacts",
-      name: "Artifacts",
-      component: () => import("@/views/console/LegacyResearchRoute.vue"),
-      meta: { title: "构建制品", icon: "ep/box" }
+      path: "/versions",
+      alias: "/artifacts",
+      name: "StrategyVersions",
+      component: () => import("@/views/console/LegacyStrategyRoute.vue"),
+      meta: { title: "策略版本", icon: "ep/box" }
     },
     {
       path: "/backtests",
       name: "Backtests",
-      component: () => import("@/views/console/LegacyResearchRoute.vue"),
+      component: () => import("@/views/console/LegacyStrategyRoute.vue"),
       meta: { title: "历史回测", icon: "ep/data-line" }
     },
     {
-      path: "/research",
-      name: "Research",
-      component: () => import("@/views/console/ResearchIndex.vue"),
-      meta: { title: "策略研究", icon: "ep/set-up" }
+      path: "/strategies",
+      alias: "/research",
+      name: "Strategies",
+      component: () => import("@/views/console/StrategyList.vue"),
+      meta: { title: "策略", icon: "ep/set-up" }
     },
     {
-      path: "/research/:researchId",
-      name: "ResearchWorkspace",
-      component: () => import("@/views/console/ResearchWorkspace.vue"),
-      meta: { title: "策略研究", showLink: false }
+      path: "/strategies/:strategyId",
+      alias: "/research/:strategyId",
+      name: "StrategyDetail",
+      component: () => import("@/views/console/StrategyDetail.vue"),
+      meta: { title: "策略", showLink: false }
     },
     {
       path: "/runs",

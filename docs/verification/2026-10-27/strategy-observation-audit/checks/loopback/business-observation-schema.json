@@ -1,0 +1,93 @@
+{
+  "available": true,
+  "schema": {
+    "fields": [
+      {
+        "description": "",
+        "enum_values": [
+          "created",
+          "error",
+          "initializing",
+          "paused",
+          "reconciling",
+          "resetting",
+          "running",
+          "stopped",
+          "stopping",
+          "warming"
+        ],
+        "kind": "enum",
+        "label": "网格业务阶段",
+        "name": "phase",
+        "nullable": false,
+        "unit": "state"
+      },
+      {
+        "description": "",
+        "enum_values": [],
+        "kind": "decimal",
+        "label": "网格锚点",
+        "name": "anchor_ticks",
+        "nullable": true,
+        "unit": "price_tick"
+      },
+      {
+        "description": "",
+        "enum_values": [],
+        "kind": "uint64",
+        "label": "完成配对",
+        "name": "completed_pairs",
+        "nullable": false,
+        "unit": "count"
+      },
+      {
+        "description": "",
+        "enum_values": [],
+        "kind": "uint64",
+        "label": "配对数量",
+        "name": "paired_lots",
+        "nullable": false,
+        "unit": "quantity_lot"
+      },
+      {
+        "description": "未计手续费与资金费，不是策略净收益",
+        "enum_values": [],
+        "kind": "decimal",
+        "label": "配对毛收益",
+        "name": "paired_gross_tick_lots",
+        "nullable": false,
+        "unit": "tick_lot"
+      },
+      {
+        "description": "实际持仓由平台账户服务确认",
+        "enum_values": [],
+        "kind": "int64",
+        "label": "策略期望库存",
+        "name": "expected_inventory_lots",
+        "nullable": false,
+        "unit": "quantity_lot"
+      },
+      {
+        "description": "",
+        "enum_values": [],
+        "kind": "int64",
+        "label": "最后处理行情时间",
+        "name": "last_market_at_ns",
+        "nullable": false,
+        "unit": "ns"
+      },
+      {
+        "description": "",
+        "enum_values": [],
+        "kind": "uint64",
+        "label": "业务错误码",
+        "name": "last_error",
+        "nullable": false,
+        "unit": "code"
+      }
+    ],
+    "schema_id": "titan.grid",
+    "schema_version": 1
+  },
+  "schema_hash": "8097dfc757165adf6c6f267c2c3506ff50d0d357316541ea8f5a6b9fbca55428"
+}

@@ -1,4 +1,4 @@
-//! Common host recovery with a native artifact; no exchange or account credentials.
+//! Common host recovery with a native compiled_strategy; no exchange or account credentials.
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -37,11 +37,11 @@ struct Metrics;
 impl StrategyMetrics for Metrics {}
 #[derive(Default)]
 struct Sink {
-    snapshots: Mutex<Vec<StrategyPrivateStateSnapshot>>,
+    snapshots: Mutex<Vec<StrategyRecoveryPoint>>,
     fail_flush: bool,
 }
-impl StrategyStateSnapshotSink for Sink {
-    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+impl StrategyRecoveryStore for Sink {
+    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         self.snapshots.lock().unwrap().push(snapshot);
         Ok(())
     }
@@ -104,7 +104,7 @@ fn seed(epoch: u64, balance: i64) -> StrategyPublicStateSeedV13 {
 }
 fn create(
     definition: &StrategyDefinition,
-    artifact: StrategyArtifact,
+    compiled_strategy: LoadedStrategy,
     generation: u64,
     sink: Arc<Sink>,
     scope: &ResourceScope,
@@ -122,13 +122,13 @@ fn create(
     let runtime = NativeV13RuntimeFactory
         .create(
             definition,
-            artifact.clone(),
+            compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
                 strategy: StrategyHandle {
-                    strategy_id: StrategyId(42),
+                    runtime_strategy_no: RuntimeStrategyNo(42),
                     generation,
                 },
-                artifact_id: artifact.id,
+                compiled_strategy_digest: compiled_strategy.id,
                 markets: Arc::from([]),
                 accounts: Arc::from([ResolvedAccountBinding {
                     local_account_no: 0,
@@ -173,48 +173,50 @@ fn attach(runtime: &Arc<dyn StrategyRuntime>, engine: &EventEngine) {
     runtime.attach_lane(lane).unwrap();
 }
 fn main() {
-    let path = std::fs::canonicalize(PathBuf::from(std::env::args_os().nth(1).expect("artifact")))
-        .unwrap();
-    let manifest = NativeArtifactLoaderV13::new(
+    let path = std::fs::canonicalize(PathBuf::from(
+        std::env::args_os().nth(1).expect("compiled_strategy"),
+    ))
+    .unwrap();
+    let manifest = NativeStrategyLoaderV13::new(
         std::env::temp_dir().join("titan-common-recovery-inspect"),
         V13TrustPolicy::default(),
     )
     .inspect(&path)
     .unwrap();
-    let package = StrategyPackageRef {
+    let package = StrategyFileRef {
         loader_type: Arc::from("native-v13"),
         uri: Arc::from(format!("file://{}", path.display())),
-        expected_digest: manifest.artifact_digest,
+        expected_digest: manifest.compiled_strategy_digest,
         signature_ref: None,
     };
     let loader = NativeV13LoaderFactory
         .create(StrategyLoaderContext {
-            allowed_artifact_roots: Arc::from([Arc::from(
+            allowed_strategy_roots: Arc::from([Arc::from(
                 path.parent().unwrap().to_string_lossy().as_ref(),
             )]),
             require_signature: false,
             ed25519_keys: BTreeMap::new(),
         })
         .unwrap();
-    let artifact = loader
+    let compiled_strategy = loader
         .load(
             StrategyLoadRequest {
-                package: package.clone(),
+                strategy_file: package.clone(),
             },
             Instant::now() + Duration::from_secs(5),
         )
         .unwrap();
     let definition = StrategyDefinition {
         strategy_key: Arc::from("common-recovery"),
-        strategy_id: StrategyId(42),
-        package,
+        runtime_strategy_no: RuntimeStrategyNo(42),
+        strategy_file: package,
         markets: Arc::from([]),
         accounts: Arc::from([]),
         risk_scope: RiskScopeRef(Arc::from("mock")),
         runtime: Default::default(),
         recovery: StrategyRecoveryPolicy::Fresh,
         enabled: true,
-        definition_version: 1,
+        run_config_revision: 1,
     };
     let engine = EventEngine::new(EventEngineConfig::default()).unwrap();
     engine
@@ -231,7 +233,13 @@ fn main() {
         fail_flush: true,
         ..Default::default()
     });
-    let (original, activation) = create(&definition, artifact.clone(), 1, sink.clone(), &scopes[0]);
+    let (original, activation) = create(
+        &definition,
+        compiled_strategy.clone(),
+        1,
+        sink.clone(),
+        &scopes[0],
+    );
     original.seed_public_state(seed(1, 100)).unwrap();
     attach(&original, &engine);
     assert_eq!(

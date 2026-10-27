@@ -23,8 +23,8 @@ impl StrategyClock for Clock {
 struct Metrics;
 impl StrategyMetrics for Metrics {}
 struct Sink;
-impl StrategyStateSnapshotSink for Sink {
-    fn submit(&self, _: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+impl StrategyRecoveryStore for Sink {
+    fn submit(&self, _: StrategyRecoveryPoint) -> LocalResult<()> {
         Ok(())
     }
     fn flush(&self, _: Instant) -> LocalResult<()> {
@@ -33,21 +33,21 @@ impl StrategyStateSnapshotSink for Sink {
 }
 fn main() {
     let path = std::fs::canonicalize(PathBuf::from(std::env::args_os().nth(1).unwrap())).unwrap();
-    let manifest = NativeArtifactLoaderV13::new(
+    let manifest = NativeStrategyLoaderV13::new(
         std::env::temp_dir().join("titan-review-queue-cache"),
         V13TrustPolicy::default(),
     )
     .inspect(&path)
     .unwrap();
-    let package = StrategyPackageRef {
+    let package = StrategyFileRef {
         loader_type: "native-v13".into(),
         uri: format!("file://{}", path.display()).into(),
-        expected_digest: manifest.artifact_digest,
+        expected_digest: manifest.compiled_strategy_digest,
         signature_ref: None,
     };
-    let artifact = NativeV13LoaderFactory
+    let compiled_strategy = NativeV13LoaderFactory
         .create(StrategyLoaderContext {
-            allowed_artifact_roots: Arc::from([Arc::from(
+            allowed_strategy_roots: Arc::from([Arc::from(
                 path.parent().unwrap().to_str().unwrap(),
             )]),
             require_signature: false,
@@ -56,34 +56,34 @@ fn main() {
         .unwrap()
         .load(
             StrategyLoadRequest {
-                package: package.clone(),
+                strategy_file: package.clone(),
             },
             Instant::now() + Duration::from_secs(5),
         )
         .unwrap();
     let definition = StrategyDefinition {
         strategy_key: "review".into(),
-        strategy_id: StrategyId(77),
-        package,
+        runtime_strategy_no: RuntimeStrategyNo(77),
+        strategy_file: package,
         markets: Arc::from([]),
         accounts: Arc::from([]),
         risk_scope: RiskScopeRef("review".into()),
         runtime: Default::default(),
         recovery: StrategyRecoveryPolicy::Fresh,
         enabled: true,
-        definition_version: 1,
+        run_config_revision: 1,
     };
     let scope = ResourceScope::new(ComponentIdentity::new("review", "stop-queue"));
     let runtime = NativeV13RuntimeFactory
         .create(
             &definition,
-            artifact.clone(),
+            compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
                 strategy: StrategyHandle {
-                    strategy_id: StrategyId(77),
+                    runtime_strategy_no: RuntimeStrategyNo(77),
                     generation: 1,
                 },
-                artifact_id: artifact.id,
+                compiled_strategy_digest: compiled_strategy.id,
                 markets: Arc::from([]),
                 accounts: Arc::from([]),
                 execution: Arc::from([]),

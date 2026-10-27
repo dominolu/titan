@@ -1,0 +1,53 @@
+
+> titan-console@6.2.0 build /home/dominolu/dev/titan-observation-realtime-20261027-638bae69/web/console
+> rimraf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build
+
+vite v7.1.12 building for production...
+╭─────────────────────────────────────────────╮
+│ 您好! 欢迎使用 pure-admin 开源项目          │
+│ 我们为您精心准备了下面两个贴心的保姆级文档  │
+│ https://pure-admin.cn                       │
+│ https://pure-admin-utils.netlify.app        │
+╰─────────────────────────────────────────────╯
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+Browserslist: browsers data (caniuse-lite) is 12 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+transforming...
+✓ 2404 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                                     1.38 kB │ gzip:   0.73 kB
+dist/static/css/404-DgQozwK4.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/403-DjuzhhlE.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/500-d2Um_kna.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/StrategyDetail-GbhOkzZd.css                                         0.10 kB │ gzip:   0.11 kB
+dist/static/css/index-B_J0ZUlR.css                                                  0.37 kB │ gzip:   0.25 kB
+dist/static/css/ConsoleLayout-CxpBYk_E.css                                         21.09 kB │ gzip:   5.13 kB
+dist/static/css/index-CB66UleR.css                                                 87.11 kB │ gzip:   8.47 kB
+dist/static/css/index-B5IhdeUM.css                                                421.94 kB │ gzip:  64.82 kB
+dist/static/js/redirect-DxfpqRQr.js                                                 0.30 kB │ gzip:   0.24 kB
+dist/static/js/RunDetail-DWmKFeO8.js                                                0.47 kB │ gzip:   0.24 kB
+dist/static/js/LegacyStrategyRoute-c-ob3OHA.js                                      1.00 kB │ gzip:   0.66 kB
+dist/static/js/index-BpJoVf6M.js                                                    1.85 kB │ gzip:   1.06 kB
+dist/static/js/OperationsPanel.vue_vue_type_script_setup_true_lang-BcMNBIT3.js      3.19 kB │ gzip:   1.79 kB
+dist/static/js/StrategyList-BuHqvm6g.js                                             3.60 kB │ gzip:   1.88 kB
+dist/static/js/run-view-BNaHiXMx.js                                                 4.99 kB │ gzip:   2.46 kB
+dist/static/js/ConsoleIcon.vue_vue_type_script_setup_true_lang-C_1tI7WS.js          6.25 kB │ gzip:   1.95 kB
+dist/static/js/RunsOverview-C1RWZgD5.js                                             8.19 kB │ gzip:   3.68 kB
+dist/static/js/ConsoleLayout-Dkldwsdm.js                                            9.16 kB │ gzip:   3.94 kB
+dist/static/js/console-BV4IhvGb.js                                                  9.80 kB │ gzip:   3.52 kB
+dist/static/js/403-XCZZM657.js                                                     11.86 kB │ gzip:   5.23 kB
+dist/static/js/HostLog.vue_vue_type_script_setup_true_lang-Bh1HOKgj.js             12.58 kB │ gzip:   5.11 kB
+dist/static/js/AccountRisk-Bt4K-EIj.js                                             12.68 kB │ gzip:   4.68 kB
+dist/static/js/404-6hxkmzFY.js                                                     12.96 kB │ gzip:   5.64 kB
+dist/static/js/500-7mEJ6x75.js                                                     14.94 kB │ gzip:   6.02 kB
+dist/static/js/RunDetail.vue_vue_type_script_setup_true_lang-B_2HH4GJ.js           16.13 kB │ gzip:   6.36 kB
+dist/static/js/StrategyDetail-D-nmxOTL.js                                          65.49 kB │ gzip:  22.35 kB
+dist/static/js/index-D-ZQDc1w.js                                                  426.56 kB │ gzip: 183.25 kB
+dist/static/js/RunAlerts.vue_vue_type_script_setup_true_lang-BJjEZUeC.js          500.39 kB │ gzip: 170.39 kB
+dist/static/js/index-Dd7aK4mo.js                                                1,234.34 kB │ gzip: 413.02 kB
+✓ built in 7.21s
+╭───────────────────────────────────────────────────────────╮
+│ 🎉 恭喜打包完成（总用时00分07秒，打包后的大小为2.76 MB）  │
+╰───────────────────────────────────────────────────────────╯

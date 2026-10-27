@@ -62,7 +62,7 @@ def main():
         try:
             for _ in range(100):
                 try:
-                    _, session = call("/api/v1/session", {"username": "operator", "password": password})
+                    _, session = call("/api/v2/session", {"username": "operator", "password": password})
                     csrf = session["csrf_token"]
                     break
                 except (error.URLError, ConnectionError):
@@ -75,26 +75,26 @@ def main():
                         "digest": "synthetic-fixture", "body": {"environment": "backtest", **body}}
 
             # The longest accepted configured ID (119) becomes a valid 128-byte workspace ID.
-            research_id = "research-" + "a" * 119
-            template = item("build-template-boundary", "template", {
-                "research_id": research_id, "research_name": "boundary", "template_id": "boundary",
+            strategy_id = "research-" + "a" * 119
+            template = item("build-template-boundary", "parameter_preset", {
+                "strategy_id": strategy_id, "strategy_name": "boundary", "parameter_preset_id": "boundary",
                 "source_digest": "b" * 64, "parameters": {"quantity": "9007199254740993"},
             })
             with sqlite3.connect(database) as db:
-                db.execute("INSERT INTO resources VALUES (?,?,?,?)", (template["id"], "template", "build", json.dumps(template)))
-            status, catalog = call("/api/v1/research")
-            assert status == 200 and any(row["id"] == research_id for row in catalog)
-            status, rows = call("/api/v1/resources?research_id=" + research_id + "&kind=template")
+                db.execute("INSERT INTO resources VALUES (?,?,?,?)", (template["id"], "parameter_preset", "build", json.dumps(template)))
+            status, catalog = call("/api/v2/strategies")
+            assert status == 200 and any(row["id"] == strategy_id for row in catalog)
+            status, rows = call("/api/v2/resources?strategy_id=" + strategy_id + "&kind=template")
             assert status == 200 and rows == [template]
 
             count, padding = 12000, "x" * 32768
             with sqlite3.connect(database) as db:
                 db.executemany("INSERT INTO resources VALUES (?,?,?,?)", (
-                    (f"history-{index}", "artifact", "build", json.dumps(item(f"history-{index}", "artifact", {
-                        "research_id": "research-archive", "research_name": "archive", "metadata": {"padding": padding},
+                    (f"history-{index}", "strategy_version", "build", json.dumps(item(f"history-{index}", "strategy_version", {
+                        "strategy_id": "research-archive", "strategy_name": "archive", "metadata": {"padding": padding},
                     }))) for index in range(count)))
             timings = {}
-            for route in ("/api/v1/research", "/api/v1/resources?research_id=research-empty&kind=artifact&limit=20"):
+            for route in ("/api/v2/strategies", "/api/v2/resources?strategy_id=research-empty&kind=strategy_version&limit=20"):
                 start = time.monotonic()
                 status, values = call(route)
                 assert status == 200
@@ -107,7 +107,7 @@ def main():
             def history():
                 entered.set()
                 for _ in range(3):
-                    call("/api/v1/research")
+                    call("/api/v2/strategies")
 
             concurrent_times = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -118,19 +118,19 @@ def main():
                 for index in range(6):
                     start = time.monotonic()
                     if index % 2:
-                        status, saved = call("/api/v1/parameter-versions", {
-                            "node_id": "build", "template_id": "boundary", "parameters": {"probe": index},
+                        status, saved = call("/api/v2/parameter-versions", {
+                            "node_id": "build", "parameter_preset_id": "boundary", "parameters": {"probe": index},
                             "expected_revision": None, "freeze_operation_id": None,
                         })
-                        assert saved["body"]["research_id"] == research_id
+                        assert saved["body"]["strategy_id"] == strategy_id
                     else:
-                        status, _ = call("/api/v1/resources/" + template["id"])
+                        status, _ = call("/api/v2/resources/" + template["id"])
                     assert status in (200, 201)
                     concurrent_times.append(time.monotonic() - start)
                 scan.result()
             assert max(concurrent_times) < 0.5, concurrent_times
             result = {"passed": True, "synthetic_history_records": count, "metadata_bytes_per_record": len(padding),
-                      "valid_workspace_id_length": len(research_id), "history_query_seconds": timings,
+                      "valid_workspace_id_length": len(strategy_id), "history_query_seconds": timings,
                       "concurrent_read_and_admission_seconds": concurrent_times,
                       "maximum_concurrent_seconds": max(concurrent_times), "real_account_access": False}
             (root / "results.json").write_text(json.dumps(result, indent=2))

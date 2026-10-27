@@ -5,7 +5,7 @@ const require = createRequire(
   new URL("../web/console/package.json", import.meta.url),
 );
 const { chromium, expect } = require("@playwright/test");
-const [origin, output, artifact] = process.argv.slice(2);
+const [origin, output, strategyVersion] = process.argv.slice(2);
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   headless: true,
@@ -20,7 +20,7 @@ page.on("pageerror", (error) => errors.push(error.message));
 async function confirm() {
   const responsePromise = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/v1/operations") &&
+      response.url().endsWith("/api/v2/operations") &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "确定", exact: true }).click();
@@ -42,10 +42,10 @@ async function login(name) {
 }
 try {
   await login("operator");
-  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.goto(origin + "/#/strategies/grid?tab=live");
   await page.getByRole("heading", { name: "受控部署", exact: true }).waitFor();
   await page.locator(".deployment-form .el-select").nth(0).click();
-  await page.getByRole("option", { name: artifact, exact: true }).click();
+  await page.getByRole("option", { name: strategyVersion, exact: true }).click();
   await page.locator(".deployment-form .el-select").nth(1).click();
   await page
     .getByRole("option", {
@@ -60,7 +60,7 @@ try {
     fullPage: true,
     animations: "disabled",
   });
-  await page.getByRole("button", { name: "部署制品", exact: true }).click();
+  await page.getByRole("button", { name: "部署策略版本", exact: true }).click();
   await page.locator(".el-drawer__close-btn:visible").click();
   await page
     .getByRole("button", { name: "启动", exact: true })
@@ -68,7 +68,7 @@ try {
   await page.getByRole("button", { name: "启动", exact: true }).click();
   await page.getByRole("button", { name: "取消", exact: true }).click();
   const cancelled = await (
-    await page.request.get(origin + "/api/v1/snapshot")
+    await page.request.get(origin + "/api/v2/snapshot")
   ).json();
   assert.equal(
     cancelled.operations.filter((op) => op.input.kind === "start").length,
@@ -97,7 +97,7 @@ try {
     fullPage: true,
     animations: "disabled",
   });
-  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.goto(origin + "/#/strategies/grid?tab=live");
   await page.locator(".live-runs-table .text-link").first().click();
   await page
     .getByRole("button", { name: "暂停", exact: true })
@@ -110,6 +110,10 @@ try {
     fullPage: true,
     animations: "disabled",
   });
+  await expect(page.locator(".business-observation")).toContainText("titan.grid", { timeout: 15000 });
+  await expect(page.locator(".business-observation")).toContainText("配对毛收益");
+  await expect(page.locator(".business-observation")).toContainText("运行内存快照");
+  await page.screenshot({path: output + "/business-observation.png",fullPage: true,animations: "disabled"});
   let releasePause, pauseEntered;
   const heldPause = new Promise((resolve) => {
     releasePause = resolve;
@@ -117,7 +121,7 @@ try {
   const enteredPause = new Promise((resolve) => {
     pauseEntered = resolve;
   });
-  await page.route("**/api/v1/operations", async (route) => {
+  await page.route("**/api/v2/operations", async (route) => {
     if (
       route.request().method() !== "POST" ||
       route.request().postDataJSON()?.action?.kind !== "pause"
@@ -131,7 +135,7 @@ try {
   await page.getByRole("button", { name: "暂停", exact: true }).click();
   const pauseResponse = page.waitForResponse(
     (response) =>
-      response.url().endsWith("/api/v1/operations") &&
+      response.url().endsWith("/api/v2/operations") &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "确定", exact: true }).click();
@@ -149,7 +153,7 @@ try {
   await page
     .locator(".el-drawer__close-btn:visible")
     .waitFor({ state: "hidden" });
-  await page.unroute("**/api/v1/operations");
+  await page.unroute("**/api/v2/operations");
   await page.getByRole("button", { name: "恢复运行", exact: true }).waitFor();
   await page.screenshot({
     path: output + "/paused.png",
@@ -162,7 +166,7 @@ try {
   await page.getByRole("button", { name: "停止", exact: true }).click();
   await confirm();
   await page
-    .getByRole("button", { name: "checkpoint 恢复", exact: true })
+    .getByRole("button", { name: "从恢复点恢复", exact: true })
     .waitFor({ timeout: 30000 });
   await page.screenshot({
     path: output + "/stopped.png",
@@ -174,10 +178,10 @@ try {
   await page.waitForURL("**/#/login");
   await login("reader");
   await page.goto(origin + "/#/runs");
-  await page.goto(origin + "/#/research/research-grid?tab=live");
+  await page.goto(origin + "/#/strategies/grid?tab=live");
   await page.locator(".live-runs-table .text-link").first().click();
   await expect(
-    page.getByRole("button", { name: "checkpoint 恢复", exact: true }),
+    page.getByRole("button", { name: "从恢复点恢复", exact: true }),
   ).toBeDisabled();
   assert.deepEqual(errors, []);
   await writeFile(
@@ -195,7 +199,8 @@ try {
           "resume",
           "stop-confirmation",
           "readonly-controls",
-          "research-workspace-live-lifecycle",
+          "grid-public-business-observation-panel",
+          "strategy-workspace-live-lifecycle",
         ],
       },
       null,

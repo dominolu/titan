@@ -31,7 +31,7 @@ pub enum StrategyErrorKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StrategyError {
     pub kind: StrategyErrorKind,
-    pub strategy_id: Option<u32>,
+    pub runtime_strategy_no: Option<u32>,
     pub generation: Option<u64>,
     pub operation_id: Option<u64>,
     pub stage: Arc<str>,
@@ -48,7 +48,7 @@ impl StrategyError {
     ) -> Self {
         Self {
             kind,
-            strategy_id: None,
+            runtime_strategy_no: None,
             generation: None,
             operation_id: None,
             stage: stage.into(),
@@ -58,7 +58,7 @@ impl StrategyError {
     }
 
     pub fn for_handle(mut self, handle: crate::StrategyHandle) -> Self {
-        self.strategy_id = Some(handle.strategy_id.0);
+        self.runtime_strategy_no = Some(handle.runtime_strategy_no.0);
         self.generation = Some(handle.generation);
         self
     }

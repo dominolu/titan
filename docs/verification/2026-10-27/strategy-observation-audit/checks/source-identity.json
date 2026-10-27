@@ -1,0 +1,12 @@
+{
+  "baseline": "638bae69324114e8a2447f648c8b7ced832196bb",
+  "root": "/home/dominolu/dev/titan-observation-audit-20261027-638bae69",
+  "git_checkout": false,
+  "file_count": 677,
+  "source_manifest_sha256": "0fb71f5a8d733af38f3309c13dfdeb1b8e7ba469c24c89183b067bc9201bfcc3",
+  "excluded": [
+    ".cargo/config.toml",
+    "docs/verification/",
+    "ignored build and dependency directories"
+  ]
+}

@@ -64,27 +64,27 @@ try:
     cfg=WORK/'manager.toml'; cfg.write_text(toml({'schema_version':1,'manager':manager}))
     log=(WORK/'manager.log').open('w'); logs.append(log); processes.append(subprocess.Popen([str(BIN),'console','manager','--config',str(cfg)],env=env,stdout=log,stderr=log,start_new_session=True))
     cookie=request.build_opener(request.HTTPCookieProcessor(CookieJar()))
-    status,session=wait(lambda: http(origin+'/api/v1/session',{'username':'review','password':password},{'Origin':origin},cookie),timeout=40)
+    status,session=wait(lambda: http(origin+'/api/v2/session',{'username':'review','password':password},{'Origin':origin},cookie),timeout=40)
     assert status==200
     headers={'Origin':origin,'X-CSRF-Token':session['csrf_token']}
-    wait(lambda: http(origin+'/api/v1/resources/live-run-probe',opener=cookie)[0]==200)
+    wait(lambda: http(origin+'/api/v2/resources/live-run-probe',opener=cookie)[0]==200)
     now=str(time.time_ns())
     with sqlite3.connect(WORK/'manager.db') as db:
         for i in range(256):
-            action={'kind':'describe','template_id':'probe','parameters':{}}
+            action={'kind':'describe','parameter_preset_id':'probe','parameters':{}}
             op={'id':f'unknown-{i}','actor':'review','node_id':'live','input':action,'account':None,'input_digest':'probe','state':'unknown','cancel_requested':False,'created_at_ns':now,'updated_at_ns':now,'result':None,'error':'synthetic lost receipt','revision':'0'}
             req={'api_version':1,'operation_id':op['id'],'input_digest':'probe','action':action,'resources':[]}
             db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?)',(op['id'],'review',op['id'],'probe','live',json.dumps(op),json.dumps(req)))
     stop={'idempotency_key':'review-stop-capacity','node_id':'live','action':{'kind':'stop','run_id':'live-run-probe','generation':'1'}}
-    status,body=http(origin+'/api/v1/operations',stop,headers,cookie)
+    status,body=http(origin+'/api/v2/operations',stop,headers,cookie)
     assert status==202,(status,body)
     accepted_id=body['id']
-    wait(lambda:http(origin+'/api/v1/operations/'+accepted_id,opener=cookie)[1]['state']=='succeeded')
+    wait(lambda:http(origin+'/api/v2/operations/'+accepted_id,opener=cookie)[1]['state']=='succeeded')
     results['stop_when_256_unknown_operations']={'http_status':status,'state':'succeeded','passed':True}
     Node.fail=True; before=len(Node.posts)
     stop['idempotency_key']='review-stop-catalog'
-    status,body=http(origin+'/api/v1/operations',stop,headers,cookie); assert status==202, (status,body)
-    wait(lambda:http(origin+'/api/v1/operations/'+body['id'],opener=cookie)[1]['state']=='succeeded')
+    status,body=http(origin+'/api/v2/operations',stop,headers,cookie); assert status==202, (status,body)
+    wait(lambda:http(origin+'/api/v2/operations/'+body['id'],opener=cookie)[1]['state']=='succeeded')
     assert len(Node.posts)==before+1
     results['stop_with_failed_catalog']={'accepted_status':status,'state':'succeeded','node_post_count':len(Node.posts)-before,'passed':True}
     # Simulate a node worker dying after spawn, before it can persist a final receipt.
@@ -94,7 +94,7 @@ try:
     log=(WORK/'node.log').open('w'); logs.append(log); processes.append(subprocess.Popen([str(BIN),'console','node','--config',str(path)],env=env,stdout=log,stderr=log,start_new_session=True))
     nh={'Authorization':'Bearer '+env['TITAN_REVIEW_NODE_TOKEN']}; endpoint=f'http://127.0.0.1:{np}'
     wait(lambda:http(endpoint+'/v1/catalog',headers=nh)[0]==200,timeout=40)
-    def node_request(id):return {'api_version':1,'operation_id':id,'input_digest':'probe','action':{'kind':'describe','template_id':'probe','parameters':{}},'resources':[]}
+    def node_request(id):return {'api_version':1,'operation_id':id,'input_digest':'probe','action':{'kind':'describe','parameter_preset_id':'probe','parameters':{}},'resources':[]}
     status,body=http(endpoint+'/v1/operations',node_request('crashed-task'),nh); assert status==200,(status,body)
     time.sleep(.3)
     _,first=http(endpoint+'/v1/operations/crashed-task',headers=nh)

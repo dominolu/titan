@@ -1,0 +1,58 @@
+[
+  {
+    "path": "crates/titan-strategy-runtime/src/observation.rs",
+    "previous_sha256": "8b4cc0f5ba1c12c1a12413ee83f0163d24d8b779eadceb04984a56bae930ef4b",
+    "current_sha256": "6d0ed0bd63c5c896de9170370c963a3d873e4b5456e23ee8dadb8aaf3c499a3e"
+  },
+  {
+    "path": "crates/titan-strategy-runtime/src/runtime_v13.rs",
+    "previous_sha256": "eb6341d2c8ea1fa5875f617c170377d1d1a2123ceb70204d363a11fbd90d6eda",
+    "current_sha256": "d14fd0fc19219a03718ee10091c79bdc03997602045ce278c5e0bd02aab5f68e"
+  },
+  {
+    "path": "crates/titan-strategy-runtime/src/runtime.rs",
+    "previous_sha256": "0eedddab1de1dd105b6163d3b684d5d96689f1ec9a24fe7a655be45b57b62c8f",
+    "current_sha256": "a3159222a02b8b8864efcd2a9a7209197b14a56dd777a88440e665885a565491"
+  },
+  {
+    "path": "crates/titan-strategy-runtime/tests/observation_boundaries.rs",
+    "previous_sha256": null,
+    "current_sha256": "54bcc34c08d52fcc4ab8524d8ff17dc7e00cc73a1585604aff7ff51499e689c5"
+  },
+  {
+    "path": "crates/titan-cli/src/management/v2.rs",
+    "previous_sha256": "a0a26c26720cbd08fcc49fbca5a4b48528d1ab34e1679f8524b2a1e2a77a60d6",
+    "current_sha256": "99556ade7e5e71c465e871f53ab6879e8707ed33c180e3e7db1d4e6f8ad802bb"
+  },
+  {
+    "path": "web/console/src/views/console/run-view.ts",
+    "previous_sha256": "dcc4611b48409488b74e6ead914f8ad0e59635eb7eb75ff3b67e3aceeac18479",
+    "current_sha256": "0f1219d230cd9e420a12b4b949c4297f425f8a5faa818928ea20be782e348ee9"
+  },
+  {
+    "path": "scripts/management_run_view_test.mjs",
+    "previous_sha256": "22a7846a6fda56299a85f854e773f3bea99ce9e12562b8e4a8eb20873a6d1c5b",
+    "current_sha256": "4dad0a32eec84420b71e96782d012f727e67ef346cbbb0f3df05ece45250704a"
+  },
+  {
+    "path": "scripts/verify_observation_recovery_compat.py",
+    "previous_sha256": "e0b2c7e3c20f3a820b04265eae8c3c4f6f779daee92c1d9fc472d17ced18f509",
+    "current_sha256": "6f7e6c6f6d86d9fabf40d85672df8b9da9323ee099dd7b9db6303da7e1756d38"
+  },
+  {
+    "path": "docs/strategy_observation_protocol.md",
+    "previous_sha256": "41943cc2508b56408a0ab7721a71090e5a4ae7a35cdd53615ea950af07487eea",
+    "current_sha256": "26877f3b3c3f107c284abdeecd8d31377eb83c5f00fc5f4741b2911dd4134cda"
+  },
+  {
+    "path": "docs/memory/engineering.md",
+    "previous_sha256": "6995bea986eeaa305a818e9754a56d6ea2629652eb1d1a7bd581959a12e31ea7",
+    "current_sha256": "bfc6203538c3a8176afc1c334518f270064a107d17bfc0cd8e67abcdbfa84707"
+  },
+  {
+    "path": "web/console/src/generated/management.ts",
+    "previous_sha256": "bebf7f16bff2f93eb22a248a347443590d01bfec25abf3f5788aaa36ab4ae9f8",
+    "current_sha256": "2fa4fca68e0d868dd703a8d7363721c60b8e894a25b7564bf22a6ed8c33febc1",
+    "note": "server-generated API types and expected build identity"
+  }
+]

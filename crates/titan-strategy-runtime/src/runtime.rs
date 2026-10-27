@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
     time::Instant,
 };
@@ -16,16 +16,55 @@ use titan_event_engine::PrimaryAsyncLaneHandle;
 use crate::*;
 
 #[derive(Default)]
-pub struct StrategyActivationGate(AtomicBool);
+pub struct StrategyActivationGate(AtomicU8);
 impl StrategyActivationGate {
-    pub fn open(&self) {
-        self.0.store(true, Ordering::Release);
+    pub fn open(&self) -> bool {
+        // 0 = closed, 1 = open, 2 = permanently invalidated for this run.
+        matches!(
+            self.0
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire),
+            Ok(_) | Err(1)
+        )
     }
     pub fn close(&self) {
-        self.0.store(false, Ordering::Release);
+        let _ = self
+            .0
+            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+    pub fn invalidate(&self) {
+        self.0.store(2, Ordering::Release);
     }
     pub fn is_open(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire) == 1
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    #[test]
+    fn invalidation_cannot_be_undone_by_a_late_open_or_close() {
+        let gate = Arc::new(StrategyActivationGate::default());
+        assert!(gate.open());
+        gate.close();
+        assert!(!gate.is_open());
+        assert!(gate.open());
+        gate.invalidate();
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..1000 {
+                        gate.close();
+                        assert!(!gate.open());
+                        assert!(!gate.is_open());
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 }
 
@@ -37,15 +76,18 @@ pub trait StrategyMetrics: Send + Sync {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct StrategyPrivateStateSnapshot {
+pub struct StrategyRecoveryPoint {
     pub checkpoint_id: u64,
     pub strategy: StrategyHandle,
     pub strategy_instance_id: u64,
-    pub strategy_id: Arc<str>,
-    pub strategy_version: Arc<str>,
+    #[serde(alias = "strategy_id")]
+    pub strategy_type: Arc<str>,
+    #[serde(alias = "strategy_version")]
+    pub source_version: Arc<str>,
     pub generation: u64,
     pub event_committed_sequence: u64,
-    pub artifact_digest: [u8; 32],
+    #[serde(alias = "artifact_digest")]
+    pub compiled_strategy_digest: [u8; 32],
     pub binding_digest: [u8; 32],
     pub abi_version: u32,
     pub state_schema_version: u32,
@@ -61,16 +103,16 @@ pub struct StrategyPrivateStateSnapshot {
     #[serde(default)]
     pub recovery: Option<crate::RecoveryBaseline>,
 }
-impl StrategyPrivateStateSnapshot {
+impl StrategyRecoveryPoint {
     pub(crate) fn native_snapshot(&self) -> StrategyStateSnapshotV13 {
         StrategyStateSnapshotV13 {
             checkpoint_id: self.checkpoint_id,
             strategy_instance_id: self.strategy_instance_id,
             generation: self.generation,
             event_committed_sequence: self.event_committed_sequence,
-            strategy_id: self.strategy_id.clone(),
-            strategy_version: self.strategy_version.clone(),
-            artifact_digest: self.artifact_digest,
+            strategy_type: self.strategy_type.clone(),
+            source_version: self.source_version.clone(),
+            compiled_strategy_digest: self.compiled_strategy_digest,
             binding_digest: self.binding_digest,
             abi_version: self.abi_version,
             state_schema_version: self.state_schema_version,
@@ -110,14 +152,11 @@ pub struct StrategyOrderRecordV13 {
     pub reserved: [u8; 1],
 }
 
-pub trait StrategyStateSnapshotSink: Send + Sync {
-    fn latest(
-        &self,
-        _strategy: StrategyHandle,
-    ) -> LocalResult<Option<StrategyPrivateStateSnapshot>> {
+pub trait StrategyRecoveryStore: Send + Sync {
+    fn latest(&self, _strategy: StrategyHandle) -> LocalResult<Option<StrategyRecoveryPoint>> {
         Ok(None)
     }
-    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
+    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()>;
     fn check_health(&self) -> LocalResult<()> {
         Ok(())
     }
@@ -144,11 +183,11 @@ pub struct StrategyPublicStateSeedV13 {
 
 pub struct StrategyRuntimeBuildContext {
     pub strategy: StrategyHandle,
-    pub artifact_id: StrategyArtifactId,
+    pub compiled_strategy_digest: CompiledStrategyDigest,
     pub markets: Arc<[ResolvedMarketBinding]>,
     pub accounts: Arc<[ResolvedAccountBinding]>,
     pub execution: Arc<[StrategyExecutionBinding]>,
-    pub state_snapshot_sink: Arc<dyn StrategyStateSnapshotSink>,
+    pub state_snapshot_sink: Arc<dyn StrategyRecoveryStore>,
     pub clock: Arc<dyn StrategyClock>,
     pub metrics: Arc<dyn StrategyMetrics>,
     pub resources: ResourceScopeHandle,
@@ -163,11 +202,11 @@ pub struct StrategyExecutionBinding {
 }
 
 pub trait StrategyRuntimeFactory: Send + Sync {
-    fn strategy_type(&self) -> &str;
+    fn runtime_type(&self) -> &str;
     fn create(
         &self,
         definition: &StrategyDefinition,
-        artifact: StrategyArtifact,
+        compiled_strategy: LoadedStrategy,
         context: StrategyRuntimeBuildContext,
     ) -> Result<Arc<dyn StrategyRuntime>, StrategyError>;
 }
@@ -182,14 +221,17 @@ pub trait StrategyRuntime: EventHandler + Send + Sync {
     fn release_safe(&self) -> bool {
         false
     }
-    fn business_snapshot(&self) -> LocalResult<serde_json::Value> {
-        Ok(
-            serde_json::json!({"available":false,"reason":"runtime has no committed business snapshot"}),
-        )
+    fn recovery_status(&self) -> LocalResult<serde_json::Value> {
+        Ok(serde_json::json!({"available":false,"reason":"recovery metadata unavailable"}))
+    }
+    fn business_observation(&self) -> LocalResult<BusinessObservationSnapshot> {
+        Ok(BusinessObservationSnapshot::unavailable(
+            "business observation unsupported",
+        ))
     }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
     fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
-    fn restore_state(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()>;
+    fn restore_state(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()>;
     fn fire_timer(&self, timer_id: u64) -> LocalResult<()>;
     fn advance_lifecycle(&self) -> LocalResult<()> {
         Ok(())
@@ -217,7 +259,7 @@ pub struct StrategyRuntimeFactoryRegistry {
 }
 impl StrategyRuntimeFactoryRegistry {
     pub fn register(&self, factory: Arc<dyn StrategyRuntimeFactory>) -> LocalResult<()> {
-        let key: Arc<str> = Arc::from(factory.strategy_type());
+        let key: Arc<str> = Arc::from(factory.runtime_type());
         let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
         if factories.insert(key, factory).is_some() {
             return Err(StrategyError::new(
@@ -229,11 +271,11 @@ impl StrategyRuntimeFactoryRegistry {
         }
         Ok(())
     }
-    pub fn get(&self, strategy_type: &str) -> LocalResult<Arc<dyn StrategyRuntimeFactory>> {
+    pub fn get(&self, runtime_type: &str) -> LocalResult<Arc<dyn StrategyRuntimeFactory>> {
         self.factories
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .get(strategy_type)
+            .get(runtime_type)
             .cloned()
             .ok_or_else(|| {
                 StrategyError::new(

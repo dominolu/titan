@@ -1,4 +1,4 @@
-//! Offline Service -> Factory -> Instance recovery, using a compiled artifact and empty services.
+//! Offline Service -> Factory -> Instance recovery, using a compiled compiled_strategy and empty services.
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -77,7 +77,7 @@ impl MarketService for MockMarket {
     }
 }
 
-// BBO-only artifact with a bound account: host facts must be routed even without
+// BBO-only compiled_strategy with a bound account: host facts must be routed even without
 // strategy account callbacks. No connector can contact an exchange in this test.
 struct MockAccounts;
 impl MockAccounts {
@@ -175,13 +175,14 @@ fn wait(service: &StrategyServiceCore, operation: StrategyOperationId) {
 }
 
 fn main() {
-    let artifact =
-        std::fs::canonicalize(PathBuf::from(std::env::args_os().nth(1).expect("artifact")))
-            .unwrap();
+    let compiled_strategy = std::fs::canonicalize(PathBuf::from(
+        std::env::args_os().nth(1).expect("compiled_strategy"),
+    ))
+    .unwrap();
     let root = PathBuf::from(std::env::args_os().nth(2).expect("verification directory"));
     std::fs::create_dir_all(&root).unwrap();
-    let loaded = NativeArtifactLoaderV13::new(root.join("inspect"), V13TrustPolicy::default())
-        .inspect(&artifact)
+    let loaded = NativeStrategyLoaderV13::new(root.join("inspect"), V13TrustPolicy::default())
+        .inspect(&compiled_strategy)
         .unwrap();
     let engine = EventEngine::new(EventEngineConfig::default()).unwrap();
     engine
@@ -217,7 +218,7 @@ fn main() {
         StrategyRecoveryPolicy::Fresh,
         StrategyRecoveryPolicy::RequireCheckpoint,
     ] {
-        let loaders = Arc::new(StrategyPackageLoaderRegistry::default());
+        let loaders = Arc::new(StrategyLoaderRegistry::default());
         loaders.register(Arc::new(NativeV13LoaderFactory)).unwrap();
         let runtimes = Arc::new(StrategyRuntimeFactoryRegistry::default());
         runtimes
@@ -226,9 +227,13 @@ fn main() {
         let service = StrategyServiceCore::new(
             StrategyCoreConfig {
                 checkpoint_root: Some(root.join("checkpoints")),
-                require_artifact_signature: false,
-                allowed_artifact_roots: Arc::from([Arc::from(
-                    artifact.parent().unwrap().to_string_lossy().as_ref(),
+                require_strategy_signature: false,
+                allowed_strategy_roots: Arc::from([Arc::from(
+                    compiled_strategy
+                        .parent()
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_ref(),
                 )]),
                 allowed_event_types: [(Arc::from(BBO_EVENT), 1)].into_iter().collect(),
                 ..Default::default()
@@ -247,11 +252,11 @@ fn main() {
         let strategy = service
             .create(StrategyDefinition {
                 strategy_key: Arc::from("recovery-smoke"),
-                strategy_id: StrategyId(77),
-                package: StrategyPackageRef {
+                runtime_strategy_no: RuntimeStrategyNo(77),
+                strategy_file: StrategyFileRef {
                     loader_type: Arc::from("native-v13"),
-                    uri: Arc::from(format!("file://{}", artifact.display())),
-                    expected_digest: loaded.artifact_digest,
+                    uri: Arc::from(format!("file://{}", compiled_strategy.display())),
+                    expected_digest: loaded.compiled_strategy_digest,
                     signature_ref: None,
                 },
                 markets: Arc::from([StrategyMarketBinding {
@@ -279,7 +284,7 @@ fn main() {
                 },
                 recovery,
                 enabled: true,
-                definition_version: 1,
+                run_config_revision: 1,
             })
             .unwrap();
         assert!(strategy.generation > generation);

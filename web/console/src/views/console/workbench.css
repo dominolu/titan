@@ -1159,20 +1159,20 @@
   width: 100%;
   height: 330px;
 }
-.research-grid {
+.strategy-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
 }
-.research-card h2 {
+.strategy-card h2 {
   font-size: 20px;
   margin: 0 0 10px;
   font-weight: 600;
 }
-.research-card .digest-text {
+.strategy-card .digest-text {
   min-height: 36px;
 }
-.research-symbol {
+.strategy-symbol {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1182,23 +1182,23 @@
   background: #edf6f2;
   border-radius: 11px;
 }
-.research-counts {
+.strategy-counts {
   display: flex;
   gap: 40px;
   margin: 24px 0;
 }
-.research-counts strong {
+.strategy-counts strong {
   display: block;
   font-size: 25px;
   font-weight: 600;
 }
-.research-counts span {
+.strategy-counts span {
   display: block;
   font-size: 11px;
   color: #718092;
   margin-top: 7px;
 }
-.research-pager {
+.strategy-pager {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1206,35 +1206,35 @@
   gap: 10px;
   padding: 12px 0;
 }
-.console-card > .research-pager {
+.console-card > .strategy-pager {
   padding: 12px 20px;
   border-top: 1px solid #edf0f3;
 }
-.card-body > .research-pager {
+.card-body > .strategy-pager {
   padding-bottom: 0;
 }
-.research-pager .el-button {
+.strategy-pager .el-button {
   font-size: 10px;
 }
-.research-tabs {
+.strategy-tabs {
   margin-top: 5px;
 }
-.research-workspace {
+.strategy-workspace {
   min-width: 0;
 }
 @media (max-width: 1190px) {
-  .research-grid {
+  .strategy-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 760px) {
-  .research-grid {
+  .strategy-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .research-pager {
+  .strategy-pager {
     font-size: 10px;
   }
-  .research-tabs {
+  .strategy-tabs {
     gap: 18px;
   }
 }

@@ -1,0 +1,4 @@
+Host: 192.168.3.88
+Working directory: /home/dominolu/dev/titan-observation-20261027-638bae69
+TITAN_BROWSER_EXECUTABLE=/home/dominolu/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome
+/home/dominolu/dev/titan/.venv/bin/python scripts/management_research_query_test.py --repo /home/dominolu/dev/titan-observation-20261027-638bae69 --binary /tmp/titan-deplugin-target/debug/titan --output /home/dominolu/dev/titan-observation-20261027-638bae69/evidence/query-09

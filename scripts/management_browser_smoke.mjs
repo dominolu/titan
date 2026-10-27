@@ -18,23 +18,23 @@ const browser = await chromium.launch({
   executablePath: process.env.TITAN_BROWSER_EXECUTABLE,
 });
 const errors = [];
-const researchPath = "/#/research/research-grid";
+const strategyPath = "/#/strategies/grid";
 async function workspace(page, tab = "parameters", query = {}) {
   await page.goto(
-    origin + researchPath + "?" + new URLSearchParams({ tab, ...query }),
+    origin + strategyPath + "?" + new URLSearchParams({ tab, ...query }),
   );
   await page
     .getByRole("heading", { name: "网格策略", exact: true, level: 1 })
     .waitFor();
-  await expect(page.locator(".research-tabs button.active")).toHaveText(
+  await expect(page.locator(".strategy-tabs button.active")).toHaveText(
     {
       parameters: "版本与参数",
-      artifacts: "构建记录",
+      versions: "策略版本",
       backtests: "回测与报告",
       live: "策略实盘",
     }[tab],
   );
-  await expect(page.locator(".research-workspace")).toBeVisible();
+  await expect(page.locator(".strategy-workspace")).toBeVisible();
 }
 async function login(role, existing) {
   const context =
@@ -76,7 +76,7 @@ try {
         async () => {
           actual = await (
             await page.request.get(
-              origin + "/api/v1/operations/" + operation.id,
+              origin + "/api/v2/operations/" + operation.id,
             )
           ).json();
           return ["succeeded", "failed", "cancelled"].includes(actual.state);
@@ -91,7 +91,7 @@ try {
     const [response] = await Promise.all([
       page.waitForResponse(
         (response) =>
-          response.url().endsWith("/api/v1/operations") &&
+          response.url().endsWith("/api/v2/operations") &&
           response.request().method() === "POST",
       ),
       button.click(),
@@ -108,7 +108,7 @@ try {
   const [draftResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/v1/parameter-versions") &&
+        response.url().endsWith("/api/v2/parameter-versions") &&
         response.request().method() === "POST",
     ),
     page.getByRole("button", { name: "保存草稿", exact: true }).click(),
@@ -122,7 +122,7 @@ try {
   const [patchResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/v1/parameter-versions/" + draft.id) &&
+        response.url().endsWith("/api/v2/parameter-versions/" + draft.id) &&
         response.request().method() === "PATCH",
     ),
     page.getByRole("button", { name: "保存草稿", exact: true }).click(),
@@ -154,7 +154,7 @@ try {
   const [frozenResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/v1/parameter-versions/" + draft.id) &&
+        response.url().endsWith("/api/v2/parameter-versions/" + draft.id) &&
         response.request().method() === "PATCH",
     ),
     page.getByRole("button", { name: "冻结版本", exact: true }).click(),
@@ -173,7 +173,7 @@ try {
   const [copyResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/v1/parameter-versions") &&
+        response.url().endsWith("/api/v2/parameter-versions") &&
         response.request().method() === "POST",
     ),
     page.getByRole("button", { name: "保存草稿", exact: true }).click(),
@@ -214,13 +214,13 @@ try {
       .filter({ hasText: frozen.id })
       .getByRole("button", { name: "构建", exact: true }),
   ).toBeEnabled();
-  await workspace(page, "artifacts");
+  await workspace(page, "versions");
   await page.reload();
-  await page.locator(".research-workspace .el-select").first().click();
+  await page.locator(".strategy-workspace .el-select").first().click();
   await page
     .getByRole("option", { name: "build / " + frozen.id, exact: true })
     .click();
-  const buildPager = page.locator('.research-pager[data-kind="version"]');
+  const buildPager = page.locator('.strategy-pager[data-kind="parameter_version"]');
   if (
     await buildPager
       .getByRole("button", { name: "下一页", exact: true })
@@ -231,34 +231,34 @@ try {
       .click();
     await expect(buildPager).toContainText("第 2 页");
     await expect(
-      page.getByRole("button", { name: "构建版本", exact: true }),
+      page.getByRole("button", { name: "编译策略", exact: true }),
     ).toBeEnabled();
   }
   const built = await clickOperation(
-    page.getByRole("button", { name: "构建版本", exact: true }),
+    page.getByRole("button", { name: "编译策略", exact: true }),
   );
-  assert.equal(built.input.version_id, frozen.id);
-  const artifact = built.result.resources.find(
-    (item) => item.kind === "artifact",
+  assert.equal(built.input.parameter_version_id, frozen.id);
+  const strategyVersion = built.result.resources.find(
+    (item) => item.kind === "strategy_version",
   );
-  assert(artifact);
+  assert(strategyVersion);
   await page.locator(".el-drawer__close-btn:visible").click();
-  await workspace(page, "artifacts");
-  await expect(page.locator(".artifacts-table")).toContainText(artifact.id);
+  await workspace(page, "versions");
+  await expect(page.locator(".strategy-versions-table")).toContainText(strategyVersion.id);
   const downloadPath = await page
-    .locator(".artifacts-table tbody tr")
-    .filter({ hasText: artifact.id })
+    .locator(".strategy-versions-table tbody tr")
+    .filter({ hasText: strategyVersion.id })
     .getByRole("link", { name: "下载", exact: true })
     .getAttribute("href");
   const download = await page.request.get(new URL(downloadPath, origin).href);
   assert.equal(download.status(), 200);
   await page
-    .getByLabel("搜索构建制品", { exact: true })
-    .fill("no-such-artifact");
-  await expect(page.locator(".artifacts-table")).toContainText(
-    "没有匹配的制品",
+    .getByLabel("搜索策略版本", { exact: true })
+    .fill("no-such-strategyVersion");
+  await expect(page.locator(".strategy-versions-table")).toContainText(
+    "没有匹配的策略版本",
   );
-  await page.getByLabel("搜索构建制品", { exact: true }).fill(artifact.id);
+  await page.getByLabel("搜索策略版本", { exact: true }).fill(strategyVersion.id);
   await page.mouse.move(500, 100);
   await page
     .locator(".console-workspace")
@@ -267,13 +267,13 @@ try {
     timeout: 10000,
   });
   await page.screenshot({
-    path: output + "/artifacts.png",
+    path: output + "/strategy-versions.png",
     fullPage: true,
     animations: "disabled",
   });
   await workspace(page, "backtests");
   await page.locator(".backtest-form .el-select").nth(0).click();
-  await page.getByRole("option", { name: artifact.id, exact: true }).click();
+  await page.getByRole("option", { name: strategyVersion.id, exact: true }).click();
   await page.locator(".backtest-form .el-select").nth(1).click();
   await page
     .getByRole("option", { name: "sideways / sideways", exact: true })
@@ -317,9 +317,9 @@ try {
   await page.locator(".el-dialog__headerbtn").click();
   await expect(page.locator(".workbench-sidebar nav a")).toHaveCount(3);
   await expect(page.locator(".workbench-sidebar nav")).toHaveText(
-    /运行总览.*策略研究.*账户风险/s,
+    /运行总览.*策略管理.*账户风险/s,
   );
-  for (const tab of ["parameters", "artifacts", "backtests", "live"]) {
+  for (const tab of ["parameters", "versions", "backtests", "live"]) {
     await workspace(page, tab);
     if (tab === "backtests") {
       await page.locator("canvas").first().waitFor();
@@ -338,11 +338,17 @@ try {
           .evaluate((el) => el.scrollWidth <= el.clientWidth),
       )
       .toBe(true);
-    assert.equal(
-      await page.evaluate(() => document.documentElement.scrollWidth),
-      390,
-      tab,
-    );
+    // Element Plus overlays animate after closing and viewport changes.
+    // Wait for their layout to settle, then retain the exact overflow check.
+    try {
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth), {timeout: 5000, message: tab}).toBe(390);
+    } catch (error) {
+      await writeFile(output + "/overflow.json", JSON.stringify(await page.evaluate(() =>
+        Array.from(document.querySelectorAll("body *")).map(element => ({tag:element.tagName,classes:element.className,left:element.getBoundingClientRect().left,right:element.getBoundingClientRect().right})).filter(item => item.right > 390 && item.right > item.left)
+      ), null, 2));
+      await page.screenshot({path:output+"/overflow.png",fullPage:true});
+      throw error;
+    }
     await page.screenshot({
       path: output + "/mobile-" + tab + ".png",
       fullPage: true,
@@ -351,25 +357,25 @@ try {
     await page.setViewportSize({ width: 1500, height: 1050 });
   }
   const session = await (
-    await page.request.get(origin + "/api/v1/session")
+    await page.request.get(origin + "/api/v2/session")
   ).json();
   const headers = { Origin: origin, "x-csrf-token": session.csrf_token };
   const snapshot = await (
-    await page.request.get(origin + "/api/v1/snapshot")
+    await page.request.get(origin + "/api/v2/snapshot")
   ).json();
   const other = snapshot.resources.find(
     (item) =>
-      item.kind === "template" && item.body.template_id === "foreign-grid",
+      item.kind === "parameter_preset" && item.body.parameter_preset_id === "foreign-grid",
   );
   assert(other);
-  const describe = await page.request.post(origin + "/api/v1/operations", {
+  const describe = await page.request.post(origin + "/api/v2/operations", {
     headers,
     data: {
       idempotency_key: crypto.randomUUID(),
       node_id: "build",
       action: {
         kind: "describe",
-        template_id: "foreign-grid",
+        parameter_preset_id: "foreign-grid",
         parameters: other.body.parameters,
       },
     },
@@ -377,12 +383,12 @@ try {
   assert.equal(describe.status(), 202);
   const valid = await terminal(await describe.json());
   const otherVersion = await page.request.post(
-    origin + "/api/v1/parameter-versions",
+    origin + "/api/v2/parameter-versions",
     {
       headers,
       data: {
         node_id: "build",
-        template_id: "foreign-grid",
+        parameter_preset_id: "foreign-grid",
         parameters: other.body.parameters,
         expected_revision: null,
         freeze_operation_id: valid.id,
@@ -391,47 +397,47 @@ try {
   );
   assert(otherVersion.ok());
   const otherFrozen = await otherVersion.json();
-  const buildOther = await page.request.post(origin + "/api/v1/operations", {
+  const buildOther = await page.request.post(origin + "/api/v2/operations", {
     headers,
     data: {
       idempotency_key: crypto.randomUUID(),
       node_id: "build",
-      action: { kind: "build", version_id: otherFrozen.id },
+      action: { kind: "compile", parameter_version_id: otherFrozen.id },
     },
   });
   assert.equal(buildOther.status(), 202);
   const otherBuilt = await terminal(await buildOther.json());
-  const otherArtifact = otherBuilt.result.resources.find(
-    (item) => item.kind === "artifact",
+  const otherStrategyVersion = otherBuilt.result.resources.find(
+    (item) => item.kind === "strategy_version",
   );
-  assert.equal(otherArtifact.body.research_id, "research-other-strategy");
+  assert.equal(otherStrategyVersion.body.strategy_id, "other-strategy");
   const scoped = await (
     await page.request.get(
       origin +
-        "/api/v1/resources?kind=artifact&research_id=research-grid&resource_id=" +
-        otherArtifact.id,
+        "/api/v2/resources?kind=strategy_version&strategy_id=grid&resource_id=" +
+        otherStrategyVersion.id,
     )
   ).json();
   assert.deepEqual(scoped, []);
-  await workspace(page, "artifacts");
-  await expect(page.locator(".artifacts-table")).not.toContainText(
-    otherArtifact.id,
+  await workspace(page, "versions");
+  await expect(page.locator(".strategy-versions-table")).not.toContainText(
+    otherStrategyVersion.id,
   );
-  await workspace(page, "live", { artifact: otherArtifact.id });
-  await expect(page.locator(".research-workspace")).toContainText(
+  await workspace(page, "live", { strategy_version_id: otherStrategyVersion.id });
+  await expect(page.locator(".strategy-workspace")).toContainText(
     "所选资源不属于当前策略",
   );
   await expect(
-    page.getByRole("button", { name: "部署制品", exact: true }),
+    page.getByRole("button", { name: "部署策略版本", exact: true }),
   ).toBeDisabled();
   for (let index = 0; index < 105; index++) {
     const saved = await page.request.post(
-      origin + "/api/v1/parameter-versions",
+      origin + "/api/v2/parameter-versions",
       {
         headers,
         data: {
           node_id: "build",
-          template_id: "foreign-grid",
+          parameter_preset_id: "foreign-grid",
           parameters: { ...editedValues, max_rejections: 100 + index },
           expected_revision: null,
           freeze_operation_id: null,
@@ -442,12 +448,12 @@ try {
   }
   for (let index = 0; index < 24; index++) {
     const saved = await page.request.post(
-      origin + "/api/v1/parameter-versions",
+      origin + "/api/v2/parameter-versions",
       {
         headers,
         data: {
           node_id: "build",
-          template_id: index % 2 ? "foreign-grid" : "sideways-neutral",
+          parameter_preset_id: index % 2 ? "foreign-grid" : "sideways-neutral",
           parameters: { ...editedValues, max_rejections: 10 + index },
           expected_revision: null,
           freeze_operation_id: null,
@@ -459,12 +465,12 @@ try {
   // Fill the current workspace's first page despite a larger global resource population.
   for (let index = 0; index < 12; index++) {
     const saved = await page.request.post(
-      origin + "/api/v1/parameter-versions",
+      origin + "/api/v2/parameter-versions",
       {
         headers,
         data: {
           node_id: "build",
-          template_id: "sideways-neutral",
+          parameter_preset_id: "sideways-neutral",
           parameters: { ...editedValues, max_rejections: 40 + index },
           expected_revision: null,
           freeze_operation_id: null,
@@ -474,7 +480,7 @@ try {
     assert(saved.ok());
   }
   await workspace(page, "parameters");
-  const versionsPager = page.locator('.research-pager[data-kind="version"]');
+  const versionsPager = page.locator('.strategy-pager[data-kind="parameter_version"]');
   await versionsPager
     .getByRole("button", { name: "刷新记录", exact: true })
     .click();
@@ -492,16 +498,16 @@ try {
   await versionsPager
     .getByRole("button", { name: "上一页", exact: true })
     .click();
-  await page.goto(origin + "/#/research");
-  await expect(page.locator(".research-card")).toHaveCount(2);
+  await page.goto(origin + "/#/strategies");
+  await expect(page.locator(".strategy-card")).toHaveCount(2);
   await page.mouse.move(500, 100);
   await page.screenshot({
-    path: output + "/research-index.png",
+    path: output + "/strategy-list.png",
     fullPage: true,
     animations: "disabled",
   });
   await page.goto(origin + "/#/artifacts");
-  await page.waitForURL("**/#/research?tab=artifacts");
+  await page.waitForURL("**/#/strategies?tab=versions");
   await page.goto(origin + "/#/accounts");
   await page.reload();
   await page.getByRole("heading", { name: "账户风险", exact: true }).waitFor();
@@ -535,7 +541,7 @@ try {
   );
   await workspace(page, "live");
   await expect(
-    page.getByRole("button", { name: "部署制品", exact: true }),
+    page.getByRole("button", { name: "部署策略版本", exact: true }),
   ).toBeDisabled();
   await workspace(page, "backtests");
   for (const label of ["准备数据", "发起回测"])
@@ -581,13 +587,13 @@ try {
           "changed-parameters-require-validation",
           "schema-form-and-json-editor",
           "initial-template-defaults",
-          "artifact-download-search",
+          "strategyVersion-download-search",
           "prepare-and-stress-toggle",
           "four-pages-mobile-width",
           "three-navigation-items",
           "workspace-build-keeps-selected-version-across-pages",
           "per-strategy-workspace-and-alias-grouping",
-          "cross-strategy-artifact-selection-rejected",
+          "cross-strategy-strategyVersion-selection-rejected",
           "server-filtered-strategy-pagination",
           "legacy-routes-choose-workspace",
         ],

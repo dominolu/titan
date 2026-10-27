@@ -1,0 +1,76 @@
+{
+  "previous_manifest_sha256": "4319e8208a49e30accc551773634433103f2e0a76d8bf9872dfd0263539a7e3c",
+  "changed_since_previous_stage": 14,
+  "files": [
+    {
+      "path": "crates/titan-strategy-runtime/src/observation.rs",
+      "previous_sha256": "17217e1684bad0df8bb9d94d2d3ae294583cffb1227a7bd73dc53d329e5f511f",
+      "sha256": "8b4cc0f5ba1c12c1a12413ee83f0163d24d8b779eadceb04984a56bae930ef4b"
+    },
+    {
+      "path": "crates/titan-strategy-runtime/src/runtime_v13.rs",
+      "previous_sha256": "98fe3abe423420606c4c4fdc641e64f9f8c4e0053fdcc150d920bf4381300c41",
+      "sha256": "eb6341d2c8ea1fa5875f617c170377d1d1a2123ceb70204d363a11fbd90d6eda"
+    },
+    {
+      "path": "crates/titan-strategy-runtime/src/v13.rs",
+      "previous_sha256": "3faa0c6bc44ef256e58ccb536d399f365dbad313d44708447717f2f0d95f2644",
+      "sha256": "7cc1aea0656403b69fb725d6e0ba7836a7f9bf45e71b88d2c93beb6deea80799"
+    },
+    {
+      "path": "docs/memory/engineering.md",
+      "previous_sha256": "b4c46bd7c4866e06d2d31506c8569b533f899ff209f157741af271d44b67f032",
+      "sha256": "6995bea986eeaa305a818e9754a56d6ea2629652eb1d1a7bd581959a12e31ea7"
+    },
+    {
+      "path": "docs/strategy_observation_protocol.md",
+      "previous_sha256": "717a60b60847c6a1606831ff3cee6e5575f8c5b9ceb8fe2b79f9e414e1b02771",
+      "sha256": "41943cc2508b56408a0ab7721a71090e5a4ae7a35cdd53615ea950af07487eea"
+    },
+    {
+      "path": "scripts/management_control_browser.mjs",
+      "previous_sha256": "1156f355658719f85d06a699acbb36341a8b0093f5484a1fc6c7a30849c0fcdc",
+      "sha256": "22ec3559d8ad89e288e2e55cef94f5c8b88f62e548d30fb0315df155cf1ea1b7"
+    },
+    {
+      "path": "scripts/management_control_smoke.py",
+      "previous_sha256": "87f5935b8aabed4272e3318129c98e8ce478bdb580212f501df8fb09aded847e",
+      "sha256": "872cdf54f364e790f6327cf814fe339b0f2ac7a78872032240deb436739f8419"
+    },
+    {
+      "path": "scripts/management_run_view_test.mjs",
+      "previous_sha256": "3087c18c766ad4df839f7c2b15f8cd5f33ca97733fe1ef58b08e41cec455c256",
+      "sha256": "22a7846a6fda56299a85f854e773f3bea99ce9e12562b8e4a8eb20873a6d1c5b"
+    },
+    {
+      "path": "scripts/verify_observation_recovery_compat.py",
+      "previous_sha256": null,
+      "sha256": "e0b2c7e3c20f3a820b04265eae8c3c4f6f779daee92c1d9fc472d17ced18f509"
+    },
+    {
+      "path": "scripts/verify_strategy_observation.sh",
+      "previous_sha256": "3a8b1971405fcd72d05c0d0941658a7db9c07d886bd19b6ff50b99392828da3a",
+      "sha256": "b9b75445774b4283f713eedfecbb05508886dd3a53aad2163802947be44e33a7"
+    },
+    {
+      "path": "web/console/src/generated/management.ts",
+      "previous_sha256": "35ea72e303588d90650d457af7408f35eca9384fc6d3004152f8842497df00f6",
+      "sha256": "bebf7f16bff2f93eb22a248a347443590d01bfec25abf3f5788aaa36ab4ae9f8"
+    },
+    {
+      "path": "web/console/src/views/console/BusinessObservationPanel.vue",
+      "previous_sha256": "7a16ecbc3f46e75cbcf65a6d7857549be6c3aa0b0100cfbb0054a329f2661b19",
+      "sha256": "7e9b55f2b577e02cbd27f68acc78bb8d9e44efc1128612fe44992e95b5cdee78"
+    },
+    {
+      "path": "web/console/src/views/console/observation-view.ts",
+      "previous_sha256": "bfbe4ade366b7e5a588e692aaab920004aa5dc1a7e32d5629fcbe3ae6966c8b8",
+      "sha256": "81825c39076724a2e042c12a7691c8c041387f7f37faf3e76055deba878cd516"
+    },
+    {
+      "path": "web/console/src/views/console/run-view.ts",
+      "previous_sha256": "fbcdf45455216cc0d165408e228dabf11ed7c1267d897beb8cdc19cf51733c9f",
+      "sha256": "dcc4611b48409488b74e6ead914f8ad0e59635eb7eb75ff3b67e3aceeac18479"
+    }
+  ]
+}

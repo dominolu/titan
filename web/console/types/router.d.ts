@@ -66,6 +66,8 @@ declare global {
   interface RouteChildrenConfigsTable {
     /** 子路由地址 `必填` */
     path: string;
+    /** 历史地址保留为同一路由的别名，避免复制页面状态。 */
+    alias?: string | string[];
     /** 路由名字（对应不要重复，和当前组件的`name`保持一致）`必填` */
     name?: string;
     /** 路由重定向 `可选` */

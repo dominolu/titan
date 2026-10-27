@@ -1,0 +1,1 @@
+/home/dominolu/dev/titan/.venv/bin/python scripts/management_control_smoke.py --repo /home/dominolu/dev/titan-observation-20261027-638bae69 --binary /tmp/titan-deplugin-target/debug/titan --output /home/dominolu/dev/titan-observation-20261027-638bae69/evidence/final-09/loopback --browser

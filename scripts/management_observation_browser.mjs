@@ -124,7 +124,7 @@ try {
   await page.getByRole("option", { name: "订单", exact: true }).click();
   await page.locator(".fact-entry").first().waitFor();
   await page.route(
-    "**/api/v1/resources/observe-run-fixture/history*",
+    "**/api/v2/resources/observe-run-fixture/history*",
     async (route) => {
       const offset = Number(
         new URL(route.request().url()).searchParams.get("offset") || "0",
@@ -162,9 +162,9 @@ try {
   await expect(page.locator(".fact-history .table-footer")).toContainText(
     "偏移 20",
   );
-  await page.unroute("**/api/v1/resources/observe-run-fixture/history*");
+  await page.unroute("**/api/v2/resources/observe-run-fixture/history*");
   await page.getByRole("button", { name: "参数与版本", exact: true }).click();
-  await page.getByText("参数、制品与恢复来源", { exact: true }).waitFor();
+  await page.getByText("参数、策略版本与恢复来源", { exact: true }).waitFor();
   await page.getByRole("button", { name: "运行概览", exact: true }).click();
   await page.request.get(fault + "/fault/stale");
   await expect(page.locator(".runtime-state")).toContainText(
@@ -219,7 +219,7 @@ try {
     historyEntered = resolve;
   });
   await page.route(
-    "**/api/v1/resources/observe-run-fixture/history*",
+    "**/api/v2/resources/observe-run-fixture/history*",
     async (route) => {
       if (new URL(route.request().url()).searchParams.get("kind") !== "stream")
         return route.continue();
@@ -259,7 +259,7 @@ try {
   );
   await page.goto(origin + "/#/accounts");
   const oldAlert = await (
-    await page.request.get(origin + "/api/v1/resources/observe-alert")
+    await page.request.get(origin + "/api/v2/resources/observe-alert")
   ).json();
   let releaseAcknowledgement, acknowledgementEntered;
   const heldAcknowledgement = new Promise((resolve) => {
@@ -269,7 +269,7 @@ try {
     acknowledgementEntered = resolve;
   });
   await page.route(
-    "**/api/v1/resources/observe-alert/acknowledge",
+    "**/api/v2/resources/observe-alert/acknowledge",
     async (route) => {
       acknowledgementEntered();
       await heldAcknowledgement;
@@ -300,7 +300,7 @@ try {
   );
   releaseAcknowledgement();
   await acknowledgementReleased;
-  await page.unroute("**/api/v1/resources/observe-alert/acknowledge");
+  await page.unroute("**/api/v2/resources/observe-alert/acknowledge");
   await expect(page.locator(".workbench-content")).not.toContainText(
     "old-session-response-must-not-appear",
   );
@@ -308,10 +308,10 @@ try {
     page.getByRole("button", { name: "确认已知悉", exact: true }),
   ).toBeDisabled();
   const session = await (
-    await page.request.get(origin + "/api/v1/session")
+    await page.request.get(origin + "/api/v2/session")
   ).json();
   const denied = await page.request.post(
-    origin + "/api/v1/resources/observe-alert/acknowledge",
+    origin + "/api/v2/resources/observe-alert/acknowledge",
     {
       headers: { Origin: origin, "x-csrf-token": session.csrf_token },
       data: { expected_revision: "0", condition_identity: "two" },

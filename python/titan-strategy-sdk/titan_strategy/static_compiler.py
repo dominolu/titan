@@ -329,7 +329,7 @@ def validate_strategy_definition(
         raise StrategyCompileError("recovery_orders requires RECOVERY_ORDER_RESULTS capability")
     if definition.spec.capabilities & Capability.RECOVERY_ORDER_RESULTS and "on_recover" not in handler_names:
         raise StrategyCompileError("RECOVERY_ORDER_RESULTS requires on_recover")
-    source_schema = canonical_state_schema(layout, schema_version=definition.spec.state_schema_version)
+    source_schema = canonical_state_schema(layout, schema_version=definition.spec.recovery_state_schema_version)
     initial_state = bytearray(definition.state.tobytes(order="C"))
     occupied = bytearray(layout.itemsize)
 
@@ -368,7 +368,7 @@ def _bridge(handler: ValidatedHandler, context_type: StrategyContextType, strate
                          for node in ast.walk(ast.parse(inspect.getsource(dispatcher.py_func))))
     expected_len = strategy.state_layout.itemsize
     expected_alignment = strategy.state_layout.alignment
-    expected_version = strategy.definition.spec.state_schema_version
+    expected_version = strategy.definition.spec.recovery_state_schema_version
     expected_hash = tuple(strategy.schema_hash)
     context_size = abi_v13.runtime_context_dtype.itemsize
 
@@ -510,27 +510,29 @@ def emit_callback_bridge(
 
 
 def describe_strategy(strategy: ValidatedStrategy) -> dict[str, object]:
-    """Typed bridge facts, not an artifact manifest. Rust validates and packages them."""
+    """Typed bridge facts. Rust validates them and builds the compiled strategy."""
     spec = strategy.definition.spec
     return {
-        "protocol_version": 1, "abi_version": 13,
+        "protocol_version": 2, "abi_version": 13,
         "abi_fingerprint": list(abi_v13.ABI_FINGERPRINT),
-        "strategy_id": spec.strategy_id, "strategy_version": spec.strategy_version,
+        "strategy_type": spec.strategy_type, "source_version": spec.source_version,
         "callbacks": [handler.name for handler in strategy.handlers],
         "callback_mask": strategy.callback_mask,
-        "state_schema_version": spec.state_schema_version,
-        "state_schema_hash": list(strategy.schema_hash),
+        "recovery_state_schema_version": spec.recovery_state_schema_version,
+        "recovery_state_schema_hash": list(strategy.schema_hash),
         "state_len": strategy.state_layout.itemsize,
         "state_alignment": strategy.state_layout.alignment,
         "initial_state": list(strategy.initial_state),
-        "state_schema": describe_state_schema(strategy.state_layout),
+        "recovery_state_schema": describe_state_schema(strategy.state_layout),
+        "business_observation": None if strategy.definition.business_observation is None
+            else strategy.definition.business_observation.describe(),
         "parameter_schema": spec.parameter_schema(),
         "subscriptions": [{"event": sub.event_kind.name.lower(), "handler": sub.handler,
                            "schema_version": sub.schema_version, "qos": sub.qos.name.lower()}
                           for sub in spec.subscriptions],
         "capabilities": [item.name.lower() for item in Capability if item and spec.capabilities & item],
         "build": {"python": platform.python_version(), "numba": numba.__version__,
-                  "llvmlite": list(binding.llvm_version_info), "compiler": "titan-numba-bridge/1"},
+                  "llvmlite": list(binding.llvm_version_info), "compiler": "titan-numba-bridge/2"},
     }
 
 

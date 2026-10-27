@@ -1,13 +1,13 @@
 # Titan
 
-Titan 是面向加密货币永续合约的 Rust 高频交易框架。策略使用 Python/Numba 编写并在编译服务器离线生成签名 ABI V13 `.titan` artifact；回测和实盘加载同一 artifact，运行进程不启动 Python。
+Titan 是面向加密货币永续合约的 Rust 高频交易框架。策略使用 Python/Numba 编写并在编译服务器离线生成签名 ABI V13 `.titan` 策略文件；回测和实盘加载同一策略文件，运行进程不启动 Python。
 
 ## 架构
 
 ```text
 titan CLI controller
 └── spawn titan run-worker
-    ├── 校验并加载 ABI V13 native artifact
+    ├── 校验并加载 ABI V13 原生策略文件
     ├── TradingRuntime
     │   ├── EventEngine
     │   │   ├── Primary / Async lane（可靠账户事实）
@@ -21,7 +21,7 @@ titan CLI controller
 ```
 
 - `titan` 是唯一用户入口；`run`/`validate` controller 和交易 worker 均不初始化 Python。
-- 每次运行使用独立 worker；`titan strategy compile` 通过 Rust 控制器启动短生命周期 Numba 桥接进程，打包、签名和制品校验均由 Rust 执行。
+- 每次运行使用独立 worker；`titan strategy compile` 通过 Rust 控制器启动短生命周期 Numba 桥接进程，打包、签名和策略编译结果校验均由 Rust 执行。
 - Python SDK 只提供策略声明、typed state、Numba 编译和 ABI 桥接；报告输出继续使用独立 Python renderer。
 - 事件热路径为 `Rust Runtime → C ABI → Numba nopython callback`，不经过 Python、PyO3 或 GIL。
 - 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
@@ -90,7 +90,7 @@ cargo build --release -p titan-cli
 
 ## 支持 Agent 调用的 Titan CLI
 
-`titan` 以 V13 artifact（回测）或部署中的 `strategy_key`（实盘）启动任务。controller 先完成静态校验并生成内部 RunSpec，再启动隔离 worker。
+`titan` 以 V13 策略文件（回测）或部署中的 `strategy_key`（实盘）启动任务。controller 先完成静态校验并生成内部 RunSpec，再启动隔离 worker。
 
 ```bash
 # 仅做静态校验，不启动 Python
@@ -119,7 +119,7 @@ data = "../fixtures/pair_arb_v13_trace.json"
 command_capacity = 64
 ```
 
-回测数据是版本化 V13 event trace；HftBacktest 通过 `backtest::strategy_v13` adapter 使用同一 artifact。实盘使用 Core Runtime 部署配置，artifact manifest 是参数、订阅和 callback 的唯一权威。
+回测数据是版本化 V13 event trace；HftBacktest 通过 `backtest::strategy_v13` adapter 使用同一策略文件。实盘使用 Core Runtime 部署配置，策略编译元数据 是参数、订阅和 callback 的唯一权威。
 
 前台运行等待 worker 结束并返回 ResultBundle 中的 `result.json`。后台运行立即返回 `run_id`，之后通过管理命令查询：
 
@@ -143,7 +143,7 @@ target/release/titan strategy ls --json
 target/release/titan strategy show deploy/pair_arb_v13/artifacts/pair_arb.titan --json
 target/release/titan strategy validate deploy/pair_arb_v13/artifacts/pair_arb.titan --json
 target/release/titan strategy compile --strategy strategies/pair_arb/strategy.py \
-  --parameters strategies/pair_arb/parameters.json --artifact-format bundle \
+  --parameters strategies/pair_arb/parameters.json --strategy-format bundle \
   --output pair_arb.titan --signing-key ed25519.key --key-id production-2026-09 --json
 ```
 
@@ -168,7 +168,7 @@ def on_tick(ctx):
 
 - Level-2 / Level-3 订单簿回放与队列位置模拟
 - 行情延迟、订单延迟、手续费和资金费建模
-- Tick 回测与 Live 共享 ABI V13 artifact 和事件生命周期
+- Tick 回测与 Live 共享 ABI V13 策略文件 和事件生命周期
 - 多资产、多交易所回测
 - EventEngine 与静态核心服务驱动的交易所连接器
 - 带 SHA-256 manifest 的权威 ResultBundle

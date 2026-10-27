@@ -1,0 +1,13 @@
+{
+  "baseline": "638bae69324114e8a2447f648c8b7ced832196bb",
+  "previous_stage_manifest_sha256": "4319e8208a49e30accc551773634433103f2e0a76d8bf9872dfd0263539a7e3c",
+  "repository_kind": "isolated source snapshot without .git",
+  "server": "192.168.3.88",
+  "verified_at_utc": "2026-10-27T04:31:49.920677+00:00",
+  "modified_files": 119,
+  "deleted_file_count": 8,
+  "deleted_paths_absent": true,
+  "cargo_config": "server-owned rsproxy mirror; local macOS configuration excluded",
+  "source_manifest_sha256": "8418894dfcce77a244baf4c5bcc9408f5c25d4e167537fae9fa4965a3005d4c5",
+  "binary_sha256": "1037f026bc48f08499e3b917f1ccc28f7b1bb7591e1206d7948ffed80edf6e70"
+}

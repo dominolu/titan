@@ -1,0 +1,4 @@
+Host: 192.168.3.88
+Working directory: /home/dominolu/dev/titan-observation-20261027-638bae69
+TITAN_BROWSER_EXECUTABLE=/home/dominolu/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome
+/home/dominolu/dev/titan/.venv/bin/python scripts/management_console_smoke.py --repo /home/dominolu/dev/titan-observation-20261027-638bae69 --binary /tmp/titan-deplugin-target/debug/titan --history /tmp/titan-deplugin-target/debug/examples/v13_grid_history --data /home/dominolu/dev/titan-grid-history-20261022-2aafc598/data/grid-history --parameters /home/dominolu/dev/titan-grid-history-20261022-2aafc598/verification-artifacts/grid-history/final/artifacts --output /home/dominolu/dev/titan-observation-20261027-638bae69/evidence/history-final --browser

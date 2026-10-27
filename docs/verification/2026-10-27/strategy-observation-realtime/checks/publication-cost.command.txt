@@ -1,0 +1,1 @@
+cargo test --locked --release -p titan-strategy-runtime publication_performance_probe -- --nocapture

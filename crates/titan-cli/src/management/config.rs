@@ -40,7 +40,7 @@ impl ConsoleConfig {
             if let Some(path) = &mut node.signing_key {
                 resolve(path);
             }
-            for template in node.templates.values_mut() {
+            for template in node.parameter_presets.values_mut() {
                 resolve(&mut template.source);
                 resolve(&mut template.parameters);
                 if let Some(path) = &mut template.layout {
@@ -124,8 +124,8 @@ impl User {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
-    #[serde(default)]
-    pub artifact_sources: BTreeMap<String, RemoteNode>,
+    #[serde(default, alias = "artifact_sources")]
+    pub strategy_sources: BTreeMap<String, RemoteNode>,
     #[serde(default)]
     pub live_control: bool,
     pub id: String,
@@ -137,8 +137,8 @@ pub struct NodeConfig {
     pub history_program: Option<PathBuf>,
     pub signing_key: Option<PathBuf>,
     pub signing_key_id: Option<String>,
-    #[serde(default)]
-    pub templates: BTreeMap<String, Template>,
+    #[serde(default, alias = "templates")]
+    pub parameter_presets: BTreeMap<String, StrategyParameterPreset>,
     #[serde(default)]
     pub datasets: BTreeMap<String, Dataset>,
     #[serde(default)]
@@ -154,21 +154,30 @@ fn task_seconds() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Template {
-    /// Logical research workspace, independent of template aliases and runtime strategy IDs.
+pub struct StrategyParameterPreset {
+    /// Logical strategy workspace, independent of template aliases and runtime strategy IDs.
     #[serde(default)]
-    pub research_id: Option<String>,
-    #[serde(default)]
-    pub research_name: Option<String>,
+    pub strategy_id: Option<String>,
+    #[serde(default, rename = "research_id")]
+    pub legacy_research_id: Option<String>,
+    #[serde(default, alias = "research_name")]
+    pub strategy_name: Option<String>,
     pub source: PathBuf,
     pub parameters: PathBuf,
     pub layout: Option<PathBuf>,
 }
 
-impl Template {
-    pub(crate) fn research_identity(&self, node_id: &str) -> Result<(String, String)> {
+impl StrategyParameterPreset {
+    pub(crate) fn strategy_identity(&self, node_id: &str) -> Result<(String, String)> {
         let source = self.source.canonicalize()?;
-        let id = if let Some(id) = &self.research_id {
+        ensure!(
+            self.strategy_id.is_none() || self.legacy_research_id.is_none(),
+            "strategy identity supplied twice"
+        );
+        let id = if let Some(id) = &self.strategy_id {
+            super::checked_id(id)?;
+            id.clone()
+        } else if let Some(id) = &self.legacy_research_id {
             super::checked_id(id)?;
             format!("research-{id}")
         } else {
@@ -186,8 +195,8 @@ impl Template {
             )
         };
         super::checked_id(&id)?;
-        let name = self.research_name.clone().unwrap_or_else(|| {
-            self.research_id.clone().unwrap_or_else(|| {
+        let name = self.strategy_name.clone().unwrap_or_else(|| {
+            self.strategy_id.clone().unwrap_or_else(|| {
                 source
                     .parent()
                     .and_then(Path::file_name)
@@ -197,7 +206,7 @@ impl Template {
         });
         ensure!(
             !name.trim().is_empty() && name.len() <= 256,
-            "invalid research name"
+            "invalid strategy name"
         );
         Ok((id, name))
     }

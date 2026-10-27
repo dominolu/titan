@@ -33,7 +33,9 @@ history_program = "../target/debug/examples/v13_grid_history"
 environments = ["backtest"]
 task_seconds = 1800
 
-[node.templates.grid]
+[node.parameter_presets.grid]
+strategy_id = "grid"
+strategy_name = "网格策略"
 source = "../strategies/grid/strategy.py"
 parameters = "../strategies/grid/parameters.json"
 
@@ -47,7 +49,7 @@ parameters = "../strategies/grid/parameters.json"
 # M3: configure on the LIVE node, not together with this build-node section.
 # Both manager.nodes.live.live_control and node.live_control must be explicitly true.
 # The live runtime must set managed_by_console=true and trust the build signing public key.
-# [node.artifact_sources.build]
+# [node.strategy_sources.build]
 # endpoint = "http://127.0.0.1:9041" # Authenticated SSH tunnel to build N, or HTTPS.
 # token_env = "TITAN_CONSOLE_BUILD_TOKEN"
 # environments = ["backtest"]

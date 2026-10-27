@@ -1,0 +1,1 @@
+/tmp/titan-deplugin-target/debug/titan console export-types --output web/console/src/generated

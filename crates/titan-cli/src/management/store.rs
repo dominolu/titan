@@ -9,19 +9,19 @@ use std::{
 };
 
 // Only fields needed for authorization and immutable lineage. Large metadata,
-// parameters, metrics and runtime observations never enter the research scan.
-const RESEARCH_PROJECTION: &str = "json_object(
+// parameters, metrics and runtime observations never enter the strategy scan.
+const STRATEGY_PROJECTION: &str = "json_object(
     'id',id,'kind',kind,'node_id',node_id,'revision','','frozen',json('false'),'digest','',
     'body',json_object(
         'environment',json_extract(data,'$.body.environment'),
         'account',json_extract(data,'$.body.account'),
         'mode',json_extract(data,'$.body.mode'),
-        'research_id',json_extract(data,'$.body.research_id'),
-        'research_name',json_extract(data,'$.body.research_name'),
+        'strategy_id',COALESCE(json_extract(data,'$.body.research_id'),json_extract(data,'$.body.strategy_id')),
+        'strategy_name',COALESCE(json_extract(data,'$.body.strategy_name'),json_extract(data,'$.body.research_name')),
         'source_digest',json_extract(data,'$.body.source_digest'),
-        'template_id',json_extract(data,'$.body.template_id'),
-        'version_id',json_extract(data,'$.body.version_id'),
-        'artifact_id',json_extract(data,'$.body.artifact_id'),
+        'parameter_preset_id',COALESCE(json_extract(data,'$.body.parameter_preset_id'),json_extract(data,'$.body.template_id')),
+        'parameter_version_id',COALESCE(json_extract(data,'$.body.parameter_version_id'),json_extract(data,'$.body.version_id')),
+        'strategy_version_id',COALESCE(json_extract(data,'$.body.strategy_version_id'),json_extract(data,'$.body.artifact_id')),
         'backtest_id',json_extract(data,'$.body.backtest_id'),
         'deployment_id',json_extract(data,'$.body.deployment_id')
     ))";
@@ -70,7 +70,7 @@ impl Store {
             .lock()
             .map_err(|_| anyhow::anyhow!("management store lock poisoned"))
     }
-    fn research_connection(&self) -> Result<Connection> {
+    fn strategy_connection(&self) -> Result<Connection> {
         // WAL readers use their own snapshot, never the admission/write mutex.
         let db = Connection::open_with_flags(
             &self.path,
@@ -151,21 +151,22 @@ impl Store {
             )
             .optional()?
         {
-            if hash != payload_digest {
+            let old: Operation = serde_json::from_str(&data)?;
+            if hash != payload_digest && hash != super::legacy::request_digest(input)? {
                 return Err(fault(
                     409,
                     "IDEMPOTENCY_CONFLICT",
                     "same idempotency key has different input",
                 ));
             }
-            return Ok(serde_json::from_str(&data)?);
+            return Ok(old);
         }
         // Stop has its own bounded admission budget; ordinary/unknown work cannot consume it.
         let stopping = matches!(input.action, Action::Stop { .. });
         let active: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE json_extract(data,'$.state') IN ('pending','running','unknown') AND (json_extract(data,'$.input.kind')='stop')=?1",[stopping],|r|r.get(0))?;
         ensure!(active < 256, "operation capacity exceeded");
         if let Some((run, generation)) = input.action.run() {
-            let conflicting: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE node_id=?1 AND json_extract(data,'$.input.run_id')=?2 AND json_extract(data,'$.input.generation')=?3 AND json_extract(data,'$.state') IN ('pending','running','unknown')",params![input.node_id,run,generation],|r|r.get(0))?;
+            let conflicting: i64 = tx.query_row("SELECT COUNT(*) FROM operations WHERE node_id=?1 AND json_extract(data,'$.input.run_id')=?2 AND COALESCE(json_extract(data,'$.input.expected_run_generation'),json_extract(data,'$.input.generation'))=?3 AND json_extract(data,'$.state') IN ('pending','running','unknown')",params![input.node_id,run,generation],|r|r.get(0))?;
             if conflicting != 0 && !matches!(input.action, Action::Stop { .. }) {
                 return Err(fault(
                     409,
@@ -180,7 +181,7 @@ impl Store {
             if let Some(resource) = resources.first()
                 && let (Some(account), Some(strategy)) = (
                     resource.body["account_identity"].as_str(),
-                    resource.body["strategy_id"].as_str(),
+                    resource.body["runtime_strategy_no"].as_str(),
                 )
             {
                 keys.push(serde_json::to_string(&json!([
@@ -198,7 +199,7 @@ impl Store {
                     )
                     .optional()?;
                 let predecessor = match &input.action {
-                    Action::Recover { run_id, .. } => Some(run_id),
+                    Action::Restore { run_id, .. } => Some(run_id),
                     _ => None,
                 };
                 if occupied
@@ -424,16 +425,16 @@ impl Store {
             fault(404, "NOT_FOUND", "resource not found")
         })?)?)
     }
-    pub fn artifact_for_operation(&self, id: &str) -> Result<Resource> {
+    pub fn strategy_version_for_operation(&self, id: &str) -> Result<Resource> {
         let db = self.connection()?;
-        let mut stmt = db.prepare("SELECT data FROM resources WHERE kind='artifact' AND json_extract(data,'$.body.operation_id')=?1 LIMIT 2")?;
+        let mut stmt = db.prepare("SELECT data FROM resources WHERE kind IN ('strategy_version','artifact') AND json_extract(data,'$.body.operation_id')=?1 LIMIT 2")?;
         let rows = stmt
             .query_map([id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        ensure!(rows.len() <= 1, "ambiguous artifact reference");
+        ensure!(rows.len() <= 1, "ambiguous compiled_strategy reference");
         let data = rows
             .first()
-            .ok_or_else(|| fault(404, "NOT_FOUND", "artifact not found"))?;
+            .ok_or_else(|| fault(404, "NOT_FOUND", "compiled_strategy not found"))?;
         Ok(serde_json::from_str(data)?)
     }
     pub fn save_resource(&self, resource: Resource, expected: Option<&str>) -> Result<Resource> {
@@ -506,7 +507,7 @@ impl Store {
         resource.revision = revision(&tx)?.to_string();
         if resource.kind == "run"
             && !never_activated
-            && resource.body["generation"]
+            && resource.body["run_generation"]
                 .as_str()
                 .and_then(|g| g.parse::<u64>().ok())
                 .is_some_and(|g| g > 0)
@@ -583,7 +584,7 @@ impl Store {
             }
         }
         let mut resources = Vec::new();
-        let mut stmt=db.prepare("SELECT data FROM resources ORDER BY CASE WHEN kind IN ('template','dataset','binding','account','node') OR (kind='alert' AND json_extract(data,'$.body.active')=1) OR (kind='run' AND json_extract(data,'$.body.process_state') IN ('RUNNING','READY','STARTING','STOP_REQUESTED')) THEN 0 ELSE 1 END,rowid DESC LIMIT 4096")?;
+        let mut stmt=db.prepare("SELECT data FROM resources ORDER BY CASE WHEN kind IN ('parameter_preset','template','dataset','binding','account','node') OR (kind='alert' AND json_extract(data,'$.body.active')=1) OR (kind='run' AND json_extract(data,'$.body.process_state') IN ('RUNNING','READY','STARTING','STOP_REQUESTED')) THEN 0 ELSE 1 END,rowid DESC LIMIT 4096")?;
         for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
             let resource: Resource = serde_json::from_str(&row?)?;
             let env = resource
@@ -607,16 +608,16 @@ impl Store {
             resources,
         })
     }
-    pub fn list_research(
+    pub fn list_strategies(
         &self,
         identity: &Identity,
         offset: usize,
         limit: usize,
-    ) -> Result<Vec<ResearchWorkspace>> {
-        let db = self.research_connection()?;
-        let mut stmt = db.prepare(&format!("SELECT {RESEARCH_PROJECTION} FROM resources WHERE kind IN ('template','version','artifact','backtest','report','deployment','run') ORDER BY CASE WHEN kind='template' THEN 0 ELSE 1 END,rowid DESC"))?;
+    ) -> Result<Vec<StrategySummary>> {
+        let db = self.strategy_connection()?;
+        let mut stmt = db.prepare(&format!("SELECT {STRATEGY_PROJECTION} FROM resources WHERE kind IN ('parameter_preset','template','parameter_version','version','strategy_version','artifact','backtest','report','deployment','run') ORDER BY CASE WHEN kind IN ('parameter_preset','template') THEN 0 ELSE 1 END,rowid DESC"))?;
         let mut memo = std::collections::HashMap::new();
-        let mut groups: std::collections::BTreeMap<String, ResearchWorkspace> = Default::default();
+        let mut groups: std::collections::BTreeMap<String, StrategySummary> = Default::default();
         for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
             let item: Resource = serde_json::from_str(&row?)?;
             let env = item.body["environment"].as_str().unwrap_or("backtest");
@@ -628,25 +629,23 @@ impl Store {
             if item.kind == "run" && item.body["mode"] == "observe" {
                 continue;
             }
-            let id = research_membership(&db, &item, 0, &mut memo)?
+            let id = strategy_membership(&db, &item, 0, &mut memo)?
                 .unwrap_or_else(|| "unassigned".into());
-            let group = groups
-                .entry(id.clone())
-                .or_insert_with(|| ResearchWorkspace {
-                    id: id.clone(),
-                    name: if id == "unassigned" {
-                        "未归属的历史记录".into()
-                    } else {
-                        item.body["research_name"]
-                            .as_str()
-                            .unwrap_or("策略研究")
-                            .to_owned()
-                    },
-                    template_count: 0,
-                    resource_count: 0,
-                });
-            if item.kind == "template" {
-                group.template_count += 1;
+            let group = groups.entry(id.clone()).or_insert_with(|| StrategySummary {
+                id: id.clone(),
+                name: if id == "unassigned" {
+                    "未归属的历史记录".into()
+                } else {
+                    item.body["strategy_name"]
+                        .as_str()
+                        .unwrap_or("策略研究")
+                        .to_owned()
+                },
+                parameter_preset_count: 0,
+                resource_count: 0,
+            });
+            if item.kind == "parameter_preset" {
+                group.parameter_preset_count += 1;
             } else {
                 group.resource_count += 1;
             }
@@ -669,12 +668,12 @@ impl Store {
         kind: Option<&str>,
         offset: usize,
         limit: usize,
-        research: Option<&str>,
+        strategy: Option<&str>,
         resource_id: Option<&str>,
     ) -> Result<Vec<Resource>> {
-        let db = self.research_connection()?;
+        let db = self.strategy_connection()?;
         let mut stmt = db.prepare(&format!(
-            "SELECT {RESEARCH_PROJECTION} FROM resources WHERE (?1 IS NULL OR kind=?1) AND (?2 IS NULL OR id=?2) ORDER BY rowid DESC",
+            "SELECT {STRATEGY_PROJECTION} FROM resources WHERE (?1 IS NULL OR kind=?1 OR kind=CASE ?1 WHEN 'strategy_version' THEN 'artifact' WHEN 'parameter_version' THEN 'version' WHEN 'parameter_preset' THEN 'template' ELSE ?1 END) AND (?2 IS NULL OR id=?2) ORDER BY rowid DESC",
         ))?;
         let mut out = Vec::new();
         let mut skipped = 0;
@@ -691,12 +690,12 @@ impl Store {
             {
                 continue;
             }
-            if let Some(research) = research {
+            if let Some(strategy) = strategy {
                 if !matches!(
                     item.kind.as_str(),
-                    "template"
-                        | "version"
-                        | "artifact"
+                    "parameter_preset"
+                        | "parameter_version"
+                        | "strategy_version"
                         | "backtest"
                         | "report"
                         | "deployment"
@@ -707,9 +706,9 @@ impl Store {
                 if item.kind == "run" && item.body["mode"] == "observe" {
                     continue;
                 }
-                let resolved = research_membership(&db, &item, 0, &mut membership)?;
-                if (research == "unassigned" && resolved.is_some())
-                    || (research != "unassigned" && resolved.as_deref() != Some(research))
+                let resolved = strategy_membership(&db, &item, 0, &mut membership)?;
+                if (strategy == "unassigned" && resolved.is_some())
+                    || (strategy != "unassigned" && resolved.as_deref() != Some(strategy))
                 {
                     continue;
                 }
@@ -838,7 +837,7 @@ pub(crate) fn account_allowed(identity: &Identity, account: Option<&str>) -> boo
     account.is_none_or(|account| identity.accounts.iter().any(|value| value == account))
 }
 // Resolve immutable lineage without rewriting old frozen records or their digests.
-fn research_membership(
+fn strategy_membership(
     db: &Connection,
     item: &Resource,
     depth: usize,
@@ -851,17 +850,19 @@ fn research_membership(
         return Ok(None);
     }
     memo.insert(item.id.clone(), None);
-    if let Some(id) = item.body["research_id"].as_str().filter(|v| !v.is_empty()) {
+    if let Some(id) = item.body["strategy_id"].as_str().filter(|v| !v.is_empty()) {
         let value = Some(id.to_owned());
         memo.insert(item.id.clone(), value.clone());
         return Ok(value);
     }
     let parent = match item.kind.as_str() {
-        "version" => item.body["template_id"]
+        "parameter_version" => item.body["parameter_preset_id"]
             .as_str()
             .map(|id| format!("{}-template-{id}", item.node_id)),
-        "artifact" => item.body["version_id"].as_str().map(str::to_owned),
-        "backtest" | "deployment" => item.body["artifact_id"].as_str().map(str::to_owned),
+        "strategy_version" => item.body["parameter_version_id"]
+            .as_str()
+            .map(str::to_owned),
+        "backtest" | "deployment" => item.body["strategy_version_id"].as_str().map(str::to_owned),
         "report" => item.body["backtest_id"].as_str().map(str::to_owned),
         "run" => item.body["deployment_id"].as_str().map(str::to_owned),
         _ => None,
@@ -869,7 +870,7 @@ fn research_membership(
     let value = if let Some(id) = parent {
         let data: Option<String> = db
             .query_row(
-                &format!("SELECT {RESEARCH_PROJECTION} FROM resources WHERE id=?1"),
+                &format!("SELECT {STRATEGY_PROJECTION} FROM resources WHERE id=?1"),
                 [id],
                 |r| r.get(0),
             )
@@ -877,13 +878,13 @@ fn research_membership(
         if let Some(data) = data {
             let parent: Resource = serde_json::from_str(&data)?;
             // A reused alias must not reassign old, unlabelled source versions.
-            if item.kind == "version"
+            if item.kind == "parameter_version"
                 && (item.body["source_digest"].as_str().is_none()
                     || item.body["source_digest"] != parent.body["source_digest"])
             {
                 None
             } else {
-                research_membership(db, &parent, depth + 1, memo)?
+                strategy_membership(db, &parent, depth + 1, memo)?
             }
         } else {
             None
@@ -940,9 +941,9 @@ mod research_read_tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(&temp.path().join("db")).unwrap());
         let saved = store.save_resource(Resource {
-            id: "artifact".into(), kind: "artifact".into(), node_id: "build".into(),
+            id: "strategy_version".into(), kind: "strategy_version".into(), node_id: "build".into(),
             revision: String::new(), frozen: true, digest: String::new(),
-            body: json!({"research_id":"research-grid","research_name":"网格", "metadata":{"schema":"must-survive-projection"},"parameters":{"quantity":"9007199254740993"}}),
+            body: json!({"strategy_id":"strategy-grid","strategy_name":"网格", "metadata":{"schema":"must-survive-projection"},"parameters":{"quantity":"9007199254740993"}}),
         }, None).unwrap();
         let actor = Identity {
             username: "reader".into(),
@@ -955,13 +956,13 @@ mod research_read_tests {
         let reader = store.clone();
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::spawn(move || {
-            let result = reader.list_research(&actor, 0, 20).and_then(|catalog| {
+            let result = reader.list_strategies(&actor, 0, 20).and_then(|catalog| {
                 let rows = reader.list_resources_scoped(
                     &actor,
-                    Some("artifact"),
+                    Some("strategy_version"),
                     0,
                     20,
-                    Some("research-grid"),
+                    Some("strategy-grid"),
                     None,
                 )?;
                 Ok((catalog, rows))
@@ -972,7 +973,7 @@ mod research_read_tests {
         drop(lock);
         thread.join().unwrap();
         let (catalog, rows) = result
-            .expect("research query waited for admission mutex")
+            .expect("strategy query waited for admission mutex")
             .unwrap();
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].resource_count, 1);
@@ -983,11 +984,11 @@ mod research_read_tests {
         );
 
         // A long-lived WAL reader also cannot prevent admission writes.
-        let db = store.research_connection().unwrap();
+        let db = store.strategy_connection().unwrap();
         db.execute_batch("BEGIN; SELECT data FROM resources;")
             .unwrap();
         store
-            .audit("reader", "review", "artifact", "probe")
+            .audit("reader", "review", "strategy_version", "probe")
             .unwrap();
         db.execute_batch("ROLLBACK").unwrap();
     }

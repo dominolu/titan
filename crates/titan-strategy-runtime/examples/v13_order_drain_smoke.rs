@@ -24,11 +24,11 @@ struct Metrics;
 impl StrategyMetrics for Metrics {}
 #[derive(Default)]
 struct Sink {
-    snapshots: Mutex<Vec<StrategyPrivateStateSnapshot>>,
+    snapshots: Mutex<Vec<StrategyRecoveryPoint>>,
     fail_flush: std::sync::atomic::AtomicBool,
 }
-impl StrategyStateSnapshotSink for Sink {
-    fn submit(&self, snapshot: StrategyPrivateStateSnapshot) -> LocalResult<()> {
+impl StrategyRecoveryStore for Sink {
+    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         self.snapshots.lock().unwrap().push(snapshot);
         Ok(())
     }
@@ -124,58 +124,63 @@ fn fact<T: account::AccountEventPayload>(
     })
 }
 fn main() {
-    let artifact =
-        std::fs::canonicalize(PathBuf::from(std::env::args_os().nth(1).expect("artifact")))
-            .unwrap();
-    run(artifact.clone(), false, false, false);
-    run(artifact.clone(), true, false, false);
-    run(artifact.clone(), false, true, false);
-    run(artifact, false, false, true);
+    let compiled_strategy = std::fs::canonicalize(PathBuf::from(
+        std::env::args_os().nth(1).expect("compiled_strategy"),
+    ))
+    .unwrap();
+    run(compiled_strategy.clone(), false, false, false);
+    run(compiled_strategy.clone(), true, false, false);
+    run(compiled_strategy.clone(), false, true, false);
+    run(compiled_strategy, false, false, true);
 }
-fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure: bool) {
-    let manifest = NativeArtifactLoaderV13::new(
+fn run(compiled_strategy: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure: bool) {
+    let manifest = NativeStrategyLoaderV13::new(
         std::env::temp_dir().join("titan-drain-inspect"),
         V13TrustPolicy::default(),
     )
-    .inspect(&artifact)
+    .inspect(&compiled_strategy)
     .unwrap();
-    let package = StrategyPackageRef {
+    let package = StrategyFileRef {
         loader_type: Arc::from("native-v13"),
-        uri: Arc::from(format!("file://{}", artifact.display())),
-        expected_digest: manifest.artifact_digest,
+        uri: Arc::from(format!("file://{}", compiled_strategy.display())),
+        expected_digest: manifest.compiled_strategy_digest,
         signature_ref: None,
     };
     let loader = NativeV13LoaderFactory
         .create(StrategyLoaderContext {
-            allowed_artifact_roots: Arc::from([Arc::from(
-                artifact.parent().unwrap().to_string_lossy().as_ref(),
+            allowed_strategy_roots: Arc::from([Arc::from(
+                compiled_strategy
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref(),
             )]),
             require_signature: false,
             ed25519_keys: BTreeMap::new(),
         })
         .unwrap();
-    let artifact = loader
+    let compiled_strategy = loader
         .load(
             StrategyLoadRequest {
-                package: package.clone(),
+                strategy_file: package.clone(),
             },
             Instant::now() + Duration::from_secs(3),
         )
         .unwrap();
     let definition = StrategyDefinition {
         strategy_key: Arc::from("drain-smoke"),
-        strategy_id: StrategyId(42),
-        package,
+        runtime_strategy_no: RuntimeStrategyNo(42),
+        strategy_file: package,
         markets: Arc::from([]),
         accounts: Arc::from([]),
         risk_scope: RiskScopeRef(Arc::from("offline")),
         runtime: Default::default(),
         recovery: StrategyRecoveryPolicy::Fresh,
         enabled: true,
-        definition_version: 1,
+        run_config_revision: 1,
     };
     let handle = StrategyHandle {
-        strategy_id: StrategyId(42),
+        runtime_strategy_no: RuntimeStrategyNo(42),
         generation: 1,
     };
     let account = account::AccountHandle {
@@ -213,10 +218,10 @@ fn run(artifact: PathBuf, fail_flush: bool, queue_overload: bool, intent_failure
     let runtime = NativeV13RuntimeFactory
         .create(
             &definition,
-            artifact.clone(),
+            compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
                 strategy: handle,
-                artifact_id: artifact.id,
+                compiled_strategy_digest: compiled_strategy.id,
                 markets: Arc::from([ResolvedMarketBinding {
                     source_stream: titan_market_service::SourceStreamId(2),
                     local_market_no: 0,

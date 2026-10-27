@@ -1,0 +1,24 @@
+{
+  "baseline": "638bae69324114e8a2447f648c8b7ced832196bb",
+  "verification_snapshot_manifest_sha256": "0fb71f5a8d733af38f3309c13dfdeb1b8e7ba469c24c89183b067bc9201bfcc3",
+  "excluded_paths": [
+    "docs/README.md",
+    "docs/data_persistence_design.md",
+    "docs/data_persistence_implementation_plan.md"
+  ],
+  "partial_document": {
+    "path": "docs/memory/engineering.md",
+    "excluded_changes": [
+      "section 19 persistence plan",
+      "section 14 reference to the future SQLite recovery migration"
+    ],
+    "verified_worktree_sha256": "bfc6203538c3a8176afc1c334518f270064a107d17bfc0cd8e67abcdbfa84707",
+    "commit_scoped_sha256": "3ea52db57c6e4824d144b5048fc397fa7cd9d0d27ef78d11221eb7551c30a71a"
+  },
+  "raw_audit_diff": {
+    "server_path": "/home/dominolu/dev/titan-observation-audit-20261027-638bae69/evidence/final-04/audit-source.diff",
+    "sha256": "d6c1426a68c8962c826244d1836e0a7e4aec708feeccc3aa39cd97eed6258d2a"
+  },
+  "commit_scoped_audit_diff_sha256": "cb379751299fed7dfe481360ad795a6e20fd95084fd92e2fcb7307c2f49419e5",
+  "note": "Historical snapshot manifests describe the full verification workspace. The commit excludes unrelated persistence planning; executable source contents are unchanged."
+}

@@ -1,0 +1,19 @@
+run presentation: precision, units, stale facts, instrument/node identity and native statuses passed
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+true !== false
+
+    at file:///home/dominolu/dev/titan-observation-audit-20261027-638bae69/scripts/management_run_view_test.mjs:172:8 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: true,
+  expected: false,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v22.22.0

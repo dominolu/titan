@@ -46,7 +46,7 @@ impl IntoResponse for Error {
             .into_response()
     }
 }
-type ApiResult<T> = std::result::Result<T, Error>;
+pub(super) type ApiResult<T> = std::result::Result<T, Error>;
 pub(crate) async fn json_errors(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -72,13 +72,58 @@ pub(crate) async fn json_errors(
     }
     response
 }
+async fn management_response(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let legacy = path.starts_with("/api/v1/") && !path.starts_with("/api/v1/files/");
+    let public = path.starts_with("/api/v2/") && !path.starts_with("/api/v2/files/");
+    let response = next.run(request).await;
+    if !(legacy || public)
+        || !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|value| value.as_bytes().starts_with(b"application/json"))
+    {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    let result = async {
+        let bytes = axum::body::to_bytes(body, 8 * 1024 * 1024).await?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if legacy {
+            super::legacy::response(&mut value);
+        } else {
+            super::v2::public_response(&mut value);
+        }
+        anyhow::Ok(serde_json::to_vec(&value)?)
+    }
+    .await;
+    match result {
+        Ok(bytes) => {
+            parts.headers.remove(header::CONTENT_LENGTH);
+            Response::from_parts(parts, axum::body::Body::from(bytes))
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError {
+                code: "RESPONSE_UNAVAILABLE".into(),
+                message: "use the strategy API v2".into(),
+                request_id: nonce(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Deserialize)]
-struct Login {
+pub(super) struct Login {
     username: String,
     password: String,
 }
 #[derive(Default, Deserialize)]
-struct ListQuery {
+pub(super) struct ListQuery {
     limit: Option<usize>,
     idempotency_key: Option<String>,
     offset: Option<usize>,
@@ -86,12 +131,14 @@ struct ListQuery {
     from_ns: Option<String>,
     to_ns: Option<String>,
     run_id: Option<String>,
+    #[serde(alias = "run_generation", alias = "worker_session_id")]
     generation: Option<String>,
-    research_id: Option<String>,
+    #[serde(alias = "research_id")]
+    strategy_id: Option<String>,
     resource_id: Option<String>,
 }
 #[derive(Deserialize)]
-struct StreamQuery {
+pub(super) struct StreamQuery {
     cursor: Option<String>,
 }
 
@@ -114,16 +161,18 @@ pub fn manager_router(config: ManagerConfig) -> Result<Router> {
         .route("/api/v1/resources/{id}/log", get(resource_log))
         .route("/api/v1/resources/{id}/acknowledge", post(acknowledge))
         .route("/api/v1/resources", get(resources))
-        .route("/api/v1/research", get(research))
         .route("/api/v1/strategies", get(resources))
-        .route("/api/v1/artifacts", get(resources))
         .route("/api/v1/backtests", get(resources))
         .route("/api/v1/runs", get(resources))
         .route("/api/v1/accounts/{id}", get(resource))
         .route("/api/v1/files/{id}/{*path}", get(file))
         .route("/api/v1/events", get(events))
+        .merge(super::v2::routes())
+        .route("/api/v1/research", get(strategy))
+        .route("/api/v1/artifacts", get(resources))
         .layer(DefaultBodyLimit::max(1_048_576))
         .layer(axum::middleware::from_fn(json_errors))
+        .layer(axum::middleware::from_fn(management_response))
         .fallback(static_file)
         .with_state(app))
 }
@@ -150,7 +199,7 @@ fn token(headers: &HeaderMap) -> Result<&str> {
         })
         .ok_or_else(|| fault(401, "UNAUTHENTICATED", "authentication required"))
 }
-fn identity(app: &App, headers: &HeaderMap, write: bool) -> Result<Identity> {
+pub(super) fn identity(app: &App, headers: &HeaderMap, write: bool) -> Result<Identity> {
     let (identity, csrf, _) = app.authenticate(token(headers)?)?;
     if write {
         let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
@@ -169,7 +218,7 @@ fn identity(app: &App, headers: &HeaderMap, write: bool) -> Result<Identity> {
     }
     Ok(identity)
 }
-async fn login(
+pub(super) async fn login(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Json(input): Json<Login>,
@@ -202,7 +251,10 @@ async fn login(
     )
         .into_response())
 }
-async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Response> {
+pub(super) async fn session(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let raw = token(&headers)?;
     let (identity, _, expires) = app.authenticate(raw)?;
     Ok((
@@ -217,7 +269,7 @@ async fn session(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<R
     )
         .into_response())
 }
-async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Response> {
+pub(super) async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Response> {
     let actor = identity(&app, &headers, true)?;
     app.store.session_remove(token(&headers)?)?;
     app.store.audit(&actor.username, "logout", "session", "")?;
@@ -230,7 +282,7 @@ async fn logout(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Re
     )
         .into_response())
 }
-async fn snapshot(
+pub(super) async fn snapshot(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
@@ -241,7 +293,7 @@ async fn snapshot(
         query.limit.unwrap_or(100).clamp(1, 200),
     )?))
 }
-async fn operations(
+pub(super) async fn operations(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
@@ -279,24 +331,24 @@ async fn operations(
         ))
     }
 }
-async fn research(
+pub(super) async fn strategy(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
-) -> ApiResult<Json<Vec<ResearchWorkspace>>> {
+) -> ApiResult<Json<Vec<StrategySummary>>> {
     let actor = identity(&app, &headers, false)?;
     let result = tokio::task::spawn_blocking(move || {
-        app.store.list_research(
+        app.store.list_strategies(
             &actor,
             query.offset.unwrap_or(0).min(1_000_000),
             query.limit.unwrap_or(20).clamp(1, 200),
         )
     })
     .await
-    .context("research query worker failed")??;
+    .context("strategy query worker failed")??;
     Ok(Json(result))
 }
-async fn resources(
+pub(super) async fn resources(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     uri: axum::extract::OriginalUri,
@@ -304,20 +356,20 @@ async fn resources(
 ) -> ApiResult<Json<Vec<Resource>>> {
     let actor = identity(&app, &headers, false)?;
     let kind = match uri.0.path() {
-        "/api/v1/strategies" => Some("template"),
-        "/api/v1/artifacts" => Some("artifact"),
+        "/api/v1/strategies" => Some("parameter_preset"),
+        "/api/v1/compiled_strategies" | "/api/v1/artifacts" => Some("strategy_version"),
         "/api/v1/backtests" => Some("backtest"),
         "/api/v1/runs" => Some("run"),
         _ => query.kind.as_deref(),
     };
-    if let Some(id) = &query.research_id {
+    if let Some(id) = &query.strategy_id {
         super::checked_id(id)?;
     }
     let offset = query.offset.unwrap_or(0).min(1_000_000);
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
-    let kind = kind.map(str::to_owned);
+    let kind = kind.map(|value| super::legacy::kind(value).to_owned());
     let result = tokio::task::spawn_blocking(move || {
-        if query.research_id.is_none() && query.resource_id.is_none() {
+        if query.strategy_id.is_none() && query.resource_id.is_none() {
             return app
                 .store
                 .list_resources(&actor, kind.as_deref(), offset, limit);
@@ -327,7 +379,7 @@ async fn resources(
             kind.as_deref(),
             offset,
             limit,
-            query.research_id.as_deref(),
+            query.strategy_id.as_deref(),
             query.resource_id.as_deref(),
         )
     })
@@ -335,7 +387,7 @@ async fn resources(
     .context("resource query worker failed")??;
     Ok(Json(result))
 }
-async fn resource(
+pub(super) async fn resource(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -344,11 +396,11 @@ async fn resource(
     Ok(Json(app.resource(&actor, &id, false)?))
 }
 #[derive(Deserialize)]
-struct Acknowledge {
+pub(super) struct Acknowledge {
     expected_revision: String,
     condition_identity: String,
 }
-async fn acknowledge(
+pub(super) async fn acknowledge(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -370,7 +422,7 @@ async fn acknowledge(
     )?;
     Ok(Json(saved))
 }
-async fn resource_history(
+pub(super) async fn resource_history(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -378,7 +430,7 @@ async fn resource_history(
 ) -> ApiResult<Json<serde_json::Value>> {
     runtime_query(app, headers, id, query, "history").await
 }
-async fn resource_log(
+pub(super) async fn resource_log(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -386,7 +438,7 @@ async fn resource_log(
 ) -> ApiResult<Json<serde_json::Value>> {
     runtime_query(app, headers, id, query, "log").await
 }
-async fn runtime_query(
+pub(super) async fn runtime_query(
     app: Arc<App>,
     headers: HeaderMap,
     id: String,
@@ -399,7 +451,10 @@ async fn runtime_query(
         return Err(fault(400, "INVALID_RESOURCE", "resource has no runtime history").into());
     }
     if let Some(generation) = query.generation
-        && resource.body["generation"].as_str() != Some(generation.as_str())
+        && resource.body["run_generation"]
+            .as_str()
+            .or_else(|| resource.body["worker_session_id"].as_str())
+            != Some(generation.as_str())
     {
         return Err(fault(409, "STALE_GENERATION", "runtime source generation changed").into());
     }
@@ -434,7 +489,7 @@ async fn runtime_query(
         .map_err(anyhow::Error::from)?;
     Ok(Json(super::app::node_json(response).await?))
 }
-async fn operation(
+pub(super) async fn operation(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -450,7 +505,7 @@ async fn submit(
     let actor = identity(&app, &headers, true)?;
     Ok((StatusCode::ACCEPTED, Json(app.submit(&actor, input)?)).into_response())
 }
-async fn cancel(
+pub(super) async fn cancel(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -460,7 +515,7 @@ async fn cancel(
     app.store.audit(&actor.username, "cancel", &id, "")?;
     Ok(Json(app.store.cancel(&id)?))
 }
-async fn create_version(
+pub(super) async fn create_version(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Json(input): Json<SaveVersion>,
@@ -468,7 +523,7 @@ async fn create_version(
     let actor = identity(&app, &headers, true)?;
     Ok(Json(app.save_version(&actor, None, input)?))
 }
-async fn update_version(
+pub(super) async fn update_version(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -478,10 +533,11 @@ async fn update_version(
     Ok(Json(app.save_version(&actor, Some(&id), input)?))
 }
 
-async fn events(
+pub(super) async fn events(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Query(query): Query<StreamQuery>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
 ) -> ApiResult<Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>>> {
     let _ = identity(&app, &headers, false)?;
     let session_token = token(&headers)?.to_owned();
@@ -491,13 +547,16 @@ async fn events(
         .map(str::to_owned)
         .or(query.cursor)
         .unwrap_or_default();
+    let legacy = uri.path().starts_with("/api/v1/");
     let stream = async_stream::stream! {
         loop {
             let actor=match app.authenticate(&session_token) {Ok((actor,_,_))=>actor,Err(_)=>{yield Ok(SseEvent::default().event("auth_expired").data("{}"));break;}};
             match app.store.events(&actor,&cursor) {
                 Ok((items,next))=>{
                     for item in items {
-                        let data=serde_json::to_string(&item).unwrap_or_default();
+                        let mut value=serde_json::to_value(&item).unwrap_or_default();
+                        if legacy {super::legacy::response(&mut value);} else {super::v2::public_response(&mut value);}
+                        let data=serde_json::to_string(&value).unwrap_or_default();
                         yield Ok(SseEvent::default().event("update").id(&item.cursor).data(data));
                     }
                     cursor=next;
@@ -510,7 +569,7 @@ async fn events(
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10))))
 }
-async fn file(
+pub(super) async fn file(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path((id, path)): Path<(String, String)>,

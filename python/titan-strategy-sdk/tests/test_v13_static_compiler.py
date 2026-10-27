@@ -20,7 +20,7 @@ class _Request:
     parameters: dict
     target_triple: str
     cpu_baseline: str
-    artifact_format: str
+    strategy_format: str
     output_path: Path
     runtime_abi: dict
 
@@ -40,10 +40,10 @@ def _compile_with_rust(request):
     parameters.write_text(json.dumps(request.parameters))
     result = _rust("compile", "--strategy", request.source_file, "--parameters", parameters,
                    "--target", request.target_triple, "--cpu-baseline", request.cpu_baseline,
-                   "--artifact-format", request.artifact_format, "--output", request.output_path)
+                   "--strategy-format", request.strategy_format, "--output", request.output_path)
     strategy = validate_strategy_definition(load_strategy_definition(request.source_file, request.parameters), request.runtime_abi)
-    return SimpleNamespace(strategy=strategy, artifact=SimpleNamespace(
-        paths=tuple(Path(path) for path in result["paths"]), artifact_digest=result["artifact_digest"]))
+    return SimpleNamespace(strategy=strategy, compiled_strategy=SimpleNamespace(
+        paths=tuple(Path(path) for path in result["paths"]), compiled_strategy_digest=result["compiled_strategy_digest"]))
 
 
 def _inspect_with_rust(path, _runtime_abi):
@@ -79,7 +79,7 @@ class TestV13StaticCompiler(unittest.TestCase):
                 source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
                 "pair", root / "pair" / "v13_smoke", runtime_abi,
             ))
-            self.assertEqual(len(pair.artifact.paths), 2)
+            self.assertEqual(len(pair.compiled_strategy.paths), 2)
             self.assertFalse(hasattr(pair, "native"))
             manifest = _inspect_with_rust(root / "pair" / "v13_smoke.manifest.cbor", runtime_abi)
             self.assertEqual(manifest["callback_mask"], 4098)
@@ -87,9 +87,9 @@ class TestV13StaticCompiler(unittest.TestCase):
                 source, {"initial_counter": 4}, "x86_64-unknown-linux-gnu", "x86-64",
                 "bundle", root / "bundle" / "v13_smoke.titan", runtime_abi,
             ))
-            self.assertEqual(len(bundle.artifact.paths), 1)
-            self.assertEqual(_inspect_with_rust(bundle.artifact.paths[0], runtime_abi)["state_len"], 48)
-            self.assertEqual(pair.artifact.artifact_digest, bundle.artifact.artifact_digest)
+            self.assertEqual(len(bundle.compiled_strategy.paths), 1)
+            self.assertEqual(_inspect_with_rust(bundle.compiled_strategy.paths[0], runtime_abi)["state_len"], 48)
+            self.assertEqual(pair.compiled_strategy.compiled_strategy_digest, bundle.compiled_strategy.compiled_strategy_digest)
 
     def test_missing_public_view_returns_stable_callback_error(self):
         for fixture, expected in (("v13_missing_view.py", -4), ("v13_handler_error.py", -1)):
@@ -101,7 +101,7 @@ class TestV13StaticCompiler(unittest.TestCase):
                         source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
                         Path(temporary) / "missing_view", runtime_abi,
                     ))
-                    library = ctypes.CDLL(str(result.artifact.paths[0]))
+                    library = ctypes.CDLL(str(result.compiled_strategy.paths[0]))
                     callback = library.titan_strategy_on_tick
                     callback.argtypes = [ctypes.c_void_p]
                     callback.restype = ctypes.c_int32
@@ -125,7 +125,7 @@ class TestV13StaticCompiler(unittest.TestCase):
                 source, {}, "x86_64-unknown-linux-gnu", "x86-64", "pair",
                 Path(temporary) / "hedge", runtime_abi,
             ))
-            library = ctypes.CDLL(str(result.artifact.paths[0]))
+            library = ctypes.CDLL(str(result.compiled_strategy.paths[0]))
             callback = library.titan_strategy_on_tick
             callback.argtypes = [ctypes.c_void_p]
             callback.restype = ctypes.c_int32
@@ -172,8 +172,8 @@ class TestV13StaticCompiler(unittest.TestCase):
                 source, parameters, "x86_64-unknown-linux-gnu", "x86-64-v2",
                 "bundle", Path(temporary) / "pair_arb.titan", runtime_abi,
             ))
-            manifest = _inspect_with_rust(result.artifact.paths[0], runtime_abi)
-            self.assertEqual(manifest["strategy_id"], "pair_arb")
+            manifest = _inspect_with_rust(result.compiled_strategy.paths[0], runtime_abi)
+            self.assertEqual(manifest["strategy_type"], "pair_arb")
             self.assertEqual(manifest["callback_mask"], 8179)
 
     def test_all_repository_v13_examples_aot_compile(self):
@@ -188,8 +188,8 @@ class TestV13StaticCompiler(unittest.TestCase):
                     "x86_64-unknown-linux-gnu", "x86-64-v2", "bundle",
                     Path(temporary) / f"{name}.titan", runtime_abi,
                 ))
-                manifest = _inspect_with_rust(result.artifact.paths[0], runtime_abi)
-                self.assertEqual(manifest["strategy_id"], name)
+                manifest = _inspect_with_rust(result.compiled_strategy.paths[0], runtime_abi)
+                self.assertEqual(manifest["strategy_type"], name)
                 self.assertEqual(manifest["abi_version"], 13)
 
 

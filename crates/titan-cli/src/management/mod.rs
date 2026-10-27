@@ -4,9 +4,11 @@ mod config;
 pub mod contract;
 mod control;
 mod http;
+mod legacy;
 mod live;
 mod node;
 mod store;
+mod v2;
 
 pub use config::{ConsoleConfig, ManagerConfig, NodeConfig};
 pub use http::{manager_router, serve_manager};

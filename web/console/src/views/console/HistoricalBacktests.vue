@@ -6,17 +6,17 @@ import { body, raw, decimal } from "./run-view";
 import { useConsoleWork } from "./use-console-work";
 import ConsoleIcon from "./ConsoleIcon.vue";
 import ConsoleDetails from "./ConsoleDetails.vue";
-import { useResearch } from "./use-research";
-import ResearchPager from "./ResearchPager.vue";
+import { useStrategy } from "./use-strategy";
+import StrategyHistoryPager from "./StrategyHistoryPager.vue";
 import { useRoute } from "vue-router";
 import ResultChart from "./ResultChart.vue";
 const store = useConsoleStore();
-const scope = useResearch(),
+const scope = useStrategy(),
   route = useRoute();
-const artifacts = computed(() => scope.options("artifact"));
+const strategyVersions = computed(() => scope.options("strategy_version"));
 const backtests = computed(() => scope.options("backtest"));
 const { busy, detail, submit } = useConsoleWork();
-const selectedArtifact = ref(""),
+const selectedStrategyVersion = ref(""),
   selectedDataset = ref(""),
   selectedResult = ref("");
 const linkError = ref("");
@@ -24,16 +24,16 @@ const stress = ref(false),
   report = ref(""),
   query = ref(""),
   filter = ref("all");
-const artifact = computed(() =>
-  scope.lookup("artifact", selectedArtifact.value)
+const strategyVersion = computed(() =>
+  scope.lookup("strategy_version", selectedStrategyVersion.value)
 );
 const dataset = computed(() =>
   store.datasets.find(row => row.id === selectedDataset.value)
 );
 watch(selectedDataset, id => {
-  const generation = store.generation;
+  const generation = store.sessionGeneration;
   scope.pinCatalog("backtest-catalog", [id]).catch(error => {
-    if (generation === store.generation) store.error = error.message;
+    if (generation === store.sessionGeneration) store.error = error.message;
   });
 });
 const activeResult = computed(() =>
@@ -70,41 +70,44 @@ watch(
 );
 watch(
   () => [
-    selectedArtifact.value,
+    selectedStrategyVersion.value,
     selectedResult.value,
     detail.value && "kind" in detail.value ? detail.value.id : ""
   ],
   ids => {
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     scope.pin("backtests", ids.filter(Boolean) as string[]).catch(error => {
-      if (generation === store.generation) store.error = error.message;
+      if (generation === store.sessionGeneration) store.error = error.message;
     });
   },
   { immediate: true }
 );
 watch(
-  () => [route.query.artifact, route.query.result],
+  () => [route.query.strategy_version_id, route.query.result],
   async () => {
-    const artifactId = String(route.query.artifact ?? ""),
+    const strategyVersionId = String(route.query.strategy_version_id ?? ""),
       resultId = String(route.query.result ?? "");
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     linkError.value = "";
-    if (artifactId) selectedArtifact.value = "";
+    if (strategyVersionId) selectedStrategyVersion.value = "";
     if (resultId) selectedResult.value = "";
     try {
-      await scope.pin("backtest-link", [artifactId, resultId].filter(Boolean));
+      await scope.pin(
+        "backtest-link",
+        [strategyVersionId, resultId].filter(Boolean)
+      );
       if (
-        generation !== store.generation ||
-        artifactId !== String(route.query.artifact ?? "") ||
+        generation !== store.sessionGeneration ||
+        strategyVersionId !== String(route.query.strategy_version_id ?? "") ||
         resultId !== String(route.query.result ?? "")
       )
         return;
-      if (artifactId) selectedArtifact.value = artifactId;
+      if (strategyVersionId) selectedStrategyVersion.value = strategyVersionId;
       if (resultId) selectedResult.value = resultId;
     } catch (failure) {
       if (
-        generation === store.generation &&
-        artifactId === String(route.query.artifact ?? "") &&
+        generation === store.sessionGeneration &&
+        strategyVersionId === String(route.query.strategy_version_id ?? "") &&
         resultId === String(route.query.result ?? "")
       )
         linkError.value = (failure as Error).message;
@@ -121,19 +124,19 @@ async function prepare() {
 }
 async function replay() {
   if (
-    !artifact.value ||
+    !strategyVersion.value ||
     !dataset.value ||
-    artifact.value.node_id !== dataset.value.node_id
+    strategyVersion.value.node_id !== dataset.value.node_id
   )
     return;
   await submit(
     {
       kind: "backtest",
-      artifact_id: artifact.value.id,
+      strategy_version_id: strategyVersion.value.id,
       dataset_id: body(dataset.value).dataset_id,
       stress: stress.value
     },
-    artifact.value.node_id
+    strategyVersion.value.node_id
   );
 }
 </script>
@@ -149,13 +152,13 @@ async function replay() {
     </div>
     <div class="card-body backtest-form">
       <div class="form-field">
-        <label class="field-label">构建制品</label
+        <label class="field-label">策略版本</label
         ><el-select
-          v-model="selectedArtifact"
-          aria-label="回测制品"
-          placeholder="选择制品"
+          v-model="selectedStrategyVersion"
+          aria-label="回测策略版本"
+          placeholder="选择策略版本"
           ><el-option
-            v-for="item in artifacts"
+            v-for="item in strategyVersions"
             :key="item.id"
             :value="item.id"
             :label="item.id"
@@ -188,9 +191,9 @@ async function replay() {
           :disabled="
             !store.writable ||
             busy ||
-            !artifact ||
+            !strategyVersion ||
             !dataset ||
-            artifact.node_id !== dataset.node_id
+            strategyVersion.node_id !== dataset.node_id
           "
           @click="replay"
           >发起回测</el-button
@@ -199,8 +202,10 @@ async function replay() {
     </div>
     <div class="table-footer">
       <span>{{
-        artifact && dataset && artifact.node_id !== dataset.node_id
-          ? "所选制品与数据来源节点不同，请选择同一节点的输入。"
+        strategyVersion &&
+        dataset &&
+        strategyVersion.node_id !== dataset.node_id
+          ? "所选策略版本与数据来源节点不同，请选择同一节点的输入。"
           : "固定输入身份与数据准备回执由节点校验；未成功完成的回测仍须检查残留。"
       }}</span
       ><button v-if="dataset" class="text-link" @click="detail = dataset">
@@ -352,7 +357,11 @@ async function replay() {
               ><button class="text-link" @click="detail = row">查看来源</button
               ><router-link
                 class="text-link"
-                :to="scope.path('live', { artifact: body(row).artifact_id })"
+                :to="
+                  scope.path('live', {
+                    strategy_version_id: body(row).strategy_version_id
+                  })
+                "
                 >用于实盘</router-link
               >
             </td>
@@ -364,7 +373,7 @@ async function replay() {
       </table>
     </div>
   </section>
-  <ResearchPager kind="backtest" />
+  <StrategyHistoryPager kind="backtest" />
   <section class="console-card section-gap">
     <div class="card-heading">
       <h2>
@@ -390,7 +399,7 @@ async function replay() {
       </p>
     </div>
   </section>
-  <ResearchPager kind="report" />
+  <StrategyHistoryPager kind="report" />
   <ConsoleDetails :item="detail" @close="detail = null" /><el-dialog
     :model-value="!!report"
     title="已校验报告"

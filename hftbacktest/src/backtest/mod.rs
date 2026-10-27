@@ -70,7 +70,7 @@ pub mod live_bar;
 
 pub mod platform;
 
-/// ABI V13 artifact adapter. Exchange matching and scheduling stay in HftBacktest while strategy
+/// ABI V13 compiled_strategy adapter. Exchange matching and scheduling stay in HftBacktest while strategy
 /// callbacks and command staging use the canonical Titan V13 runtime contract.
 pub mod strategy_v13;
 

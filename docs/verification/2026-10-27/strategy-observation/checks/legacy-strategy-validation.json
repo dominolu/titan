@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "binary_sha256": "65f8a1b1a9b326c757704ddabf7fba8780b0331a5a3eaaeab6da6ceac9512acc",
+  "source_file": "/home/dominolu/dev/titan-research-fixes-20261026-0099c1fb/verification-artifacts/research-fixes/m3/build/operations/eed0f1846ce57ad9fcb3e93c5b3f70c197cde74f3cbf184aabe1cb26fa42909e/strategy.titan",
+  "file_sha256": "6ce3238ccebcbb212587762d068047916852e774fd0faa5687dbd55fe6291a23",
+  "original_file_unchanged": true,
+  "validation": {
+    "compiled_strategy_digest": "305acf4987837572bada0e35171563c816a3a4be3e68a5f7d93c1b2b9287ce00",
+    "schema_version": 1,
+    "source_version": "1.2.1",
+    "strategy_type": "grid",
+    "valid": true
+  }
+}

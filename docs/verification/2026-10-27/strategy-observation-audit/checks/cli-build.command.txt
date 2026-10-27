@@ -1,0 +1,1 @@
+cargo build --locked -p titan-cli --bin titan

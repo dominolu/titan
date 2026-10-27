@@ -1,0 +1,69 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-observation-audit-20261027-638bae69/crates/titan-strategy-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.60s
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-cb05fcd36417db5f)
+
+running 8 tests
+test observation_runtime_checkpoint_and_stop_failure_invalidate ... 
+thread 'observation_runtime_checkpoint_and_stop_failure_invalidate' (3298921) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:420:9:
+assertion failed: !harness.runtime.business_observation().unwrap().available
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test observation_runtime_control_rejection_finishes_operation_without_failing_strategy ... 
+thread 'observation_runtime_control_rejection_finishes_operation_without_failing_strategy' (3298924) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:437:5:
+assertion `left == right` failed
+  left: Pending
+ right: Failed
+
+thread 'event-primary-lane-1' (3298926) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:295:66:
+called `Result::unwrap()` on an `Err` value: Disconnected
+FAILED
+test observation_runtime_execution_rejection_while_callback_owns_state ... 
+thread 'observation_runtime_execution_rejection_while_callback_owns_state' (3298927) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:485:5:
+assertion failed: !harness.runtime.business_observation().unwrap().available
+
+thread 'event-primary-lane-1' (3298929) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:64:18:
+called `Result::unwrap()` on an `Err` value: Timeout
+FAILED
+test observation_runtime_invalidation_after_inflight_start_closes_reopened_gate ... 
+thread 'observation_runtime_invalidation_after_inflight_start_closes_reopened_gate' (3298952) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:543:5:
+assertion `left == right` failed
+  left: Succeeded
+ right: Failed
+FAILED
+test observation_runtime_invalidation_survives_control_rejection ... 
+thread 'observation_runtime_invalidation_survives_control_rejection' (3298955) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:461:5:
+assertion failed: !harness.runtime.business_observation().unwrap().available
+
+thread 'event-primary-lane-1' (3298957) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:295:66:
+called `Result::unwrap()` on an `Err` value: Disconnected
+FAILED
+test observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame ... 
+thread 'observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame' (3298958) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:388:5:
+assertion failed: harness.runtime.execution_result(rejected_result()).is_ok()
+FAILED
+test observation_runtime_never_started_and_stopped_frames ... 
+thread 'observation_runtime_never_started_and_stopped_frames' (3298961) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:331:5:
+assertion failed: !never_started.runtime.business_observation().unwrap().available
+FAILED
+test observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start ... 
+thread 'observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start' (3298964) panicked at crates/titan-strategy-runtime/tests/observation_boundaries.rs:543:5:
+assertion `left == right` failed
+  left: Succeeded
+ right: Failed
+FAILED
+
+failures:
+
+failures:
+    observation_runtime_checkpoint_and_stop_failure_invalidate
+    observation_runtime_control_rejection_finishes_operation_without_failing_strategy
+    observation_runtime_execution_rejection_while_callback_owns_state
+    observation_runtime_invalidation_after_inflight_start_closes_reopened_gate
+    observation_runtime_invalidation_survives_control_rejection
+    observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame
+    observation_runtime_never_started_and_stopped_frames
+    observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start
+
+test result: FAILED. 0 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.33s
+
+error: test failed, to rerun pass `-p titan-strategy-runtime --test observation_boundaries`

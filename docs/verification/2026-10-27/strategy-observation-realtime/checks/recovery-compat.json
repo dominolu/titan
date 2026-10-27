@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "original_files_unchanged": true,
+  "inputs_sha256": {
+    "/home/dominolu/dev/titan-observation-20261027-638bae69/evidence/final-09/loopback/live/checkpoints/synthetic-gate-1/77/strategy-77.json": "42719f6171df38eb0a970f586d81a521d31d6a4f613087b7ccffccfbe9a222dd",
+    "/home/dominolu/dev/titan-observation-20261027-638bae69/evidence/final-09/loopback/build/operations/cc807a0a9a4fdc08192a69fea0491ab96838a18db29c0bcddb96c3e752215af7/strategy.titan": "8b1971d9b9559ed1a278c76d36daa5622f71aa0387a408b49b7a2a6f7de514b2"
+  },
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "titan-strategy-runtime",
+    "historical_recovery_point_loads_original_native_strategy",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ]
+}

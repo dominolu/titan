@@ -20,6 +20,7 @@ import {
   orderStates
 } from "./run-view";
 import ConsoleIcon from "./ConsoleIcon.vue";
+import BusinessObservationPanel from "./BusinessObservationPanel.vue";
 import EquityHistoryChart from "./EquityHistoryChart.vue";
 import RiskCard from "./RiskCard.vue";
 import RunAlerts from "./RunAlerts.vue";
@@ -55,13 +56,6 @@ const inProgress = computed(() =>
   )
 );
 const lastReceipt = computed(() => operations.value[0]);
-const priceOrders = computed(() =>
-  view.value.orders.filter(
-    order =>
-      view.value.instrument &&
-      raw(order.asset_id) === raw(view.value.instrument.asset_id)
-  )
-);
 const drawdown = computed(() =>
   view.value.drawdown.length === 1 ? view.value.drawdown[0] : null
 );
@@ -84,20 +78,10 @@ const controlDisabled = (kind: string) =>
           request.action.run_id === item.value?.id
       ))) ||
   (view.value.stale && ["pause", "resume"].includes(kind));
-const parameterFields = [
-  ["order_qty_lots", "单笔数量", "lots"],
-  ["lower_price_ticks", "下边界", "ticks"],
-  ["upper_price_ticks", "上边界", "ticks"],
-  ["buy_levels", "买侧层数", "层"],
-  ["sell_levels", "卖侧层数", "层"],
-  ["max_notional_tick_lots", "策略名义上限", "tick·lot"],
-  ["market_stale_after_ns", "行情过期时间", "ns"],
-  ["max_loss_tick_lots", "亏损保护", "tick·lot"]
-];
 let sourceSequence = 0,
   disposed = false;
 watch(
-  () => [id.value, store.generation],
+  () => [id.value, store.sessionGeneration],
   async () => {
     const sequence = ++sourceSequence;
     tab.value = "summary";
@@ -120,13 +104,13 @@ watch(
   () => [item.value?.id, view.value.state.deployment_id],
   async () => {
     if (!item.value) return;
-    const identity = store.generation;
+    const identity = store.sessionGeneration;
     try {
       await pinResources(
         [item.value.id, view.value.state.deployment_id].filter(Boolean)
       );
     } catch (failure) {
-      if (!disposed && identity === store.generation)
+      if (!disposed && identity === store.sessionGeneration)
         store.error = (failure as Error).message;
     }
   },
@@ -140,11 +124,12 @@ async function control(kind: string) {
   )
     return;
   const source = item.value,
-    generation = view.value.state.generation,
-    checkpoint = view.value.state.checkpoint_id;
-  const identity = store.generation;
-  if (kind === "recover" && !checkpoint) {
-    ElMessage.error("缺少可确认的 checkpoint 身份");
+    generation = view.value.state.run_generation,
+    recoveryPoint =
+      view.value.state.recovery_point_sha256 ?? view.value.state.checkpoint_id;
+  const identity = store.sessionGeneration;
+  if (kind === "restore" && !recoveryPoint) {
+    ElMessage.error("缺少可确认的 恢复点 身份");
     return;
   }
   const meaning =
@@ -152,8 +137,8 @@ async function control(kind: string) {
       ? "暂停禁止新增开仓，继续接收事实并处理撤单与保护性减仓。"
       : kind === "stop"
         ? "停止完成需等待撤单、成交与持仓确认，不因请求受理而清零。"
-        : kind === "recover"
-          ? "按原制品、绑定与 checkpoint 进行恢复核验，不补充原运行期限。"
+        : kind === "restore"
+          ? "按原策略版本、绑定与 恢复点 进行恢复核验，不补充原运行期限。"
           : "恢复运行仍由引擎校验账户和交易入口。";
   try {
     await ElMessageBox.confirm(
@@ -172,12 +157,14 @@ async function control(kind: string) {
   // Confirmation must not authorize a different resource, generation or refreshed capability.
   if (
     disposed ||
-    identity !== store.generation ||
+    identity !== store.sessionGeneration ||
     item.value?.id !== source.id ||
-    view.value.state.generation !== generation ||
+    view.value.state.run_generation !== generation ||
     controlDisabled(kind) ||
     !view.value.actions.includes(kind) ||
-    (kind === "recover" && view.value.state.checkpoint_id !== checkpoint)
+    (kind === "restore" &&
+      (view.value.state.recovery_point_sha256 ??
+        view.value.state.checkpoint_id) !== recoveryPoint)
   ) {
     ElMessage.warning("目标状态已变更，请重新确认");
     return;
@@ -185,29 +172,41 @@ async function control(kind: string) {
   busy.value = [...busy.value, kind];
   try {
     const action: Action =
-      kind === "recover"
-        ? { kind, run_id: source.id, generation, checkpoint_id: checkpoint }
+      kind === "restore"
+        ? {
+            kind,
+            run_id: source.id,
+            expected_run_generation: generation,
+            recovery_point_sha256: recoveryPoint
+          }
         : {
             kind: kind as "pause" | "resume" | "stop",
             run_id: source.id,
-            generation
+            expected_run_generation: generation
           };
     await store.submit(action, source.node_id);
     if (
       !disposed &&
-      identity === store.generation &&
+      identity === store.sessionGeneration &&
       item.value?.id === source.id
     ) {
       receipts.value = true;
       ElMessage.success("操作已受理，等待执行方确认");
     }
   } catch (failure) {
-    if (!disposed && identity === store.generation)
+    if (!disposed && identity === store.sessionGeneration)
       ElMessage.error((failure as Error).message);
   } finally {
     busy.value = busy.value.filter(entry => entry !== kind);
   }
 }
+const priceOrders = computed(() =>
+  view.value.orders.filter(
+    order =>
+      !view.value.instrument ||
+      String(order.asset_id) === String(view.value.instrument.asset_id)
+  )
+);
 const sides: Record<string, string> = {
   "0": "未指定",
   "1": "买入",
@@ -259,7 +258,7 @@ onBeforeUnmount(() => {
           ><span
             >{{ raw(view.state.account) }} /
             {{ raw(view.state.instrument) }}</span
-          ><span>运行代次 {{ raw(view.state.generation) }}</span
+          ><span>运行代次 {{ raw(view.state.run_generation) }}</span
           ><span>{{ item.node_id }}</span>
         </p>
       </div>
@@ -349,13 +348,11 @@ onBeforeUnmount(() => {
     <template v-if="tab === 'summary'">
       <section class="metric-grid">
         <article class="metric-card">
-          <p>网格配对毛收益</p>
-          <strong class="number" :title="raw(view.grid.grid_profit_tick_lots)"
-            >{{ decimal(view.grid.grid_profit_tick_lots, 4)
-            }}<small>tick·lot</small></strong
+          <p>业务观测协议</p>
+          <strong>{{ raw(view.business.schema_id) }}</strong
           ><span
-            >已配对 {{ raw(view.grid.completed_pairs) }} ·
-            未计费用与资金费</span
+            >版本 {{ raw(view.business.schema_version) }} ·
+            {{ view.business.available ? "已接入" : "尚不可用" }}</span
           >
         </article>
         <article class="metric-card">
@@ -396,54 +393,10 @@ onBeforeUnmount(() => {
       </section>
       <div class="detail-split">
         <EquityHistoryChart :item="item" :stale="view.stale" />
-        <article class="console-card grid-state">
-          <div class="card-heading">
-            <h2>网格状态</h2>
-            <span class="unit-tag">已提交 checkpoint</span>
-          </div>
-          <div v-if="!view.business.available" class="compact-empty">
-            {{ view.business.reason || "尚无已提交的业务快照" }}
-          </div>
-          <template v-else
-            ><dl class="risk-lines">
-              <div>
-                <dt>锚点 / ticks</dt>
-                <dd :title="raw(view.grid.anchor_ticks)">
-                  {{ raw(view.grid.anchor_ticks) }}
-                </dd>
-              </div>
-              <div>
-                <dt>业务状态码</dt>
-                <dd>{{ raw(view.grid.status) }}</dd>
-              </div>
-              <div>
-                <dt>完成配对</dt>
-                <dd>{{ raw(view.grid.completed_pairs) }}</dd>
-              </div>
-            </dl>
-            <div class="price-ladder">
-              <div
-                v-for="(order, index) in priceOrders.slice(0, 6)"
-                :key="index"
-                class="price-level"
-              >
-                <span :class="{ positive: raw(order.side) === '1' }">{{
-                  sides[raw(order.side)] || raw(order.side)
-                }}</span
-                ><i /><strong
-                  class="number"
-                  :title="raw(order.price_ticks) + ' ticks'"
-                  >{{
-                    raw(scaled(order.price_ticks, view.instrument?.price_tick))
-                  }}</strong
-                >
-              </div>
-            </div>
-            <p class="subtle grid-note">
-              账户品种委托 · 不从意图推造交易所事实
-            </p></template
-          >
-        </article>
+        <BusinessObservationPanel
+          :observation="view.business"
+          :stale="view.businessStale"
+        />
       </div>
       <div class="detail-split">
         <section class="console-card">
@@ -525,15 +478,15 @@ onBeforeUnmount(() => {
     />
     <FactHistory
       v-if="tab === 'history'"
-      :key="item.id + ':' + view.state.generation"
+      :key="item.id + ':' + view.state.run_generation"
       :item="item"
     />
     <template v-if="tab === 'parameters'"
       ><div class="notice">
-        运行实例引用固定制品和参数，修改参数须建立新版本。恢复继续沿用原期限与身份校验。
+        运行实例引用固定策略版本和参数，修改参数须建立新版本。恢复继续沿用原期限与身份校验。
       </div>
       <section class="console-card">
-        <div class="card-heading"><h2>参数、制品与恢复来源</h2></div>
+        <div class="card-heading"><h2>参数、策略版本与恢复来源</h2></div>
         <dl class="parameter-grid">
           <div>
             <dt>账户 / 原生品种</dt>
@@ -542,28 +495,32 @@ onBeforeUnmount(() => {
             </dd>
           </div>
           <div>
-            <dt>制品摘要</dt>
+            <dt>编译内容校验值</dt>
             <dd class="mono">
-              {{ raw(view.strategy.artifact_digest) }}
+              {{ raw(view.strategy.compiled_strategy_digest) }}
             </dd>
           </div>
           <div>
             <dt>运行代次</dt>
-            <dd>{{ raw(view.state.generation) }}</dd>
+            <dd>{{ raw(view.state.run_generation) }}</dd>
           </div>
           <div>
             <dt>停止方式</dt>
             <dd>{{ stopLabel }}</dd>
           </div>
           <div>
-            <dt>Checkpoint 身份</dt>
+            <dt>恢复点文件校验值</dt>
             <dd class="mono">
-              {{ raw(view.state.checkpoint_id ?? view.business.checkpoint_id) }}
+              {{
+                raw(
+                  view.state.recovery_point_sha256 ?? view.state.checkpoint_id
+                )
+              }}
             </dd>
           </div>
           <div>
-            <dt>状态结构版本</dt>
-            <dd>{{ raw(view.business.state_schema_version) }}</dd>
+            <dt>恢复状态结构版本</dt>
+            <dd>{{ raw(view.recovery.state_schema_version) }}</dd>
           </div>
           <div>
             <dt>最大风险敞口</dt>
@@ -576,18 +533,18 @@ onBeforeUnmount(() => {
             <dd>{{ time(view.state.expires_at_ns, true) }}</dd>
           </div>
         </dl>
-        <dl v-if="view.business.available" class="parameter-grid">
-          <div v-for="[field, label, unit] in parameterFields" :key="field">
-            <dt>{{ label }}</dt>
-            <dd>{{ raw(view.config[field]) }} {{ unit }}</dd>
+        <dl v-if="Object.keys(view.config).length" class="parameter-grid">
+          <div v-for="(value, field) in view.config" :key="field">
+            <dt>{{ field }}</dt>
+            <dd>{{ raw(value) }}</dd>
           </div>
         </dl>
         <details class="secondary-details">
-          <summary>已提交的策略配置</summary>
+          <summary>冻结输入参数</summary>
           <pre>{{ pretty(view.config) }}</pre>
         </details>
         <details class="secondary-details">
-          <summary>完整业务状态与 checkpoint 元数据</summary>
+          <summary>公开业务观测与恢复元数据</summary>
           <pre>{{ pretty(view.observation.strategies) }}</pre>
         </details>
       </section></template

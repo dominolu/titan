@@ -1,0 +1,34 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-observation-audit-20261027-638bae69/crates/titan-strategy-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.89s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_strategy_runtime-4446fdaee0c4c558)
+
+running 13 tests
+
+thread 'observation::tests::panicking_clock_does_not_leave_an_incomplete_frame' (3314113) panicked at crates/titan-strategy-runtime/src/observation.rs:774:51:
+injected clock panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test observation::tests::projection_is_bounded_and_does_not_publish_recovery_internals ... ok
+test observation::tests::no_callback_does_not_publish_or_consume_the_initial_request ... ok
+test observation::tests::projection_rejects_unknown_paths_outside_bounds_and_incompatible_types ... ok
+test observation::tests::missing_initialization_is_nullable_and_unknown_enum_is_incomplete ... ok
+test observation::tests::public_schema_is_independent_of_private_name_offset_and_hash ... ok
+test observation::tests::panicking_clock_does_not_leave_an_incomplete_frame ... ok
+test observation::tests::reads_preserve_u64_and_reject_non_finite_values ... ok
+test observation::tests::publication_coalesces_requests_and_never_replays_a_recovery_point ... ok
+test observation::tests::request_during_capture_remains_pending_for_the_next_boundary ... ok
+test observation::tests::busy_reads_are_bounded_and_invalidation_wins_over_an_inflight_writer ... ok
+test observation::tests::stopped_reader_cannot_block_the_writer_or_terminal_publication ... ok
+{"capture_max_ns":2793,"capture_p50_ns":350,"capture_p99_ns":423,"fields":8,"hot_path_allocations":0,"idle_ns_per_callback":16.10934,"max_scalar_bytes":128,"probe":"business_observation_publication"}
+{"capture_max_ns":5901,"capture_p50_ns":2098,"capture_p99_ns":2128,"fields":64,"hot_path_allocations":0,"idle_ns_per_callback":9.61937,"max_scalar_bytes":1024,"probe":"business_observation_publication"}
+test observation::tests::publication_performance_probe ... ok
+coherent concurrent observations accepted: 937
+test observation::tests::concurrent_readers_only_see_whole_published_frames ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.08s
+
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-cb05fcd36417db5f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

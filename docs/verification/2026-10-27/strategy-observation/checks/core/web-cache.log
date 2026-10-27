@@ -1,0 +1,1 @@
+resource cache: catalog survives 600 updates; selected resource retained; per-kind limits and revision ordering passed

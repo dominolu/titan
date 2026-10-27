@@ -153,28 +153,28 @@ def main():
     evidence = {"host": "43.130.234.54", "binary_sha256": args.expected_sha256, "account_id": 1, "account": "gate", "instrument": SYMBOL, "max_exposure_quote": "100", "max_price_deviation_bps": 50, "max_observation_seconds": 90, "mode": "observe", "venue_methods": ["GET"], "preexisting_target_orders": len(before_orders), "preexisting_target_positions": [{k: p.get(k) for k in ("symbol", "position_side", "position_qty")} for p in before_positions]}
     try:
         node, manager = start("node"), start("manager")
-        session = wait(lambda: call("/api/v1/session", {"username": "operator", "password": password}))
+        session = wait(lambda: call("/api/v2/session", {"username": "operator", "password": password}))
         def current():
-            resources = call("/api/v1/snapshot")["resources"]
+            resources = call("/api/v2/snapshot")["resources"]
             return ready_run(resources)
         run = wait(current)
         observation = run["body"]["observation"]
         assert observation["readonly"] and observation["strategies"] == [] and observation["account_snapshot"]["image"]["account_id"] == "1"
         write_private(args.root / "snapshot-private.json", json.dumps(run, indent=2))
-        identity = (run["id"], run["body"]["generation"], observation["pid"], observation["start_time"])
+        identity = (run["id"], run["body"]["run_generation"], observation["pid"], observation["start_time"])
         try:
-            call("/api/v1/operations", {"idempotency_key": "live-readonly-rejection", "node_id": "live", "action": {"kind": "pause", "run_id": run["id"], "generation": run["body"]["generation"]}}, session["csrf_token"])
+            call("/api/v2/operations", {"idempotency_key": "live-readonly-rejection", "node_id": "live", "action": {"kind": "pause", "run_id": run["id"], "generation": run["body"]["run_generation"]}}, session["csrf_token"])
             raise AssertionError("live write capability was unexpectedly enabled")
         except error.HTTPError as failure: assert failure.code == 403
-        history = call(f"/api/v1/resources/{run['id']}/history?kind=balance&generation={run['body']['generation']}")
+        history = call(f"/api/v2/resources/{run['id']}/history?kind=balance&generation={run['body']['run_generation']}")
         assert history["items"], "account recorder did not retain bootstrap balances"
         assert all(item["account_id"] == "1" for item in history["items"])
         stop(manager); stop(node)
         node, manager = start("node"), start("manager")
         recovered = wait(current, timeout=15)
         actual = recovered["body"]["observation"]
-        assert (recovered["id"], recovered["body"]["generation"], actual["pid"], actual["start_time"]) == identity, "manager/node restart created or adopted a different worker"
-        wait(lambda: call("/api/v1/snapshot") and next((r for r in call("/api/v1/snapshot")["resources"] if r["id"] == run["id"] and r["body"]["process_state"] in ("STOPPED", "FAILED", "UNKNOWN")), None), timeout=max(1, 112 - (time.monotonic() - started)))
+        assert (recovered["id"], recovered["body"]["run_generation"], actual["pid"], actual["start_time"]) == identity, "manager/node restart created or adopted a different worker"
+        wait(lambda: call("/api/v2/snapshot") and next((r for r in call("/api/v2/snapshot")["resources"] if r["id"] == run["id"] and r["body"]["process_state"] in ("STOPPED", "FAILED", "UNKNOWN")), None), timeout=max(1, 112 - (time.monotonic() - started)))
         with sqlite3.connect(args.root / "node/runs.sqlite3") as db:
             rows = db.execute("SELECT state FROM runs WHERE strategy_id='management-observer'").fetchall()
         assert rows == [("STOPPED",)], "observer did not finish cleanly or was duplicated"

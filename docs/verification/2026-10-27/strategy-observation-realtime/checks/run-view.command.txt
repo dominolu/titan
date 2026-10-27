@@ -1,0 +1,1 @@
+node scripts/management_run_view_test.mjs

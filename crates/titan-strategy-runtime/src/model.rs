@@ -11,16 +11,17 @@ use titan_market_service::MarketSourceHandle;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[repr(transparent)]
-pub struct StrategyId(pub u32);
+pub struct RuntimeStrategyNo(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct StrategyHandle {
-    pub strategy_id: StrategyId,
+    #[serde(alias = "strategy_id")]
+    pub runtime_strategy_no: RuntimeStrategyNo,
     pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct StrategyArtifactId {
+pub struct CompiledStrategyDigest {
     pub digest: [u8; 32],
 }
 
@@ -29,7 +30,7 @@ pub struct StrategyArtifactId {
 pub struct StrategyOperationId(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StrategyPackageRef {
+pub struct StrategyFileRef {
     pub loader_type: Arc<str>,
     pub uri: Arc<str>,
     pub expected_digest: [u8; 32],
@@ -151,15 +152,18 @@ pub enum StrategyRecoveryPolicy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StrategyDefinition {
     pub strategy_key: Arc<str>,
-    pub strategy_id: StrategyId,
-    pub package: StrategyPackageRef,
+    #[serde(alias = "strategy_id")]
+    pub runtime_strategy_no: RuntimeStrategyNo,
+    #[serde(alias = "package")]
+    pub strategy_file: StrategyFileRef,
     pub markets: Arc<[StrategyMarketBinding]>,
     pub accounts: Arc<[StrategyAccountBinding]>,
     pub risk_scope: RiskScopeRef,
     pub runtime: StrategyRuntimeSpec,
     pub recovery: StrategyRecoveryPolicy,
     pub enabled: bool,
-    pub definition_version: u64,
+    #[serde(alias = "definition_version")]
+    pub run_config_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -190,18 +194,18 @@ impl StrategyCapabilities {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StrategyPackageManifest {
-    pub strategy_type: Arc<str>,
-    pub package_version: semver::Version,
+pub struct CompiledStrategyMetadata {
+    pub runtime_type: Arc<str>,
+    pub source_version: semver::Version,
     pub runtime_abi: ApiVersion,
     pub parameter_schema: Arc<serde_json::Value>,
     pub parameter_schema_version: u32,
-    pub state_schema_version: u32,
+    pub recovery_state_schema_version: u32,
     pub state_byte_len: usize,
     pub callbacks: StrategyCallbackMask,
     pub capabilities: StrategyCapabilities,
     pub subscriptions: Arc<[StrategySubscriptionSpec]>,
-    pub artifact_digest: [u8; 32],
+    pub compiled_strategy_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug)]
@@ -299,8 +303,8 @@ pub struct StrategyRuntimeDiagnosticSnapshot {
 pub struct StrategyInstanceSnapshot {
     pub handle: StrategyHandle,
     pub strategy_key: Arc<str>,
-    pub definition_version: u64,
-    pub artifact_id: StrategyArtifactId,
+    pub run_config_revision: u64,
+    pub compiled_strategy_digest: CompiledStrategyDigest,
     pub lifecycle: StrategyLifecycle,
     pub enabled: bool,
 }
@@ -313,7 +317,7 @@ pub struct StrategyStateSnapshotRequest {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StrategyEventHeaderV1 {
-    pub strategy_id: u32,
+    pub runtime_strategy_no: u32,
     pub kind: u16,
     pub flags: u16,
     pub strategy_generation: u64,

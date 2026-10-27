@@ -8,7 +8,7 @@ from titan_strategy.types import EventKind, EventQos
 
 state_dtype = record(tick_items=uint64, tick_callbacks=uint64, bar_items=uint64, bar_callbacks=uint64)
 SPEC = StrategySpec(
-    strategy_id="event_counter", strategy_version="2.0.0", state_schema_version=1,
+    strategy_type="event_counter", source_version="2.0.0", recovery_state_schema_version=1,
     subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),),
     capabilities=Capability.MARKET_DATA,
 )

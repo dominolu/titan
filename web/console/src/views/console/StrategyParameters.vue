@@ -7,15 +7,15 @@ import { parseExact, integerToken, scalarText } from "@/utils/precision";
 import { body, pretty, raw, operationLabels } from "./run-view";
 import { useConsoleWork } from "./use-console-work";
 import ConsoleDetails from "./ConsoleDetails.vue";
-import { useResearch } from "./use-research";
-import ResearchPager from "./ResearchPager.vue";
+import { useStrategy } from "./use-strategy";
+import StrategyHistoryPager from "./StrategyHistoryPager.vue";
 import ConsoleIcon from "./ConsoleIcon.vue";
 const store = useConsoleStore();
-const scope = useResearch();
-const templates = computed(() => scope.options("template"));
-const versions = computed(() => scope.resources("version"));
+const scope = useStrategy();
+const presets = computed(() => scope.options("parameter_preset"));
+const versions = computed(() => scope.resources("parameter_version"));
 const { busy, detail, perform, submit } = useConsoleWork();
-const selectedTemplate = ref("");
+const selectedPreset = ref("");
 let editSequence = 0,
   disposed = false;
 onBeforeUnmount(() => {
@@ -29,13 +29,13 @@ const comparison = ref<string[]>([]);
 const editor = ref("json");
 const query = ref("");
 const filter = ref("all");
-const template = computed(() =>
-  scope.lookup("template", selectedTemplate.value)
+const preset = computed(() =>
+  scope.lookup("parameter_preset", selectedPreset.value)
 );
 const formIdentity = computed(() =>
   JSON.stringify([
-    template.value?.id,
-    template.value?.revision,
+    preset.value?.id,
+    preset.value?.revision,
     parameters.value,
     draft.value?.id,
     draft.value?.revision
@@ -49,8 +49,8 @@ const schema = computed(() => {
     row =>
       row.state === "succeeded" &&
       row.input.kind === "describe" &&
-      row.node_id === template.value?.node_id &&
-      row.input.template_id === body(template.value).template_id
+      row.node_id === preset.value?.node_id &&
+      row.input.parameter_preset_id === body(preset.value).parameter_preset_id
   );
   return (last?.result as any)?.metadata?.parameter_schema?.properties ?? {};
 });
@@ -65,13 +65,15 @@ const shown = computed(() =>
   versions.value.filter(
     row =>
       (filter.value === "all" || row.frozen === (filter.value === "frozen")) &&
-      `${row.id} ${row.node_id} ${body(row).template_id}`
+      `${row.id} ${row.node_id} ${body(row).parameter_preset_id}`
         .toLowerCase()
         .includes(query.value.toLowerCase())
   )
 );
 const differences = computed(() => {
-  const [left, right] = comparison.value.map(id => scope.lookup("version", id));
+  const [left, right] = comparison.value.map(id =>
+    scope.lookup("parameter_version", id)
+  );
   if (!left || !right) return [];
   const a = body(left).parameters ?? {},
     b = body(right).parameters ?? {};
@@ -86,18 +88,18 @@ const differences = computed(() => {
     }));
 });
 watch(
-  () => templates.value,
+  () => presets.value,
   items => {
-    if (!selectedTemplate.value && items.length)
-      selectedTemplate.value = items[0].id;
+    if (!selectedPreset.value && items.length)
+      selectedPreset.value = items[0].id;
   },
   { immediate: true }
 );
 watch(
-  () => template.value?.id,
+  () => preset.value?.id,
   () => {
-    if (template.value) {
-      parameters.value = pretty(body(template.value).parameters);
+    if (preset.value) {
+      parameters.value = pretty(body(preset.value).parameters);
       draft.value = null;
     }
   },
@@ -108,15 +110,15 @@ watch(formIdentity, () => {
 });
 watch(
   () => [
-    selectedTemplate.value,
+    selectedPreset.value,
     draft.value?.id,
     ...comparison.value,
     detail.value && "kind" in detail.value ? detail.value.id : ""
   ],
   ids => {
-    const generation = store.generation;
+    const generation = store.sessionGeneration;
     scope.pin("parameters", ids.filter(Boolean) as string[]).catch(error => {
-      if (generation === store.generation) store.error = error.message;
+      if (generation === store.sessionGeneration) store.error = error.message;
     });
   },
   { immediate: true }
@@ -138,15 +140,15 @@ function setParameter(key: string, value: string, type: string) {
   }
 }
 async function validate() {
-  if (!template.value) return;
-  const source = template.value,
+  if (!preset.value) return;
+  const source = preset.value,
     identity = formIdentity.value;
   await perform(
     () =>
       store.submit(
         {
           kind: "describe",
-          template_id: body(source).template_id,
+          parameter_preset_id: body(source).parameter_preset_id,
           parameters: parseExact(parameters.value)
         },
         source.node_id
@@ -157,12 +159,9 @@ async function validate() {
   );
 }
 async function save(freeze: boolean) {
-  if (
-    !template.value ||
-    (freeze && describeResult.value?.state !== "succeeded")
-  )
+  if (!preset.value || (freeze && describeResult.value?.state !== "succeeded"))
     return;
-  const source = template.value,
+  const source = preset.value,
     currentDraft = draft.value,
     identity = formIdentity.value;
   await perform(
@@ -170,7 +169,7 @@ async function save(freeze: boolean) {
       consoleApi.save(
         {
           node_id: source.node_id,
-          template_id: body(source).template_id,
+          parameter_preset_id: body(source).parameter_preset_id,
           parameters: parseExact(parameters.value),
           expected_revision: currentDraft?.revision ?? null,
           freeze_operation_id: freeze ? validation.value : null
@@ -187,27 +186,29 @@ async function save(freeze: boolean) {
 }
 async function editVersion(item: Resource, copy: boolean) {
   const sequence = ++editSequence,
-    generation = store.generation,
-    previousTemplate = selectedTemplate.value,
+    generation = store.sessionGeneration,
+    previousPreset = selectedPreset.value,
     previousForm = formIdentity.value;
   const active = () =>
-    !disposed && sequence === editSequence && generation === store.generation;
-  const templateId = `${item.node_id}-template-${body(item).template_id}`;
+    !disposed &&
+    sequence === editSequence &&
+    generation === store.sessionGeneration;
+  const presetId = `${item.node_id}-template-${body(item).parameter_preset_id}`;
   try {
-    await scope.pin("edit-source", [templateId]);
+    await scope.pin("edit-source", [presetId]);
   } catch (failure) {
     if (active()) ElMessage.error((failure as Error).message);
     return;
   }
   if (
     !active() ||
-    selectedTemplate.value !== previousTemplate ||
+    selectedPreset.value !== previousPreset ||
     formIdentity.value !== previousForm
   )
     return;
-  selectedTemplate.value = templateId;
+  selectedPreset.value = presetId;
   await nextTick();
-  if (!active() || selectedTemplate.value !== templateId) return;
+  if (!active() || selectedPreset.value !== presetId) return;
   parameters.value = pretty(body(item).parameters);
   draft.value = copy ? null : item;
   validation.value = "";
@@ -228,25 +229,25 @@ async function editVersion(item: Resource, copy: boolean) {
         }}</span>
       </div>
       <div class="card-body">
-        <label class="field-label">策略模板</label
+        <label class="field-label">参数预设</label
         ><el-select
-          v-model="selectedTemplate"
-          aria-label="策略模板"
-          placeholder="选择节点已登记的模板"
+          v-model="selectedPreset"
+          aria-label="参数预设"
+          placeholder="选择节点已登记的参数预设"
           style="width: 100%"
           ><el-option
-            v-for="item in templates"
+            v-for="item in presets"
             :key="item.id"
             :value="item.id"
-            :label="item.node_id + ' / ' + body(item).template_id"
+            :label="item.node_id + ' / ' + body(item).parameter_preset_id"
         /></el-select>
-        <ResearchPager kind="template" />
+        <StrategyHistoryPager kind="parameter_preset" />
       </div>
-      <div v-if="!template" class="compact-empty">
+      <div v-if="!preset" class="compact-empty">
         {{
-          selectedTemplate
-            ? "所选模板当前不可用，请重新选择；已编辑参数仍保留。"
-            : "尚未收到已授权节点的模板目录"
+          selectedPreset
+            ? "所选参数预设当前不可用，请重新选择；已编辑参数仍保留。"
+            : "尚未收到已授权节点的参数预设目录"
         }}
       </div>
       <template v-else>
@@ -340,17 +341,17 @@ async function editVersion(item: Resource, copy: boolean) {
     </section>
     <aside class="console-card context-card">
       <div class="card-heading">
-        <h2>模板与版本来源</h2>
+        <h2>参数预设与版本来源</h2>
         <ConsoleIcon name="shield" />
       </div>
       <dl class="risk-lines">
         <div>
           <dt>执行节点</dt>
-          <dd>{{ raw(template?.node_id) }}</dd>
+          <dd>{{ raw(preset?.node_id) }}</dd>
         </div>
         <div>
-          <dt>模板</dt>
-          <dd>{{ raw(body(template).template_id) }}</dd>
+          <dt>参数预设</dt>
+          <dd>{{ raw(body(preset).parameter_preset_id) }}</dd>
         </div>
         <div>
           <dt>编辑状态</dt>
@@ -375,7 +376,7 @@ async function editVersion(item: Resource, copy: boolean) {
       </div>
       <details class="secondary-details" open>
         <summary>源文件摘要</summary>
-        <p class="digest-text">{{ raw(body(template).source_digest) }}</p>
+        <p class="digest-text">{{ raw(body(preset).source_digest) }}</p>
       </details>
       <details v-if="describeResult" class="secondary-details">
         <summary>校验结果与字段定义</summary>
@@ -392,7 +393,7 @@ async function editVersion(item: Resource, copy: boolean) {
         ><ConsoleIcon name="search" /><input
           v-model="query"
           aria-label="搜索参数版本"
-          placeholder="搜索版本、节点或模板"
+          placeholder="搜索版本、节点或参数预设"
       /></label>
     </div>
     <div class="table-toolbar">
@@ -452,7 +453,7 @@ async function editVersion(item: Resource, copy: boolean) {
       <table class="data-table versions-table">
         <thead>
           <tr>
-            <th>版本 / 模板</th>
+            <th>版本 / 参数预设</th>
             <th>节点</th>
             <th>状态</th>
             <th>操作</th>
@@ -463,7 +464,9 @@ async function editVersion(item: Resource, copy: boolean) {
             <td>
               <button class="text-link" @click="detail = row">
                 {{ row.id }}</button
-              ><span class="cell-note">{{ body(row).template_id }}</span>
+              ><span class="cell-note">{{
+                body(row).parameter_preset_id
+              }}</span>
             </td>
             <td>{{ row.node_id }}</td>
             <td>
@@ -476,7 +479,10 @@ async function editVersion(item: Resource, copy: boolean) {
                 size="small"
                 :disabled="!row.frozen || !store.writable || busy"
                 @click="
-                  submit({ kind: 'build', version_id: row.id }, row.node_id)
+                  submit(
+                    { kind: 'compile', parameter_version_id: row.id },
+                    row.node_id
+                  )
                 "
                 >构建</el-button
               ><button class="text-link" @click="editVersion(row, true)">
@@ -505,11 +511,11 @@ async function editVersion(item: Resource, copy: boolean) {
     </div>
     <div class="table-footer">
       <span>当前缓存 {{ shown.length }} 个版本 · 更早记录见历史查询</span
-      ><router-link class="text-link" :to="scope.path('artifacts')"
-        >查看构建记录 →</router-link
+      ><router-link class="text-link" :to="scope.path('versions')"
+        >查看策略版本 →</router-link
       >
     </div>
   </section>
-  <ResearchPager kind="version" />
+  <StrategyHistoryPager kind="parameter_version" />
   <ConsoleDetails :item="detail" @close="detail = null" />
 </template>

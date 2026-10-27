@@ -37,8 +37,16 @@ pub trait StrategyService: Send + Sync {
     fn release_safe(&self, _strategy: StrategyHandle) -> LocalResult<bool> {
         Ok(false)
     }
-    fn business_snapshot(&self, _strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
-        Ok(serde_json::json!({"available":false,"reason":"business snapshot unsupported"}))
+    fn recovery_status(&self, _strategy: StrategyHandle) -> LocalResult<serde_json::Value> {
+        Ok(serde_json::json!({"available":false,"reason":"recovery metadata unavailable"}))
+    }
+    fn business_observation(
+        &self,
+        _strategy: StrategyHandle,
+    ) -> LocalResult<BusinessObservationSnapshot> {
+        Ok(BusinessObservationSnapshot::unavailable(
+            "business observation unsupported",
+        ))
     }
     fn resolve(&self, strategy_key: &str) -> LocalResult<StrategyHandle>;
     fn state(&self, strategy: StrategyHandle) -> LocalResult<StrategyRuntimeStateSnapshot>;
