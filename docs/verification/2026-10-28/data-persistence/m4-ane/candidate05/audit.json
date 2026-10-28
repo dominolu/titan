@@ -1,0 +1,70 @@
+{
+  "passed": true,
+  "independent_fills": 2,
+  "fee_units_USDT_1e8": 808001,
+  "archive_fill_counts_by_replay": [
+    [
+      0,
+      2
+    ],
+    [
+      1,
+      1
+    ]
+  ],
+  "archive_conflicts": 0,
+  "operations": [
+    {
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "local_simulated_occupancy_rows": 0,
+  "fixed_record_payload_unchanged": true,
+  "fixed_record_pin_count": 1,
+  "final_point_generation": 2,
+  "final_point_pending_execution": false,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    },
+    {
+      "order_id": 4294967297,
+      "side": 2,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    }
+  ],
+  "final_point_position_lots": 0,
+  "sampled_risk": [
+    {
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "currency": "USDT",
+      "max_actual_notional": "8.08001",
+      "max_pending_bound_notional": "8.08006",
+      "coverage_complete": false,
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

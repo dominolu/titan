@@ -151,6 +151,11 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
         config_path.to_str().context("invalid node config path")?,
     )?;
     let initial_catalog = catalog_items(&config)?;
+    let _projection = titan_persistence::ProjectionWorker::start(
+        config.work_root.join("storage"),
+        Some(config.work_root.join("account-facts.sqlite3")),
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let live = super::live::LiveNode::open(&config, &config_path)?;
     let router = Router::new()
         .route("/v1/catalog", get(catalog))
@@ -159,6 +164,7 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
         .route("/v1/operations/{id}/cancel", post(cancel))
         .route("/v1/files/{id}/{*path}", get(file))
         .route("/v1/runs/{id}/history", get(history))
+        .route("/v1/runs/{id}/facts", get(facts))
         .route("/v1/runs/{id}/log", get(runtime_log))
         .layer(DefaultBodyLimit::max(1_048_576))
         .layer(axum::middleware::from_fn(super::http::json_errors))
@@ -185,9 +191,59 @@ type NodeState = Arc<(
 )>;
 #[derive(serde::Deserialize)]
 struct HistoryQuery {
+    cursor: Option<String>,
+    newest_first: Option<bool>,
     kind: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
+}
+async fn facts(
+    State(state): State<NodeState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> std::result::Result<Json<Value>, Error> {
+    authenticate(&state.0, &headers)?;
+    checked_id(&id)?;
+    let config = state.0.clone();
+    let claim = if super::control::is_managed(&config, &id) {
+        Some(super::control::fact_claim(&config, &id)?)
+    } else if directory(&config, &id)?.join("request.json").exists() {
+        None
+    } else {
+        Some(state.4.fact_claim(&id)?)
+    };
+    if query.cursor.as_ref().is_some_and(|c| c.len() > 4096)
+        || query.kind.as_ref().is_some_and(|k| k.len() > 64)
+    {
+        return Err(fault(400, "INVALID_HISTORY_QUERY", "query budget exceeded").into());
+    }
+    let result=tokio::task::spawn_blocking(move||->Result<Value>{
+        use titan_persistence::{HistoryQuery,HistoryFilter,HistoryRequest,FactEnvironment,RoutedHistoryQuery};
+        let (path,account,run,environment)=if let Some(claim)=claim {
+            let path=config.work_root.join("account-facts.sqlite3");
+            let db=rusqlite::Connection::open_with_flags(&path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            db.busy_timeout(Duration::from_millis(200))?;
+            let recording=format!("{}:{}",claim.run_id,claim.worker_session_id);
+            let environment:String=db.query_row("SELECT environment FROM archive_sources WHERE recording=?1",[recording],|r|r.get(0))?;
+            let environment=match environment.as_str(){"live"=>FactEnvironment::Live,"simulation"=>FactEnvironment::Simulation,_=>anyhow::bail!("recording environment changed")};
+            (path,claim.account,claim.run_id,environment)
+        }else{
+            let directory=directory(&config,&id)?;
+            let request:NodeRequest=serde_json::from_slice(&std::fs::read(directory.join("request.json"))?)?;
+            ensure!(request.operation_id==id&&matches!(request.action,Action::Backtest{..}),"source is not an admitted backtest");
+            ensure!(directory.join("history/manifest.json").is_file(),"backtest storage publication is incomplete");
+            (directory.join("history/history.db"),"simulation".into(),id.clone(),FactEnvironment::Backtest)
+        };
+        let request=HistoryRequest{filter:HistoryFilter{environment,account:account.clone(),strategy_id:None,run_id:Some(run.clone()),kind:query.kind.filter(|v|!v.is_empty())},cursor:query.cursor.filter(|v|!v.is_empty()).map(|v|serde_json::from_str(&v)).transpose()?,limit:query.limit.unwrap_or(20).clamp(1,200),newest_first:query.newest_first.unwrap_or(false)};
+        let page=RoutedHistoryQuery::new(config.work_root.join("storage"),path).page(&request).map_err(|error|{
+            if error.to_string().contains("cursor_scope_changed"){fault(409,"STALE_HISTORY_CURSOR","history cursor no longer matches the selected scope")}else{tracing::warn!(reason=%error,"history query unavailable");fault(503,"HISTORY_UNAVAILABLE","history recording is unavailable")}
+        })?;
+        let mut value=serde_json::to_value(page)?;
+        if let Some(items)=value["items"].as_array_mut(){for item in items{if item["fact"]["kind"]!="business_observation"{item["fact"]["payload"]=precise(item["fact"]["payload"].take());}}}
+        value["source"]=json!({"kind":"fact_archive","account":account,"run_id":run,"persisted":true,"attribution":"account unless the record contains proven strategy identity"});Ok(value)
+    }).await.context("history query task failed")??;
+    Ok(Json(result))
 }
 async fn runtime_log(
     State(state): State<NodeState>,
@@ -521,7 +577,16 @@ async fn file(
     Path((id, path)): Path<(String, String)>,
 ) -> std::result::Result<Response, Error> {
     authenticate(&state.0, &headers)?;
-    let file = inside(&directory(&state.0, &id)?, &path)?;
+    let dir = directory(&state.0, &id)?;
+    let requested = FsPath::new(&path);
+    super::require(
+        !requested.is_absolute()
+            && requested
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+        "invalid published path",
+    )?;
+    let file = dir.join(&path);
     // Internal request/owner/configuration material is never downloadable.
     let name = file.file_name().and_then(|v| v.to_str()).unwrap_or("");
     super::require(
@@ -541,6 +606,26 @@ async fn file(
         ),
         "file is not a published result",
     )?;
+    if !file.is_file() && matches!(name, "report.html" | "strategy.titan" | "layout.json") {
+        let receipt = read_receipt(&state.0, &id)?;
+        super::require(
+            receipt.state == OperationState::Succeeded,
+            "file operation is not complete",
+        )?;
+        let prefix = if name == "report.html" {
+            "report"
+        } else {
+            "strategy-compilation"
+        };
+        ensure_file(
+            &state.0,
+            &directory(&state.0, &id)?,
+            format!("{prefix}:{id}"),
+            &path,
+        )
+        .await?;
+    }
+    let file = inside(&dir, &path)?;
     let kind = match file.extension().and_then(|v| v.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "json" => "application/json",
@@ -703,6 +788,44 @@ fn reference<'a>(request: &'a NodeRequest, kind: &str) -> Result<&'a Resource> {
         .find(|r| r.kind == kind)
         .context(format!("missing {kind} reference"))
 }
+async fn publish_files(
+    config: &NodeConfig,
+    dir: &FsPath,
+    id: String,
+    kind: &str,
+    names: &[&str],
+) -> Result<()> {
+    let root = config.work_root.join("storage");
+    let directory = dir.to_owned();
+    let kind = kind.to_owned();
+    let names = names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || {
+        titan_persistence::publish_host_files(
+            &root,
+            &id,
+            &kind,
+            &directory,
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
+    })
+    .await?
+}
+async fn ensure_file(config: &NodeConfig, dir: &FsPath, id: String, name: &str) -> Result<()> {
+    let destination = dir.join(name);
+    if destination.is_file() {
+        return Ok(());
+    }
+    let root = config.work_root.join("storage");
+    let name = name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        titan_persistence::materialize_published_file(&root, &id, &name, &destination)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    })
+    .await?
+}
+
 async fn execute(
     config: &NodeConfig,
     request: &NodeRequest,
@@ -781,6 +904,14 @@ async fn execute(
             let metadata = &actual["metadata"];
             let layout = history_layout(metadata)?;
             atomic_json(&dir.join("layout.json"), &layout)?;
+            publish_files(
+                config,
+                dir,
+                format!("strategy-compilation:{id}"),
+                "compiled_strategy_v1",
+                &["strategy.titan", "layout.json"],
+            )
+            .await?;
             let compiled_strategy = resource(
                 config,
                 "strategy_version",
@@ -821,11 +952,47 @@ async fn execute(
             );
             let prepared_sha256 = digest_file(&output)?;
             std::fs::File::open(&output)?.sync_all()?;
+            let storage_root = config.work_root.join("storage");
+            let objects = titan_persistence::object_store(&storage_root)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let mut files = Vec::new();
+            for name in ["prepared.bin", "prepared.parquet", "prepared.json"] {
+                let path = dir.join(name);
+                std::fs::File::open(&path)?.sync_all()?;
+                files.push(titan_persistence::PublishedFile {
+                    path: name.into(),
+                    object: objects
+                        .put_file(&path)
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+                });
+            }
+            let publication = titan_persistence::PublishedManifest {
+                schema_version: 1,
+                logical_id: format!("dataset-preparation:{id}"),
+                kind: "dataset_preparation_v1".into(),
+                files,
+                metadata: json!({"dataset_id":dataset_id,"prepare_operation_id":id,"input_sha256":source_hashes,"quality":summary}),
+            };
+            titan_persistence::publish_file(
+                &dir.join("dataset-publication.pending.json"),
+                &serde_json::to_vec(&publication)?,
+            )
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let catalog = titan_persistence::ResultCatalog::open(&storage_root.join("catalog.db"))
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let storage_reference = publication
+                .publish(objects.as_ref(), &catalog)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            ensure!(
+                !stop.load(Ordering::Acquire),
+                "dataset preparation was cancelled before publication"
+            );
             let mut body = original.body.clone();
             body["prepared"] = true.into();
             body["prepared_sha256"] = prepared_sha256.clone().into();
             body["prepared_operation_id"] = id.clone().into();
             body["quality"] = precise(summary.clone());
+            body["storage_manifest"] = serde_json::to_value(&storage_reference)?;
             let updated = resource(config, "dataset", dataset_id, false, body);
             std::fs::create_dir_all(config.work_root.join("datasets"))?;
             // Only publish the new immutable cache after successful completion; cancellation protects the old cache.
@@ -853,6 +1020,18 @@ async fn execute(
                     .as_str()
                     .context("missing compiled_strategy operation")?,
             )?;
+            let compilation_id = compiled_strategy.body["operation_id"]
+                .as_str()
+                .context("missing compilation")?;
+            for name in ["strategy.titan", "layout.json"] {
+                ensure_file(
+                    config,
+                    &source,
+                    format!("strategy-compilation:{compilation_id}"),
+                    name,
+                )
+                .await?;
+            }
             ensure!(
                 digest_file(&source.join("strategy.titan"))?
                     == compiled_strategy.body["strategy_file_sha256"]
@@ -879,7 +1058,15 @@ async fn execute(
                 published["body"] == dataset_ref.body,
                 "dataset provenance differs from its preparation receipt"
             );
-            let prepared = directory(config, preparation)?.join("prepared.bin");
+            let preparation_dir = directory(config, preparation)?;
+            ensure_file(
+                config,
+                &preparation_dir,
+                format!("dataset-preparation:{preparation}"),
+                "prepared.bin",
+            )
+            .await?;
+            let prepared = preparation_dir.join("prepared.bin");
             let prepared_sha256 = digest_file(&prepared)?;
             ensure!(
                 dataset_ref.body["prepared_sha256"].as_str() == Some(prepared_sha256.as_str()),
@@ -900,7 +1087,9 @@ async fn execute(
                 .arg("--output")
                 .arg(dir.join("history"))
                 .arg("--run-id")
-                .arg(id);
+                .arg(id)
+                .arg("--storage-root")
+                .arg(config.work_root.join("storage"));
             if *stress {
                 cmd.arg("--stress");
             }
@@ -935,6 +1124,14 @@ async fn execute(
                 .arg("--json")
                 .env("TITAN_HOME", &config.work_root);
             let result = run_command(config, cmd, dir, stop).await?;
+            publish_files(
+                config,
+                dir,
+                format!("report:{id}"),
+                "report_v1",
+                &["report.html"],
+            )
+            .await?;
             Ok(
                 json!({"report":result,"resources":[resource(config,"report",id,true,json!({"strategy_id":backtest.body["strategy_id"],"strategy_name":backtest.body["strategy_name"],"operation_id":id,"backtest_id":backtest.id,"environment":"backtest"}))]}),
             )

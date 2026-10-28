@@ -296,6 +296,13 @@ try {
   );
   assert.equal(result.body.metrics.final_position_btc, "0.0");
   await page.locator(".el-drawer__close-btn:visible").click();
+  if (process.env.TITAN_PERSISTENCE_STAGE === "M2") {
+    await workspace(page, "backtests", { result: result.id });
+    await expect(page.locator(".fact-history")).toBeVisible();
+    await expect(page.locator(".fact-history .fact-entry").first()).toBeVisible();
+    await expect(page.locator(".fact-history .notice.warning")).toHaveCount(0);
+    await page.screenshot({ path: output + "/persisted-facts.png", fullPage: true, animations: "disabled" });
+  }
   const rendered = await clickOperation(
     page
       .locator(".backtest-results tbody tr")
@@ -596,6 +603,7 @@ try {
           "cross-strategy-strategyVersion-selection-rejected",
           "server-filtered-strategy-pagination",
           "legacy-routes-choose-workspace",
+          ...(process.env.TITAN_PERSISTENCE_STAGE === "M2" ? ["backtest-persisted-facts-through-shared-query-port"] : []),
         ],
         pageErrors: errors,
       },

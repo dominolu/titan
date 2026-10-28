@@ -1,0 +1,63 @@
+{
+  "passed": true,
+  "scenario": "missing-history-incomplete",
+  "candidate": "candidate07",
+  "expected_outcome": "restore_rejected",
+  "generation_floor": 2,
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "missing-native-fill-latches-205-and-no-financial-fill-is-invented",
+    "old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation",
+    "incomplete-or-conflicting-native-history-rejects-successor-without-trading-or-release"
+  ],
+  "operations": [
+    {
+      "id": "ff6fd5181997259944aa09fda5c66e875de26392554ab437c1719ea017a8e14c",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "e1168c0cd2b6997b917819db36a7575aaf4e1fdf3f62b12dfc90cad08abfbf72",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "5079a3775d32721078f51a09f302e3883563607616dcfbd7b41616ecb80f9e71",
+      "kind": "stop",
+      "state": "failed"
+    },
+    {
+      "id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d",
+      "kind": "restore",
+      "state": "failed"
+    }
+  ],
+  "elapsed_seconds": 34.90706489700824,
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "reference": {
+    "record_id": "ddbf38fabf03b161feef204241c697db",
+    "payload_sha256": "eb1ec815604afeaf1eb40c557552dec041d31846a28723830b429faf4f212df9",
+    "store_id": "fe16a73db9fbf9528a41e667fed66163",
+    "runtime_strategy_no": 77
+  },
+  "original_expires_at_ns": "1793166775294669287",
+  "handler_seconds": 1,
+  "startup_seconds": 30,
+  "checkpoint_seconds": 60,
+  "stop_seconds": 10,
+  "maximum_run_seconds": 120,
+  "local_simulated_occupancy_rows": 2,
+  "old_run_not_reopened": true,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:41113/api/v4",
+    "public_ws_url": "ws://127.0.0.1:41113/public",
+    "private_ws_url": "ws://127.0.0.1:41113/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

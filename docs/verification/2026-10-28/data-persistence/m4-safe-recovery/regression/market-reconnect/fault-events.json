@@ -1,0 +1,12 @@
+{
+  "scenario": "market-reconnect",
+  "events": [
+    {
+      "kind": "disconnect",
+      "private": false,
+      "sessions": 2
+    }
+  ],
+  "private_sessions": 1,
+  "public_sessions": 4
+}

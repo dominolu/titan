@@ -83,6 +83,8 @@ pub struct RiskScopeRef(pub Arc<str>);
 pub struct StrategyRuntimeSpec {
     #[serde(default)]
     pub recovery_checkpoint_sha256: Option<String>,
+    #[serde(default)]
+    pub recovery_reference: Option<crate::RecoveryPointRef>,
     /// Optional platform execution envelope, independent of strategy business parameters.
     #[serde(default)]
     pub execution_limits: Option<ExecutionLimits>,
@@ -109,6 +111,7 @@ impl Default for StrategyRuntimeSpec {
     fn default() -> Self {
         Self {
             recovery_checkpoint_sha256: None,
+            recovery_reference: None,
             execution_limits: None,
             async_lane_capacity: 16_384,
             critical_reserve: 2_048,

@@ -317,7 +317,7 @@ pub(super) async fn run(
         let value=match publication {
             DirectPublication::Event(PublishEvent::PrivateStreamReady)=>Some(json!({"kind":"ready"})),
             DirectPublication::Account(AccountPublication::Error(_))=>Some(json!({"kind":"error"})),
-            DirectPublication::Account(AccountPublication::OrderWithExecution{client_order_id,venue_order_id,order,..})=>Some(json!({"client_order_id":client_order_id,"order_id":venue_order_id,"status":format!("{:?}",order.status),"price":order.price_tick as f64*order.tick_size,"executed_qty":order.qty-order.leaves_qty})),
+            DirectPublication::Account(AccountPublication::OrderWithNativeFills{client_order_id,venue_order_id,order,..})=>Some(json!({"client_order_id":client_order_id,"order_id":venue_order_id,"status":format!("{:?}",order.status),"price":order.price_tick as f64*order.tick_size,"executed_qty":order.qty-order.leaves_qty})),
             _=>None,
         };if let Some(value)=value {let _=tx.send(value);}
     }));

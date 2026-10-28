@@ -1,0 +1,55 @@
+{
+  "passed": true,
+  "scenario": "private-disconnect",
+  "expected_runtime_outcome": "failed_closed",
+  "candidate": "candidate07",
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "abnormal-Stop-fails-closed-at-original-budget-retains-position-and-reservations"
+  ],
+  "operations": [
+    {
+      "id": "ce17625689135f379bcf537341abb3d138dd02d3554c366eac377e260484b105",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "9248fd7ce07acbd69343265036574042095fce75ba9117afbbb532867ce85476",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "3cae41147133bd28e142f21de5bc0a9066652725640d65ba039081af33127a73",
+      "kind": "stop",
+      "state": "failed"
+    }
+  ],
+  "elapsed_seconds": 9.6817218195647,
+  "observed_stop_receipt_seconds": 1.8693387601524591,
+  "engine_stop_budget_seconds": 10,
+  "checkpoint_seconds": 60,
+  "startup_seconds": 30,
+  "handler_seconds": 1,
+  "maximum_run_seconds": 120,
+  "old_expires_at_ns": "1793166971333554871",
+  "new_expires_at_ns": "1793166971333554871",
+  "old_generation": "1",
+  "new_generation": "1",
+  "reference": null,
+  "simulated_position_base": "0.0001",
+  "local_simulated_occupancy_rows": 2,
+  "independent_fill_rows": 1,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:36647/api/v4",
+    "public_ws_url": "ws://127.0.0.1:36647/public",
+    "private_ws_url": "ws://127.0.0.1:36647/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

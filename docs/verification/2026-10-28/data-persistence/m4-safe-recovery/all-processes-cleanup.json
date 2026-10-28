@@ -1,0 +1,49 @@
+{
+  "passed": true,
+  "worker_identities_checked": [
+    {
+      "registry": "evidence/m4-safe-recovery-gates-06/loopback/live/runs.sqlite3",
+      "pid": 4019078,
+      "process_start_time": 776543597,
+      "alive": false
+    },
+    {
+      "registry": "evidence/m4-safe-recovery-gates-06-final/loopback/live/runs.sqlite3",
+      "pid": 4030486,
+      "process_start_time": 776572502,
+      "alive": false
+    },
+    {
+      "registry": "evidence/m4-safe-recovery-gates-07-final/loopback/live/runs.sqlite3",
+      "pid": 4044727,
+      "process_start_time": 776622335,
+      "alive": false
+    },
+    {
+      "registry": "evidence/m4-safe-recovery-regression-07-01/bootstrap-replay/node/runs.sqlite3",
+      "pid": 4050906,
+      "process_start_time": 776665451,
+      "alive": false
+    },
+    {
+      "registry": "evidence/m4-safe-recovery-regression-07-01/partial/node/runs.sqlite3",
+      "pid": 4049646,
+      "process_start_time": 776657155,
+      "alive": false
+    }
+  ],
+  "remaining_owned_titan_processes": [],
+  "temporary_synthetic_signing_and_account_keys_removed": [
+    "evidence/m4-safe-recovery-gates-06-final/loopback/signing.key",
+    "evidence/m4-safe-recovery-gates-06-final/loopback/key.der",
+    "evidence/m4-safe-recovery-gates-06-final/loopback/secrets/gate.toml",
+    "evidence/m4-safe-recovery-gates-06/loopback/signing.key",
+    "evidence/m4-safe-recovery-gates-06/loopback/key.der",
+    "evidence/m4-safe-recovery-gates-06/loopback/secrets/gate.toml",
+    "evidence/m4-safe-recovery-gates-07-final/loopback/signing.key",
+    "evidence/m4-safe-recovery-gates-07-final/loopback/key.der",
+    "evidence/m4-safe-recovery-gates-07-final/loopback/secrets/gate.toml"
+  ],
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

@@ -1,0 +1,36 @@
+{
+  "passed": true,
+  "original_files_unchanged": true,
+  "inputs_sha256": {
+    "/home/dominolu/dev/titan-observation-audit-20261027-638bae69/evidence/final-04/loopback/live/checkpoints/synthetic-gate-1/77/strategy-77.json": "6deb086a605d42fa8fc7cd004fe48c1fc60278d0085f2bb30247c6a19eb8f9ab",
+    "/home/dominolu/dev/titan-observation-audit-20261027-638bae69/evidence/final-04/loopback/build/operations/e988e9a4394334261d284aaadceed2dec2dcc64c63985bbac835f7be6830e5bb/strategy.titan": "91dc1c38e925ed1d5ee77c8fa01446fb7a2263740559e1831a89d529ae38eb12"
+  },
+  "command": [
+    "cargo",
+    "--config",
+    "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05/cargo-source.toml",
+    "test",
+    "--locked",
+    "-p",
+    "titan-strategy-runtime",
+    "historical_recovery_point_loads_original_native_strategy",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "boundary_command": [
+    "cargo",
+    "--config",
+    "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05/cargo-source.toml",
+    "test",
+    "--locked",
+    "-p",
+    "titan-strategy-runtime",
+    "--test",
+    "observation_boundaries",
+    "--",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ]
+}

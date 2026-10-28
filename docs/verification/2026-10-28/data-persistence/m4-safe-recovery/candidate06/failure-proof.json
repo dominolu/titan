@@ -1,0 +1,38 @@
+{
+  "candidate": "candidate06",
+  "passed": false,
+  "binary_sha256": "96cf5187cf4aec735c8764bb4fc80e5097dfc496482a800ae7efed37b3f58e29",
+  "release_safe": false,
+  "strategy_gates": [
+    {
+      "activation_gate_open": false,
+      "command_gate_open": true,
+      "lifecycle": "Failed",
+      "last_error_code": "stop_drain_deadline_exceeded"
+    }
+  ],
+  "selected_point": {
+    "reference": {
+      "record_id": "a6aabf19bec7d97250ac7ebe54a6bffd",
+      "payload_sha256": "cefd9e457f3e493f0f4ee271af7b7e0618b4fb26c1d397c0e98579edf83b7dc5",
+      "store_id": "c50e8a22d5e3828eeec4101aad564ecb",
+      "runtime_strategy_no": 77
+    },
+    "generation": 1,
+    "pending_execution": false,
+    "consumed_lots": 0,
+    "original_checkpoint_seconds": 60,
+    "blob_unchanged": true
+  },
+  "cleanup": {
+    "passed": true,
+    "acceptance_passed": false,
+    "remaining_owned_workers": [],
+    "management_processes_exited": true,
+    "synthetic_credentials_removed": true,
+    "real_host_contacted": false
+  },
+  "reason": "external activation was invalidated but native command-gate flag remained true on failure; hardened in candidate07",
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

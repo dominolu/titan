@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/home/dominolu/dev/titan/.venv/bin/python",
+    "-u",
+    "scripts/management_fill_recovery_smoke.py",
+    "--repo",
+    "/home/dominolu/dev/titan-persistence-m3-20261027-59973648",
+    "--release",
+    "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-safe-recovery-release-07",
+    "--expected-binary-sha256",
+    "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+    "--expected-strategy-sha256",
+    "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+    "--candidate-label",
+    "candidate07",
+    "--scenario",
+    "private-recovery",
+    "--output",
+    "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-safe-recovery-07-01/private-recovery"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 81.45559182018042
+}

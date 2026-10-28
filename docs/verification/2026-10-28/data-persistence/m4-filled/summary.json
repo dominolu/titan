@@ -1,0 +1,42 @@
+{
+  "status": "stopped_by_user",
+  "real_fill_recovery_acceptance_passed": false,
+  "positioned_strategy_stop_acceptance_passed": false,
+  "user_disposition": "保留占用，停止本轮复验",
+  "manual_release_performed": false,
+  "preserved_occupancy_rows": 2,
+  "original_unknown_run_preserved": true,
+  "runtime_strategy_no": 1793153499,
+  "recovery_generation_floor": 3,
+  "original_expiry_preserved": true,
+  "checkpoint_period_seconds": 60,
+  "minimum_quantity_btc": "0.0001",
+  "max_exposure_usdt": "100",
+  "stop_budget_seconds": 10,
+  "venue_confirmed_actual_filled_orders_all_attempts": 4,
+  "independent_trade_rows_observed": 1,
+  "emergency_reduce_only_close_used_attempt_03": true,
+  "latest_independent_postflight": "postflight-03-independent.json",
+  "final_titan_process_count": 0,
+  "temporary_plaintext_credentials_remaining": 0,
+  "new_candidate_04_deployed": false,
+  "candidate_binary_sha256": "9649e59d4cb97d1b8e4be25b2081960d2b728573bf5fd25507fff7bc827d6929",
+  "candidate_native_strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "candidate_validation": {
+    "platform_rust_passed": 647,
+    "platform_rust_ignored": 24,
+    "doctest_passed": 2,
+    "doctest_ignored": 1,
+    "platform_loopback_checks_with_previous_strategy": 32,
+    "platform_browser_checks": 10,
+    "final_native_and_guard_tests": 9,
+    "sdk_tests": 115,
+    "source_files_byte_equal": 557
+  },
+  "limitations": [
+    "no successful real-fill restore",
+    "no positioned strategy Stop within 10s accepted",
+    "no post-restore execution/fee deduplication acceptance",
+    "private snapshots and raw recovery payloads retained only on live node"
+  ]
+}

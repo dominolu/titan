@@ -1,6 +1,6 @@
 // Generated from Rust management DTOs. Do not edit.
 export const API_VERSION = 2;
-export const EXPECTED_BUILD = "afa29604b3e2456c2bf27abe673a8eeea3c8805edf421d2d144ec5d45a23fb2a";
+export const EXPECTED_BUILD = "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035";
 export type Role = "reader" | "operator";
 export type Identity = { username: string, role: Role, nodes: Array<string>, accounts: Array<string>, environments: Array<string>, };
 export type Session = { identity: Identity, csrf_token: string, expires_at_ns: string, api_version: number, build: string, };

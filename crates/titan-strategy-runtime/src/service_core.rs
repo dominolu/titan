@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -83,7 +81,10 @@ pub struct StrategyCoreConfig {
     pub max_pending_capacity: usize,
     pub max_state_capacity: usize,
     pub max_concurrent_loads: usize,
+    /// Legacy directory configuration; maps only to SQLite, never to a file writer.
     pub checkpoint_root: Option<PathBuf>,
+    pub recovery_storage: Option<SqliteRecoveryConfig>,
+    pub recovery_store: Option<Arc<dyn StrategyRecoveryStore>>,
     pub require_strategy_signature: bool,
     pub trusted_strategy_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
@@ -109,6 +110,8 @@ impl Default for StrategyCoreConfig {
             max_state_capacity: 1 << 20,
             max_concurrent_loads: 2,
             checkpoint_root: None,
+            recovery_storage: None,
+            recovery_store: None,
             require_strategy_signature: true,
             trusted_strategy_keys: BTreeMap::new(),
         }
@@ -146,234 +149,6 @@ impl StrategyRecoveryStore for DisabledSnapshotSink {
     fn enabled(&self) -> bool {
         false
     }
-}
-
-struct FileStrategyRecoveryStore {
-    root: PathBuf,
-    sender: Mutex<Option<mpsc::SyncSender<Option<StrategyRecoveryPoint>>>>,
-    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
-    failed: Arc<AtomicBool>,
-    pending: Arc<std::sync::atomic::AtomicUsize>,
-    generation_lock: Mutex<()>,
-}
-
-impl FileStrategyRecoveryStore {
-    fn new(root: PathBuf) -> LocalResult<Arc<Self>> {
-        fs::create_dir_all(&root).map_err(|_| checkpoint_error("checkpoint_root_unavailable"))?;
-        let (sender, receiver) = mpsc::sync_channel::<Option<StrategyRecoveryPoint>>(16);
-        let writer_root = root.clone();
-        let failed = Arc::new(AtomicBool::new(false));
-        let writer_failed = failed.clone();
-        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let writer_pending = pending.clone();
-        let writer = std::thread::Builder::new()
-            .name("strategy-checkpoint-writer".into())
-            .spawn(move || {
-                while let Ok(Some(snapshot)) = receiver.recv() {
-                    if let Err(error) = write_checkpoint(&writer_root, &snapshot) {
-                        writer_failed.store(true, Ordering::Release);
-                        warn!(
-                            reason_code = error.reason_code.as_ref(),
-                            "strategy checkpoint write failed"
-                        );
-                    }
-                    writer_pending.fetch_sub(1, Ordering::AcqRel);
-                }
-            })
-            .map_err(|_| checkpoint_error("checkpoint_writer_start_failed"))?;
-        Ok(Arc::new(Self {
-            root,
-            sender: Mutex::new(Some(sender)),
-            writer: Mutex::new(Some(writer)),
-            failed,
-            pending,
-            generation_lock: Mutex::new(()),
-        }))
-    }
-
-    fn load(
-        &self,
-        runtime_strategy_no: RuntimeStrategyNo,
-    ) -> LocalResult<Option<StrategyRecoveryPoint>> {
-        self.load_pinned(runtime_strategy_no, None)
-    }
-    fn load_pinned(
-        &self,
-        runtime_strategy_no: RuntimeStrategyNo,
-        expected: Option<&str>,
-    ) -> LocalResult<Option<StrategyRecoveryPoint>> {
-        let path = checkpoint_path(&self.root, runtime_strategy_no);
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && expected.is_none() => {
-                return Ok(None);
-            }
-            Err(_) => return Err(checkpoint_error("checkpoint_read_failed")),
-        };
-        if let Some(expected) = expected {
-            use sha2::{Digest, Sha256};
-            let actual: String = Sha256::digest(&bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            if expected != actual {
-                return Err(checkpoint_error("checkpoint_reference_changed"));
-            }
-        }
-        let snapshot: StrategyRecoveryPoint = serde_json::from_slice(&bytes)
-            .map_err(|_| checkpoint_error("checkpoint_decode_failed"))?;
-        if snapshot.strategy.runtime_strategy_no != runtime_strategy_no
-            || snapshot.strategy.generation != snapshot.generation
-        {
-            return Err(checkpoint_error("checkpoint_identity_mismatch"));
-        }
-        Ok(Some(snapshot))
-    }
-
-    fn reserve_generation(
-        &self,
-        runtime_strategy_no: RuntimeStrategyNo,
-        minimum: u64,
-    ) -> LocalResult<u64> {
-        let _guard = self
-            .generation_lock
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let path = generation_path(&self.root, runtime_strategy_no);
-        let persisted = match fs::read(&path) {
-            Ok(bytes) if bytes.len() == 8 => {
-                u64::from_le_bytes(bytes.try_into().expect("length checked"))
-            }
-            Ok(_) => return Err(checkpoint_error("generation_watermark_invalid")),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(_) => return Err(checkpoint_error("generation_watermark_read_failed")),
-        };
-        let generation = persisted
-            .max(minimum)
-            .checked_add(1)
-            .filter(|value| {
-                value
-                    .checked_sub(1)
-                    .is_some_and(|prefix| prefix <= u64::from(u32::MAX))
-            })
-            .ok_or_else(|| checkpoint_error("generation_overflow"))?;
-        let temporary = self.root.join(format!(
-            ".strategy-{}.generation.tmp",
-            runtime_strategy_no.0
-        ));
-        atomic_write(&self.root, &temporary, &path, &generation.to_le_bytes())?;
-        Ok(generation)
-    }
-}
-
-impl StrategyRecoveryStore for FileStrategyRecoveryStore {
-    fn latest(&self, strategy: StrategyHandle) -> LocalResult<Option<StrategyRecoveryPoint>> {
-        self.check_health()?;
-        let snapshot = self.load(strategy.runtime_strategy_no)?;
-        if snapshot.as_ref().is_some_and(|s| s.strategy != strategy) {
-            return Err(checkpoint_error("checkpoint_generation_changed"));
-        }
-        Ok(snapshot)
-    }
-    fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
-        self.check_health()?;
-        let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
-        let sender = sender
-            .as_ref()
-            .ok_or_else(|| checkpoint_error("checkpoint_writer_stopped"))?;
-        self.pending.fetch_add(1, Ordering::AcqRel);
-        let result = sender
-            .try_send(Some(snapshot))
-            .map_err(|_| checkpoint_error("checkpoint_queue_full"));
-        if result.is_err() {
-            self.pending.fetch_sub(1, Ordering::AcqRel);
-        }
-        result
-    }
-
-    fn flush(&self, deadline: Instant) -> LocalResult<()> {
-        tracing::debug!(
-            pending = self.pending.load(Ordering::Acquire),
-            "checkpoint flush started"
-        );
-        while self.pending.load(Ordering::Acquire) != 0 {
-            self.check_health()?;
-            if Instant::now() >= deadline {
-                return Err(checkpoint_error("checkpoint_flush_deadline_exceeded"));
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        self.check_health()
-    }
-
-    fn check_health(&self) -> LocalResult<()> {
-        if self.failed.load(Ordering::Acquire) {
-            Err(checkpoint_error("checkpoint_writer_failed"))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Drop for FileStrategyRecoveryStore {
-    fn drop(&mut self) {
-        if let Some(sender) = self
-            .sender
-            .get_mut()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
-            let _ = sender.send(None);
-        }
-        if let Some(writer) = self
-            .writer
-            .get_mut()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
-            let _ = writer.join();
-        }
-    }
-}
-
-fn checkpoint_path(root: &Path, runtime_strategy_no: RuntimeStrategyNo) -> PathBuf {
-    root.join(format!("strategy-{}.json", runtime_strategy_no.0))
-}
-
-fn generation_path(root: &Path, runtime_strategy_no: RuntimeStrategyNo) -> PathBuf {
-    root.join(format!("strategy-{}.generation", runtime_strategy_no.0))
-}
-
-fn atomic_write(root: &Path, temporary: &Path, path: &Path, bytes: &[u8]) -> LocalResult<()> {
-    let mut file =
-        fs::File::create(temporary).map_err(|_| checkpoint_error("checkpoint_write_failed"))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| checkpoint_error("checkpoint_write_failed"))?;
-    fs::rename(temporary, path).map_err(|_| checkpoint_error("checkpoint_commit_failed"))?;
-    fs::File::open(root)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| checkpoint_error("checkpoint_directory_sync_failed"))
-}
-
-fn write_checkpoint(root: &Path, snapshot: &StrategyRecoveryPoint) -> LocalResult<()> {
-    let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
-    let path = checkpoint_path(root, snapshot.strategy.runtime_strategy_no);
-    let temporary = root.join(format!(
-        ".strategy-{}.json.tmp",
-        snapshot.strategy.runtime_strategy_no.0
-    ));
-    let bytes =
-        serde_json::to_vec(snapshot).map_err(|_| checkpoint_error("checkpoint_encode_failed"))?;
-    let result = atomic_write(root, &temporary, &path, &bytes);
-    if let Some(started) = timing {
-        tracing::debug!(
-            elapsed_us = started.elapsed().as_micros() as u64,
-            bytes = bytes.len(),
-            "checkpoint persisted"
-        );
-    }
-    result
 }
 
 fn checkpoint_error(code: &'static str) -> StrategyError {
@@ -442,7 +217,7 @@ pub struct StrategyServiceCore {
     next_operation: AtomicU64,
     operations: Mutex<titan_core_types::OperationHistory<StrategyOperationId, GlobalOperation>>,
     cold_loads: Arc<ColdLoadLimiter>,
-    checkpoints: Option<Arc<FileStrategyRecoveryStore>>,
+    checkpoints: Option<Arc<dyn StrategyRecoveryStore>>,
     scheduler: crate::scheduler::Scheduler,
 }
 
@@ -487,7 +262,7 @@ impl ColdLoadLimiter {
 
 impl StrategyServiceCore {
     pub fn new(
-        config: StrategyCoreConfig,
+        mut config: StrategyCoreConfig,
         dependencies: StrategyServiceDependencies,
         loaders: Arc<StrategyLoaderRegistry>,
         runtimes: Arc<StrategyRuntimeFactoryRegistry>,
@@ -500,11 +275,35 @@ impl StrategyServiceCore {
         }
         let cache = LoadedStrategyCache::new(config.max_strategy_cache_entries)?;
         let max_concurrent_loads = config.max_concurrent_loads;
-        let checkpoints = config
-            .checkpoint_root
-            .clone()
-            .map(FileStrategyRecoveryStore::new)
-            .transpose()?;
+        if (config.recovery_storage.is_some() && config.checkpoint_root.is_some())
+            || (config.recovery_store.is_some()
+                && (config.recovery_storage.is_some() || config.checkpoint_root.is_some()))
+        {
+            return Err(checkpoint_error("recovery_config_conflict"));
+        }
+        let checkpoints = match config.recovery_store.clone() {
+            Some(store) => Some(store),
+            None if config.recovery_storage.is_some() => {
+                let storage = config.recovery_storage.clone().expect("checked above");
+                if let Some(parent) = storage.path.parent() {
+                    validate_legacy_recovery_imports(parent, &storage.path)?;
+                }
+                Some(SqliteRecoveryStore::open(storage)? as Arc<dyn StrategyRecoveryStore>)
+            }
+            None => config
+                .checkpoint_root
+                .as_ref()
+                .map(|root| {
+                    reject_legacy_recovery_directory(root)?;
+                    SqliteRecoveryStore::open(SqliteRecoveryConfig::new(root.join("runtime.db")))
+                        .map(|store| store as Arc<dyn StrategyRecoveryStore>)
+                })
+                .transpose()?,
+        };
+        if checkpoints.as_ref().is_some_and(|store| !store.durable()) {
+            return Err(checkpoint_error("recovery_durability_unavailable"));
+        }
+        config.recovery_store = checkpoints.clone();
         Ok(Self {
             config,
             dependencies,
@@ -556,6 +355,9 @@ impl StrategyServiceCore {
         if let Some(error) = first_error {
             Err(error)
         } else {
+            if let Some(store) = &self.checkpoints {
+                store.close(deadline)?;
+            }
             Ok(())
         }
     }
@@ -916,7 +718,7 @@ impl StrategyServiceCore {
         if lookups.len() > 128 {
             return Err(definition_error("recovery_order_lookup_capacity"));
         }
-        let recovered = if lookups.is_empty() {
+        let mut recovered = if lookups.is_empty() {
             Vec::new()
         } else {
             let accounts = self.dependencies.accounts.clone();
@@ -957,6 +759,108 @@ impl StrategyServiceCore {
                 })
             })?
         };
+        let mut history_queries = Vec::new();
+        if let Some(saved) = &checkpoint {
+            if saved.orders_list.len() > 128 {
+                return Err(definition_error("recovery_history_order_capacity"));
+            }
+            for order in saved.orders_list.iter() {
+                let binding = resolved_accounts
+                    .iter()
+                    .find(|b| b.local_account_no == order.account_no)
+                    .ok_or_else(|| definition_error("recovery_order_account_not_bound"))?;
+                let asset = binding
+                    .tradable_assets
+                    .iter()
+                    .find(|a| a.local_asset_no == order.asset_no)
+                    .ok_or_else(|| definition_error("recovery_order_asset_not_bound"))?;
+                history_queries.push((
+                    order.account_no,
+                    order.asset_no,
+                    order.order_id,
+                    binding.account,
+                    titan_account_service::AssetId(asset.asset_id),
+                    crate::runtime_v13::client_order_id(handle, order.order_id),
+                ));
+            }
+        }
+        let execution_history = if history_queries.is_empty() {
+            Vec::new()
+        } else {
+            let accounts = self.dependencies.accounts.clone();
+            self.run_cold(deadline, move || {
+                let executor = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| dependency_error("recovery_lookup_executor_failed"))?;
+                executor.block_on(async {
+                    tokio::time::timeout(
+                        deadline.saturating_duration_since(Instant::now()),
+                        async {
+                            let mut results = Vec::new();
+                            for (local, local_asset, order_id, account, asset, client) in
+                                history_queries
+                            {
+                                if let Some(proof) = accounts
+                                    .execution_evidence(account, asset, client)
+                                    .await
+                                    .map_err(|error| {
+                                        StrategyError::new(
+                                            StrategyErrorKind::DependencyUnavailable,
+                                            "recovery",
+                                            "recovery_execution_history_failed",
+                                            error.to_string(),
+                                        )
+                                    })?
+                                {
+                                    if proof.order.client_order_id != client
+                                        || proof.order.asset_id != asset
+                                        || proof.fills.len() > 4096
+                                        || proof.fills.iter().any(|f| {
+                                            f.client_order_id != client
+                                                || f.asset_id != asset.0
+                                                || f.side != proof.order.side
+                                                || f.venue_order_id != proof.order.venue_order_id
+                                        })
+                                    {
+                                        return Err(definition_error(
+                                            "recovery_execution_history_identity_changed",
+                                        ));
+                                    }
+                                    results.push((
+                                        local,
+                                        proof.order,
+                                        RecoveryExecutionHistory {
+                                            account_no: local,
+                                            asset_no: local_asset,
+                                            order_id,
+                                            fills: proof.fills.into(),
+                                        },
+                                    ));
+                                }
+                            }
+                            Ok(results)
+                        },
+                    )
+                    .await
+                    .map_err(|_| load_timeout("recovery_execution_history_deadline"))?
+                })
+            })?
+        };
+        let mut histories = Vec::new();
+        for (local, order, history) in execution_history {
+            if let Some((_, prior)) = recovered
+                .iter()
+                .find(|(a, o)| *a == local && o.client_order_id == order.client_order_id)
+            {
+                if *prior != order {
+                    return Err(definition_error("recovery_order_changed_during_history"));
+                }
+            } else {
+                recovered.push((local, order));
+            }
+            histories.push(history);
+        }
         let mut initial_positions = Vec::new();
         let mut initial_balances = Vec::new();
         let mut initial_accounts = Vec::new();
@@ -1097,6 +1001,7 @@ impl StrategyServiceCore {
             recovery_orders: initial_recovery_orders.into(),
         })?;
         if let Some(checkpoint) = checkpoint {
+            runtime.seed_recovery_executions(histories.into())?;
             runtime.restore_state(checkpoint)?;
         }
         // Event routing must exist before an upstream subscription can emit its initial image.
@@ -1513,7 +1418,8 @@ impl StrategyServiceCore {
 impl StrategyAdminService for StrategyServiceCore {
     fn create(&self, definition: StrategyDefinition) -> LocalResult<StrategyHandle> {
         self.ensure_accepting()?;
-        if definition.runtime.recovery_checkpoint_sha256.is_some()
+        if (definition.runtime.recovery_checkpoint_sha256.is_some()
+            || definition.runtime.recovery_reference.is_some())
             && definition.recovery != StrategyRecoveryPolicy::RequireCheckpoint
         {
             return Err(checkpoint_error("pinned_checkpoint_requires_recovery"));
@@ -1522,10 +1428,23 @@ impl StrategyAdminService for StrategyServiceCore {
             .checkpoints
             .as_ref()
             .map(|store| {
-                store.load_pinned(
-                    definition.runtime_strategy_no,
-                    definition.runtime.recovery_checkpoint_sha256.as_deref(),
-                )
+                if let Some(reference) = &definition.runtime.recovery_reference {
+                    if reference.runtime_strategy_no != definition.runtime_strategy_no
+                        || definition
+                            .runtime
+                            .recovery_checkpoint_sha256
+                            .as_ref()
+                            .is_some_and(|sha| sha != &reference.payload_sha256)
+                    {
+                        return Err(checkpoint_error("checkpoint_reference_changed"));
+                    }
+                    store.load_reference(reference).map(Some)
+                } else {
+                    store.load_pinned(
+                        definition.runtime_strategy_no,
+                        definition.runtime.recovery_checkpoint_sha256.as_deref(),
+                    )
+                }
             })
             .transpose()?
             .flatten();
@@ -1886,7 +1805,10 @@ pub(crate) fn validate_definition(
     config: &StrategyCoreConfig,
     definition: &StrategyDefinition,
 ) -> LocalResult<()> {
-    if !definition.accounts.is_empty() && config.checkpoint_root.is_none() {
+    if !definition.accounts.is_empty()
+        && config.recovery_store.is_none()
+        && config.checkpoint_root.is_none()
+    {
         return Err(StrategyError::new(
             StrategyErrorKind::UnsupportedCapability,
             "definition",
@@ -1894,7 +1816,10 @@ pub(crate) fn validate_definition(
             "strategies with account execution require a durable checkpoint root",
         ));
     }
-    if definition.recovery != StrategyRecoveryPolicy::Fresh && config.checkpoint_root.is_none() {
+    if definition.recovery != StrategyRecoveryPolicy::Fresh
+        && config.recovery_store.is_none()
+        && config.checkpoint_root.is_none()
+    {
         return Err(StrategyError::new(
             StrategyErrorKind::UnsupportedCapability,
             "definition",
@@ -1923,6 +1848,14 @@ pub(crate) fn validate_definition(
         ));
     }
     let runtime = &definition.runtime;
+    if config
+        .recovery_store
+        .as_ref()
+        .and_then(|s| s.minimum_handler_budget())
+        .is_some_and(|budget| runtime.max_handler_duration < budget)
+    {
+        return Err(definition_error("recovery_handler_budget_too_small"));
+    }
     if runtime.async_lane_capacity == 0
         || runtime.critical_reserve >= runtime.async_lane_capacity
         || runtime.async_lane_capacity > config.max_lane_capacity
@@ -2179,102 +2112,6 @@ pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) ->
                 ACCOUNT_EVENT_SCHEMA_VERSION
             )
     )
-}
-
-#[cfg(test)]
-mod checkpoint_tests {
-    use super::*;
-
-    #[test]
-    fn file_checkpoint_store_round_trips_latest_snapshot() {
-        let root = std::env::temp_dir().join(format!(
-            "titan-strategy-checkpoint-{}-{}",
-            std::process::id(),
-            SystemStrategyClock.now_ns()
-        ));
-        let strategy = StrategyHandle {
-            runtime_strategy_no: RuntimeStrategyNo(91),
-            generation: 7,
-        };
-        let snapshot = StrategyRecoveryPoint {
-            checkpoint_id: 11,
-            strategy,
-            strategy_instance_id: 91,
-            strategy_type: Arc::from("pair-arb"),
-            source_version: Arc::from("13.0.0"),
-            generation: 7,
-            event_committed_sequence: 22,
-            compiled_strategy_digest: [1; 32],
-            binding_digest: [2; 32],
-            abi_version: STRATEGY_ABI_V13,
-            state_schema_version: 3,
-            state_schema_hash: [4; 32],
-            state_alignment: 8,
-            state_bytes: Arc::from([5_u8, 6, 7]),
-            orders_list: Arc::from([StrategyOrderRecordV13 {
-                order_id: 99,
-                status: 6,
-                ..StrategyOrderRecordV13::default()
-            }]),
-            orders_list_checksum: [10; 32],
-            public_state_identity: [8; 32],
-            checksum: [9; 32],
-            recovery: None,
-        };
-        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
-        store.submit(snapshot).unwrap();
-        drop(store);
-
-        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
-        let restored = store.load(strategy.runtime_strategy_no).unwrap().unwrap();
-        let path = checkpoint_path(&root, strategy.runtime_strategy_no);
-        use sha2::{Digest, Sha256};
-        let hash: String = Sha256::digest(std::fs::read(&path).unwrap())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert!(
-            store
-                .load_pinned(strategy.runtime_strategy_no, Some(&hash))
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            store
-                .load_pinned(strategy.runtime_strategy_no, Some(&"0".repeat(64)))
-                .unwrap_err()
-                .reason_code
-                .as_ref(),
-            "checkpoint_reference_changed"
-        );
-        assert_eq!(restored.checkpoint_id, 11);
-        assert_eq!(restored.generation, 7);
-        assert_eq!(restored.state_bytes.as_ref(), [5, 6, 7]);
-        assert_eq!(restored.orders_list.len(), 1);
-        assert_eq!(restored.orders_list[0].order_id, 99);
-        assert_eq!(restored.orders_list_checksum, [10; 32]);
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn generation_watermark_survives_store_restart() {
-        let root = std::env::temp_dir().join(format!(
-            "titan-strategy-generation-{}-{}",
-            std::process::id(),
-            SystemStrategyClock.now_ns()
-        ));
-        let runtime_strategy_no = RuntimeStrategyNo(92);
-        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
-        assert_eq!(store.reserve_generation(runtime_strategy_no, 0).unwrap(), 1);
-        drop(store);
-
-        let store = FileStrategyRecoveryStore::new(root.clone()).unwrap();
-        assert_eq!(store.reserve_generation(runtime_strategy_no, 0).unwrap(), 2);
-        assert_eq!(store.reserve_generation(runtime_strategy_no, 8).unwrap(), 9);
-        drop(store);
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }
 
 // Host accounting and epoch fencing is independent of strategy callback selection.

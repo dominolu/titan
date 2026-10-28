@@ -76,6 +76,10 @@ impl Default for MarketServiceConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountServiceConfig {
+    #[serde(default)]
+    pub history_path: Option<PathBuf>,
+    #[serde(default = "live_fact_environment")]
+    pub recording_environment: titan_persistence::FactEnvironment,
     #[serde(default = "default_accounts")]
     pub max_accounts: usize,
     #[serde(default = "default_account_instruments")]
@@ -93,6 +97,8 @@ pub struct AccountServiceConfig {
 impl Default for AccountServiceConfig {
     fn default() -> Self {
         Self {
+            history_path: None,
+            recording_environment: titan_persistence::FactEnvironment::Live,
             max_accounts: default_accounts(),
             max_instruments_per_account: default_account_instruments(),
             max_currencies_per_account: default_account_currencies(),
@@ -101,6 +107,9 @@ impl Default for AccountServiceConfig {
             startup_timeout_ms: default_account_startup_ms(),
         }
     }
+}
+fn live_fact_environment() -> titan_persistence::FactEnvironment {
+    titan_persistence::FactEnvironment::Live
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -111,6 +120,8 @@ pub struct StrategyServiceConfig {
     pub allowed_strategy_roots: Vec<PathBuf>,
     #[serde(default)]
     pub checkpoint_root: Option<PathBuf>,
+    #[serde(default)]
+    pub recovery_storage: Option<titan_strategy_runtime::SqliteRecoveryConfig>,
     #[serde(default, alias = "allow_unsigned_artifacts")]
     pub allow_unsigned_strategies: bool,
     #[serde(default)]
@@ -269,6 +280,19 @@ impl ConfigurationAdapter {
         };
 
         validate_runtime_definitions(&config.market_sources, &config.accounts)?;
+        if let Some(path) = config.account_service.history_path.as_mut()
+            && !path.is_absolute()
+        {
+            *path = config_directory.join(&*path);
+        }
+        if matches!(
+            config.account_service.recording_environment,
+            titan_persistence::FactEnvironment::Backtest
+        ) {
+            return Err(ConfigurationError::Invalid(
+                "account recording environment must be live or simulation".into(),
+            ));
+        }
         validate_account_source_capacity(&config.event_engine, &config.accounts)?;
         if !config.accounts.is_empty() && account_secret_root.is_none() {
             return Err(ConfigurationError::Invalid(
@@ -388,14 +412,89 @@ impl TradingRuntime {
             account_secret_root,
             strategy_bootstrap,
         } = config;
+        let observed = observed.or_else(|| {
+            if accounts.is_empty() {
+                return None;
+            }
+            let path = account_service
+                .history_path
+                .clone()
+                .or_else(|| {
+                    strategy_bootstrap.as_ref().and_then(|b| {
+                        b.config
+                            .recovery_storage
+                            .as_ref()
+                            .map(|s| s.path.with_file_name("history.db"))
+                            .or_else(|| {
+                                b.config
+                                    .checkpoint_root
+                                    .as_ref()
+                                    .map(|p| p.join("history.db"))
+                            })
+                    })
+                })
+                .unwrap_or_else(|| PathBuf::from("history.db"));
+            Some((
+                path,
+                format!(
+                    "runtime-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ),
+            ))
+        });
+        if let Some((history_path, _)) = &observed {
+            let recovery_path = strategy_bootstrap.as_ref().and_then(|bootstrap| {
+                bootstrap
+                    .config
+                    .recovery_storage
+                    .as_ref()
+                    .map(|s| s.path.clone())
+                    .or_else(|| {
+                        bootstrap
+                            .config
+                            .checkpoint_root
+                            .as_ref()
+                            .map(|p| p.join("runtime.db"))
+                    })
+            });
+            if let Some(path) = recovery_path {
+                let normalize = |p: &Path| -> std::io::Result<PathBuf> {
+                    if p.exists() {
+                        std::fs::canonicalize(p)
+                    } else {
+                        let parent = p.parent().unwrap_or(Path::new("."));
+                        std::fs::create_dir_all(parent)?;
+                        Ok(std::fs::canonicalize(parent)?.join(p.file_name().unwrap_or_default()))
+                    }
+                };
+                let recovery = normalize(&path)
+                    .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))?;
+                let history = normalize(history_path)
+                    .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))?;
+                if recovery == history {
+                    return Err(ApplicationRuntimeError::Account(
+                        "recovery and observation database paths must differ".into(),
+                    ));
+                }
+            }
+        }
         let events = Arc::new(EventEngine::new(event_engine)?);
         let event_handle = Arc::new(events.handle());
         register_event_catalog(&event_handle)?;
         events.start()?;
         let observation = observed
             .map(|(path, source)| {
-                titan_account_service::AccountFactJournal::open(path, source, &accounts)
-                    .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))
+                titan_account_service::AccountFactJournal::open_with_environment(
+                    path,
+                    source,
+                    &accounts,
+                    account_service.recording_environment.clone(),
+                )
+                .map_err(|e| ApplicationRuntimeError::Account(e.to_string()))
             })
             .transpose()?;
         let mut observation_routes = Vec::new();
@@ -465,6 +564,9 @@ impl TradingRuntime {
             },
             secret_provider,
         );
+        if let Some(journal) = &observation {
+            account.set_recording_guard(journal.recording_guard());
+        }
         for factory in catalog.account {
             account
                 .register_factory(factory)
@@ -582,6 +684,15 @@ impl TradingRuntime {
     }
 
     pub fn check_dependency_health(&self) -> Result<(), ApplicationRuntimeError> {
+        if self
+            .observation
+            .as_ref()
+            .is_some_and(|j| !j.recording_healthy())
+        {
+            return Err(ApplicationRuntimeError::Shutdown(
+                "critical account recording unavailable".into(),
+            ));
+        }
         use titan_market_service::MarketService;
         let events = self.event_handle.runtime_health();
         if events.event_loop_failed
@@ -973,6 +1084,33 @@ fn adapt_strategies(
             "strategy_service requires at least one allowed_strategy_roots entry".into(),
         ));
     }
+    if bootstrap.checkpoint_root.is_some() && bootstrap.recovery_storage.is_some() {
+        return Err(ConfigurationError::Invalid(
+            "checkpoint_root and recovery_storage cannot both be configured".into(),
+        ));
+    }
+    let recovery_storage = if let Some(mut storage) = bootstrap.recovery_storage {
+        storage
+            .validate()
+            .map_err(|e| ConfigurationError::Invalid(e.to_string()))?;
+        if storage.path.is_relative() {
+            storage.path = config_directory.join(&storage.path);
+        }
+        let parent = storage.path.parent().ok_or_else(|| {
+            ConfigurationError::Invalid("recovery database parent missing".into())
+        })?;
+        std::fs::create_dir_all(parent).map_err(|e| ConfigurationError::Invalid(e.to_string()))?;
+        storage.path = if storage.path.exists() {
+            std::fs::canonicalize(&storage.path)
+        } else {
+            std::fs::canonicalize(parent)
+                .map(|p| p.join(storage.path.file_name().expect("database filename")))
+        }
+        .map_err(|e| ConfigurationError::Invalid(e.to_string()))?;
+        Some(storage)
+    } else {
+        None
+    };
     let checkpoint_root = if let Some(path) = bootstrap.checkpoint_root {
         let path = if path.is_absolute() {
             path
@@ -997,6 +1135,7 @@ fn adapt_strategies(
     for definition in strategies {
         if (definition.recovery != StrategyRecoveryPolicy::Fresh || !definition.accounts.is_empty())
             && checkpoint_root.is_none()
+            && recovery_storage.is_none()
         {
             return Err(ConfigurationError::Invalid(format!(
                 "strategy {} requires strategy_service.checkpoint_root",
@@ -1045,6 +1184,7 @@ fn adapt_strategies(
             .collect::<Vec<_>>()
             .into(),
         checkpoint_root,
+        recovery_storage,
         require_strategy_signature: !bootstrap.allow_unsigned_strategies,
         trusted_strategy_keys: bootstrap
             .trusted_ed25519_keys
@@ -1382,6 +1522,42 @@ config = {}
         assert!(runtime.strategy_service().is_none());
         runtime.shutdown().unwrap();
         assert_eq!(runtime.events().arena().outstanding_blocks(), 0);
+    }
+
+    #[test]
+    fn recovery_configuration_rejects_driver_conflicts_and_shared_history_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut definitions = vec![live_strategy(StrategyDataMode::Tick)];
+        let mut storage =
+            titan_strategy_runtime::SqliteRecoveryConfig::new(directory.path().join("runtime.db"));
+        storage.driver = "postgres".into();
+        let mut config = StrategyServiceConfig {
+            allowed_strategy_roots: vec![directory.path().to_owned()],
+            allow_unsigned_strategies: true,
+            recovery_storage: Some(storage),
+            ..Default::default()
+        };
+        assert!(adapt_strategies(&mut definitions, directory.path(), config.clone()).is_err());
+        config.recovery_storage.as_mut().unwrap().driver = "sqlite".into();
+        config.checkpoint_root = Some(directory.path().to_owned());
+        assert!(adapt_strategies(&mut definitions, directory.path(), config).is_err());
+        let mut adapted = ConfigurationAdapter::adapt(application(), directory.path()).unwrap();
+        adapted.strategy_bootstrap = Some(StrategyBootstrap {
+            config: StrategyCoreConfig {
+                recovery_storage: Some(titan_strategy_runtime::SqliteRecoveryConfig::new(
+                    directory.path().join("shared.db"),
+                )),
+                ..Default::default()
+            },
+        });
+        assert!(
+            TradingRuntime::start_observed(
+                adapted,
+                directory.path().join("shared.db"),
+                "test".into()
+            )
+            .is_err()
+        );
     }
 
     fn live_strategy(data_mode: StrategyDataMode) -> StrategyDefinition {

@@ -52,6 +52,8 @@ Stop 使用独立的有界受理容量和派发循环；目录同步、普通任
 
 跨进程恢复不能只看当前活动订单。E 对 checkpoint 中非终态意图通过原账户 connector 的只读查询补齐最多 128 笔权威结果，再进入现有恢复对账；查询共享原启动期限。交易所无结果、身份冲突、累计成交变化或持仓证据不足仍拒绝，不能用“活动列表中已消失”推断撤单成功。
 
+恢复点及运行代次现统一保存在账户/运行编号命名空间内的 `runtime.db`。恢复请求继续提交原始载荷 SHA256，节点核验并 pin 完整记录引用，冻结进 managed spec 后启动 worker；不会因 head 更新改选其他记录。旧 JSON/代次文件必须先显式导入，正常运行不再写文件或自动回退。迁移、检查及隔离备份步骤见[恢复存储维护](recovery_storage_operations.md)，本轮非实盘证据见[M1 验证](verification/2026-10-27/data-persistence/m1/README.md)。
+
 数据准备在独立目录写入，校验源文件与缓存摘要、fsync 后才发布缓存引用。失败或取消保留旧缓存。新登记的数据集必须先执行准备操作；回测要求缓存引用与成功的原始准备回执一致，不能仅凭一个导入文件的摘要声称它对应某组 CSV。回测固定制品、数据与执行模型，收益、回撤、含在途风险和最终残仓均来自 Rust 引擎。失败时保留已有结果，页面不补零或计算替代指标；报告校验 ResultBundle 文件清单及摘要。
 
 备份管理库和 N 的完整状态目录，包括 WAL 一致快照、原请求、回执、Registry、制品和数据引用。回滚先停接收新任务，确认未完成任务身份，再配套切换程序与静态资源。数据库 `user_version` 超过程序能力时拒绝启动；不得删除回执、账户事实或换操作 ID 来解除 `unknown`。实盘 worker 的升级、停止与恢复须使用后续 M2/M3 已验收的协议，不能因 Web 回滚而杀死或接管旧实例。
@@ -111,7 +113,9 @@ worker 的 Unix IPC 目录为 `0700`、socket 为 `0600`，请求还绑定令牌
 
 创建、停止和析构 `TradingRuntime` 的整个生命周期由同步 owner 线程持有；IPC 和网络异步任务使用各自的运行时，不能把拥有 Tokio runtime 的业务宿主放进 HTTP/CLI 的异步上下文后再析构。worker 异常退出且缺少终态回执时，N 返回 `UNKNOWN`，不从进程消失推断已完成停止。
 
-历史通过 `/api/v1/resources/<id>/history` 分页读取，支持 `fill/order/position/balance/stream/equity_sample/funding/cashflow/ledger`；`generation` 与当前来源不符时拒绝查询。宿主日志通过同一资源授权入口 `/log` 按字节偏移读取，每页最多 64 KiB。只发布固定的 `worker.log`，不发布 claim、运行配置或凭据。告警确认属于 A 的元数据，并与审计在同一事务提交，不修改 E 的诊断；新的来源条件需要重新确认。
+新历史通过 `/api/v2/resources/<id>/facts` 或策略下的 run/backtest `/facts` 读取，实盘模拟和回测复用同一端口。节点固定环境/账户/运行后查询，游标绑定来源、过滤和固定上界；每页最多 200 条/约 4 MiB。旧 `/history` 保留早期记录兼容，页面提供显式开关。代次/会话不符及旧游标拒绝；来源 gap、未关闭和 received segment complete 不表示交易所完整覆盖。目录、配置和维护流程见[本地历史与结果手册](local_persistence_operations.md)。
+
+宿主日志通过同一资源授权入口 `/log` 按字节偏移读取，每页最多 64 KiB。只发布固定的 `worker.log`，不发布 claim、运行配置或凭据。告警确认属于 A 的元数据，并与审计在同一事务提交，不修改 E 的诊断；新的来源条件需要重新确认。
 
 `scripts/management_observation_smoke.py --browser` 在编译服务器验证模拟账户事实的端到端转发、权限、过期、告警和日志。`scripts/management_live_readonly.py` 仅用于已授权实盘节点，使用已验证二进制执行 90 秒只读验收；它以只读方式读取该节点既有账户后端，凭据及完整快照不离开节点，最终输出脱敏证据。脚本包含固定的账户 ID 1 与目标品种保护，不应挪到编译服务器执行真实账户验证。
 
@@ -132,3 +136,53 @@ Recover 必须显式引用 N 登记的 checkpoint 文件 SHA256 和旧运行代�
 控制回执超时先查询同一 E operation。只读回执查询不会补执行动作；缺少 E 的调用前/后证据时保留 unknown。A/N 重启通过 owner token、PID/启动身份和固定 socket 重新查询原 worker，不能重新启动它。恢复未成功时保留旧账户占用，只有明确的“从未尝试激活”证据可释放失败 Start 的占用。
 
 编译服务器先运行 `scripts/management_control_smoke.py`（loopback 模拟交易所、实际签名制品/A/N/E）和 `--browser` 页面验收。真实账户验收脚本 `scripts/management_live_control.py` 仅在指定实盘节点运行，要求编译服务器的冻结 release 和 SHA256；内置 gate/ID 1/BTC、100 USDT、50 bps、120 秒、最小数量及前后残留核对。它不是长期策略入口。实盘部署完成后关闭本轮 A/N，不注册自动重启交易服务。
+
+## 历史与对象后端（M3）
+
+管理节点复用 `work_root/storage`，先在节点维护环境执行 `titan storage initialize --storage-root <work_root>/storage --profile <private.json>`，再启动节点。profile 只保存环境变量引用，变量需注入节点和其 worker；不通过管理 HTTP 请求传递密钥或任意存储路径。管理器自身的目录库不切换。
+
+后台投影独立于策略运行及其恢复 writer。`prepare-history/prepare-objects` 产生维护计划，`activate --plan` 才提交生效修订，切换后旧历史游标返回 409，需要刷新。配置库丢失或身份不符时拒绝自动回退。本地恢复仍使用 SQLite；可信运行配置需满足已冻结的新运行预算准入。
+
+原结果包中的 `history.db` 保持不可变，M3 为历史投影与裁剪创建 `history-source.db` 工作副本，API 继续使用原逻辑接口。准备数据、编译文件及报告缓存缺失时从已登记清单按原字节物化，不重新编译策略或重跑回测。完整配置、回切、缓存清理及故障操作见[历史与结果存储维护](local_persistence_operations.md)。
+
+## P14 实盘准入与已验收流程
+
+P14 已完成本轮受控实盘验收，详见[本轮记录](verification/2026-10-28/data-persistence/m4/README.md)。用户明确运维 SSH 账户并核对节点后，先在实盘节点运行 `scripts/persistence_live_preflight.py --output <私有准入报告>`；只允许 GET，核对 gate / ID 1 / BTC 的规格、模式、零风险和无其他控制器。`management_live_control.py` 现在要求 `--preflight <报告路径>`，报告须在 10 分钟内且固定风险约束完全匹配，启动前仍复查。使用编译服务器冻结包及其 expected SHA，不在实盘节点编译。脚本同时收集本地 SQLite 固定记录恢复和统一事实的证据；只有下撤单、原期限恢复与停止、占用释放、最终零残留和进程退出均通过，才标记 P14 完成。
+
+本轮实际通过 13 项流程及独立后置核对，六笔最小委托全部撤销、零成交，固定 SQLite 记录/pin、代次递增和原期限保持；最终本轮占用、目标挂单/持仓和验收进程均为零。临时明文凭据已删除，完整账本和恢复证据留在实盘节点私有目录。后续复现应新建私有目录并重新做现场准入；不得将本轮通过当作长期运行授权、真实成交恢复或有仓位平仓的证据。
+
+
+### 真实成交补验的当前状态
+
+2026-10-28 的[成交补验](verification/2026-10-28/data-persistence/m4-filled/README.md)未通过。独立成交及费用已落盘，持仓进入原 60 s SQLite 点，但策略已因先持仓后成交的序号判断进入待对账状态，恢复候选未激活。自有进程退出后采用单独的最小 reduce-only 安全平仓，不能记为策略 Stop 通过。独立 GET 复核为零目标挂单/持仓，验收进程已退出。
+
+用户明确选择保留占用、停止本轮复验。两条账户/命名空间占用和原 UNKNOWN、失败回执、到期预算、原恢复记录及 pin 均保留；未执行人工处置，未部署候选 04。临时明文凭据及传输文件已清理。新候选仅通过非实盘验证，不据此自动恢复实盘。
+
+`management_live_fill_recovery.py` 只用于明确授权的有限补验。复用旧目录须验证未激活或安全 Stop 的原 E 证明；已有真实成交按本轮新增成交筛选，同时核对既有财务摘要不变，历史诊断保留。恢复前还须核对公开业务阶段与错误码，不能把公共 `pending_execution=false` 当作策略必然可恢复。
+
+`--reconciliation-receipt` 仅验证显式人工审计回执与保留的 store ID、原记录、操作集和代次下界；它不会释放占用、制造 E 安全证明或改写旧运行。本轮没有有效人工回执，参数不能用于绕过用户的停止决定。历史复现说明不构成继续运行授权。
+
+
+### 完整模拟链路的新证据
+
+[2026-10-28 A/N/E 非实盘验收](verification/2026-10-28/data-persistence/m4-ane/README.md)使用冻结候选 04 复现跨进程重放后库存重复推进。修复候选 05 保留同一签名策略文件，恢复已消费累计量，并抑制重复成交的策略回调与计数。完整模拟部署、先持仓后成交、SQLite 跨进程恢复、成交/费用去重及原 10 s 内有仓位 Stop 通过；旧崩溃源缺口保留，新源干净封存。
+
+复现入口为 `scripts/management_fill_recovery_smoke.py`，只允许编译服务器，所有 REST/WebSocket URL 必须为 loopback，凭据为合成值，归档环境为 simulation。指定冻结 release、程序/策略 SHA 和新证据目录；不重新编译策略替代原签名文件。
+
+实盘仍保持停止，两条真实保留占用不动。当前可供后续审查的修复产物为编译服务器的 `evidence/m4-fill-release-05`；非实盘通过不生成 E 的真实安全释放证明，也不授权解占或启动实盘。
+
+### 候选 05 的故障验收边界
+
+[五场景故障补验](verification/2026-10-28/data-persistence/m4-faults/README.md)已在编译服务器完成。验收入口新增 `--scenario partial|bootstrap-replay|market-reconnect|private-disconnect|abnormal-stop`；部分成交使用同一源码的双 lot 签名参数 fixture，其余场景使用原签名文件。程序/Web 及 65 项冻结发布文件均未变化。
+
+可信事实下，部分成交恢复、bootstrap 重放恢复及行情重连的 Stop 均在原 10 s 内平仓、退出 E 并由 A 释放模拟占用。私有断线会使旧运行失效，重新连上不恢复旧交易门；独立成交缺失的异常态也不能凭累计订单量强行结算。对应 Stop 必须保留失败回执、残仓和占用，等待 A 最终 FAILED，不能将 E 退出当作安全释放。
+
+异常态原引擎 Stop 预算仍为 10 s，本轮客户端收到超时失败回执为 11.702 s；轮询观察等待不构成期限延长或平仓通过。私有流 `ACCOUNT_STREAM_GAP` 与旧崩溃来源缺口保留，即使 writer 清洁关闭也不能宣称交易所历史连续。模拟负例数据库只留证，不进行人工解占；实盘及原两条真实占用继续不动。
+
+### 私有断线和缺成交后的显式恢复
+
+[候选 07 安全恢复](verification/2026-10-28/data-persistence/m4-safe-recovery/README.md)已通过编译服务器的 5 个新增场景和 5 个故障回归。当前候选为 `evidence/m4-safe-recovery-release-07`，候选 06 的内部门标志失败和候选 05 均保留；新程序未部署至实盘。平台失败时同时关闭激活门和原生命令门，连接重新 READY 不自动恢复旧运行。
+
+恢复必须等旧 E 退出，保留原占用，以原 run/generation 和事先确认的固定 SHA 提交显式 Restore。异常时最新 head 可能已经 pending 或含业务错误；不能改写该 BLOB，应保留失败证据并选择已有、无未决执行且可由完整原生成交解释的固定点。已知订单的非零累计量必须补查完整原生 ID/数量/费用，补查不完整、内容矛盾或与旧账本冲突时拒绝激活。新 E 在原总期限内启动新代次，原 BLOB/pin、boot ID、单调截止值和到期值不变；旧 Stop 仍失败，新 Stop 仍为独立的 10 s 操作。
+
+当前仅验收可精确证明的净持仓增加；不借持仓镜像补造成交，不自动重试失败恢复、回退代次、解除占用或切换 namespace。两个正例新 Stop 退出/释放为 3.566 / 3.615 s，旧运行保持 FAILED 和安全证明 false。全账户历史缺口及冲突继续显示，不据局部补查恢复完整收益统计。实盘和原两条真实保留占用维持用户的停止决定。

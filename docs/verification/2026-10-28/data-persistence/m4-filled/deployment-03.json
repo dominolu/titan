@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "files_verified": 60,
+  "archive_sha256": "696fd441cc696e89c0cc858b950564f88d827c6c156c3b39129836d31033c4d0",
+  "binary_sha256": "9649e59d4cb97d1b8e4be25b2081960d2b728573bf5fd25507fff7bc827d6929",
+  "strategy_file_sha256": "179e63538110e63c2af64dec839e7a0adb32cc172b530f43f8fde4347d1f5f6c",
+  "build_host": "192.168.3.88",
+  "live_compilation": false,
+  "same_namespace_safe_stopped_guard_passed": true
+}

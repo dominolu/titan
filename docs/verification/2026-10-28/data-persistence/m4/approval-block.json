@@ -1,0 +1,15 @@
+{
+  "stage": "M4/P14",
+  "status": "awaiting_ssh_operator_authorization",
+  "target_host": "43.130.234.54",
+  "default_ssh_user": "dominolu",
+  "default_login_result": "public-key authentication denied",
+  "proposed_ssh_user": "root",
+  "automatic_approval": "rejected before command execution",
+  "reason": "Switching to a privileged live-host login requires explicit authorization of that operator account.",
+  "root_probe_executed": false,
+  "live_account_accessed": false,
+  "orders_submitted": 0,
+  "workaround_attempted": false,
+  "requested_input": "Confirm root@43.130.234.54 or provide and authorize the intended SSH operator account."
+}

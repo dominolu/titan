@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """M3 build-server acceptance: real A/N/worker/connector, loopback simulated venue only."""
+import persistence_acceptance as persistence
 import argparse, base64, hashlib, shutil, http.cookiejar, json, os, select, secrets, signal, socket, sqlite3, struct, subprocess, threading, time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +17,7 @@ def unit(c,s=0):return {"coefficient":c,"scale":s}
 class Venue(ThreadingHTTPServer):
     daemon_threads=True
     def __init__(self):
-        super().__init__(("127.0.0.1",0),Handler);self.lock=threading.RLock();self.orders={};self.private=[];self.public=[];self.calls=[];self.failed=[];self.ws_frames=[];self.alive=True;self.evidence_fault=False
+        super().__init__(("127.0.0.1",0),Handler);self.lock=threading.RLock();self.orders={};self.private=[];self.public=[];self.calls=[];self.failed=[];self.ws_frames=[];self.alive=True;self.evidence_fault=False;self.recovery_database=None;self.intent_proofs=[]
     def broadcast(self,channel,payload):
         self.ws_frames.append({"sent":channel,"connections":len(self.private),"symbol":payload.get("symbol"),"state":payload.get("state")})
         with self.lock:
@@ -80,6 +81,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path=parse.urlparse(self.path).path.removeprefix("/api/v4/crossex/");body=json.loads(self.rfile.read(int(self.headers.get("Content-Length",0))) or b"{}");self.server.calls.append(("POST",path))
         if path=="orders":
+            order_id=int.from_bytes(bytes.fromhex(body["text"])[8:],"little")
+            proof=None
+            with sqlite3.connect(self.server.recovery_database) as recovery_db:
+                for record_id,digest,payload in recovery_db.execute("SELECT id,sha256,payload FROM recovery_points WHERE strategy_no=77 ORDER BY rowid DESC"):
+                    point=json.loads(payload)
+                    if any(int(order["order_id"])==order_id for order in point["orders_list"]):
+                        assert hashlib.sha256(payload).hexdigest()==digest
+                        proof={"record_id":record_id,"payload_sha256":digest,"order_id":str(order_id)}
+                        break
+            if proof is None:
+                self.server.failed.append(("INTENT_NOT_DURABLE",body["text"]))
+                return self.reply({"label":"INTENT_NOT_DURABLE"},500)
+            self.server.intent_proofs.append(proof)
             now=str(int(time.time()*1000));key=str(len(self.server.orders)+1)
             order={**body,"order_id":key,"state":"OPEN","executed_qty":"0","executed_avg_price":"0","create_time":now,"update_time":now,"position_side":"NONE"}
             self.server.orders[key]=order;self.server.broadcast("order",order);return self.reply(order)
@@ -94,7 +108,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument("--repo",type=Path,required=True);parser.add_argument("--binary",type=Path,required=True);parser.add_argument("--output",type=Path,required=True);parser.add_argument("--browser",action="store_true");parser.add_argument("--prepare-only",action="store_true");parser.add_argument("--parameters-file",type=Path);args=parser.parse_args()
     assert "192.168.3.88" in subprocess.check_output(["hostname","-I"]).decode(),"build server only"
     args.repo=args.repo.resolve();args.binary=args.binary.resolve();args.output.mkdir(parents=True);root=args.output.resolve();root.chmod(0o700)
-    venue=Venue();threading.Thread(target=venue.serve_forever,daemon=True).start();threading.Thread(target=venue.prices,daemon=True).start()
+    venue=Venue();venue.recovery_database=root/"live/checkpoints/synthetic-gate-1/77/runtime.db";threading.Thread(target=venue.serve_forever,daemon=True).start();threading.Thread(target=venue.prices,daemon=True).start()
     vp=venue.server_port;mp,bp,np=port(),port(),port();origin=f"http://127.0.0.1:{mp}"
     password,token=secrets.token_hex(24),secrets.token_hex(32);env=dict(os.environ,RUST_LOG="warn,titan_strategy_runtime=debug,connector::gatecrossex::stream=debug",TITAN_CONSOLE_NODE_TOKEN=token,TITAN_STRATEGY_PYTHON="/home/dominolu/dev/titan/.venv/bin/python",TITAN_STRATEGY_SDK=str(args.repo/"python/titan-strategy-sdk"))
     hashed=subprocess.check_output([str(args.binary),"console","password-hash"],input=password.encode(),env=env).decode().strip()
@@ -109,6 +123,7 @@ def main():
     duration=lambda secs,nanos=0:{"secs":secs,"nanos":nanos}
     runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret)},"strategy_service":{"trusted_ed25519_keys":{"acceptance":public}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":cfg,"instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":cfg,"ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","runtime_strategy_no":77,"strategy_file":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"acceptance","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(10),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"run_config_revision":1}]}
     runtime["accounts"][0]["instruments"][0]["linear_quote_currency"]=1
+    runtime["account_service"]["recording_environment"]="simulation"
     # Keep a genuine pre-confirmation checkpoint so recovery must query historical orders.
     runtime["strategies"][0]["runtime"]["checkpoint_interval"]=duration(60)
     runtime["strategies"][0]["runtime"]["max_handler_duration"]=duration(5)
@@ -120,6 +135,7 @@ def main():
     users=[{"username":name,"password_hash":hashed,"role":role,"nodes":["build","live"],"accounts":["gate"],"environments":["backtest","live"]} for name,role in (("operator","operator"),("reader","reader"))]
     manager={"listen":f"127.0.0.1:{mp}","public_origin":origin,"database":str(root/"manager.db"),"web_root":str(args.repo/"web/console/dist"),"secure_cookie":False,"nodes":{"build":remote(bp,False),"live":remote(np,True)},"users":users}
     for name,value in (("build",{"node":build}),("live",{"node":node}),("manager",{"manager":manager})):(root/(name+".toml")).write_text(toml({"schema_version":1,**value}))
+    persistence.initialize(args.binary,root/"live/storage",env)
     processes=[]
     def start(name,kind):
         p=subprocess.Popen([str(args.binary),"console",kind,"--config",str(root/(name+".toml"))],env=env,stdin=subprocess.DEVNULL,stdout=(root/(name+".log")).open("ab"),stderr=subprocess.STDOUT);processes.append(p);return p
@@ -233,9 +249,12 @@ def main():
         passed("native-grid-independent-business-schema-through-worker-node-manager-v2")
         passed("public-schema-hash-preserved-and-recovery-schema-separated")
         assert business["protocol_version"]==2 and business["source"]["kind"]=="runtime_publication"
-        checkpoint_path=root/"live/checkpoints/synthetic-gate-1/77/strategy-77.json"
+        checkpoint_path=root/"live/checkpoints/synthetic-gate-1/77/runtime.db"
+        def checkpoint_bytes():
+            with sqlite3.connect(checkpoint_path) as db:
+                return db.execute("SELECT p.payload FROM recovery_heads h JOIN recovery_points p ON p.id=h.record_id WHERE h.strategy_no=77").fetchone()[0]
         wait(checkpoint_path.exists)
-        checkpoint_before=checkpoint_path.read_bytes()
+        checkpoint_before=checkpoint_bytes()
         checkpoint_sha=hashlib.sha256(checkpoint_before).hexdigest()
         publication_samples=[]
         previous=business
@@ -249,10 +268,57 @@ def main():
                 if sample.get("available") and int(sample["source"]["publication_sequence"])>int(baseline["source"]["publication_sequence"]) and int(sample["data"]["last_market_at_ns"])>int(baseline["data"]["last_market_at_ns"]):return sample
             previous=wait(fresh_business,8)
             publication_samples.append({"elapsed_seconds":time.monotonic()-began,"source":previous["source"],"last_market_at_ns":previous["data"]["last_market_at_ns"]})
-            assert checkpoint_path.read_bytes()==checkpoint_before,"observation must not force a recovery write"
+            assert checkpoint_bytes()==checkpoint_before,"observation must not force a recovery write"
         assert all("recovery_sequence" not in sample["source"] for sample in publication_samples)
-        (root/"realtime-observation.json").write_text(json.dumps({"passed":True,"checkpoint_interval_seconds":60,"checkpoint_sha256_before":checkpoint_sha,"checkpoint_sha256_after":hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),"maximum_update_wait_seconds":max(sample["elapsed_seconds"] for sample in publication_samples),"samples":publication_samples},indent=2))
-        passed("realtime-publications-advance-while-60s-recovery-file-is-byte-identical")
+        (root/"realtime-observation.json").write_text(json.dumps({"passed":True,"checkpoint_interval_seconds":60,"checkpoint_sha256_before":checkpoint_sha,"checkpoint_sha256_after":hashlib.sha256(checkpoint_bytes()).hexdigest(),"maximum_update_wait_seconds":max(sample["elapsed_seconds"] for sample in publication_samples),"samples":publication_samples},indent=2))
+        passed("realtime-publications-advance-while-60s-sqlite-recovery-payload-is-byte-identical")
+        archive_proofs={}
+        if os.environ.get("TITAN_PERSISTENCE_STAGE") in ("M2","M3"):
+            def fact_page(item,kind,*,cursor=None,limit=2,newest_first=False):
+                query={"kind":kind,"limit":limit,"run_generation":item["body"]["run_generation"]}
+                if newest_first:query["newest_first"]="true"
+                if cursor:query["cursor"]=json.dumps(cursor)
+                return call(f"/api/v2/strategies/{owner}/runs/{item['id']}/facts?"+parse.urlencode(query))
+            page=wait(lambda:(p if p.get("items") and p.get("next_cursor") else None) if (p:=fact_page(run,"business_observation")) else None,10)
+            for entry in page["items"]:
+                assert entry["fact"]["scope"]["environment"]=="simulation"
+                assert entry["fact"]["scope"]["strategy_id"]==owner
+                assert entry["fact"]["payload"]["schema_hash"]==business["schema_hash"]
+                assert entry["fact"]["payload"]["schema"]==business["schema"]
+                assert not {"state_bytes","orders_list","recovery_reference"}.intersection(entry["fact"]["payload"])
+            cursor_page=fact_page(run,"business_observation",cursor=page["next_cursor"])
+            assert cursor_page["upper_row"]==page["upper_row"]
+            assert all(int(row["row_id"])<=int(page["upper_row"]) for row in cursor_page["items"])
+            latest=fact_page(run,"business_observation",newest_first=True)
+            assert latest["items"][0]["row_id"]==latest["upper_row"]
+            assert [int(row["row_id"]) for row in latest["items"]]==sorted([int(row["row_id"]) for row in latest["items"]],reverse=True)
+            try:fact_page(run,"business_observation",cursor=latest["next_cursor"]);raise AssertionError("history cursor direction was changed")
+            except error.HTTPError as failure:assert failure.code==409
+            try:fact_page(run,"order",cursor=page["next_cursor"]);raise AssertionError("cursor from different history kind accepted")
+            except error.HTTPError as failure:assert failure.code==409
+            try:call(f"/api/v2/strategies/other/runs/{run['id']}/facts");raise AssertionError("cross-strategy archive accepted")
+            except error.HTTPError as failure:assert failure.code==404
+            balances=fact_page(run,"balance",limit=20)
+            assert balances["items"] and all(row["fact"]["scope"]["strategy_id"] is None for row in balances["items"])
+            archive_proofs.update(public_schema_hash=business["schema_hash"],fixed_upper_row=page["upper_row"],bootstrap_account_facts=len(balances["items"]))
+            passed("persisted-public-frames-share-history-port-and-preserve-public-schema")
+            passed("history-cursor-fixed-bound-and-cross-scope-rejected")
+            passed("latest-history-order-and-cursor-direction-are-preserved")
+            passed("platform-bootstrap-facts-do-not-invent-strategy-attribution")
+        if persistence.enabled():
+            store=root/"live/storage";history=root/"live/account-facts.sqlite3"
+            native_before=persistence.digest(deployed);recovery_before=checkpoint_bytes()
+            switched=persistence.switch_history(args.binary,store,history,"postgres",env)
+            pg_page=fact_page(run,"business_observation")
+            assert pg_page["items"] and pg_page["recording"]["backend"]=="postgres"
+            assert checkpoint_bytes()==recovery_before and persistence.digest(deployed)==native_before
+            persistence.switch_objects(args.binary,store,"s3",env)
+            persistence.switch_objects(args.binary,store,"filesystem",env)
+            returned=persistence.switch_history(args.binary,store,history,"sqlite",env)
+            assert fact_page(run,"business_observation")["recording"]["backend"]=="sqlite"
+            assert checkpoint_bytes()==recovery_before and persistence.digest(deployed)==native_before
+            (root/"backend-switch.json").write_text(json.dumps({"passed":True,"postgres":switched,"sqlite":returned,"strategy_sha256":native_before,"recovery_sha256":hashlib.sha256(recovery_before).hexdigest()},indent=2))
+            passed("running-native-strategy-history-and-object-roundtrip-keeps-local-recovery-identical")
         cursor=call("/api/v2/snapshot")["cursor"]
         with opener.open(origin+"/api/v2/events?cursor="+cursor,timeout=8) as stream:
             until=time.monotonic()+5
@@ -266,12 +332,20 @@ def main():
                     streamed=payload["body"]["observation"]["strategies"][0]["business_observation"]
                     if not streamed.get("available") or int(streamed["source"]["publication_sequence"])<=int(previous["source"]["publication_sequence"]):continue
                     assert streamed["schema_id"]=="titan.grid" and streamed["source"]["kind"]=="runtime_publication"
-                    assert checkpoint_path.read_bytes()==checkpoint_before
+                    assert checkpoint_bytes()==checkpoint_before
                     (root/"business-observation-sse.json").write_text(json.dumps(item,ensure_ascii=False,indent=2))
                     break
             else:raise AssertionError("run business observation did not reach SSE")
         passed("business-observation-propagates-through-sse")
-        paused=completed(submit({"kind":"pause","run_id":run["id"],"expected_run_generation":generation}));wait(lambda:all(o["state"]!="OPEN" for o in venue.orders.values()));passed("pause-consumes-cancel-confirmations")
+        with persistence.backend_paused("postgres"):
+            began_pause=time.monotonic()
+            paused=completed(submit({"kind":"pause","run_id":run["id"],"expected_run_generation":generation}))
+            wait(lambda:all(o["state"]!="OPEN" for o in venue.orders.values()))
+            assert time.monotonic()-began_pause<10,"original stop/pause budget exceeded"
+        passed("pause-consumes-cancel-confirmations")
+        if persistence.enabled():
+            persistence.storage(args.binary,root/"live/storage","project","--database",root/"live/account-facts.sqlite3",env=env)
+            passed("postgres-network-blackhole-does-not-block-native-cancels-or-local-recovery")
         receipt_path=root/"live/operations"/paused["id"]/"receipt.json";saved=receipt_path.read_bytes();lost=json.loads(saved);lost.update(state="unknown",result=None,error="simulated adapter acknowledgement loss");receipt_path.write_text(json.dumps(lost))
         try:
             with request.urlopen(request.Request(f"http://127.0.0.1:{np}/v1/operations/{paused['id']}",headers={"Authorization":"Bearer "+token}),timeout=10) as response:assert json.load(response)["state"]=="succeeded"
@@ -284,7 +358,7 @@ def main():
         completed(submit({"kind":"pause","run_id":run["id"],"expected_run_generation":generation}));wait(lambda:all(o["state"]!="OPEN" for o in venue.orders.values()));time.sleep(.5)
         pid=int(body["observation"]["pid"]);os.kill(pid,signal.SIGKILL)
         old=wait(lambda:next((r for r in resources("run") if r["id"]==run["id"] and r["body"]["recovery_point_sha256"] and r["body"]["process_state"]=="UNKNOWN"),None));passed("crash-retains-checkpoint-and-occupancy")
-        saved_checkpoint=json.loads((root/"live/checkpoints/synthetic-gate-1/77/strategy-77.json").read_text())
+        saved_checkpoint=json.loads(checkpoint_bytes())
         unresolved=sum(o["status"] not in (4,6,7,8) for o in saved_checkpoint["orders_list"])
         assert unresolved>0,"fixture must retain genuine unresolved intents in the checkpoint"
         bad=completed(submit({"kind":"restore","run_id":old["id"],"expected_run_generation":generation,"recovery_point_sha256":"0"*64}),False);assert "checkpoint" in bad["error"];passed("wrong-checkpoint-rejected")
@@ -313,6 +387,18 @@ def main():
         completed(submit({"kind":"stop","run_id":new["id"],"expected_run_generation":new["body"]["run_generation"]}));passed("stop-reserved-receipt-capacity");wait(lambda:next((r for r in resources("run") if r["id"]==new["id"] and r["body"]["release_proof"]["safe"]),None));assert all(o["state"]!="OPEN" for o in venue.orders.values());passed("stop-engine-proof-and-flat-release")
         with sqlite3.connect(root/"manager.db") as db:assert db.execute("SELECT COUNT(*) FROM occupancy").fetchone()[0]==0
         assert not venue.failed,venue.failed
+        assert len(venue.intent_proofs)==len(venue.orders)>0
+        (root/"durable-intents.json").write_text(json.dumps({"passed":True,"proofs":venue.intent_proofs},indent=2))
+        passed("each-simulated-post-has-a-committed-sqlite-state-and-intent")
+        if os.environ.get("TITAN_PERSISTENCE_STAGE") in ("M2","M3"):
+            old_history=fact_page(run,"order",limit=200)
+            assert old_history["items"] and int(old_history["recording"]["gap_count"])>0
+            current_history=fact_page(new,"order",limit=200)
+            assert current_history["items"] and all(row["fact"]["scope"]["run_id"]==new["body"]["worker_id"] for row in current_history["items"])
+            assert all(row["fact"]["scope"]["run_id"]!=new["body"]["worker_id"] for row in old_history["items"])
+            archive_proofs.update(old_recording=old_history["recording"],old_orders=len(old_history["items"]),new_orders=len(current_history["items"]))
+            (root/"archive-history.json").write_text(json.dumps({"passed":True,**archive_proofs},indent=2))
+            passed("crashed-source-gap-and-restored-run-histories-remain-distinct")
         (root/"results.json").write_text(json.dumps({"passed":True,"source":"real runtime with loopback simulated venue; no real account","checks":checks,"venue_order_count":len(venue.orders),"remaining_orders":0},indent=2))
     finally:
         (root/"venue-debug.json").write_text(json.dumps({"ws":venue.ws_frames,"calls":venue.calls,"failed":venue.failed},indent=2))

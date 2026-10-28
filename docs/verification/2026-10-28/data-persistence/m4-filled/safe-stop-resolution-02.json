@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "mechanism": "normal GET-only node catalog ingests original E safe Stop proof",
+  "occupancy_before": 2,
+  "occupancy_after": 0,
+  "succeeded_start_operation_preserved": "862408bcb7826973ddc165803a4781bcebde1747be9257f703786cee064ad4d4",
+  "operation_count_unchanged": 5,
+  "original_runtime_strategy_no": 1793153499,
+  "no_operation_submitted": true,
+  "same_database_and_namespace": true,
+  "proof": {
+    "run_id": "862408bcb7826973ddc165803a4781bcebde1747be9257f703786cee064ad4d4",
+    "source": "trading_runtime",
+    "process_state": "stopped",
+    "release_proof": {
+      "account_epoch": "1",
+      "captured_at_ns": "1793154767136198008",
+      "safe": true,
+      "source": "trading_runtime"
+    }
+  }
+}

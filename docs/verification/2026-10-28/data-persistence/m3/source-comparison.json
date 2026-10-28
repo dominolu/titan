@@ -1,0 +1,7 @@
+{
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "files": 551,
+  "different": [],
+  "local_matches_frozen": true,
+  "comparison": "Byte-level SHA256 only; no local build, tests, formatting or analysis executed."
+}

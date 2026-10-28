@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "postgres": {
+    "dsn_env": "TITAN_HISTORY_POSTGRES_DSN",
+    "allow_insecure_loopback": false,
+    "root_certificate": null,
+    "statement_timeout_ms": 2000,
+    "connect_timeout_ms": 2000
+  },
+  "s3": {
+    "endpoint": "https://objects.example.internal",
+    "region": "us-east-1",
+    "bucket": "titan-archive",
+    "prefix": "node-a",
+    "access_key_env": "TITAN_OBJECT_ACCESS_KEY",
+    "secret_key_env": "TITAN_OBJECT_SECRET_KEY",
+    "session_token_env": null,
+    "allow_insecure_loopback": false,
+    "timeout_ms": 30000
+  },
+  "budget": {
+    "max_database_bytes": 21474836480,
+    "min_free_bytes": 1073741824,
+    "max_object_bytes": 5000000000,
+    "max_local_object_bytes": 107374182400,
+    "projection_batch_rows": 200,
+    "projection_interval_ms": 1000
+  }
+}

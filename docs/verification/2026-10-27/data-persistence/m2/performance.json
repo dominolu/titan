@@ -1,0 +1,55 @@
+{
+  "recovery_commit_us": {
+    "samples": 64,
+    "p50": 10383,
+    "p95": 10742,
+    "p99": 13107,
+    "max": 13107
+  },
+  "native_full_replay": {
+    "name": "bounded-full-audit-replay-resource-measurement",
+    "passed": true,
+    "peak_rss_kib": 20248,
+    "user_seconds": "12.17",
+    "system_seconds": "0.07",
+    "input_bytes": 105094491,
+    "history_bytes": 1667072,
+    "parquet_bytes": 1014263,
+    "sql_chunk_records": 64,
+    "parquet_chunk_records": 64,
+    "fact_max_bytes": 1048576
+  },
+  "query_isolation": {
+    "passed": true,
+    "synthetic_history_records": 12000,
+    "metadata_bytes_per_record": 32768,
+    "valid_workspace_id_length": 128,
+    "history_query_seconds": {
+      "/api/v2/strategies": 0.3667885670438409,
+      "/api/v2/resources?strategy_id=research-empty&kind=strategy_version&limit=20": 0.3695460772141814
+    },
+    "concurrent_read_and_admission_seconds": [
+      0.0010371198877692223,
+      0.0707829874008894,
+      0.0007249563932418823,
+      0.07631340902298689,
+      0.0006432626396417618,
+      0.043553260155022144
+    ],
+    "maximum_concurrent_seconds": 0.07631340902298689,
+    "real_account_access": false
+  },
+  "limits": {
+    "account_queue_messages": 4096,
+    "account_writer_batch_messages": 256,
+    "backtest_chunk_records": 64,
+    "backtest_chunk_bytes": 4194304,
+    "fact_max_bytes": 1048576,
+    "history_page_records": 200,
+    "history_page_bytes": 4194304,
+    "history_busy_timeout_ms": 200,
+    "object_copy_buffer_bytes": 65536,
+    "market_event_parquet_shard_rows": 1048576
+  },
+  "scope": "Build-server measurements, no production latency or power-loss durability SLA; preparation retains existing in-memory sorting."
+}

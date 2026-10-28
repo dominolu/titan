@@ -1,0 +1,54 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "lost_s3_put_ack_retries_same_original_object",
+      "passed": true,
+      "first_exit": 10,
+      "hits": 2
+    },
+    {
+      "name": "interrupted_s3_body_has_no_success_manifest_and_can_retry",
+      "passed": true
+    },
+    {
+      "name": "real_s3_invalid_credentials_rejected_and_secret_redacted",
+      "passed": true
+    },
+    {
+      "name": "incorrect_conditional_success_response_rejected_at_capability_probe",
+      "passed": true
+    },
+    {
+      "name": "orphan_staging_cleanup_is_explicit_and_content_preserving",
+      "passed": true,
+      "receipt": {
+        "removed_sessions": 1
+      }
+    },
+    {
+      "name": "sigkill_exporter_before_pg_commit_rolls_back_rows_and_cursor",
+      "passed": true
+    },
+    {
+      "name": "pg_commit_ack_dropped_after_durable_command_retries_without_duplicates",
+      "passed": true
+    },
+    {
+      "name": "acknowledged_pg_batch_retry_does_not_repeat_facts",
+      "passed": true
+    },
+    {
+      "name": "postgres_network_blackhole_has_client_deadline_and_resumes",
+      "passed": true,
+      "seconds": 4.021265783347189
+    },
+    {
+      "name": "pruned_history_exports_via_postgres_and_returns_to_sqlite",
+      "passed": true,
+      "records": "11"
+    }
+  ],
+  "no_real_accounts": true,
+  "power_loss_scope": "process SIGKILL and transaction/transport faults; no physical power loss"
+}

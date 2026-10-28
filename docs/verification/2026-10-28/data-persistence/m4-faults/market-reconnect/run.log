@@ -1,0 +1,4 @@
+frozen-candidate05-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate05-deployed-without-recompile: passed
+public-socket-reconnects-and-protective-exit-completes-before-original-Stop-deadline: passed
+trusted-facts-Stop-flattens-with-reduce-only-and-releases-only-local-simulated-occupancy: passed

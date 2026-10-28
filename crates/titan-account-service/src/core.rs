@@ -43,6 +43,7 @@ pub struct AccountServiceCore {
     accepting: AtomicBool,
     mutation: Mutex<()>,
     binding_pins: titan_core_types::BindingPins<AccountHandle>,
+    recording_guard: RwLock<Option<RecordingGuard>>,
 }
 
 impl AccountServiceCore {
@@ -66,10 +67,17 @@ impl AccountServiceCore {
             accepting: AtomicBool::new(false),
             mutation: Mutex::new(()),
             binding_pins: Default::default(),
+            recording_guard: Default::default(),
         })
     }
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
         self.factories.register(f)
+    }
+    pub fn set_recording_guard(&self, guard: Arc<dyn Fn() -> bool + Send + Sync>) {
+        *self
+            .recording_guard
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(guard);
     }
     pub fn ledger_page(
         &self,
@@ -448,6 +456,19 @@ impl AccountAdminService for AccountServiceCore {
 }
 
 impl AccountService for AccountServiceCore {
+    fn execution_evidence(
+        &self,
+        account: AccountHandle,
+        asset: AssetId,
+        client: Id128,
+    ) -> OrderExecutionEvidenceFuture {
+        match self.registry.get(account) {
+            Ok(entry) => entry.connector.execution_evidence(asset, client),
+            Err(error) => {
+                Box::pin(async move { Err(AccountConnectorError::rejected(error.to_string())) })
+            }
+        }
+    }
     fn pin_binding(&self, handle: AccountHandle) -> LocalResult<titan_core_types::BindingLease> {
         let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
         self.registry.get(handle)?;
@@ -530,6 +551,10 @@ impl AccountService for AccountServiceCore {
         let entry = self.require_ready(h)?;
         Ok(Arc::new(AccountConnectorExecution::new(
             entry.connector.clone(),
+            self.recording_guard
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
         )))
     }
 }

@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "reference": {
+    "payload_sha256": "6331a1207de344b7f3b2ad67d7115cbc1860f63268b623afd2028bd194f0f519",
+    "record_id": "115d300d642e13a87005e7c91e7c50d2",
+    "runtime_strategy_no": 1793153499,
+    "store_id": "fc33061510493847569029084cd5559f"
+  },
+  "confirmed_position_lots": 1,
+  "independent_fills": 1,
+  "pending_execution": false,
+  "periodic_checkpoint_seconds": 60,
+  "before_crash_elapsed_seconds": 64.167,
+  "state_schema_version": 3
+}

@@ -1,0 +1,53 @@
+
+> titan-console@6.2.0 build /home/dominolu/dev/titan-persistence-m3-20261027-59973648/web/console
+> rimraf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build
+
+vite v7.1.12 building for production...
+╭─────────────────────────────────────────────╮
+│ 您好! 欢迎使用 pure-admin 开源项目          │
+│ 我们为您精心准备了下面两个贴心的保姆级文档  │
+│ https://pure-admin.cn                       │
+│ https://pure-admin-utils.netlify.app        │
+╰─────────────────────────────────────────────╯
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+Browserslist: browsers data (caniuse-lite) is 12 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+transforming...
+✓ 2404 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                                     1.38 kB │ gzip:   0.73 kB
+dist/static/css/404-DgQozwK4.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/403-DjuzhhlE.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/500-d2Um_kna.css                                                    0.05 kB │ gzip:   0.07 kB
+dist/static/css/StrategyDetail-GbhOkzZd.css                                         0.10 kB │ gzip:   0.11 kB
+dist/static/css/index-B_J0ZUlR.css                                                  0.37 kB │ gzip:   0.25 kB
+dist/static/css/ConsoleLayout-CxpBYk_E.css                                         21.09 kB │ gzip:   5.13 kB
+dist/static/css/index-CB66UleR.css                                                 87.11 kB │ gzip:   8.47 kB
+dist/static/css/index-B5IhdeUM.css                                                421.94 kB │ gzip:  64.82 kB
+dist/static/js/redirect-BkfL5NYW.js                                                 0.30 kB │ gzip:   0.23 kB
+dist/static/js/RunDetail-DFxnmjdw.js                                                0.47 kB │ gzip:   0.24 kB
+dist/static/js/LegacyStrategyRoute-DSKvqysE.js                                      1.00 kB │ gzip:   0.66 kB
+dist/static/js/index-d6pBttCV.js                                                    1.85 kB │ gzip:   1.06 kB
+dist/static/js/OperationsPanel.vue_vue_type_script_setup_true_lang-BBam28AD.js      3.19 kB │ gzip:   1.79 kB
+dist/static/js/StrategyList-B9L19Rwh.js                                             3.60 kB │ gzip:   1.88 kB
+dist/static/js/run-view-CYtbJJsn.js                                                 5.06 kB │ gzip:   2.47 kB
+dist/static/js/ConsoleIcon.vue_vue_type_script_setup_true_lang-C6Dkgg5R.js          6.25 kB │ gzip:   1.95 kB
+dist/static/js/RunsOverview-CsVaknVG.js                                             8.19 kB │ gzip:   3.68 kB
+dist/static/js/ConsoleLayout-vghGcxwa.js                                            9.16 kB │ gzip:   3.94 kB
+dist/static/js/console-WacaFTEV.js                                                 10.07 kB │ gzip:   3.57 kB
+dist/static/js/403-CI-hdYZZ.js                                                     11.86 kB │ gzip:   5.23 kB
+dist/static/js/AccountRisk-Da-YEA2f.js                                             12.68 kB │ gzip:   4.68 kB
+dist/static/js/404-CHbU4Rlu.js                                                     12.96 kB │ gzip:   5.64 kB
+dist/static/js/HostLog.vue_vue_type_script_setup_true_lang-DOqgr4-a.js             13.45 kB │ gzip:   5.56 kB
+dist/static/js/500-Db44Tvs9.js                                                     14.94 kB │ gzip:   6.02 kB
+dist/static/js/RunDetail.vue_vue_type_script_setup_true_lang-CmVcM37g.js           16.13 kB │ gzip:   6.36 kB
+dist/static/js/StrategyDetail-BMfeyVN2.js                                          65.54 kB │ gzip:  22.36 kB
+dist/static/js/index-CPkKRZeQ.js                                                  426.56 kB │ gzip: 183.25 kB
+dist/static/js/RunAlerts.vue_vue_type_script_setup_true_lang-BWZS-MCt.js          500.74 kB │ gzip: 170.54 kB
+dist/static/js/index-DjtbMsux.js                                                1,234.34 kB │ gzip: 413.01 kB
+✓ built in 7.36s
+╭───────────────────────────────────────────────────────────╮
+│ 🎉 恭喜打包完成（总用时00分07秒，打包后的大小为2.76 MB）  │
+╰───────────────────────────────────────────────────────────╯

@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "host": "43.130.234.54",
+  "ssh_user": "ubuntu",
+  "operator_euid": 0,
+  "release": "/data/titan-persistence-m4-20261028-59973648/m4-release-01",
+  "archive_sha256": "6650ee2409dff2012309bc65994b3bbf2bb0e728a3f8a718ee19535e355b05d1",
+  "binary_sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3",
+  "strategy_file_sha256": "9accd2b4ad4cbe67904c7b0e149249369f4e984803e673eabe8edcdcc99e4f51",
+  "files_verified": 46,
+  "native_signature_validated": true,
+  "compiled_on_live_host": false
+}

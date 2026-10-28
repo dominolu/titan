@@ -134,6 +134,7 @@ impl LiveNode {
             }
             let spec = ObserverSpec {
                 claim: HostClaim {
+                    strategy_id: None,
                     run_id: id.clone(),
                     worker_session_id: generation.clone(),
                     account: binding.account.clone(),
@@ -348,6 +349,14 @@ impl LiveNode {
         .await?;
         result["source"] = json!({"worker_id":id,"worker_session_id":spec.claim.worker_session_id,"pid":pid.to_string(),"start_time":start.to_string(),"scope":"account","persisted":false});
         Ok(result)
+    }
+    pub fn fact_claim(&self, id: &str) -> Result<HostClaim> {
+        checked_id(id)?;
+        let spec: ObserverSpec = serde_json::from_slice(&std::fs::read(
+            directory(&self.config, id)?.join("observe.json"),
+        )?)?;
+        ensure!(spec.claim.run_id == id, "observer fact identity changed");
+        Ok(spec.claim)
     }
 }
 pub(crate) fn observe_worker(config: NodeConfig, id: String, token: String) -> Result<()> {

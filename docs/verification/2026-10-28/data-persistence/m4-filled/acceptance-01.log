@@ -1,0 +1,12 @@
+signed-server-built-one-lot-grid-deployed: passed
+Traceback (most recent call last):
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-01/scripts/management_live_fill_recovery.py", line 262, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-01/scripts/management_live_fill_recovery.py", line 154, in main
+    began=time.monotonic();run=resource(completed(submit({"kind":"start","deployment_id":deployment["id"]})),"run");active=run
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-01/scripts/management_live_fill_recovery.py", line 102, in completed
+    assert op["state"]=="succeeded",op.get("error");return op
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: CheckpointFailed [recovery_storage:recovery_schema_unsupported]: recovery storage operation failed

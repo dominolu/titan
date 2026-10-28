@@ -1,0 +1,28 @@
+{
+  "passed": true,
+  "checks": [
+    "five-pages",
+    "real-session",
+    "ui-validate-freeze-build-backtest-report",
+    "refresh",
+    "bounded-chart",
+    "readonly",
+    "offline-reconnect",
+    "integer-precision",
+    "draft-create-edit-copy-diff",
+    "catalog-refresh-preserves-editor",
+    "changed-parameters-require-validation",
+    "schema-form-and-json-editor",
+    "initial-template-defaults",
+    "strategyVersion-download-search",
+    "prepare-and-stress-toggle",
+    "four-pages-mobile-width",
+    "three-navigation-items",
+    "workspace-build-keeps-selected-version-across-pages",
+    "per-strategy-workspace-and-alias-grouping",
+    "cross-strategy-strategyVersion-selection-rejected",
+    "server-filtered-strategy-pagination",
+    "legacy-routes-choose-workspace"
+  ],
+  "pageErrors": []
+}

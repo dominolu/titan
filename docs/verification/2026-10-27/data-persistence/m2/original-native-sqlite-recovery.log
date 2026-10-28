@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_strategy_runtime-53d79c8bee2a5abc)
+
+running 1 test
+previous-binary signed grid and recovery bytes loaded unchanged; state schema 3, ABI 13; trading gate remains closed
+test v13::tests::historical_recovery_point_loads_original_native_strategy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.13s
+
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-b3e152981a9664d8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-b3e152981a9664d8)
+
+running 8 tests
+test observation_runtime_checkpoint_and_stop_failure_invalidate ... ok
+test observation_runtime_control_rejection_finishes_operation_without_failing_strategy ... ok
+test observation_runtime_execution_rejection_while_callback_owns_state ... ok
+test observation_runtime_invalidation_after_inflight_start_closes_reopened_gate ... ok
+test observation_runtime_invalidation_survives_control_rejection ... ok
+test observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame ... ok
+test observation_runtime_never_started_and_stopped_frames ... ok
+test observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+

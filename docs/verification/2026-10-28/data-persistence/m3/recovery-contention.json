@@ -1,0 +1,56 @@
+{
+  "burst16_budget_ms": 5000,
+  "default_handler_admitted": false,
+  "default_handler_ms": 5,
+  "existing_runtime_handler_ms": 5000,
+  "existing_stop_ms": 10000,
+  "hardware_power_loss_tested": false,
+  "passed": true,
+  "scenarios": [
+    {
+      "burst16_us": 148334,
+      "max_us": 131405,
+      "online_backup_us": null,
+      "p50_us": 66624,
+      "p95_us": 130024,
+      "p99_us": 131405,
+      "payload_bytes_max": 2000904,
+      "payload_bytes_p50": 1049486,
+      "pressure_commits": 0,
+      "pressure_wal_peak_bytes": 0,
+      "samples": 96,
+      "scenario": "idle"
+    },
+    {
+      "burst16_us": 291471,
+      "max_us": 131758,
+      "online_backup_us": null,
+      "p50_us": 68837,
+      "p95_us": 130604,
+      "p99_us": 131758,
+      "payload_bytes_max": 2000904,
+      "payload_bytes_p50": 1049486,
+      "pressure_commits": 714,
+      "pressure_wal_peak_bytes": 55055592,
+      "samples": 96,
+      "scenario": "history_writer_long_reader"
+    },
+    {
+      "burst16_us": 314449,
+      "max_us": 132230,
+      "online_backup_us": 218224,
+      "p50_us": 68408,
+      "p95_us": 129887,
+      "p99_us": 132230,
+      "payload_bytes_max": 2000904,
+      "payload_bytes_p50": 1049486,
+      "pressure_commits": 364,
+      "pressure_wal_peak_bytes": 27657592,
+      "samples": 96,
+      "scenario": "object_io_and_online_backup"
+    }
+  ],
+  "single_submission_budget_ms": 750,
+  "sqlite": "3.53.2",
+  "synchronous": "FULL"
+}

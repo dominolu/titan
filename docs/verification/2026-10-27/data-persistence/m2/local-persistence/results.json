@@ -1,0 +1,170 @@
+{
+  "passed": true,
+  "real_account_access": false,
+  "checks": [
+    {
+      "name": "full-facts-match-engine-backtest-sideways-neutral-base",
+      "passed": true,
+      "records": 1563,
+      "fills": 30,
+      "ordered_payload_sha256": "cb70442b7db27f82520049963250302f1206d8dabab04753749fcb1545b9fb30"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-sideways-neutral-stress",
+      "passed": true,
+      "records": 1580,
+      "fills": 59,
+      "ordered_payload_sha256": "08bffa7cbf2c354991f1916bb4fa2df310a8c0fb99980b46f3b3c5e08c38dac7"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-sideways-long_bias-base",
+      "passed": true,
+      "records": 1566,
+      "fills": 31,
+      "ordered_payload_sha256": "3871fee5e2cb03dfd6c6763d51ef36d98db5cca5f79eaf99ae72f706cd6dad88"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-sideways-long_bias-stress",
+      "passed": true,
+      "records": 1603,
+      "fills": 56,
+      "ordered_payload_sha256": "e097820cec0fc2cffd2ce04afc0ff91415907644246959991917d4e44554f4fe"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-sideways-short_bias-base",
+      "passed": true,
+      "records": 1567,
+      "fills": 29,
+      "ordered_payload_sha256": "a3ca14cd9946c3af9bb9d200d8539c68de1617a534c1dc3fc2010d95c246aa0b"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-sideways-short_bias-stress",
+      "passed": true,
+      "records": 1637,
+      "fills": 63,
+      "ordered_payload_sha256": "75c561e38534d4e327b5860e566a26c6ca6635abfc829abc5e8d899cc4b5628c"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-neutral-base",
+      "passed": true,
+      "records": 3184,
+      "fills": 447,
+      "ordered_payload_sha256": "89709b79cfd5e3b22e7e6b9f3e5cfcedaaee75605e6a519681796dc4951853f7"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-neutral-stress",
+      "passed": true,
+      "records": 3419,
+      "fills": 789,
+      "ordered_payload_sha256": "b3629a42e679d29b1dc83680801e74cc1d10803e74b47b4d8596a4cfe7b4a6d6"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-long_bias-base",
+      "passed": true,
+      "records": 2845,
+      "fills": 358,
+      "ordered_payload_sha256": "972fd147e5e6362898c04efed3594ec47d260e95892f44e5bd1e498a892328f6"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-long_bias-stress",
+      "passed": true,
+      "records": 3126,
+      "fills": 651,
+      "ordered_payload_sha256": "f20ed9ac677372cb73d8568fa6360d188f069992685e59ba6df051698a3f1166"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-short_bias-base",
+      "passed": true,
+      "records": 2710,
+      "fills": 327,
+      "ordered_payload_sha256": "1f3b6aab22ce2e274981e74c44ced7055a3b86e3b341b94e9f77e95e17bd48e3"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-up-short_bias-stress",
+      "passed": true,
+      "records": 2900,
+      "fills": 567,
+      "ordered_payload_sha256": "d0d092126b52c2845a037ebc90f739ab7c3cba9b477f1a69bd76b29182f3b226"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-neutral-base",
+      "passed": true,
+      "records": 2465,
+      "fills": 258,
+      "ordered_payload_sha256": "748023a66a703551782d3b4b98f8bdc355872e11745ad5c7907c6c7e1bdeaca0"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-neutral-stress",
+      "passed": true,
+      "records": 2656,
+      "fills": 489,
+      "ordered_payload_sha256": "8a22b9527d7b11f7367f673aded5d7267e0e4cefa66864aebc138386f2c8f4e9"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-long_bias-base",
+      "passed": true,
+      "records": 2343,
+      "fills": 231,
+      "ordered_payload_sha256": "46511951c7a487accc8931bf8a2f31c81ac97fab753ef4245dfa10e1ccd799db"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-long_bias-stress",
+      "passed": true,
+      "records": 2567,
+      "fills": 393,
+      "ordered_payload_sha256": "36aafbdad503003dc8f1df683f1edabfaebc3e825c8057a0ed4b907a6909c314"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-short_bias-base",
+      "passed": true,
+      "records": 2445,
+      "fills": 254,
+      "ordered_payload_sha256": "c41d7256eddc82dddc1b648016ec7d96baa61db9a6f868599fa565fcea8651f2"
+    },
+    {
+      "name": "full-facts-match-engine-backtest-down-short_bias-stress",
+      "passed": true,
+      "records": 2567,
+      "fills": 436,
+      "ordered_payload_sha256": "f697a6458cefe03db1f181863b1a87dc6c69e957bdd402f987099a3d54740ce5"
+    },
+    {
+      "name": "same-native-file-binary-and-parquet-inputs-have-identical-engine-and-fact-results",
+      "passed": true,
+      "strategy_sha256": "6f0ef426b4d85dd2df330d3f8a8ed618f8f4fb417b5feb82aebff2dc2e68fe67",
+      "records_compared": 1561,
+      "binary_input_sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683",
+      "parquet_input_sha256": "e9377df9db8f9d981ffa94f26b0782d8f6d9bb2c51ddf0fa75b0790ada5e9893"
+    },
+    {
+      "name": "bounded-full-audit-replay-resource-measurement",
+      "passed": true,
+      "peak_rss_kib": 20248,
+      "user_seconds": "12.17",
+      "system_seconds": "0.07",
+      "input_bytes": 105094491,
+      "history_bytes": 1667072,
+      "parquet_bytes": 1014263,
+      "sql_chunk_records": 64,
+      "parquet_chunk_records": 64,
+      "fact_max_bytes": 1048576
+    },
+    {
+      "name": "object-publication-registration-retry-and-byte-identical-v1-materialization",
+      "passed": true
+    },
+    {
+      "name": "fixed-bound-streamed-parquet-export-preserves-all-original-envelopes",
+      "passed": true,
+      "records": 1563
+    },
+    {
+      "name": "engine-failure-persists-explicit-diagnostics-without-inventing-final-state",
+      "passed": true
+    },
+    {
+      "name": "report-reader-rejects-tampered-or-uncommitted-materialized-bundle",
+      "passed": true
+    }
+  ]
+}

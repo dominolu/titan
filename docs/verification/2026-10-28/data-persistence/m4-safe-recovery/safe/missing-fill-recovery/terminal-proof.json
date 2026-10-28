@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "stop_through_exit_and_release_seconds": 3.565926304087043,
+  "old_run_still_failed_and_unsafe": true,
+  "old_expires_at_ns": "1793166600647410789",
+  "new_expires_at_ns": "1793166600647410789",
+  "fixed_blob_unchanged": true,
+  "fixed_pin_count": 1,
+  "position_lots": 0,
+  "occupancy": 0,
+  "independent_fills": 2,
+  "fee_units_USDT_1e8": 808001
+}

@@ -1,0 +1,6 @@
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-recovery-m1-20261027-59973648/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-recovery-m1-20261027-59973648/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-recovery-m1-20261027-59973648/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-recovery-m1-20261027-59973648/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-recovery-m1-20261027-59973648/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.19s

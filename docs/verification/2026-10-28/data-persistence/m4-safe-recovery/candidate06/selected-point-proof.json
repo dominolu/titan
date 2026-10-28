@@ -1,0 +1,13 @@
+{
+  "reference": {
+    "record_id": "a6aabf19bec7d97250ac7ebe54a6bffd",
+    "payload_sha256": "cefd9e457f3e493f0f4ee271af7b7e0618b4fb26c1d397c0e98579edf83b7dc5",
+    "store_id": "c50e8a22d5e3828eeec4101aad564ecb",
+    "runtime_strategy_no": 77
+  },
+  "generation": 1,
+  "pending_execution": false,
+  "consumed_lots": 0,
+  "original_checkpoint_seconds": 60,
+  "blob_unchanged": true
+}

@@ -1,0 +1,1 @@
+CARGO_TARGET_DIR=/tmp/titan-deplugin-target CARGO_NET_OFFLINE=true cargo --config evidence/m1-final-09/cargo-source.toml test --locked -p titan-strategy-runtime recovery_commit_latency_probe -- --nocapture

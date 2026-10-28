@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "pageErrors": [],
+  "checks": [
+    "deploy",
+    "start-cancel-no-operation",
+    "start-confirmation",
+    "pause",
+    "pending-pause-keeps-stop-enabled",
+    "resume",
+    "stop-confirmation",
+    "readonly-controls",
+    "grid-public-business-observation-panel",
+    "strategy-workspace-live-lifecycle"
+  ]
+}

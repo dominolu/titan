@@ -1,0 +1,1 @@
+env TITAN_HOME=/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/cli-home /home/dominolu/dev/titan/.venv/bin/python scripts/verify_cli_bundle.py /tmp/titan-deplugin-target/debug/titan /home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/cli-bundle

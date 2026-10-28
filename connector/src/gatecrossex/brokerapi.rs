@@ -251,6 +251,9 @@ impl GateCrossExClient {
 
 #[async_trait::async_trait]
 impl BrokerApi for GateCrossExClient {
+    fn supports_order_execution_evidence(&self) -> bool {
+        true
+    }
     async fn account_ledger_page(
         &self,
         from_ms: i64,

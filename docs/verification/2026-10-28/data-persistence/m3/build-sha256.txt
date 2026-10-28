@@ -1,0 +1,3 @@
+40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3  /tmp/titan-deplugin-target/debug/titan
+499522d213a3156b1006391674093d77909a0d76998dffc75fd2f9b01fa41f9f  Cargo.lock
+1c7c58d6e63ee038ff1ec7d0b79d24dc7c6b2efdb75cec3e1faa4f8799390193  /home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05/smoke.titan

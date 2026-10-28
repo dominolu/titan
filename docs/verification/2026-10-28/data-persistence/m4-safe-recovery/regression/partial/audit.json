@@ -1,0 +1,77 @@
+{
+  "passed": true,
+  "scenario": "partial",
+  "expected_runtime_outcome": "safe_flat_stop",
+  "independent_fills": 4,
+  "fee_units_USDT_1e8": 1616002,
+  "archive_fill_counts_by_replay": [
+    [
+      0,
+      4
+    ],
+    [
+      1,
+      2
+    ]
+  ],
+  "archive_conflicts": 0,
+  "archive_sources": [
+    [
+      "c802a12960d11d5ff99a037bf9d071916452b488bceb48e792c580737d5a3089:9ec45a413add4fb5853840416fa999de6dc55f78419502960402ada0539fc643",
+      0,
+      0
+    ],
+    [
+      "16eda1f30d4c15e30aa79b78f503a40e02c4067a1330ff681f8e08b24bd6cf10:8f26a717ef58c23c0a076fcc2dd1833f26015b8fa9fca6559ef1ca50eaaae6b9",
+      1,
+      1
+    ]
+  ],
+  "archive_gaps": [
+    [
+      "c802a12960d11d5ff99a037bf9d071916452b488bceb48e792c580737d5a3089:9ec45a413add4fb5853840416fa999de6dc55f78419502960402ada0539fc643",
+      "recording_gap"
+    ]
+  ],
+  "financial_issues": [],
+  "local_simulated_occupancy_rows": 0,
+  "final_point_generation": 2,
+  "manager_terminal_process_state": "STOPPED",
+  "manager_terminal_release_safe": true,
+  "all_manager_run_expiries_match_original": true,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 2,
+      "fill_count": 2
+    },
+    {
+      "order_id": 4294967297,
+      "side": 2,
+      "cumulative_filled_lots": 2,
+      "fill_count": 2
+    }
+  ],
+  "fixed_record_pin_count": 1,
+  "sampled_risk": [
+    {
+      "account": "gate",
+      "amount_unit": "0.00000001",
+      "asset_id": "1",
+      "coverage_complete": false,
+      "currency": "USDT",
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "last_sample_at_ns": "1793166748140811186",
+      "last_sample_complete": true,
+      "last_source": "16eda1f30d4c15e30aa79b78f503a40e02c4067a1330ff681f8e08b24bd6cf10:8f26a717ef58c23c0a076fcc2dd1833f26015b8fa9fca6559ef1ca50eaaae6b9",
+      "max_actual_notional": "16.16002",
+      "max_actual_units": "1616002000",
+      "max_pending_bound_notional": "32.32004",
+      "max_pending_bound_units": "3232004000",
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

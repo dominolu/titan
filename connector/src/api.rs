@@ -596,6 +596,9 @@ pub struct AlgoOrderRequest {
 /// 之间自由切换。
 #[async_trait::async_trait]
 pub trait BrokerApi: Send + Sync {
+    fn supports_order_execution_evidence(&self) -> bool {
+        false
+    }
     async fn account_ledger_page(
         &self,
         _from_ms: i64,

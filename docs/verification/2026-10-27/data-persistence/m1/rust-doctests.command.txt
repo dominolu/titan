@@ -1,0 +1,1 @@
+cargo --config /home/dominolu/dev/titan-recovery-m1-20261027-59973648/evidence/m1-final-09/cargo-source.toml test --locked --workspace --all-features --doc

@@ -113,6 +113,20 @@ pub enum DirectPublication<'a> {
 /// boundary until that runner is retired.
 #[derive(Clone, Debug)]
 pub enum AccountPublication {
+    /// Order state whose executions arrive independently with native trade IDs and fees.
+    OrderWithNativeFills {
+        position_side: crate::api::ApiPositionSide,
+        symbol: String,
+        client_order_id: Option<String>,
+        venue_order_id: Option<String>,
+        order: Order,
+        average_price: f64,
+        reduce_only: bool,
+    },
+    NativeFill {
+        position_side: crate::api::ApiPositionSide,
+        fill: crate::api::Fill,
+    },
     /// An order average is independent of the incremental execution price in `Order`.
     OrderWithExecution {
         position_side: crate::api::ApiPositionSide,

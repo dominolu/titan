@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "backend": "local-sqlite",
+  "fixed_reference": {
+    "payload_sha256": "cd40211b5807aca137a6b37b32eb0f03d767bfa67c2d66363380298af599ec17",
+    "record_id": "77e43efd9ac080e8721ab3f621b30508",
+    "runtime_strategy_no": 1793151398,
+    "store_id": "b2fa8ae6c46d657c2837381e2e7964a3"
+  },
+  "unresolved_checkpoint_orders": 2,
+  "old_generation": "1",
+  "new_generation": "2",
+  "old_expires_at_ns": "1793151526681151096",
+  "new_expires_at_ns": "1793151526681151096"
+}

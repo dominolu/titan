@@ -1,0 +1,49 @@
+{
+  "rust-tests": {
+    "passed": 636,
+    "failed": 0,
+    "ignored": 22,
+    "measured": 0,
+    "filtered": 0
+  },
+  "rust-doctests": {
+    "passed": 2,
+    "failed": 0,
+    "ignored": 1,
+    "measured": 0,
+    "filtered": 0
+  },
+  "sdk-tests": {
+    "passed": 115
+  },
+  "report-tests": {
+    "passed": 5
+  },
+  "maintenance": {
+    "passed": 9
+  },
+  "loopback": {
+    "passed": 32
+  },
+  "control-browser": {
+    "passed": 10
+  },
+  "historical": {
+    "passed": 54
+  },
+  "historical-browser": {
+    "passed": 23
+  },
+  "readonly": {
+    "passed": 6
+  },
+  "readonly-browser": {
+    "passed": 8
+  },
+  "local-persistence": {
+    "passed": 24
+  },
+  "persistence_contract_passed": 20,
+  "historical_backtests": 18,
+  "historical_fills": 5468
+}

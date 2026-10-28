@@ -1,0 +1,6 @@
+frozen-candidate07-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate07-deployed-without-recompile: passed
+missing-native-fill-latches-205-and-no-financial-fill-is-invented: passed
+old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation: passed
+authoritative-native-backfill-recovers-one-consumption-and-one-fee-from-fixed-SQLite-BLOB: passed
+new-generation-positioned-Stop-flattens-and-releases-within-original-ten-seconds: passed

@@ -1,0 +1,87 @@
+{
+  "passed": true,
+  "runs": [
+    {
+      "path": "evidence/m4-fill-fault-05-01/partial/cleanup.json",
+      "passed": true,
+      "acceptance_passed": false,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-02/abnormal-stop/cleanup.json",
+      "passed": true,
+      "acceptance_passed": false,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-02/bootstrap-replay/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-02/market-reconnect/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-02/partial/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-02/private-disconnect/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-03/abnormal-stop/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-04/abnormal-stop/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    },
+    {
+      "path": "evidence/m4-fill-fault-05-04/private-disconnect/cleanup.json",
+      "passed": true,
+      "acceptance_passed": true,
+      "remaining_owned_workers": [],
+      "management_processes_exited": true,
+      "synthetic_credentials_removed": true,
+      "real_host_contacted": false
+    }
+  ],
+  "real_host_contacted": false
+}

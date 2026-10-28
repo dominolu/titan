@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "host": "192.168.3.88",
+  "documents": 9,
+  "relative_links": 179,
+  "missing": [],
+  "source_files": 551,
+  "source_differences": [],
+  "evidence_credential_value_matches": []
+}

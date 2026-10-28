@@ -1,0 +1,11 @@
+test_account_mode_drift_rejected (test_persistence_live_preflight.AdmissionTests.test_account_mode_drift_rejected) ... ok
+test_frozen_policy_accepts_minimum_quote (test_persistence_live_preflight.AdmissionTests.test_frozen_policy_accepts_minimum_quote) ... ok
+test_invalid_crossed_and_outside_grid_bbo_rejected (test_persistence_live_preflight.AdmissionTests.test_invalid_crossed_and_outside_grid_bbo_rejected) ... ok
+test_preexisting_risk_and_owner_rejected (test_persistence_live_preflight.AdmissionTests.test_preexisting_risk_and_owner_rejected) ... ok
+test_unit_drift_rejected (test_persistence_live_preflight.AdmissionTests.test_unit_drift_rejected) ... ok
+test_wrong_symbol_or_business_or_state_rejected (test_persistence_live_preflight.AdmissionTests.test_wrong_symbol_or_business_or_state_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.014s
+
+OK

@@ -1,0 +1,67 @@
+{
+  "passed": true,
+  "scenario": "private-history-fee-conflict",
+  "candidate": "candidate07",
+  "expected_outcome": "restore_rejected",
+  "generation_floor": 2,
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation",
+    "incomplete-or-conflicting-native-history-rejects-successor-without-trading-or-release"
+  ],
+  "operations": [
+    {
+      "id": "74ae3fa5f5965f44cd1cfeb816a2182bf21c6d0e821460a8f448c42c2834f1fe",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "aefd6821f10467ab78bfa8a38426bc8763822e42d48a220b97ce88c5b99f23ee",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "5944c5c38c31e6bb57ffca160a400088df87ee3de8bb802275a12428fa233a7a",
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "id": "5a14f63ad481e152ab1f2d521f36983ac7638c61abe7323d86a1aebafb861ab3",
+      "kind": "stop",
+      "state": "failed"
+    },
+    {
+      "id": "bc3440eb35fa715b1b34524b4fc8b7ddffd4ca397c0f73478b3db3a22cc2459d",
+      "kind": "restore",
+      "state": "failed"
+    }
+  ],
+  "elapsed_seconds": 88.0537905972451,
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "reference": {
+    "record_id": "fc20d947a883e3797ad5e9c537132856",
+    "payload_sha256": "7462b2df7a89e384da77f2084bc4f0408a6f19f258404c39be1b3d7bb28957af",
+    "store_id": "a42fdff7e560e9dc5ee88de5e2cf12f1",
+    "runtime_strategy_no": 77
+  },
+  "original_expires_at_ns": "1793166854717607897",
+  "handler_seconds": 1,
+  "startup_seconds": 30,
+  "checkpoint_seconds": 60,
+  "stop_seconds": 10,
+  "maximum_run_seconds": 120,
+  "local_simulated_occupancy_rows": 2,
+  "old_run_not_reopened": true,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:40505/api/v4",
+    "public_ws_url": "ws://127.0.0.1:40505/public",
+    "private_ws_url": "ws://127.0.0.1:40505/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

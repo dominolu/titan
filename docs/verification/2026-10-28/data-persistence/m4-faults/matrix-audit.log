@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "build_host": "192.168.3.88",
+  "candidate": "candidate05",
+  "binary_sha256": "38495ebcd5671901cc19ee07837c20fdaa3710a437e69d7b14b0cc17082f0b89",
+  "original_strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "partial_strategy_sha256": "b506c62e1372ced88229f4de2661458305aa3504102f32e3c7ea99b210f9130e",
+  "frozen_release_files_unchanged": 65,
+  "frozen_source_files": 558,
+  "original_source_changes": {
+    "scripts/management_fill_recovery_smoke.py": {
+      "before": "cc2393841a166c29d1a1563e81efa0094a5885e1148caf7681003d091d5b67eb",
+      "after": "aa94a1dad3bf351cd3d1ff10b27a35d4e56fdb3eff0abf90c359e26ff6d8eb9e"
+    }
+  },
+  "product_source_unchanged": true,
+  "partial_parameter_differences": {
+    "order_qty_lots": {
+      "before": 1,
+      "after": 2
+    },
+    "max_position_lots": {
+      "before": 1,
+      "after": 2
+    }
+  },
+  "strategy_source_sha256": "8a7c8169cf72ca17466a5bbfb5079e365220af8f3959ccc96a8a757bd5db6bc1",
+  "cases": [
+    "partial",
+    "bootstrap-replay",
+    "market-reconnect",
+    "private-disconnect",
+    "abnormal-stop"
+  ],
+  "case_paths": {
+    "partial": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-fault-05-02/partial",
+    "bootstrap-replay": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-fault-05-02/bootstrap-replay",
+    "market-reconnect": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-fault-05-02/market-reconnect",
+    "private-disconnect": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-fault-05-04/private-disconnect",
+    "abnormal-stop": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-fault-05-04/abnormal-stop"
+  },
+  "test_source_sha256": {
+    "scripts/management_fill_recovery_smoke.py": "aa94a1dad3bf351cd3d1ff10b27a35d4e56fdb3eff0abf90c359e26ff6d8eb9e",
+    "scripts/management_fill_fault_smoke.py": "6237ecc6fe4edad680383bb18ad93ec044dbda91e7cfee25b1df9ef331504f3e",
+    "scripts/verify_fill_fault_evidence.py": "f1aa20c25772a0094c4d1b81715c8ce2961ea6bfd79436589904ac3d184acb10",
+    "configs/sim-partial-recovery-acceptance.parameters.json": "f9c43b5d73ee2f11f102c3bfb9fd638bc97f7f4dd87481f9da0e5236f32378ff"
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

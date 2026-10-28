@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "scenario": "missing-history-conflict",
+  "expected_outcome": "restore_rejected",
+  "independent_fills": 0,
+  "fee_units_USDT_1e8": 0,
+  "archive_fill_counts_by_replay": [],
+  "archive_conflicts": 0,
+  "issues_preserved": [],
+  "sources": [
+    [
+      "ee0c0b504477102db3475148881907ad7de7f870bbaf054376a44494619eeca1:6b9807266a0acc9de6057869d2d56537aa3622f342aece5be45990198470a013",
+      1,
+      1
+    ],
+    [
+      "305913c9e37c722a43c45696ba1209347c6bd436a7531b9e2718ea320f26f291:779b7f998022900a0de47467ee80e177d8de9eeeeddd4ad20de0bd65c05f662b",
+      1,
+      1
+    ]
+  ],
+  "fixed_reference": {
+    "record_id": "e7d8089c793325a8f0f71016fd6de910",
+    "payload_sha256": "b313cdb0302960667e37768206782926504122c0359d9f48074e5cac714a1de7",
+    "store_id": "ce4f452f39e2c75b5545f16343890604",
+    "runtime_strategy_no": 77
+  },
+  "fixed_record_sha_valid": true,
+  "fixed_pin_count": 1,
+  "generation_floor": 2,
+  "original_expiry_unchanged": true,
+  "original_run_still_failed_and_unsafe": true,
+  "original_monotonic_budget_unchanged": {
+    "boot_id": "f4216c2a-feba-4734-a43f-0d57c4013107",
+    "deadline_boottime_ns": "7766713515375246",
+    "expires_at_ns": "1793166814548392396"
+  },
+  "old_terminal_gates": [
+    {
+      "activation_gate_open": false,
+      "command_gate_open": false,
+      "lifecycle": "Failed",
+      "last_error_code": "stop_drain_deadline_exceeded"
+    }
+  ],
+  "local_simulated_occupancy_rows": 2,
+  "final_point_generation": 1,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 0
+    }
+  ],
+  "terminal": null,
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

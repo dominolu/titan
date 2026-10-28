@@ -1,0 +1,4 @@
+frozen-candidate07-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate07-deployed-without-recompile: passed
+old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation: passed
+incomplete-or-conflicting-native-history-rejects-successor-without-trading-or-release: passed

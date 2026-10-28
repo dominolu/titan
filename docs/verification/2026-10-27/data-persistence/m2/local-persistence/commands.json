@@ -1,0 +1,372 @@
+[
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.03260307386517525
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/7af4d8fbb123e092311d8d4d12d554891a77b5ffc7955c6d51cd6afa4fde5eef/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.0342167504131794
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/92f860bc5823b54477b1ed0098737b1f2461dbc788e94b6eef07db8c75f6b040/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.03608423564583063
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/8ed70b9961b9b19cf870fd039bebd256830fb57545442ebca446e6a5121b711c/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.036065686494112015
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/6432c77ba708c7190801d08c76fae6779ee8b780eb79d782c94111e1513ee1e8/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.03294402826577425
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/af7aa2ab006fed403addba5b4c02844852545f10eccced98ace922c6b7f07a9c/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.035169134847819805
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/f603f9a81222c5a82ab4122331a5f19ce3d513db92ac1ac93d7768bcfda6f0c1/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.07912385743111372
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/6e48259112e8d031d697f571894fcca6c975f753f6a3dc62e021bce5c77d2024/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.08924635034054518
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/eed707de9649110bca355179b4647b7c5279eecbcf605bc1605fe9be651351c6/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.06935025751590729
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/574eaf207428c9081b538d19139f2c815351e50b5e486a2fcd83b0dd4a446952/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.08086317125707865
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/624df36d5522247d644a2628c13ef6f25456ad89d4330b754b4ca07d5a477a0c/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.06620161607861519
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/f4cb2e7696644f6458014a6f1d472fd0957ab7a6abea0f6d9ae66fbe99aa671d/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.07339959125965834
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/3af4a563944ae49a6c1697b80fc9298c37745f1895fb8053407971e3041e1767/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.05925342999398708
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/7543a8536aa2cefbffe26226e5102cb8c04d97470e4de67552f3e1aec04073f9/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.06696744076907635
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/d32196629f964536bce291dabad64d28050bc534e2dc61914a3405184f22fb43/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.05499497801065445
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/295d4edada65d3360cef1d8a3ec2dad043c3ff70aae2d2a7fa12c92a5d7e870e/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.06262951157987118
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/adf5c81b4f1e8bd6dececf265f3c09307edba0f9f493f3ea49c7db3dce4aa4a1/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.058697985485196114
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/3fc441bbf87e5e99096151c5598c3f34a74e66fb4c64d388e97450f74adf1af6/history/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.06397420447319746
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/examples/v13_grid_history",
+      "run",
+      "--strategy-file",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/f2cc1513c161533edebaa87706cf53d2cddc8cb477d2557730b48b2af219bb58/strategy.titan",
+      "--layout",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/f2cc1513c161533edebaa87706cf53d2cddc8cb477d2557730b48b2af219bb58/layout.json",
+      "--data",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/38c85ea47fea3bf81d5a25e5361cd4499c747979a1b0b3239fe0784dea9a2cf0/prepared.parquet",
+      "--output",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/parquet-replay",
+      "--run-id",
+      "m2-parquet-equivalence",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/parquet-storage"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 16.241606326773763
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/parquet-replay/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.030894619412720203
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "register-bundle",
+      "--bundle",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57/history",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/storage"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.8108270615339279
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "register-bundle",
+      "--bundle",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57/history",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/storage"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.7773594157770276
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "register-publication",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/storage",
+      "--reference",
+      "{\"bytes\": \"2156\", \"sha256\": \"3f21aaff5f72a69c8f04b5977939e7eb62aa1c08737c6279442327d16533ee56\"}"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.27568061649799347
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "materialize-bundle",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/storage",
+      "--reference",
+      "{\"bytes\": \"1192\", \"sha256\": \"c017f584d20223d4eb1ae3dc7e9de3b1df185215e82837dbc800f181f1386d31\"}",
+      "--output",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/materialized"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.7053387826308608
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "materialize-bundle",
+      "--storage-root",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/storage",
+      "--reference",
+      "{\"bytes\": \"1192\", \"sha256\": \"c017f584d20223d4eb1ae3dc7e9de3b1df185215e82837dbc800f181f1386d31\"}",
+      "--output",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/materialized"
+    ],
+    "exit_code": 10,
+    "elapsed_seconds": 0.009687142446637154
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "export-facts",
+      "--database",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57/history/history.db",
+      "--account",
+      "simulation",
+      "--run-id",
+      "53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57",
+      "--output",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/export.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.4141364125534892
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/export.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.03814248368144035
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "export-facts",
+      "--database",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/historical/node/operations/53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57/history/history.db",
+      "--account",
+      "simulation",
+      "--run-id",
+      "53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57",
+      "--output",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/export.parquet"
+    ],
+    "exit_code": 10,
+    "elapsed_seconds": 0.0021918071433901787
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "run",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/smoke.titan",
+      "-e",
+      "backtest",
+      "-m",
+      "tick",
+      "-c",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/backtest.toml",
+      "--json"
+    ],
+    "exit_code": 31,
+    "elapsed_seconds": 2.9998481338843703
+  },
+  {
+    "argv": [
+      "/tmp/titan-deplugin-target/debug/titan",
+      "storage",
+      "inspect-parquet",
+      "--input",
+      "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/cli-home/runs/run-18e265a0296328f7-379d67/facts.parquet"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.007828359492123127
+  }
+]

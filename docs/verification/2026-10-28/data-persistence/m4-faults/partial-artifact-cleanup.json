@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "removed": [
+    "signing.key",
+    "key.der",
+    "secrets/gate.toml"
+  ],
+  "signed_public_fixture_retained": true,
+  "real_host_contacted": false
+}

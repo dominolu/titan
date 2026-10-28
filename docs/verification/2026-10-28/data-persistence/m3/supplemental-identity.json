@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "scope": "isolated lifecycle fixture; injected expected identity mismatch, restored afterward; no shared destination metadata changed",
+  "checks": [
+    {
+      "name": "postgres_expected_identity_mismatch_rejected",
+      "passed": true
+    },
+    {
+      "name": "s3_expected_identity_mismatch_rejected",
+      "passed": true
+    },
+    {
+      "name": "obsolete_plan_revision_rejected",
+      "passed": true
+    }
+  ]
+}

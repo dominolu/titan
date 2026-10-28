@@ -949,6 +949,8 @@ fn snapshot_barrier_registry_enforces_active_limit_and_deadline() {
         first_lane
             .snapshot_barrier()
             .is_some_and(|barrier| barrier.state == SnapshotBarrierState::Failed)
+            // The worker releases the barrier lock before publishing its health transition.
+            && first_lane.health().state == SubscriberState::ResyncRequired
     });
     assert_eq!(first_lane.health().state, SubscriberState::ResyncRequired);
 

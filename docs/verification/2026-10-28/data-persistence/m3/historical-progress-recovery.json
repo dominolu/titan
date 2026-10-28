@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "checks": 97,
+  "source": "Original JSON check log plus successful immutable operation records in the same manager.db; metrics recovered from completed results, no engine rerun.",
+  "engine_runs": 18,
+  "fills": 5468
+}

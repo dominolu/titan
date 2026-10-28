@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "compared_files": 540,
+  "missing": [],
+  "changed": [],
+  "method": "Read-only SHA256 byte comparison; no local compilation, generation, formatting, static analysis, or tests."
+}

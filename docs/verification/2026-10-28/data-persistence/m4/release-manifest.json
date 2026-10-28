@@ -1,0 +1,216 @@
+{
+  "host_built": "192.168.3.88",
+  "source_root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648",
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "binary_sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3",
+  "strategy_file_sha256": "9accd2b4ad4cbe67904c7b0e149249369f4e984803e673eabe8edcdcc99e4f51",
+  "strategy_version_id": "build-artifact-f5cfafe5304c04550459a5f7a8b2c64e0db8f28e04b68789e46c89e199b0b674",
+  "binary_matches_m3_verified_artifact": true,
+  "production_source_unchanged": true,
+  "m4_harness_changes": [
+    "scripts/management_live_control.py",
+    "scripts/persistence_live_preflight.py",
+    "scripts/test_persistence_live_preflight.py"
+  ],
+  "risk_policy": {
+    "host": "43.130.234.54",
+    "account": "gate",
+    "account_id": 1,
+    "instrument": "GATE_FUTURE_BTC_USDT",
+    "minimum_order_base": "0.0001",
+    "max_exposure_quote": "100",
+    "max_price_deviation_bps": 50,
+    "maximum_run_seconds": 120,
+    "handler_budget_seconds": 1,
+    "stop_timeout_seconds": 10,
+    "stop_action": "flatten"
+  },
+  "live_authorization_status": "SSH operator account awaits explicit user confirmation after automatic approval rejection",
+  "live_requests_executed": false,
+  "files": {
+    "bin/titan": {
+      "sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3",
+      "bytes": 561885128
+    },
+    "scripts/management_live_control.py": {
+      "sha256": "52866c07c61867df26ec49b0a5536a573a6221d2bd8ad00d0d676eb21abf5c9d",
+      "bytes": 21144
+    },
+    "scripts/persistence_live_preflight.py": {
+      "sha256": "4c2cd6264b8dc2d44b30cabb68f6eeab734290ed7b9e4ea356aeffc5ed234dd6",
+      "bytes": 5534
+    },
+    "scripts/test_persistence_live_preflight.py": {
+      "sha256": "0ec3b497a40b5b170fe7713cf2a7c5f6eac22007a8e75421588f4e63e2c6d1c4",
+      "bytes": 2268
+    },
+    "strategy_version-source/manifest.json": {
+      "sha256": "c1f1f728e54cd668114fdac43110e3c1c0d253d1c035db56168c79bb536337e0",
+      "bytes": 16497
+    },
+    "strategy_version-source/operations/f5cfafe5304c04550459a5f7a8b2c64e0db8f28e04b68789e46c89e199b0b674/receipt.json": {
+      "sha256": "0e384f682335c1aa85a8dc868b8f200b3072b476ea3d5d3a627eaabe3b0812f1",
+      "bytes": 72854
+    },
+    "strategy_version-source/operations/f5cfafe5304c04550459a5f7a8b2c64e0db8f28e04b68789e46c89e199b0b674/strategy.titan": {
+      "sha256": "9accd2b4ad4cbe67904c7b0e149249369f4e984803e673eabe8edcdcc99e4f51",
+      "bytes": 392509
+    },
+    "strategy_version-source/published/build-artifact-f5cfafe5304c04550459a5f7a8b2c64e0db8f28e04b68789e46c89e199b0b674.json": {
+      "sha256": "53049a7f3b50c6a1cb5a3186584ec17e83ead0d2fff24d4eeb5c99b20426a313",
+      "bytes": 36450
+    },
+    "verification/artifact-prepare.log": {
+      "sha256": "edbaef03c34997485fced6a7ba396a90434110a991fcae526faa90263cd48da9",
+      "bytes": 85
+    },
+    "verification/m3-source-identity.json": {
+      "sha256": "9387eb8106ccd0da1eabfffcc95e30015d0c030aea7f2a2e0513f523285e8c46",
+      "bytes": 64665
+    },
+    "verification/m3-summary.json": {
+      "sha256": "6573cea377904934bf1c7dd835bba9f08ddeef9691a2f97fe54fda62878fc2a8",
+      "bytes": 9596
+    },
+    "verification/native-validation.json": {
+      "sha256": "33d9c91a093d98ee85ab6dd23228de628ab15d20b852e418f98d923522337ae0",
+      "bytes": 176
+    },
+    "verification/policy-tests.log": {
+      "sha256": "b59e481e584ab6d1a9cb69539293472bf4fa66794f691331801da77189ddd4c6",
+      "bytes": 912
+    },
+    "web/favicon.ico": {
+      "sha256": "cee2e12f96e2a721788427cfeac91b56857ca4c7855057e1bf2267eaf90a3a05",
+      "bytes": 1270
+    },
+    "web/index.html": {
+      "sha256": "baa660680adb0b8092d932537b36fc8f61c8d9f5d09838e8a9978f02062e9c18",
+      "bytes": 1376
+    },
+    "web/logo.svg": {
+      "sha256": "e5517bd3f8293804fde256a5cdad53361653ebe8271829b7f92ddc117341d624",
+      "bytes": 706
+    },
+    "web/platform-config.json": {
+      "sha256": "5e334ad5761fd277537a324629373e7e47eb157b2ad6e0e5869e713153ed1394",
+      "bytes": 599
+    },
+    "web/static/css/403-DjuzhhlE.css": {
+      "sha256": "0cd6c78e1234d88f45ca78fb929e0c326f69aeb1781347a22a23788c3371d187",
+      "bytes": 51
+    },
+    "web/static/css/404-DgQozwK4.css": {
+      "sha256": "2e745917deb4f41f9f918ab805ee3e6dfca90ea2d848a0cf6e7a24db952eb0aa",
+      "bytes": 51
+    },
+    "web/static/css/500-d2Um_kna.css": {
+      "sha256": "e1b7f3e88b7caab57f9a8b938b2bf5bc0d6db81e9c01565f09ecea0b8b47ae13",
+      "bytes": 51
+    },
+    "web/static/css/ConsoleLayout-CxpBYk_E.css": {
+      "sha256": "ea2d6fb264ae5163e6d1d7594ca54d85a1311d05827df34fad118c1738c9cd48",
+      "bytes": 21093
+    },
+    "web/static/css/StrategyDetail-GbhOkzZd.css": {
+      "sha256": "959d82068f21a47fcaa1c7bcfd3c33dfcc9f845245fc8a3d3bf42bfde5501ef4",
+      "bytes": 101
+    },
+    "web/static/css/index-B5IhdeUM.css": {
+      "sha256": "b658cee67c734daa27296e9390730d36359fd7ac5ed5e1f679a70620db886e5c",
+      "bytes": 421941
+    },
+    "web/static/css/index-B_J0ZUlR.css": {
+      "sha256": "73aa5f9ab555667dc0ded420d04f4d7318798ff5666d560052eef97f7816d242",
+      "bytes": 367
+    },
+    "web/static/css/index-CB66UleR.css": {
+      "sha256": "0521d467e910cd3391e1e6f6824c00cd49da178cba3f653e2022b3ac42ef46cf",
+      "bytes": 87108
+    },
+    "web/static/js/403-CI-hdYZZ.js": {
+      "sha256": "8463be2757f42922875eae38a2dbcec6c95787024633bbeb46f422cc5eebeb03",
+      "bytes": 11859
+    },
+    "web/static/js/404-CHbU4Rlu.js": {
+      "sha256": "ef9c6052d2e546d10b6860ef9bd15954a3970624b807634aa17f423d79032b75",
+      "bytes": 12956
+    },
+    "web/static/js/500-Db44Tvs9.js": {
+      "sha256": "5bd83592762056ac571bcf5dde27f325e27e55e4867a110076c31f774f7b7979",
+      "bytes": 14944
+    },
+    "web/static/js/AccountRisk-Da-YEA2f.js": {
+      "sha256": "e9d0f322866db5284b826eaba9602f5951de7a95c746e63c0c508466f57fe3e1",
+      "bytes": 12682
+    },
+    "web/static/js/ConsoleIcon.vue_vue_type_script_setup_true_lang-C6Dkgg5R.js": {
+      "sha256": "e210d7f30869f34be6e09dc01591be25f99cc29d02758117345ec8f68748afb1",
+      "bytes": 6250
+    },
+    "web/static/js/ConsoleLayout-vghGcxwa.js": {
+      "sha256": "b1be1c5efb3c3087778a59f2dae761be70ffd399183e13e4fc595a6747a47136",
+      "bytes": 9162
+    },
+    "web/static/js/HostLog.vue_vue_type_script_setup_true_lang-DOqgr4-a.js": {
+      "sha256": "e28b07537bfafc8ee261263d495ef464651dabea2f6faabc3ffe79db6bc76953",
+      "bytes": 13450
+    },
+    "web/static/js/LegacyStrategyRoute-DSKvqysE.js": {
+      "sha256": "401e05291557bac82f05ca26fbf9980ab4534de18660973dfad2525801dcd05a",
+      "bytes": 1003
+    },
+    "web/static/js/OperationsPanel.vue_vue_type_script_setup_true_lang-BBam28AD.js": {
+      "sha256": "a6fd370ce7c075ffec314865a942cc664b5d73335db69a1d429e14e1c335d340",
+      "bytes": 3187
+    },
+    "web/static/js/RunAlerts.vue_vue_type_script_setup_true_lang-BWZS-MCt.js": {
+      "sha256": "29bc856da395e518fcdd330b1b41a0be6b929daa61960d6d4dea3871cd8362a8",
+      "bytes": 500744
+    },
+    "web/static/js/RunDetail-DFxnmjdw.js": {
+      "sha256": "6c733b37d8561d0e427e6af4f12dcdbc359912da5f91c3b11b0e2f63316119e9",
+      "bytes": 469
+    },
+    "web/static/js/RunDetail.vue_vue_type_script_setup_true_lang-CmVcM37g.js": {
+      "sha256": "174b3f689039d7622b14b0422dd2431558b4de75da61c5293d88c453a180a2a3",
+      "bytes": 16127
+    },
+    "web/static/js/RunsOverview-CsVaknVG.js": {
+      "sha256": "96e081f1b87771ffaff3653fc87b8a30d76c9e11fb408ae3b7c15a6d1061bd57",
+      "bytes": 8194
+    },
+    "web/static/js/StrategyDetail-BMfeyVN2.js": {
+      "sha256": "5f057493c53e4021708853457a8ba969f3d422382e821a2445d220657b0ab171",
+      "bytes": 65537
+    },
+    "web/static/js/StrategyList-B9L19Rwh.js": {
+      "sha256": "ee4cf7cafc1ecf2b3c0545b02b742e45dfb3edede01cf405937e13b71c42ef52",
+      "bytes": 3599
+    },
+    "web/static/js/console-WacaFTEV.js": {
+      "sha256": "92edf0811e0a983947447c9245359da26ab06b130b4a66978ac66dc949d28743",
+      "bytes": 10074
+    },
+    "web/static/js/index-CPkKRZeQ.js": {
+      "sha256": "d5c83641782084844abef2e1ba0cb3c67bc7d1906eeec932ee709da8d745f3fb",
+      "bytes": 426558
+    },
+    "web/static/js/index-DjtbMsux.js": {
+      "sha256": "227a7cb099d5ee7f8d24eff16603dac403c35294b7c62321b6ca337538d3de8f",
+      "bytes": 1234335
+    },
+    "web/static/js/index-d6pBttCV.js": {
+      "sha256": "cff0a09a6ee7908af81858ef161e56bfdb30803d6ab69886f4f38e4558c4d8b2",
+      "bytes": 1849
+    },
+    "web/static/js/redirect-BkfL5NYW.js": {
+      "sha256": "1bfca179c4f394b11f19244592c63ad05e822809e4530d405c98ac9f87f5d056",
+      "bytes": 304
+    },
+    "web/static/js/run-view-CYtbJJsn.js": {
+      "sha256": "0214d15eedc4573d07ca0a4dad7654178c81118d31780092105a3ccd32d2487f",
+      "bytes": 5058
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "files_verified": 60,
+  "archive_sha256": "e23e8e4fd5dfeef53b5cf5c1a5098355c539e5cd5789a1a291b0b3c296771582",
+  "binary_sha256": "6bee280da188d9a2eca71e26a0b27ed4d96d2fa5fe28830c5d0e317e6e84722c",
+  "strategy_file_sha256": "179e63538110e63c2af64dec839e7a0adb32cc172b530f43f8fde4347d1f5f6c",
+  "build_host": "192.168.3.88",
+  "live_compilation": false
+}

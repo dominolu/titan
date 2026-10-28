@@ -1,0 +1,15 @@
+frozen-candidate04-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate04-deployed-without-recompile: passed
+E-consumes-position-before-native-execution-and-fee: passed
+native-fill-fee-and-same-session-replays-count-once: passed
+original-60s-SQLite-point-retains-consumed-fill-and-healthy-business-state: passed
+owned-E-crash-and-A-N-restart-preserve-reference-and-reservation: passed
+new-E-restores-fixed-SQLite-record-position-and-original-expiry: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_recovery_smoke.py", line 523, in <module>
+    main()
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_recovery_smoke.py", line 447, in main
+    wait(business, 5)
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_recovery_smoke.py", line 309, in wait
+    raise AssertionError("finite loopback acceptance timed out; inspect preserved evidence")
+AssertionError: finite loopback acceptance timed out; inspect preserved evidence

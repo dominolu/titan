@@ -1,0 +1,14 @@
+signed-remote-deployment: passed
+start-engine-running: passed
+minimum-post-only-order-confirmed: passed
+E-monetary-risk-and-persisted-sampled-maximum-within-100-USDT: passed
+pause-private-terminal-and-flat: passed
+A-N-restart-same-worker: passed
+same-generation-resume-and-confirmed-cancel: passed
+controlled-flat-crash-preserves-checkpoint: passed
+pinned-recovery-original-budget: passed
+authoritative-historical-order-reconciliation: passed
+fixed-sqlite-record-reference-and-original-expiry-preserved: passed
+engine-stop-proof-zero-residual-risk: passed
+live-facts-persist-across-recovery-and-crashed-source-gap-is-visible: passed
+{"passed": true, "checks": ["signed-remote-deployment", "start-engine-running", "minimum-post-only-order-confirmed", "E-monetary-risk-and-persisted-sampled-maximum-within-100-USDT", "pause-private-terminal-and-flat", "A-N-restart-same-worker", "same-generation-resume-and-confirmed-cancel", "controlled-flat-crash-preserves-checkpoint", "pinned-recovery-original-budget", "authoritative-historical-order-reconciliation", "fixed-sqlite-record-reference-and-original-expiry-preserved", "engine-stop-proof-zero-residual-risk", "live-facts-persist-across-recovery-and-crashed-source-gap-is-visible"], "host": "43.130.234.54", "account": "gate", "account_id": 1, "instrument": "GATE_FUTURE_BTC_USDT", "binary_sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3", "artifact_sha256": "9accd2b4ad4cbe67904c7b0e149249369f4e984803e673eabe8edcdcc99e4f51", "max_exposure_quote": "100", "max_price_deviation_bps": 50, "maximum_run_seconds": 120, "minimum_order_base": "0.0001", "stop_action": "flatten", "elapsed_seconds": 22.02, "final_target_orders": 0, "final_target_positions": [], "order_facts_recorded": 18, "unified_order_facts_recorded": 18, "independent_fill_records": 0, "recovery_backend": "local-sqlite", "preflight_checked_at_unix": 1793151288}

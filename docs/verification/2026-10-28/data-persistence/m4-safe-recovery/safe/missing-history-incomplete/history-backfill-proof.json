@@ -1,0 +1,136 @@
+{
+  "reads": [
+    {
+      "at_ns": 1793166687991060075,
+      "query": {
+        "symbol": [
+          "GATE_FUTURE_BTC_USDT"
+        ],
+        "page": [
+          "1"
+        ],
+        "limit": [
+          "1000"
+        ]
+      },
+      "returned_native_ids": [],
+      "rows": 0,
+      "history_open": true
+    }
+  ],
+  "restore": {
+    "account": "gate",
+    "actor": "operator",
+    "cancel_requested": false,
+    "created_at_ns": "1793166685331983402",
+    "error": "engine did not confirm successful completion; inspect preserved result",
+    "id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d",
+    "input": {
+      "expected_run_generation": "1",
+      "kind": "restore",
+      "recovery_point_sha256": "eb1ec815604afeaf1eb40c557552dec041d31846a28723830b429faf4f212df9",
+      "run_id": "live-run-e1168c0cd2b6997b917819db36a7575aaf4e1fdf3f62b12dfc90cad08abfbf72"
+    },
+    "input_digest": "70bc6adbfe8839fd97f4a47eff28aa46020909ffc383d3742bb9cb76f5ed3f16",
+    "node_id": "live",
+    "result": {
+      "business_success": false,
+      "detail": "strategy runtime definition failed: DependencyUnavailable [recovery:recovery_execution_history_failed]: execution evidence native fills incomplete",
+      "outcome_unknown": false,
+      "resources": [
+        {
+          "body": {
+            "account": "gate",
+            "account_identity": "simulation-candidate04-gate-1",
+            "admission_operation_id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d",
+            "allowed_actions": [],
+            "available": false,
+            "binding_id": "gate-btc",
+            "deployment_id": "live-deployment-ff6fd5181997259944aa09fda5c66e875de26392554ab437c1719ea017a8e14c",
+            "environment": "live",
+            "expires_at_ns": "1793166775294669287",
+            "instrument": "GATE_FUTURE_BTC_USDT",
+            "lifecycle": "Unknown",
+            "mode": "trade",
+            "observation": {
+              "available": false,
+              "reason": "strategy activation was never attempted",
+              "run_id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d",
+              "source": "runtime_owner",
+              "start_admission_absent": true
+            },
+            "observation_stale": true,
+            "parameters": {
+              "account_no": 0,
+              "allocated_capital_tick_lots": 10000000,
+              "anchor_mode": "order_average",
+              "asset_no": 0,
+              "buy_levels": 1,
+              "cancel_retry_limit": 3,
+              "direction": "long_bias",
+              "flatten_timeout_ns": 8000000000,
+              "grid_levels": 1,
+              "leverage": 1,
+              "lower_price_ticks": 600000,
+              "margin_reserve_pct": 5.0,
+              "market_stale_after_ns": 5000000000,
+              "max_loss_tick_lots": 0,
+              "max_notional_tick_lots": 10000000,
+              "max_position_lots": 1,
+              "max_rejections": 5,
+              "max_slippage_ticks": 5,
+              "min_notional_tick_lots": 1,
+              "min_order_lots": 1,
+              "neutral_mode": "two_sided",
+              "order_notional_tick_lots": 200,
+              "order_policy": "retain",
+              "order_qty_lots": 1,
+              "order_timeout_ns": 10000000000,
+              "quote_currency_no": 1,
+              "quote_units_per_tick_lot": 1000.0,
+              "retry_backoff_ns": 500000000,
+              "sell_levels": 0,
+              "size_mode": "fixed_qty",
+              "spacing_mode": "arithmetic",
+              "start_mode": "strict",
+              "stop_above_ticks": 0,
+              "stop_action": "flatten",
+              "stop_below_ticks": 0,
+              "upper_price_ticks": 1100000
+            },
+            "predecessor_run_id": "live-run-e1168c0cd2b6997b917819db36a7575aaf4e1fdf3f62b12dfc90cad08abfbf72",
+            "process_state": "FAILED",
+            "recovery_point_sha256": null,
+            "recovery_reference": null,
+            "release_proof": {
+              "safe": false,
+              "source": "trading_runtime",
+              "worker_id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d"
+            },
+            "reservation_operation_id": "e1168c0cd2b6997b917819db36a7575aaf4e1fdf3f62b12dfc90cad08abfbf72",
+            "run_generation": "unconfirmed",
+            "runtime_strategy_no": "77",
+            "source_started_at_ns": "1793166686894002847",
+            "stop_action": "flatten",
+            "strategy_id": "grid",
+            "strategy_name": "\u7f51\u683c\u7b56\u7565",
+            "strategy_version_id": "build-artifact-82ed126528c53dbc8e2b2e235f1d772387205908cc692c5b0d155b9422cf5266",
+            "worker_id": "aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d"
+          },
+          "digest": "6982b9c7a71848a42ac6574991171d0c2e8700671ad394d8ba92bc120e33a938",
+          "frozen": false,
+          "id": "live-run-aea199a7c2f97a15113ec2722e5abf673ed5d454ad2cb3d7f9eeb4049366b94d",
+          "kind": "run",
+          "node_id": "live",
+          "revision": ""
+        }
+      ],
+      "start_admission_absent": true
+    },
+    "revision": "137",
+    "state": "failed",
+    "updated_at_ns": "1793166688724835474"
+  },
+  "only_REST_provided_missing_fill": true,
+  "old_worker_exited_before_queries": true
+}

@@ -10,10 +10,11 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 titan-core-types = { path = "../titan-core-types" }
 titan-domain-types = { path = "../titan-domain-types" }
+titan-persistence = { path = "../titan-persistence" }
 titan-market-service = { path = "../titan-market-service" }
 tracing = "0.1"
 zeroize = "1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "cache", "fallible_uint"] }
 sha2 = "0.10"
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

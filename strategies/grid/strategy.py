@@ -258,7 +258,10 @@ def position_caught_up(ctx):
     for r in ctx.state["refs"]:
         if r["order_id"] and r["reported_lots"] > r["applied_lots"]:
             return False
-    if pos["account_sequence"] >= g["fill_sequence"] and pos["qty_lots"] == g["expected_position_lots"]:
+    # Position and execution are independent venue streams. The matching position may
+    # arrive first; its lower publication version is not evidence of stale inventory.
+    # Unconsumed order totals above still block, and the host enforces inventory proof.
+    if pos["qty_lots"] == g["expected_position_lots"]:
         g["position_wait_ns"] = 0
         return True
     buys, sells, _ = risk_reservations(ctx.state)

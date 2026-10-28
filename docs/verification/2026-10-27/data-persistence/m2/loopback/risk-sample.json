@@ -1,0 +1,273 @@
+{
+  "account": "gate",
+  "account_generation": "1",
+  "account_id": "1",
+  "attribution": "account",
+  "balances": [
+    {
+      "available_units": "10000000000",
+      "currency_id": "1",
+      "margin_units": "10000000000",
+      "unrealized_pnl_units": "0",
+      "wallet_units": "10000000000"
+    }
+  ],
+  "captured_at_ns": "1793106544126645891",
+  "completeness": {
+    "account_image": true,
+    "missing": [
+      "funding_coverage",
+      "cashflow_coverage"
+    ],
+    "performance": false,
+    "risk": true
+  },
+  "currencies": [
+    {
+      "amount_unit": {
+        "coefficient": "1",
+        "scale": "8"
+      },
+      "currency_id": "1",
+      "native_currency": "USDT"
+    }
+  ],
+  "epoch": "1",
+  "equity": [
+    {
+      "amount": "100",
+      "amount_unit": "0.00000001",
+      "amount_units": "10000000000",
+      "currency": "USDT",
+      "currency_id": "1",
+      "valuation_complete": true
+    }
+  ],
+  "instruments": [
+    {
+      "asset_id": "1",
+      "contract_multiplier": {
+        "coefficient": "1",
+        "scale": "0"
+      },
+      "linear_quote_currency": "1",
+      "native_symbol": "GATE_FUTURE_BTC_USDT",
+      "price_tick": {
+        "coefficient": "1",
+        "scale": "0"
+      },
+      "quantity_lot": {
+        "coefficient": "1",
+        "scale": "3"
+      }
+    }
+  ],
+  "max_drawdown": null,
+  "max_exposure": [
+    {
+      "account": "gate",
+      "amount_unit": "0.00000001",
+      "asset_id": "1",
+      "coverage_complete": false,
+      "currency": "USDT",
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "last_sample_at_ns": "1793106530589806479",
+      "last_sample_complete": true,
+      "last_source": "f8594ee7d17a62787d0af339087ce1e81e438f78a6ceaa398eb67e99fb5327e3:f1143cbac76f3c800b8e56f67dd8536f0890f12e4c2533d905bef33b2a54fe66",
+      "max_actual_notional": "0",
+      "max_actual_units": "0",
+      "max_pending_bound_notional": "2.003",
+      "max_pending_bound_units": "200300000",
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "net_pnl": null,
+  "orders": [
+    {
+      "asset_id": "1",
+      "client_order_id": [
+        "34",
+        "202",
+        "131",
+        "140",
+        "58",
+        "226",
+        "224",
+        "82",
+        "1",
+        "0",
+        "0",
+        "0",
+        "1",
+        "0",
+        "0",
+        "0"
+      ],
+      "command_id": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "filled_quantity_lots": "0",
+      "order_type": "0",
+      "position_side": "0",
+      "price_ticks": "998",
+      "quantity_lots": "1",
+      "reduce_only": false,
+      "side": "1",
+      "status": "1",
+      "time_in_force": "1",
+      "venue_order_id": [
+        "1",
+        "53",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    },
+    {
+      "asset_id": "1",
+      "client_order_id": [
+        "34",
+        "202",
+        "131",
+        "140",
+        "58",
+        "226",
+        "224",
+        "82",
+        "2",
+        "0",
+        "0",
+        "0",
+        "1",
+        "0",
+        "0",
+        "0"
+      ],
+      "command_id": [
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ],
+      "filled_quantity_lots": "0",
+      "order_type": "0",
+      "position_side": "0",
+      "price_ticks": "1002",
+      "quantity_lots": "1",
+      "reduce_only": false,
+      "side": "2",
+      "status": "1",
+      "time_in_force": "1",
+      "venue_order_id": [
+        "1",
+        "54",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    }
+  ],
+  "positions": [
+    {
+      "asset_id": "1",
+      "entry_price_ticks": "0",
+      "liquidation_price_ticks": "0",
+      "margin_currency_id": "1",
+      "margin_type": "2",
+      "position_side": "0",
+      "quantity_lots": "0",
+      "realized_pnl_units": "0",
+      "unrealized_pnl_units": "0"
+    }
+  ],
+  "provider": "gate-crossex-account",
+  "risk": {
+    "assets": [
+      {
+        "actual_notional": {
+          "amount": "0",
+          "amount_unit": "0.00000001",
+          "amount_units": "0",
+          "currency": "USDT"
+        },
+        "asset_id": "1",
+        "captured_at_ns": "1793106544126779118",
+        "complete": true,
+        "currency": "USDT",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "missing": [],
+        "pending_bound_notional": {
+          "amount": "2.003",
+          "amount_unit": "0.00000001",
+          "amount_units": "200300000",
+          "currency": "USDT"
+        },
+        "price_captured_at_ns": "1793106544101093945",
+        "price_source_stream": "1"
+      }
+    ],
+    "captured_at_ns": "1793106544126779118",
+    "complete": true,
+    "maximum_method": "observed_samples_not_continuous_market_maximum",
+    "notional": [
+      {
+        "actual_amount": "0",
+        "amount_unit": "0.00000001",
+        "currency": "USDT",
+        "pending_bound_amount": "2.003"
+      }
+    ],
+    "scope": "account_positions_and_known_execution_intents",
+    "valuation": "fresh_best_ask_conservative"
+  },
+  "version": "6"
+}

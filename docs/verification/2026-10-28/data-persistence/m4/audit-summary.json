@@ -1,0 +1,75 @@
+{
+  "passed": true,
+  "source": "persisted E facts, unified archive, manager receipts and local SQLite recovery",
+  "order_fact_count": 18,
+  "unique_order_count": 6,
+  "minimum_order_base": "0.0001",
+  "all_final_orders_cancelled": true,
+  "last_order_status_counts": {
+    "4": 6
+  },
+  "maximum_cumulative_filled_lots": 0,
+  "independent_fill_count": 0,
+  "unified_archive_counts": {
+    "balance": 19,
+    "business_observation": 32,
+    "equity_sample": 15,
+    "ledger": 8,
+    "order": 18,
+    "position": 2,
+    "risk_sample": 35,
+    "stream": 2
+  },
+  "account_occupancy_rows": 0,
+  "titan_process_count": 0,
+  "sampled_max_exposure": [
+    {
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "currency": "USDT",
+      "max_actual_notional": "0",
+      "max_pending_bound_notional": "16.20044",
+      "method": "maximum_of_observed_snapshots",
+      "coverage_complete": false,
+      "last_sample_complete": true
+    }
+  ],
+  "operations": [
+    {
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "kind": "resume",
+      "state": "succeeded"
+    },
+    {
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "fixed_reference_pin_count": 1,
+  "selected_payload_sha256": "cd40211b5807aca137a6b37b32eb0f03d767bfa67c2d66363380298af599ec17",
+  "recovery_generation_min_max": [
+    1,
+    2
+  ],
+  "original_expiry_preserved": true,
+  "old_source_gap_intentional": true,
+  "production_source_unchanged": true
+}

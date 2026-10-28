@@ -1,0 +1,23 @@
+{
+  "passed": true,
+  "reference": {
+    "payload_sha256": "e726985c2bf4b0df2d730d07c925e9c77de39845387c232562e0baa9d65489a3",
+    "record_id": "ff732671a7fdd1ae3d0a812bbd351e9e",
+    "runtime_strategy_no": 77,
+    "store_id": "dd1a4f9d3b09b050d80237e159f75155"
+  },
+  "elapsed_seconds": 65.85677961073816,
+  "periodic_seconds": 60,
+  "confirmed_position_lots": 1,
+  "pending_execution": false,
+  "business": {
+    "anchor_ticks": "808001",
+    "completed_pairs": "0",
+    "expected_inventory_lots": "1",
+    "last_error": "0",
+    "last_market_at_ns": "1793159801199724401",
+    "paired_gross_tick_lots": "0",
+    "paired_lots": "0",
+    "phase": "running"
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "kind": "operator_external_flat_reconciliation",
+  "status": "proposed-requires-explicit-human-authorization",
+  "operator_authorized": false,
+  "scope_root": "/data/titan-persistence-m4-fill-20261028-59973648/run-01",
+  "original_run_id": "live-run-b6c7c5e3aad699df7eb788b2abced9d9064d29e2a5237a9c6ff942b588ca8dfb",
+  "failed_restore_operation_id": "2347b283bc1a58b614fa8a27e4cd3ae6ca1f21f1e9a028bc88a9b81668883c33",
+  "checked_at_unix": 1793156130,
+  "target_order_count": 0,
+  "target_nonzero_position_count": 0,
+  "titan_process_count": 0,
+  "venue_order_outcomes": [
+    {
+      "text": "e350f5f59b3a11ae0100000000000000",
+      "state": "FILLED",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "side": "BUY",
+      "qty": "0.0001",
+      "executed_qty": "0.0001",
+      "reduce_only": "false",
+      "time_in_force": "IOC"
+    },
+    {
+      "text": "e350f5f59b3a11ae0100000001000000",
+      "state": "FILLED",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "side": "BUY",
+      "qty": "0.0001",
+      "executed_qty": "0.0001",
+      "reduce_only": "false",
+      "time_in_force": "IOC"
+    },
+    {
+      "text": "e350f5f59b3a11ae0200000000000000",
+      "state": "FILLED",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "side": "SELL",
+      "qty": "0.0001",
+      "executed_qty": "0.0001",
+      "reduce_only": "true",
+      "time_in_force": "IOC"
+    },
+    {
+      "text": "titan-safe-8b0018cbc9f01130",
+      "state": "FILLED",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "side": "SELL",
+      "qty": "0.0001",
+      "executed_qty": "0.0001",
+      "reduce_only": "true",
+      "time_in_force": "IOC"
+    }
+  ],
+  "original_budget_expired": true,
+  "original_budget": {
+    "boot_id": "d894309f-ce6a-4f2d-9e32-b701727759b2",
+    "deadline_boottime_ns": "11306977780391997",
+    "expires_at_ns": "1793155635534956658"
+  },
+  "failed_candidate_never_activated": true,
+  "expected_occupancy_rows": [
+    {
+      "binding": "[\"crossex-gate-account-1\",\"GATE_FUTURE_BTC_USDT\"]",
+      "operation_id": "2347b283bc1a58b614fa8a27e4cd3ae6ca1f21f1e9a028bc88a9b81668883c33",
+      "run_id": "live-run-b6c7c5e3aad699df7eb788b2abced9d9064d29e2a5237a9c6ff942b588ca8dfb",
+      "node_id": "live"
+    },
+    {
+      "binding": "[\"order_namespace\",\"crossex-gate-account-1\",\"1793153499\"]",
+      "operation_id": "2347b283bc1a58b614fa8a27e4cd3ae6ca1f21f1e9a028bc88a9b81668883c33",
+      "run_id": "live-run-b6c7c5e3aad699df7eb788b2abced9d9064d29e2a5237a9c6ff942b588ca8dfb",
+      "node_id": "live"
+    }
+  ],
+  "operation_set_sha256": "24e669514eb04c02c73a7cdc050e7cb11d9172131841fa89c6c6ffa535ec9b6b",
+  "recovery_database": "node/checkpoints/crossex-gate-account-1/1793153499/runtime.db",
+  "store_id": "fc33061510493847569029084cd5559f",
+  "runtime_strategy_no": 1793153499,
+  "generation_floor": 3,
+  "preserved_record_id": "115d300d642e13a87005e7c91e7c50d2",
+  "preserved_payload_sha256": "6331a1207de344b7f3b2ad67d7115cbc1860f63268b623afd2028bd194f0f519",
+  "proposed_mutation": "Back up manager via SQLite Backup API; one immediate transaction rechecks these exact two reservation rows and operation digest, appends operator audit, then deletes only matching occupancy rows. Preserve UNKNOWN resource, failed receipt, native facts, pins and recovery bytes. Retry same namespace with a new finite run; its restore preserves that run original expiry.",
+  "automatic_E_safe_release_proof": false,
+  "no_mutation_performed": true
+}

@@ -462,6 +462,36 @@ impl Store {
             && resource.body["observation"]["source"] == "runtime_owner"
             && resource.body["observation"]["run_id"] == resource.body["admission_operation_id"];
         if never_activated
+            && resource.body["predecessor_run_id"].is_null()
+            && let Some(admission) = resource.body["admission_operation_id"].as_str()
+        {
+            let data: Option<String> = tx
+                .query_row(
+                    "SELECT data FROM operations WHERE id=?1",
+                    [admission],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(data) = data {
+                let operation: Operation = serde_json::from_str(&data)?;
+                if operation.node_id == resource.node_id
+                    && matches!(operation.input, Action::Start { .. })
+                    && matches!(
+                        operation.state,
+                        OperationState::Failed | OperationState::Cancelled
+                    )
+                {
+                    // Release a terminal Start only with E's later non-activation proof.
+                    // Preserve the failure and never release a recovery predecessor
+                    // or an occupancy that has moved to another operation.
+                    tx.execute(
+                        "DELETE FROM occupancy WHERE operation_id=?1 AND node_id=?2 AND (run_id IS NULL OR run_id=?3)",
+                        params![admission, resource.node_id, resource.id],
+                    )?;
+                }
+            }
+        }
+        if never_activated
             && let (Some(previous), Some(admission)) = (
                 resource.body["predecessor_run_id"].as_str(),
                 resource.body["admission_operation_id"].as_str(),

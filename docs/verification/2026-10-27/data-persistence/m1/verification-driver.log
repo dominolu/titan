@@ -1,0 +1,25 @@
+rust-format: passed
+rust-check: passed
+rust-clippy: passed
+rust-tests: passed
+rust-doctests: passed
+cli-build: passed
+sdk-tests: passed
+report-tests: passed
+original-native-sqlite-recovery: passed
+maintenance: passed
+native-service-build: passed
+smoke-compile: passed
+native-service: passed
+native-negative-build: passed
+common-recovery: passed
+order-drain: passed
+timer-compile: passed
+timer-failure: passed
+dto-export: passed
+web-types: passed
+web-build: passed
+loopback-grid: passed
+history-query-isolation: passed
+source-identity: passed
+M1 non-live verification passed. No real accounts or production storage were accessed.

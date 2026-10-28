@@ -1,0 +1,9 @@
+[
+  "frozen-candidate04-binary-web-signature-and-native-bytes-verified",
+  "A-to-N-signed-candidate04-deployed-without-recompile",
+  "E-consumes-position-before-native-execution-and-fee",
+  "native-fill-fee-and-same-session-replays-count-once",
+  "original-60s-SQLite-point-retains-consumed-fill-and-healthy-business-state",
+  "owned-E-crash-and-A-N-restart-preserve-reference-and-reservation",
+  "new-E-restores-fixed-SQLite-record-position-and-original-expiry"
+]

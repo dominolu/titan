@@ -1,0 +1,129 @@
+{
+  "passed": true,
+  "plan": {
+    "id": "7feab041-6b85-4ab0-8e71-966d5eeecc73",
+    "domain": "objects",
+    "source_id": "objects",
+    "from_revision": 2,
+    "target": "filesystem",
+    "target_id": "a69d63f5-f2d0-4cbc-8129-7706e513b735",
+    "phase": "committed",
+    "proof": {
+      "bytes": "3033096067",
+      "inventory_sha256": "b989de294487918a61f3a310b6b5d1cdfae9ae4721b4b89bcfc3a0ff63708ba6",
+      "objects": "195",
+      "published_roots": "31",
+      "target_id": "a69d63f5-f2d0-4cbc-8129-7706e513b735"
+    }
+  },
+  "object_route": {
+    "id": 1,
+    "revision": 3,
+    "backend": "filesystem",
+    "target_id": "a69d63f5-f2d0-4cbc-8129-7706e513b735"
+  },
+  "history_routes": [
+    {
+      "source_id": "98ca64d6b93805ce56312603c0a0232e",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "08ec8e7968a214673dec29f430f2c7fb",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "ba07a8e641a6937cc399e584f4b41a42",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "c0d0962b51a0059e4c4a3fba8246d2c9",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "f3c010ee118d08a48f6c514a598938e7",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "eaf1b42166b6d46d004fad3906c801e8",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "0a7dcc74f6bd953111ef9b9288487ed5",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "9356ba66cd337e1c5b51e58779d85301",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "83f8b6dafd667fa8f6e789d069ed7176",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "ae4de7ce699cfa627f42ebafde6fd01a",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "cb5624877232d739cfdbd3c0aa7547f9",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "b5ffd080f37935ad2a9ba9d7efca2614",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "507f3ce438d90e087c372f2b72f9f08d",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "b59c68d79127ff285b1025492e1393c0",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "a2b7405b600a049815f29a3fa4be4d78",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "e8ebdeb9ba5d683ecb517eae52cbd393",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "c7b72e2c699ba0e111e5dbc929da35fa",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "ea958957e76ca6da97a51d8d4557ba77",
+      "revision": 3,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "149ca80d89cba55b7705ab1cad41df1d",
+      "revision": 1,
+      "backend": "sqlite"
+    },
+    {
+      "source_id": "360b3f55aa47e849b0088e821ae53c72",
+      "revision": 1,
+      "backend": "sqlite"
+    }
+  ],
+  "interrupted_plan_resumed": true,
+  "no_engine_reruns": true
+}

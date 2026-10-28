@@ -17,6 +17,14 @@ pub trait AccountAdminService: Send + Sync {
 }
 
 pub trait AccountService: Send + Sync {
+    fn execution_evidence(
+        &self,
+        _account: AccountHandle,
+        _asset: AssetId,
+        _client: Id128,
+    ) -> OrderExecutionEvidenceFuture {
+        Box::pin(async { Ok(None) })
+    }
     fn order_evidence(
         &self,
         _account: AccountHandle,

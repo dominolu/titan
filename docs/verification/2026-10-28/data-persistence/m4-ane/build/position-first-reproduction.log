@@ -1,0 +1,21 @@
+test_existing_grid_initializes_holds_and_flattens_exactly_one_lot (test_live_fill_acceptance.GridLifecycleTests.test_existing_grid_initializes_holds_and_flattens_exactly_one_lot) ... ok
+test_actual_native_one_lot_fill_restore_and_reduce_only_exit (test_live_fill_acceptance.NativeOneLotTests.test_actual_native_one_lot_fill_restore_and_reduce_only_exit) ... FAIL
+test_frozen_one_lot_parameters (test_live_fill_acceptance.PolicyTests.test_frozen_one_lot_parameters) ... ok
+test_only_confirmed_consumed_checkpoint_is_eligible (test_live_fill_acceptance.PolicyTests.test_only_confirmed_consumed_checkpoint_is_eligible) ... ok
+test_position_scope_refuses_unexpected_exposure (test_live_fill_acceptance.PolicyTests.test_position_scope_refuses_unexpected_exposure) ... ok
+test_reuse_requires_released_occupancy_and_positive_owner_proof (test_live_fill_acceptance.PolicyTests.test_reuse_requires_released_occupancy_and_positive_owner_proof) ... ok
+test_reuse_stopped_requires_every_original_owner_safe (test_live_fill_acceptance.PolicyTests.test_reuse_stopped_requires_every_original_owner_safe) ... ok
+test_safety_close_is_reduce_only_and_bounded (test_live_fill_acceptance.PolicyTests.test_safety_close_is_reduce_only_and_bounded) ... ok
+
+======================================================================
+FAIL: test_actual_native_one_lot_fill_restore_and_reduce_only_exit (test_live_fill_acceptance.NativeOneLotTests.test_actual_native_one_lot_fill_restore_and_reduce_only_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/test_live_fill_acceptance.py", line 118, in test_actual_native_one_lot_fill_restore_and_reduce_only_exit
+    self.assertEqual(int(ctx.state['grid']['last_error']),0)
+AssertionError: 205 != 0
+
+----------------------------------------------------------------------
+Ran 8 tests in 11.310s
+
+FAILED (failures=1)

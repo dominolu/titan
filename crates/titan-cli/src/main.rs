@@ -16,6 +16,8 @@ use std::{
 };
 
 mod compiler;
+mod recovery_cli;
+mod storage_cli;
 use registry::{Registry, StopAction, now_ns, process_start_time};
 use titan_cli::registry;
 
@@ -38,6 +40,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Query local facts and maintain immutable result publications without executing strategies.
+    Storage {
+        #[command(subcommand)]
+        command: storage_cli::StorageCommand,
+    },
+    /// Inspect, migrate, export and back up platform recovery storage without trading.
+    Recovery {
+        #[arg(long)]
+        database: PathBuf,
+        #[command(subcommand)]
+        command: recovery_cli::RecoveryCommand,
+    },
     /// Serve or access the management application and authenticated execution node.
     Console {
         #[command(subcommand)]
@@ -208,6 +222,7 @@ enum StrategyCommands {
 impl Commands {
     fn json_requested(&self) -> bool {
         match self {
+            Self::Recovery { .. } | Self::Storage { .. } => true,
             Self::CoreRun { json, .. }
             | Self::Run { json, .. }
             | Self::Validate { json, .. }
@@ -355,7 +370,7 @@ struct V13Trace {
     events: Vec<V13TraceEvent>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct V13TraceState {
     now_ns: i64,
@@ -371,7 +386,7 @@ struct V13TraceState {
     active_orders: Vec<titan_strategy_runtime::TitanActiveOrderView>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum V13TraceEventKind {
     Tick,
@@ -386,7 +401,7 @@ enum V13TraceEventKind {
     Stop,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct V13TraceEvent {
     kind: V13TraceEventKind,
@@ -1310,6 +1325,66 @@ fn v13_backtest_worker(
     spec: &RunSpec,
     stop: Arc<AtomicBool>,
 ) -> Result<(), CliError> {
+    let record = registry
+        .get(run_id)?
+        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
+    let directory = record
+        .result_path
+        .parent()
+        .ok_or_else(|| CliError::Engine("run output directory missing".into()))?;
+    let mut scope = titan_persistence::FactScope::account(
+        titan_persistence::FactEnvironment::Backtest,
+        "simulation",
+    );
+    scope.strategy_id = Some(spec.strategy.strategy_key.clone());
+    scope.run_id = Some(run_id.into());
+    scope.run_generation = Some("1".into());
+    let mut recorder = titan_persistence::RunRecorder::open(
+        directory,
+        scope,
+        run_id.into(),
+        serde_json::to_value(spec).map_err(CliError::ResultJson)?,
+    )
+    .map_err(|e| CliError::Engine(e.to_string()))?;
+    let executed = v13_backtest_engine(registry, run_id, token, spec, stop, &mut recorder);
+    let error = executed.as_ref().err().map(ToString::to_string);
+    let mut result=executed.unwrap_or_else(|_|serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":spec.strategy.strategy_key,"strategy_version":spec.strategy.source_version,"status":"FAILED","error":error,"returns":[],"final_state_available":false}));
+    recorder
+        .finish(result["end_at_ns"].as_i64().unwrap_or(0), result.clone())
+        .map_err(|e| CliError::Engine(e.to_string()))?;
+    result["persistence"] = serde_json::json!({"status":"COMMITTED","audit":"full","history":"history.db","archive":"facts.parquet","schema_version":1});
+    write_result_bundle(
+        &record.result_path,
+        run_id,
+        spec,
+        &serde_json::to_vec_pretty(&result).map_err(CliError::ResultJson)?,
+    )?;
+    let status = result["status"].as_str().unwrap_or("FAILED");
+    if !registry.finish(
+        run_id,
+        token,
+        status,
+        if error.is_some() { 1 } else { 0 },
+        error.as_deref(),
+    )? {
+        return Err(CliError::Engine(
+            "run ownership changed before result publication".into(),
+        ));
+    }
+    if let Some(error) = error {
+        return Err(CliError::Engine(error));
+    }
+    Ok(())
+}
+
+fn v13_backtest_engine(
+    registry: &Registry,
+    run_id: &str,
+    token: &str,
+    spec: &RunSpec,
+    stop: Arc<AtomicBool>,
+    recorder: &mut titan_persistence::RunRecorder,
+) -> Result<serde_json::Value, CliError> {
     use titan_strategy_runtime::{NativeStrategyLoaderV13, OfflineV13Adapter, StagedCommandV13};
     let BackendSpec::Backtest {
         data,
@@ -1331,6 +1406,7 @@ fn v13_backtest_worker(
             path: data.clone(),
             source,
         })?;
+    recorder.record("input_manifest",0,serde_json::json!({"trace_sha256":format!("{:x}",Sha256::digest(&trace_bytes)),"config_sha256":spec.config_sha256,"compiled_strategy_digest":spec.strategy.compiled_strategy_digest,"model":"frozen_v13_trace","execution_source":"simulated_trace_facts"})).map_err(|e|CliError::Engine(e.to_string()))?;
     if trace.schema_version != 1 {
         return Err(CliError::Engine(format!(
             "unsupported V13 trace schema_version {}",
@@ -1382,6 +1458,19 @@ fn v13_backtest_worker(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        recorder
+            .record(
+                match event.kind {
+                    V13TraceEventKind::Fill => "fill",
+                    V13TraceEventKind::Order => "order",
+                    V13TraceEventKind::Position => "position",
+                    V13TraceEventKind::Balance => "balance",
+                    _ => "trace_event",
+                },
+                event.now_ns,
+                serde_json::to_value(&event).map_err(CliError::ResultJson)?,
+            )
+            .map_err(|e| CliError::Engine(e.to_string()))?;
         if let Some(update) = event.state {
             adapter.update_public_state(
                 update.markets,
@@ -1416,6 +1505,9 @@ fn v13_backtest_worker(
         }
         .map_err(|error| CliError::Engine(error.to_string()))?;
         for command in commands {
+            recorder
+                .record("command", event.now_ns, staged_command_fact(&command))
+                .map_err(|e| CliError::Engine(e.to_string()))?;
             match command {
                 StagedCommandV13::Submit { .. } => submit_count += 1,
                 StagedCommandV13::Cancel { .. } => cancel_count += 1,
@@ -1431,6 +1523,9 @@ fn v13_backtest_worker(
             .map_err(|error| CliError::Engine(error.to_string()))?
     };
     for command in stop_commands {
+        recorder
+            .record("command", last_now_ns, staged_command_fact(&command))
+            .map_err(|e| CliError::Engine(e.to_string()))?;
         match command {
             StagedCommandV13::Submit { .. } => submit_count += 1,
             StagedCommandV13::Cancel { .. } => cancel_count += 1,
@@ -1463,27 +1558,25 @@ fn v13_backtest_worker(
         "submit_count": submit_count,
         "cancel_count": cancel_count,
         "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+        "end_at_ns": last_now_ns,
         "status": status,
     });
-    let result_json = serde_json::to_string_pretty(&result).map_err(CliError::ResultJson)?;
-    let record = registry
-        .get(run_id)?
-        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
-    write_result_bundle(&record.result_path, run_id, spec, result_json.as_bytes())?;
-    let exit_code = 0;
-    let final_state = if status == "COMPLETED" {
-        "COMPLETED"
-    } else {
-        "STOPPED"
-    };
-    if !registry.finish(run_id, token, final_state, exit_code, None)? {
-        return Err(CliError::Engine(
-            "run ownership changed before backtest completion".into(),
-        ));
-    }
-    Ok(())
+    Ok(result)
 }
 
+fn staged_command_fact(command: &titan_strategy_runtime::StagedCommandV13) -> serde_json::Value {
+    match command {
+        titan_strategy_runtime::StagedCommandV13::Submit { order_id, request } => {
+            serde_json::json!({"kind":"submit","order_id":order_id.to_string(),"request":request})
+        }
+        titan_strategy_runtime::StagedCommandV13::Cancel {
+            command_id,
+            request,
+        } => {
+            serde_json::json!({"kind":"cancel","command_id":command_id.to_string(),"request":request})
+        }
+    }
+}
 fn core_live_worker(
     registry: &Registry,
     run_id: &str,
@@ -1571,6 +1664,44 @@ fn write_result_bundle(
         return Err(CliError::Engine("ResultBundle is already committed".into()));
     }
     atomic_write(path, bytes)?;
+    let mut files = vec![BundleFile {
+        path: "result.json".into(),
+        bytes: bytes.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    }];
+    for name in ["history.db", "facts.parquet"] {
+        let file_path = path.with_file_name(name);
+        if file_path.exists() {
+            use std::io::Read;
+            let mut file = fs::File::open(&file_path).map_err(|source| CliError::Read {
+                path: file_path.clone(),
+                source,
+            })?;
+            let mut hash = Sha256::new();
+            let mut buffer = [0; 65536];
+            loop {
+                let count = file.read(&mut buffer).map_err(|source| CliError::Read {
+                    path: file_path.clone(),
+                    source,
+                })?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+            }
+            files.push(BundleFile {
+                path: name.into(),
+                bytes: file
+                    .metadata()
+                    .map_err(|source| CliError::Read {
+                        path: file_path,
+                        source,
+                    })?
+                    .len(),
+                sha256: format!("{:x}", hash.finalize()),
+            });
+        }
+    }
     let manifest = BundleManifest {
         schema_version: 1,
         run_id: run_id.into(),
@@ -1578,16 +1709,18 @@ fn write_result_bundle(
         strategy_version: spec.strategy.source_version.clone(),
         abi_fingerprint: hex_digest(&titan_strategy_runtime::V13_ABI_FINGERPRINT),
         committed_at_ns: now_ns(),
-        files: vec![BundleFile {
-            path: "result.json".into(),
-            bytes: bytes.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(bytes)),
-        }],
+        files,
     };
-    atomic_write(
-        &manifest_path,
+    titan_persistence::commit_result_bundle(
+        path.parent().unwrap_or(Path::new(".")),
+        &registry_path()
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("storage"),
         &serde_json::to_vec_pretty(&manifest).map_err(CliError::ResultJson)?,
     )
+    .map_err(|e| CliError::Engine(e.to_string()))?;
+    Ok(())
 }
 
 fn monitor_and_shutdown(
@@ -1886,6 +2019,20 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
         .get(run_id)?
         .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
     let manifest_path = run.result_path.with_file_name("manifest.json");
+    let storage = registry_path()
+        .parent()
+        .ok_or_else(|| CliError::Engine("registry parent missing".into()))?
+        .join("storage");
+    if !manifest_path.is_file() || !run.result_path.is_file() {
+        titan_persistence::rehydrate_result_bundle(
+            &storage,
+            run_id,
+            run.result_path
+                .parent()
+                .ok_or_else(|| CliError::Engine("bundle parent missing".into()))?,
+        )
+        .map_err(|e| CliError::Engine(e.to_string()))?;
+    }
     let manifest_bytes = fs::read(&manifest_path).map_err(|source| CliError::Read {
         path: manifest_path.clone(),
         source,
@@ -1910,6 +2057,14 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
         .result_path
         .parent()
         .ok_or_else(|| CliError::Engine("ResultBundle has no parent directory".into()))?;
+    if manifest
+        .files
+        .iter()
+        .any(|f| !bundle.join(&f.path).is_file())
+    {
+        titan_persistence::rehydrate_result_bundle(&storage, run_id, bundle)
+            .map_err(|e| CliError::Engine(e.to_string()))?;
+    }
     let canonical_bundle = fs::canonicalize(bundle).map_err(|source| CliError::Read {
         path: bundle.into(),
         source,
@@ -2194,6 +2349,10 @@ fn main() -> ExitCode {
     };
     let json_requested = cli.command.json_requested();
     let result = match cli.command {
+        Commands::Storage { command } => storage_cli::run(command)
+            .map_err(|error| CliError::Engine(format!("storage maintenance: {error:#}"))),
+        Commands::Recovery { database, command } => recovery_cli::run(database, command)
+            .map_err(|error| CliError::Engine(format!("recovery maintenance: {error:#}"))),
         Commands::Console { command } => titan_cli::management::run(command)
             .map_err(|error| CliError::Engine(format!("{error:#}"))),
         Commands::CoreRun { config, json } => run_configured_core(&config, json),

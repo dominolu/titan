@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "checks": [
+    "live-legacy-owner-lock-prevents-migration",
+    "original-byte-import-and-idempotent-receipt",
+    "fixed-reference-and-idempotent-pin",
+    "byte-identical-export-and-no-overwrite",
+    "wrong-store-and-changed-source-rejected",
+    "consistent-backup-quarantine-and-no-overwrite",
+    "retention-respects-fixed-operation-reference",
+    "legacy-source-and-generation-watermark-unchanged",
+    "generation-only-migration-preserves-reservations-without-forging-state"
+  ],
+  "reference": {
+    "payload_sha256": "6deb086a605d42fa8fc7cd004fe48c1fc60278d0085f2bb30247c6a19eb8f9ab",
+    "record_id": "d5f3420946c58e63f068173e205406fa",
+    "runtime_strategy_no": 77,
+    "store_id": "4d89ec55af9de091eb788fc57bd9905c"
+  },
+  "source_sha256": "6deb086a605d42fa8fc7cd004fe48c1fc60278d0085f2bb30247c6a19eb8f9ab",
+  "generation_floor": "4"
+}

@@ -1,0 +1,72 @@
+{
+  "passed": true,
+  "scenario": "bootstrap-replay",
+  "expected_runtime_outcome": "safe_flat_stop",
+  "candidate": "candidate07",
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "bootstrap-buffered-native-replay-precedes-READY-without-double-inventory-or-fees",
+    "fixed-SQLite-cross-process-recovery-replays-preserve-consumed-partial-boundaries-and-original-expiry",
+    "trusted-facts-Stop-flattens-with-reduce-only-and-releases-only-local-simulated-occupancy"
+  ],
+  "operations": [
+    {
+      "id": "235aa9483254a0023757486e9d4946228bd2aba6143064af0b539fb1bdd53767",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "27ba6622cc321b1d0f000e1a007b91edb45f218b7562f0b9a8d3b69233917c58",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "d99d75577ec42023fce9528c860d33dca1609e502dee43234c81583435710ab6",
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "id": "b96ef53113a11f47b4b66e737c9ca5e68434a28ee66504cdcbca93df178e0a16",
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "id": "11d065027235ae0eed737a7a39a5b9b5c16f072da82ab7466bbd6c00c1af520b",
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "elapsed_seconds": 77.60474632494152,
+  "observed_stop_receipt_seconds": 1.4131882833316922,
+  "engine_stop_budget_seconds": 10,
+  "checkpoint_seconds": 60,
+  "startup_seconds": 30,
+  "handler_seconds": 1,
+  "maximum_run_seconds": 120,
+  "old_expires_at_ns": "1793166875361307888",
+  "new_expires_at_ns": "1793166875361307888",
+  "old_generation": "1",
+  "new_generation": "2",
+  "reference": {
+    "payload_sha256": "030b9fa494881850479e5ec0028b8bdd1539a09f6bdbe4089bc6aef2bc1bcb1a",
+    "record_id": "f88d0d2e9552965f7df65c2678bb5e4d",
+    "runtime_strategy_no": 77,
+    "store_id": "cb38435b8a9bb0266ae8467e12c55567"
+  },
+  "simulated_position_base": "0",
+  "local_simulated_occupancy_rows": 0,
+  "independent_fill_rows": 2,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:46567/api/v4",
+    "public_ws_url": "ws://127.0.0.1:46567/public",
+    "private_ws_url": "ws://127.0.0.1:46567/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

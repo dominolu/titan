@@ -1,0 +1,17 @@
+{
+  "passed": true,
+  "public_schema_hash": "8097dfc757165adf6c6f267c2c3506ff50d0d357316541ea8f5a6b9fbca55428",
+  "fixed_upper_row": "112",
+  "bootstrap_account_facts": 5,
+  "old_recording": {
+    "durable_upper_row": "158",
+    "gap_count": "1",
+    "incomplete_sources": "1",
+    "received_segment_complete": false,
+    "source_count": "1",
+    "unclosed_sources": "1",
+    "venue_history_complete": false
+  },
+  "old_orders": 8,
+  "new_orders": 4
+}

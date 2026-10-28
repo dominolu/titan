@@ -1,0 +1,63 @@
+{
+  "passed": true,
+  "scenario": "market-reconnect",
+  "expected_runtime_outcome": "safe_flat_stop",
+  "independent_fills": 2,
+  "fee_units_USDT_1e8": 808001,
+  "archive_fill_counts_by_replay": [
+    [
+      0,
+      2
+    ]
+  ],
+  "archive_conflicts": 0,
+  "archive_sources": [
+    [
+      "36225cabc1f9bd797639f37c1304c421a55f2b044d9671c144dfa08d63d5a561:9c5011c935c0a33b9b8a25a711ffd823d94e80c51d74ce4219647cd603b3e046",
+      1,
+      1
+    ]
+  ],
+  "archive_gaps": [],
+  "financial_issues": [],
+  "local_simulated_occupancy_rows": 0,
+  "final_point_generation": 1,
+  "manager_terminal_process_state": "STOPPED",
+  "manager_terminal_release_safe": true,
+  "all_manager_run_expiries_match_original": true,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    },
+    {
+      "order_id": 2,
+      "side": 2,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    }
+  ],
+  "fixed_record_pin_count": null,
+  "sampled_risk": [
+    {
+      "account": "gate",
+      "amount_unit": "0.00000001",
+      "asset_id": "1",
+      "coverage_complete": false,
+      "currency": "USDT",
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "last_sample_at_ns": "1793163300635435340",
+      "last_sample_complete": true,
+      "last_source": "36225cabc1f9bd797639f37c1304c421a55f2b044d9671c144dfa08d63d5a561:9c5011c935c0a33b9b8a25a711ffd823d94e80c51d74ce4219647cd603b3e046",
+      "max_actual_notional": "8.08001",
+      "max_actual_units": "808001000",
+      "max_pending_bound_notional": "16.16002",
+      "max_pending_bound_units": "1616002000",
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

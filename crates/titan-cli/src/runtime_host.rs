@@ -31,6 +31,8 @@ pub(crate) fn run_runtime_owner<T: Send>(work: impl FnOnce() -> Result<T> + Send
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostClaim {
+    #[serde(default)]
+    pub strategy_id: Option<String>,
     pub run_id: String,
     #[serde(alias = "generation")]
     pub worker_session_id: String,
@@ -304,6 +306,7 @@ impl WorkerHost {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        self.state.sample();
         let mut snapshot = self.snapshot();
         snapshot["process_state"] = "stopped".into();
         snapshot["stopped_at_ns"] = now().into();
@@ -526,7 +529,26 @@ impl State {
             for instance in service.list().iter() {
                 let state = service.state(instance.handle)?;
                 let diagnostic = service.diagnostics(instance.handle)?;
-                strategies.push(json!({"strategy_key":instance.strategy_key,"runtime_strategy_no":instance.handle.runtime_strategy_no.0.to_string(),"run_generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"pause_supported":service.pause_supported(instance.handle).unwrap_or(false),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"compiled_strategy_digest":hex(&instance.compiled_strategy_digest.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"recovery":service.recovery_status(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()})),"business_observation":service.business_observation(instance.handle).unwrap_or_else(|error|BusinessObservationSnapshot::unavailable(error.to_string()))}));
+                let business = service
+                    .business_observation(instance.handle)
+                    .unwrap_or_else(|error| {
+                        BusinessObservationSnapshot::unavailable(error.to_string())
+                    });
+                let mut scope = titan_persistence::FactScope::account(
+                    titan_persistence::FactEnvironment::Live,
+                    &self.claim.account,
+                );
+                scope.strategy_id = self.claim.strategy_id.clone();
+                scope.run_id = Some(self.claim.run_id.clone());
+                scope.run_generation = Some(instance.handle.generation.to_string());
+                if let Ok(body) = serde_json::to_value(&business) {
+                    let _ = self.journal.public_observation(
+                        scope,
+                        &instance.handle.runtime_strategy_no.0.to_string(),
+                        &body,
+                    );
+                }
+                strategies.push(json!({"strategy_key":instance.strategy_key,"runtime_strategy_no":instance.handle.runtime_strategy_no.0.to_string(),"run_generation":instance.handle.generation.to_string(),"lifecycle":format!("{:?}",state.lifecycle),"pause_supported":service.pause_supported(instance.handle).unwrap_or(false),"command_gate_open":state.command_gate_open,"activation_gate_open":state.activation_gate_open,"compiled_strategy_digest":hex(&instance.compiled_strategy_digest.digest),"callback_count":diagnostic.callback_count.to_string(),"command_count":diagnostic.command_count.to_string(),"last_error_code":diagnostic.last_error_code,"recovery":service.recovery_status(instance.handle).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string()})),"business_observation":business}));
             }
         }
         let financial=self.journal.summary(&self.claim.account).unwrap_or_else(|error|json!({"available":false,"reason":error.to_string(),"net_pnl":null,"max_drawdown":null}));
@@ -713,6 +735,7 @@ mod tests {
     async fn worker_query_rejects_wrong_token_generation_pid_and_unbounded_frames() {
         let tmp = tempfile::tempdir().unwrap();
         let claim = HostClaim {
+            strategy_id: None,
             run_id: "run".into(),
             worker_session_id: "one".into(),
             account: "missing".into(),

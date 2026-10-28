@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "stop_through_exit_seconds": 3.4472773522138596,
+  "orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    },
+    {
+      "order_id": 4294967297,
+      "side": 2,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    }
+  ],
+  "unique_native_fills": 2,
+  "fee_units_USDT_1e8": 808001,
+  "position_lots": 0,
+  "local_simulated_occupancy_rows": 0
+}

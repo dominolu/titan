@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "release": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-release-01",
+  "archive": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-release-01.tar.gz",
+  "archive_sha256": "6650ee2409dff2012309bc65994b3bbf2bb0e728a3f8a718ee19535e355b05d1",
+  "archive_bytes": 161188509,
+  "binary_sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3",
+  "strategy_file_sha256": "9accd2b4ad4cbe67904c7b0e149249369f4e984803e673eabe8edcdcc99e4f51",
+  "files": 46,
+  "no_private_signing_key_or_credentials": true,
+  "production_source_unchanged": true,
+  "live_requests_executed": false
+}

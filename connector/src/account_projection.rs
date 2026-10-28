@@ -6,6 +6,59 @@ use titan_account_service as account;
 
 const TERMINAL_ORDER_HISTORY: usize = 1024;
 
+#[cfg(test)]
+mod native_execution_tests {
+    use super::*;
+    #[test]
+    fn native_replay_preserves_bootstrap_baseline_and_bounded_proof() {
+        let mut image = AccountProjection::default();
+        let order = account::Id128([9; 16]);
+        image.seed_native_order(&account::OrderChangedV1 {
+            asset_id: 1,
+            venue_order_id: order,
+            filled_quantity_lots: 3,
+            header: account::AccountEventHeaderV1 {
+                exchange_ts: 100,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        assert_eq!(
+            image.native_execution(1, account::Id128([1; 16]), order, vec![1], 2, 90),
+            Ok(Some(3))
+        );
+        assert_eq!(
+            image.native_execution(1, account::Id128([2; 16]), order, vec![2], 1, 110),
+            Ok(Some(4))
+        );
+        let mut replacement = AccountProjection::default();
+        replacement.inherit_native_executions(&image);
+        assert_eq!(
+            replacement.native_execution(1, account::Id128([2; 16]), order, vec![2], 1, 110),
+            Ok(None)
+        );
+        assert!(
+            replacement
+                .native_execution(1, account::Id128([2; 16]), order, vec![9], 1, 110)
+                .is_err()
+        );
+        assert_eq!(
+            replacement.native_execution(1, account::Id128([3; 16]), order, vec![3], 1, 120),
+            Ok(Some(5))
+        );
+        for n in 4_u128..8194 {
+            replacement
+                .native_fills
+                .insert((1, n.to_le_bytes()), (vec![], 0));
+        }
+        assert!(
+            replacement
+                .native_execution(1, account::Id128([8; 16]), order, vec![8], 1, 130)
+                .is_err()
+        );
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct AccountProjection {
     pub epoch: u64,
@@ -20,9 +73,53 @@ pub(crate) struct AccountProjection {
     order_times: BTreeMap<(u32, [u8; 16]), i64>,
     position_times: BTreeMap<(u32, u8), i64>,
     balance_times: BTreeMap<u32, i64>,
+    native_fills: BTreeMap<(u32, [u8; 16]), (Vec<u8>, i64)>,
+    native_totals: BTreeMap<(u32, [u8; 16]), (i64, i64)>,
 }
 
 impl AccountProjection {
+    pub fn inherit_native_executions(&mut self, previous: &Self) {
+        self.native_fills = previous.native_fills.clone();
+        self.native_totals = previous.native_totals.clone();
+    }
+    pub fn seed_native_order(&mut self, order: &account::OrderChangedV1) {
+        self.native_totals
+            .entry((order.asset_id, order.venue_order_id.0))
+            .or_insert((order.filled_quantity_lots, order.header.exchange_ts));
+    }
+    pub fn native_execution(
+        &mut self,
+        asset: u32,
+        trade: account::Id128,
+        order: account::Id128,
+        fingerprint: Vec<u8>,
+        quantity: i64,
+        timestamp: i64,
+    ) -> Result<Option<i64>, &'static str> {
+        let key = (asset, trade.0);
+        if let Some((prior, _)) = self.native_fills.get(&key) {
+            return if *prior == fingerprint {
+                Ok(None)
+            } else {
+                Err("native trade identity has contradictory facts")
+            };
+        }
+        if self.native_fills.len() >= 8192
+            || (self.native_totals.len() >= 8192
+                && !self.native_totals.contains_key(&(asset, order.0)))
+        {
+            return Err("native execution proof capacity exceeded; reconciliation required");
+        }
+        let total = self.native_totals.entry((asset, order.0)).or_default();
+        if timestamp > total.1 || total.1 == 0 {
+            total.0 = total
+                .0
+                .checked_add(quantity)
+                .ok_or("native execution quantity overflow")?;
+        }
+        self.native_fills.insert(key, (fingerprint, total.0));
+        Ok(Some(total.0))
+    }
     pub fn commit(&mut self, header: account::AccountEventHeaderV1) {
         self.epoch = header.account_epoch;
         self.committed_version = header.account_version;

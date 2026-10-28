@@ -382,6 +382,20 @@ pub use titan_domain_types::Event;
 unsafe impl POD for Event {}
 
 impl crate::backtest::data::NpyDTyped for Event {
+    fn read_parquet(path: &str) -> std::io::Result<crate::backtest::data::Data<Self>> {
+        let mut events = Vec::new();
+        titan_persistence::columnar::scan_market(std::path::Path::new(path), |event| {
+            if events.len() == 1_048_576 {
+                return Err(titan_persistence::failure(
+                    "Parquet Event shard exceeds 64 MiB; split the dataset",
+                ));
+            }
+            events.push(event);
+            Ok(())
+        })
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        Ok(crate::backtest::data::Data::from_data(&events))
+    }
     fn descr() -> Vec<crate::backtest::data::Field> {
         let endian = if cfg!(target_endian = "little") {
             "<"

@@ -1,0 +1,32 @@
+{
+  "rust-tests": {
+    "passed": 614,
+    "failed": 0,
+    "ignored": 22,
+    "measured": 0,
+    "filtered": 0
+  },
+  "rust-doctests": {
+    "passed": 2,
+    "failed": 0,
+    "ignored": 1,
+    "measured": 0,
+    "filtered": 0
+  },
+  "sdk-tests": {
+    "passed": 115
+  },
+  "report-tests": {
+    "passed": 5
+  },
+  "sqlite_unit_passed": 24,
+  "maintenance": {
+    "passed": 9
+  },
+  "loopback": {
+    "passed": 27
+  },
+  "browser": {
+    "passed": 10
+  }
+}

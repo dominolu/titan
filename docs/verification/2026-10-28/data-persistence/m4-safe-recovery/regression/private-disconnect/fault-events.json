@@ -1,0 +1,12 @@
+{
+  "scenario": "private-disconnect",
+  "events": [
+    {
+      "kind": "disconnect",
+      "private": true,
+      "sessions": 1
+    }
+  ],
+  "private_sessions": 2,
+  "public_sessions": 2
+}

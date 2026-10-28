@@ -1,0 +1,198 @@
+{
+  "passed": true,
+  "candidate": "candidate05",
+  "source": "immutable signed artifact through real A/N/E and loopback Gate; no real account",
+  "checks": [
+    "frozen-candidate05-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate05-deployed-without-recompile",
+    "E-consumes-position-before-native-execution-and-fee",
+    "native-fill-fee-and-same-session-replays-count-once",
+    "original-60s-SQLite-point-retains-consumed-fill-and-healthy-business-state",
+    "owned-E-crash-and-A-N-restart-preserve-reference-and-reservation",
+    "new-E-restores-fixed-SQLite-record-position-and-original-expiry",
+    "cross-process-original-trade-replay-preserves-fee-inventory-and-order-count",
+    "positioned-reduce-only-Stop-flat-proof-and-reservation-release-within-original-10s",
+    "unified-history-deduplicates-native-replay-and-preserves-crash-gap"
+  ],
+  "binary_sha256": "38495ebcd5671901cc19ee07837c20fdaa3710a437e69d7b14b0cc17082f0b89",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "checkpoint_seconds": 60,
+  "handler_seconds": 1,
+  "startup_seconds": 30,
+  "stop_seconds": 10,
+  "maximum_run_seconds": 120,
+  "elapsed_seconds": 78.87554095219821,
+  "positioned_stop_seconds": 1.6073080226778984,
+  "positioned_stop_through_worker_exit_seconds": 3.6904849456623197,
+  "old_pid": 3970796,
+  "new_pid": 3971302,
+  "old_generation": "1",
+  "new_generation": "2",
+  "old_expires_at_ns": "1793160418612141461",
+  "new_expires_at_ns": "1793160418612141461",
+  "reference": {
+    "payload_sha256": "97ef69aa09c73068818d3c9a55bdae99163ccf739858883172ac7fcf252aa64f",
+    "record_id": "e16a073678dbbbb46dd9d767d5d3bc41",
+    "runtime_strategy_no": 77,
+    "store_id": "9190f1ad961f86e3308c97ea6f382574"
+  },
+  "native_fills": {
+    "[\"gate-crossex-account\",\"gate\",\"GATE_FUTURE_BTC_USDT\",\"b80857ce30286594bb9eefaf166d4452\"]": {
+      "digest": "d45de18d3a4c5e095df56f01e18ef2bdb8620f30728358b3bfafa632e01f2cbd",
+      "details": {
+        "asset_id": "1",
+        "client_order_id": "22ca838c3ae2e0520100000000000000",
+        "command_id": "00000000000000000000000000000000",
+        "cumulative_filled_quantity_lots": "1",
+        "fee_amount_unit": "0.00000001",
+        "fee_amount_units": "404001",
+        "fee_currency": "USDT",
+        "fee_currency_id": "1",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "instrument_binding": {
+          "asset_id": "1",
+          "contract_multiplier": {
+            "coefficient": "1",
+            "scale": "0"
+          },
+          "linear_quote_currency": "1",
+          "native_symbol": "GATE_FUTURE_BTC_USDT",
+          "price_tick": {
+            "coefficient": "1",
+            "scale": "1"
+          },
+          "quantity_lot": {
+            "coefficient": "1",
+            "scale": "4"
+          }
+        },
+        "last_fill_quantity_lots": "1",
+        "observed_fee_amount": "0.00404001",
+        "position_side": "0",
+        "price_ticks": "808001",
+        "realized_pnl_units": "0",
+        "side": "1",
+        "trade_id": "b80857ce30286594bb9eefaf166d4452",
+        "venue_order_id": "cf39cf7ee00a78e47fdd7f9025b32dc6"
+      },
+      "source_version": "8"
+    },
+    "[\"gate-crossex-account\",\"gate\",\"GATE_FUTURE_BTC_USDT\",\"5807e243a60b1b1f41de3924bdd65ee6\"]": {
+      "digest": "278c18e40d37730982b0103e1812c71c0e0ce51d23df08a95ecbd316b5475156",
+      "details": {
+        "asset_id": "1",
+        "client_order_id": "22ca838c3ae2e0520100000001000000",
+        "command_id": "00000000000000000000000000000000",
+        "cumulative_filled_quantity_lots": "1",
+        "fee_amount_unit": "0.00000001",
+        "fee_amount_units": "404000",
+        "fee_currency": "USDT",
+        "fee_currency_id": "1",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "instrument_binding": {
+          "asset_id": "1",
+          "contract_multiplier": {
+            "coefficient": "1",
+            "scale": "0"
+          },
+          "linear_quote_currency": "1",
+          "native_symbol": "GATE_FUTURE_BTC_USDT",
+          "price_tick": {
+            "coefficient": "1",
+            "scale": "1"
+          },
+          "quantity_lot": {
+            "coefficient": "1",
+            "scale": "4"
+          }
+        },
+        "last_fill_quantity_lots": "1",
+        "observed_fee_amount": "0.00404",
+        "position_side": "0",
+        "price_ticks": "808000",
+        "realized_pnl_units": "-1000",
+        "side": "2",
+        "trade_id": "5807e243a60b1b1f41de3924bdd65ee6",
+        "venue_order_id": "f84fc072ba5da308899702bb676f4ccb"
+      },
+      "source_version": "11"
+    }
+  },
+  "fee_units_USDT_1e8": "808001",
+  "simulated_fee_policy": "0.0005 quote notional; 1e-8 USDT ROUND_HALF_UP",
+  "cross_process_replay_rows": 1,
+  "old_recording": {
+    "durable_upper_row": "17",
+    "gap_count": "1",
+    "incomplete_sources": "1",
+    "received_segment_complete": false,
+    "source_count": "1",
+    "unclosed_sources": "1",
+    "venue_history_complete": false
+  },
+  "new_recording": {
+    "durable_upper_row": "355",
+    "gap_count": "0",
+    "incomplete_sources": "0",
+    "received_segment_complete": true,
+    "source_count": "1",
+    "unclosed_sources": "0",
+    "venue_history_complete": false
+  },
+  "operations": [
+    {
+      "id": "366688ad75346891ca56ac53844210f1dee14b8202803e8aa16b04862834a5dd",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "8df29eba8d46b0f7fd594bf374e65af96fbf73318d9431b0752eed8f1225e4bb",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "4799b699e9389f1d7b0ece2a57902460be7f43bf38ba8fbaea648b4393c91ae4",
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "id": "2a0c6c8bc27eb8da489c640d9727a645d6dfcb2244f26e8e3692ebf90e86a4f3",
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "id": "30d9532cc2131b6740e6e6a35f822e2786d2dc81afd8c37fa8ebaac788198b44",
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "durable_intents": [
+    {
+      "record_id": "3191940fa1310b122104dd9357a59ccd",
+      "payload_sha256": "9a08aafe9038a35c6970c1022e73e9fd8497a61cf4d1e4ad70abe7aa1f3cf53b",
+      "order_id": "1",
+      "generation": 1,
+      "client_order_id": "22ca838c3ae2e0520100000000000000"
+    },
+    {
+      "record_id": "d31bd7e785243bd28f747167743dff4f",
+      "payload_sha256": "c31a79faaa2e2082a56832eb4fae40797b45aaf37c8d47feeae7eb7a7fdd39c9",
+      "order_id": "4294967297",
+      "generation": 2,
+      "client_order_id": "22ca838c3ae2e0520100000001000000"
+    }
+  ],
+  "remaining_mock_position": "0",
+  "remaining_mock_orders": 0,
+  "local_occupancy_rows": 0,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:41551/api/v4",
+    "public_ws_url": "ws://127.0.0.1:41551/public",
+    "private_ws_url": "ws://127.0.0.1:41551/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

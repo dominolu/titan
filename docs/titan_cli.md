@@ -63,7 +63,19 @@ titan run pair-arb-mainnet \
 
 Live 的位置参数是部署配置中的 `strategy_key`。部署侧只配置 artifact URI/digest、market/account binding、risk scope、recovery 和 runtime policy；参数、订阅与 callback 均以 artifact manifest 为准。
 
+## 恢复存储维护
+
+恢复点与代次统一保存在节点本地 SQLite，维护命令不启动账户 connector：
+
+```bash
+titan recovery --database /srv/titan/recovery/runtime.db inspect
+```
+
+同一入口提供 `import-legacy`、`import-generation`、`export`、`backup`、`pin`、`unpin` 和 `prune`，成功输出 JSON。旧文件须显式迁移，备份副本默认隔离，不能直接激活交易。配置与完整操作顺序见[SQLite 恢复存储维护](recovery_storage_operations.md)。
+
 ## 任务管理
+
+统一历史与结果维护使用 `titan storage`：`facts`、`export-facts`、`inspect-parquet`、`register-bundle`、`register-publication`、`publish-manifest` 和 `materialize-bundle`。查询使用固定上界游标，登记重试只操作既有字节，不重跑引擎；M3 增加 `initialize`、`inspect`、`project`、`prepare-history`、`prepare-objects`、`resume`、`activate`、`prune-history`、`evict-local-objects` 和 `clean-staging`。按计划 ID 提交切换回执；回切先回填，恢复点始终本地 SQLite。完整参数及故障处理见[历史与结果存储维护](local_persistence_operations.md)。
 
 ```bash
 titan ls --active

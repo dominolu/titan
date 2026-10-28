@@ -252,6 +252,10 @@ pub fn execution_report_counts(reports: &[ExecutionReport]) -> ExecutionReportCo
     counts.order_count = order_ids.len() as u64;
     counts
 }
+/// Serialization only; these values remain the execution engine's authoritative facts.
+pub fn execution_fact(r: &ExecutionReport) -> serde_json::Value {
+    serde_json::json!({"kind":format!("{:?}",r.kind),"reason":super::execution::execution_reason_code(r.reason),"venue_id":r.venue_id.0,"instrument_id":r.instrument_id.0,"asset_no":r.asset_no,"order_id":r.order_id.to_string(),"venue_order_id":r.venue_order_id.to_string(),"exchange_at_ns":r.exchange_ts.to_string(),"delivery_at_ns":r.delivery_ts.to_string(),"sequence":r.sequence.to_string(),"status":format!("{:?}",r.status),"side":format!("{:?}",r.side),"order_price":r.order_price,"order_quantity":r.order_qty,"execution_price":r.exec_price,"execution_quantity":r.exec_qty,"cumulative_filled_quantity":r.cumulative_filled_qty,"maker":r.maker,"account_delta":r.account_delta.map(|d|serde_json::json!({"instrument_id":d.instrument_id.0,"currency":d.currency.0,"position_delta":d.position_delta,"trade_quantity":d.trade_qty,"trade_value":d.trade_value,"cash_delta":d.cash_delta,"fee":d.fee,"funding":d.funding,"execution_price":d.execution_price,"realized_pnl":d.realized_pnl}))})
+}
 
 impl BacktestResult {
     /// Creates an empty result carrying immutable run identity. Runtime counters and account
@@ -347,6 +351,8 @@ pub struct AuditRecorder {
     capacity: usize,
     records: Vec<AuditRecord>,
     dropped: u64,
+    persistent: Option<titan_persistence::RunRecorder>,
+    failure: Option<String>,
 }
 
 pub trait AuditChunkSink {
@@ -445,6 +451,8 @@ impl AuditRecorder {
             capacity: 0,
             records: Vec::new(),
             dropped: 0,
+            persistent: None,
+            failure: None,
         }
     }
 
@@ -454,12 +462,34 @@ impl AuditRecorder {
             capacity,
             records: Vec::with_capacity(capacity),
             dropped: 0,
+            persistent: None,
+            failure: None,
         }
     }
 
     #[inline]
     pub fn record(&mut self, record: AuditRecord) {
         if !self.enabled {
+            return;
+        }
+        if let Some(writer) = self.persistent.as_mut() {
+            if self.failure.is_some() {
+                return;
+            }
+            let kind = match record.kind {
+                AuditKind::Command => "command",
+                AuditKind::RiskDecision => "risk_decision",
+                AuditKind::OrderTransition | AuditKind::ExecutionReport => "order",
+                AuditKind::Fill => "fill",
+                AuditKind::AccountDelta => "account_delta",
+                AuditKind::Funding => "funding",
+                AuditKind::Liquidation => "liquidation",
+                AuditKind::Diagnostic => "diagnostic",
+            };
+            let body = serde_json::json!({"schema_version":record.schema_version,"run_id":record.run_id.to_string(),"phase":format!("{:?}",record.key.phase),"venue_no":record.key.venue_no,"asset_no":record.key.asset_no,"source_priority":record.key.source_priority,"sequence":record.key.sequence.to_string(),"order_id":record.order_id.to_string(),"code":record.code,"value0":record.value0,"value1":record.value1,"value0_bits":record.value0.to_bits().to_string(),"value1_bits":record.value1.to_bits().to_string()});
+            if let Err(error) = writer.record(kind, record.key.timestamp, body) {
+                self.failure = Some(error.to_string());
+            }
             return;
         }
         if self.records.len() == self.capacity {
@@ -493,6 +523,39 @@ impl AuditRecorder {
     pub fn records(&self) -> &[AuditRecord] {
         &self.records
     }
+    pub fn persistent(writer: titan_persistence::RunRecorder) -> Self {
+        Self {
+            enabled: true,
+            capacity: 0,
+            records: Vec::new(),
+            dropped: 0,
+            persistent: Some(writer),
+            failure: None,
+        }
+    }
+    pub fn check(&self) -> titan_persistence::Result<()> {
+        if let Some(error) = &self.failure {
+            return Err(titan_persistence::failure(error));
+        }
+        Ok(())
+    }
+    pub fn finish(
+        &mut self,
+        timestamp: i64,
+        outcome: serde_json::Value,
+    ) -> titan_persistence::Result<()> {
+        self.check()?;
+        if let Some(writer) = self.persistent.take()
+            && let Err(error) = writer.finish(timestamp, outcome)
+        {
+            self.failure = Some(error.to_string());
+            return Err(error);
+        }
+        Ok(())
+    }
+    pub fn is_persistent(&self) -> bool {
+        self.persistent.is_some()
+    }
 
     pub fn drain_chunk(&mut self) -> impl Iterator<Item = AuditRecord> + '_ {
         self.records.drain(..)
@@ -503,6 +566,9 @@ impl AuditRecorder {
     }
 
     pub fn reset(&mut self) {
+        if self.persistent.is_some() {
+            self.failure=Some("persistent audit must be finished before reset; each run requires a fresh identity".into());
+        }
         self.records.clear();
         self.dropped = 0;
     }

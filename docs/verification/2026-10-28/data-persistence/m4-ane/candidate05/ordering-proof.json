@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "position_version": "6",
+  "native_fill_version": "8",
+  "position_lots": 1,
+  "native_execution_rows_before_release": 0,
+  "same_session_native_delivery_count": 3
+}

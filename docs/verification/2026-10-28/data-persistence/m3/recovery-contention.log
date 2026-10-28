@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_strategy_runtime-f8114d4d6e0bc21e)
+
+running 1 test
+test recovery_storage::tests::recovery_contention_budget_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 24.52s
+
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-61b9d041ec4a4e35)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

@@ -234,6 +234,10 @@ async fn run_snapshot(
         .or_else(|| body.get("checkpoint_id"))
         .cloned()
         .unwrap_or(Value::Null);
+    recovery["recovery_reference"] = body
+        .get("recovery_reference")
+        .cloned()
+        .unwrap_or(Value::Null);
     let runtime = instance
         .map(|item| {
             let mut item = item.clone();
@@ -288,6 +292,26 @@ async fn run_history(
     let actor = identity(&app, &headers, false)?;
     scoped(&app, &actor, &strategy, "run", &id)?;
     super::http::runtime_query(app, headers, id, query, "history").await
+}
+async fn run_facts(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path((strategy, id)): Path<(String, String)>,
+    Query(query): Query<super::http::ListQuery>,
+) -> ApiResult<Json<Value>> {
+    let actor = identity(&app, &headers, false)?;
+    scoped(&app, &actor, &strategy, "run", &id)?;
+    super::http::runtime_query(app, headers, id, query, "facts").await
+}
+async fn backtest_facts(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path((strategy, id)): Path<(String, String)>,
+    Query(query): Query<super::http::ListQuery>,
+) -> ApiResult<Json<Value>> {
+    let actor = identity(&app, &headers, false)?;
+    scoped(&app, &actor, &strategy, "backtest", &id)?;
+    super::http::runtime_query(app, headers, id, query, "facts").await
 }
 
 async fn submit(
@@ -387,6 +411,15 @@ pub(super) fn routes() -> Router<Arc<App>> {
             "/api/v2/strategies/{strategy_id}/runs/{id}/history",
             get(run_history),
         )
+        .route(
+            "/api/v2/strategies/{strategy_id}/runs/{id}/facts",
+            get(run_facts),
+        )
+        .route(
+            "/api/v2/strategies/{strategy_id}/backtests/{id}/facts",
+            get(backtest_facts),
+        )
+        .route("/api/v2/resources/{id}/facts", get(http::resource_facts))
         .route("/api/v2/operations", get(http::operations).post(submit))
         .route("/api/v2/operations/{id}", get(http::operation))
         .route("/api/v2/operations/{id}/cancel", post(http::cancel))

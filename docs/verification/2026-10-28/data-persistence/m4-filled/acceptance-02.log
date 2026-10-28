@@ -1,0 +1,11 @@
+signed-server-built-one-lot-grid-deployed: passed
+Traceback (most recent call last):
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-02/scripts/management_live_fill_recovery.py", line 275, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-02/scripts/management_live_fill_recovery.py", line 168, in main
+    first=wait(lambda:trades() or None,timeout=10);assert len(first)==1
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-02/scripts/management_live_fill_recovery.py", line 110, in wait
+    raise RuntimeError("finite live acceptance timed out; inspect private evidence")
+RuntimeError: finite live acceptance timed out; inspect private evidence

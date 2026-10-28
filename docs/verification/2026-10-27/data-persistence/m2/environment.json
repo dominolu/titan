@@ -1,0 +1,18 @@
+{
+  "server": "192.168.3.88",
+  "source_root": "/home/dominolu/dev/titan-persistence-m2-20261027-59973648",
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "git_state": "isolated snapshot of the baseline plus uncommitted M1/M2 source; exact source hashes are in source-identity.json",
+  "toolchain": [
+    "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+    "Python 3.11.14",
+    "v22.22.0",
+    "10.32.1"
+  ],
+  "rust_sqlite_version": "3.53.2",
+  "parquet": "58.4.0",
+  "validation": "all local builds/tests/code generation/formatting on the build server",
+  "real_account_access": false,
+  "production_deployment": false
+}

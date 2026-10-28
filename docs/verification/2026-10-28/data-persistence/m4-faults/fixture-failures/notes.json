@@ -1,0 +1,15 @@
+{
+  "product_changed": false,
+  "counted_as_acceptance_pass": false,
+  "failures": [
+    {
+      "path": "partial-early-occupancy.log",
+      "reason": "fixture checked A occupancy before asynchronous safe-release projection; fixed by bounded wait counted in original 10s"
+    },
+    {
+      "path": "abnormal-receipt-path.log",
+      "reason": "fixture looked under wrong directory for E receipt; actual node receipt already contained stop_drain_deadline_exceeded; fixed to inspect authoritative A result.runtime"
+    }
+  ],
+  "additional_verification": "reran private/abnormal negative cases and waited for A terminal projection before cleanup"
+}

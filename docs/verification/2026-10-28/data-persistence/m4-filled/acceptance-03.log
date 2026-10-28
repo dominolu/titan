@@ -1,0 +1,16 @@
+signed-server-built-one-lot-grid-deployed: passed
+real-independent-buy-fill-and-one-lot-position-confirmed: passed
+paused-no-opening-orders-and-confirmed-one-lot-inventory: passed
+real-fill-consumed-into-original-periodic-local-sqlite-checkpoint: passed
+owned-worker-crash-with-confirmed-minimum-position: passed
+Traceback (most recent call last):
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-03/scripts/management_live_fill_recovery.py", line 277, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-03/scripts/management_live_fill_recovery.py", line 195, in main
+    restored=completed(submit({"kind":"restore","run_id":old["id"],"expected_run_generation":old["body"]["run_generation"],"recovery_point_sha256":digest}));active=resource(restored,"run")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data/titan-persistence-m4-fill-20261028-59973648/m4-fill-release-03/scripts/management_live_fill_recovery.py", line 116, in completed
+    assert op["state"]=="succeeded",op.get("error");return op
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: engine did not confirm successful completion; inspect preserved result

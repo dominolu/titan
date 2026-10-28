@@ -1,0 +1,1 @@
+/home/dominolu/dev/titan/.venv/bin/python scripts/verify_recovery_maintenance.py --binary /tmp/titan-deplugin-target/debug/titan --fixture /home/dominolu/dev/titan-observation-audit-20261027-638bae69/evidence/final-04/loopback --output /home/dominolu/dev/titan-recovery-m1-20261027-59973648/evidence/m1-final-09/maintenance

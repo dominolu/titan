@@ -1,0 +1,70 @@
+{
+  "passed": true,
+  "scenario": "missing-fill-recovery",
+  "candidate": "candidate07",
+  "expected_outcome": "safe_flat_stop",
+  "stop_through_exit_seconds": 3.565926304087043,
+  "new_generation": "2",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "missing-native-fill-latches-205-and-no-financial-fill-is-invented",
+    "old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation",
+    "authoritative-native-backfill-recovers-one-consumption-and-one-fee-from-fixed-SQLite-BLOB",
+    "new-generation-positioned-Stop-flattens-and-releases-within-original-ten-seconds"
+  ],
+  "operations": [
+    {
+      "id": "05f2a858d22b9156b5eb831475baa42ee0b9f0f27424398c342a932f9b63e70c",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "bb5da80c3565cef066f1d6917a36f61d80248881c5e31c25d4b938933f4e86b1",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "43c1fa9b90ed06caabe64a6ce963b4af5557ef59a086f12b0022055419061090",
+      "kind": "stop",
+      "state": "failed"
+    },
+    {
+      "id": "f5fdc39e5d99f7b4628507fbe48dd18c9162d07cd7d81bfb533568877bf2087e",
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "id": "81180c494c7002bd034123e404b8b8fea1f49efa8849dc632fdef95ada341d3d",
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "elapsed_seconds": 89.2825536923483,
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "reference": {
+    "record_id": "55de2f5379ff98323e66213b95305de9",
+    "payload_sha256": "c899eae94180760dd6bd101db7489608d8486fb0d5fdc27b9748e2fe7d403ca4",
+    "store_id": "1ff583e4d7fe9e7d1dd5ae6b9dc39358",
+    "runtime_strategy_no": 77
+  },
+  "original_expires_at_ns": "1793166600647410789",
+  "handler_seconds": 1,
+  "startup_seconds": 30,
+  "checkpoint_seconds": 60,
+  "stop_seconds": 10,
+  "maximum_run_seconds": 120,
+  "local_simulated_occupancy_rows": 0,
+  "old_run_not_reopened": true,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:41867/api/v4",
+    "public_ws_url": "ws://127.0.0.1:41867/public",
+    "private_ws_url": "ws://127.0.0.1:41867/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

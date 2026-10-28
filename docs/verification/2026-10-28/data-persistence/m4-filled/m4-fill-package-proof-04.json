@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "archive": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m4-fill-release-04.tar.gz",
+  "archive_sha256": "1d9254564725a7691bfa87b721a50305d6a3cbadc48c297a7ae12ec4b60e2680",
+  "archive_bytes": 161364679,
+  "binary_sha256": "9649e59d4cb97d1b8e4be25b2081960d2b728573bf5fd25507fff7bc827d6929",
+  "strategy_file_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "files": 62,
+  "source_files": 557,
+  "private_signing_keys_and_account_credentials_excluded": true
+}

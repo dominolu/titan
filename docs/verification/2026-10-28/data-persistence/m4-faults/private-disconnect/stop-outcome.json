@@ -1,0 +1,31 @@
+{
+  "account": "gate",
+  "actor": "operator",
+  "cancel_requested": false,
+  "created_at_ns": "1793163537164819545",
+  "error": "engine did not confirm successful completion; inspect preserved result",
+  "id": "3365017cd038e02aff654ddddd1f841d9a3db42bdd771576f85bb5fb083fd4cc",
+  "input": {
+    "expected_run_generation": "1",
+    "kind": "stop",
+    "run_id": "live-run-666fbbf4564718188e61171f4a252db10f63165d5b2360f3cd166680f097b8d6"
+  },
+  "input_digest": "1df19c50210cc0762865c0911ed3350d095f344ae3a1d15af4cfb74c7af3cf35",
+  "node_id": "live",
+  "result": {
+    "business_success": false,
+    "runtime": {
+      "detail": "InvalidState [runtime_v13:invalid_stop_state]: V13 runtime operation failed",
+      "input": {
+        "action": "stop",
+        "digest": "1df19c50210cc0762865c0911ed3350d095f344ae3a1d15af4cfb74c7af3cf35",
+        "expected_run_generation": "1",
+        "id": "3365017cd038e02aff654ddddd1f841d9a3db42bdd771576f85bb5fb083fd4cc"
+      },
+      "state": "failed"
+    }
+  },
+  "revision": "50",
+  "state": "failed",
+  "updated_at_ns": "1793163539036371523"
+}

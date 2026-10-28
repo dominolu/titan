@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "build_host": "192.168.3.88",
+  "local_remote_file_bytes_equal": {
+    "scripts/management_fill_recovery_smoke.py": "aa94a1dad3bf351cd3d1ff10b27a35d4e56fdb3eff0abf90c359e26ff6d8eb9e",
+    "scripts/management_fill_fault_smoke.py": "6237ecc6fe4edad680383bb18ad93ec044dbda91e7cfee25b1df9ef331504f3e",
+    "scripts/verify_fill_fault_evidence.py": "f1aa20c25772a0094c4d1b81715c8ce2961ea6bfd79436589904ac3d184acb10",
+    "configs/sim-partial-recovery-acceptance.parameters.json": "f9c43b5d73ee2f11f102c3bfb9fd638bc97f7f4dd87481f9da0e5236f32378ff",
+    "docs/data_persistence_design.md": "1e588c519f2c136ac2886627d0019b519bf882e4cf1f1cd5cda27d9863ca36e3",
+    "docs/data_persistence_implementation_plan.md": "53cbebfc4d9ba875a577c410a71ebcc5ae74b0576a91da9222e33b406b45dbd6",
+    "docs/management_console_operations.md": "c1bd2d5c30ffe49f5af547c986824e9498f2e90608138690e77a5ead02081f9b",
+    "docs/recovery_storage_operations.md": "562e6eb96910233860ba3486e140514da0090d03053df0611cb446d5edc70dcf",
+    "docs/memory/engineering.md": "4b4473aed106f7e3595c8fe1f9aec9c63cf6c1deac7116df934f016fedba911e",
+    "docs/README.md": "74ee333fd1feae442d7da0dae40ba0c691eb876ae45bbfdecd6f446f385dee46",
+    "docs/verification/2026-10-28/data-persistence/m4-faults/README.md": "f232a220257f9020e47fff3181bf3a6dfdbb0b64c164a748ac73af808cc10da1"
+  },
+  "relative_document_links_checked": 217,
+  "exported_evidence_files_verified": 58,
+  "five_case_results_and_audits_passed": true,
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

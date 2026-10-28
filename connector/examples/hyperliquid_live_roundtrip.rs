@@ -125,6 +125,12 @@ async fn main() -> Result<()> {
                 venue_order_id,
                 order,
                 ..
+            }
+            | AccountPublication::OrderWithNativeFills {
+                client_order_id,
+                venue_order_id,
+                order,
+                ..
             } => {
                 let _ = tx.send((
                     format!(
@@ -137,7 +143,7 @@ async fn main() -> Result<()> {
             AccountPublication::Position { symbol, qty, .. } => {
                 let _ = tx.send((format!("Position {symbol}={qty}"), Instant::now()));
             }
-            AccountPublication::Balance { .. } => {}
+            AccountPublication::Balance { .. } | AccountPublication::NativeFill { .. } => {}
             AccountPublication::Error(e) => {
                 let _ = tx.send((format!("AccountError: {e:?}"), Instant::now()));
             }

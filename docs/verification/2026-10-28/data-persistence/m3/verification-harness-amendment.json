@@ -1,0 +1,10 @@
+{
+  "production_source_unchanged": true,
+  "amended_files": [
+    "scripts/management_console_smoke.py",
+    "scripts/persistence_acceptance.py"
+  ],
+  "reason": "Bulk object migration exceeded the 300s harness wait; per-request/strategy/recovery/stop deadlines unchanged. Resume the same verified plan and complete remaining checks without rerunning engines.",
+  "original_frozen_sha256": "ae3efdd718aa8c0b06be0158b0431d8022b0be9049dfe28fa94fa199e9a6185f",
+  "amended_source_sha256": "9387eb8106ccd0da1eabfffcc95e30015d0c030aea7f2a2e0513f523285e8c46"
+}

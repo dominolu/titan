@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "host": "192.168.3.88",
+  "documents": 6,
+  "relative_links": 184,
+  "missing": [],
+  "source_files": 553,
+  "production_source_unchanged_from_m3": true,
+  "harness_matches_deployed_release": true,
+  "live_export_sha256_verified": true,
+  "binary_matches_m3_verified_artifact": true,
+  "stage_status": "M1-M4/P01-P14 complete within recorded scope"
+}

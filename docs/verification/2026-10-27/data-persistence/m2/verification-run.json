@@ -1,0 +1,145 @@
+{
+  "passed": true,
+  "server": "192.168.3.88",
+  "source_root": "/home/dominolu/dev/titan-persistence-m2-20261027-59973648",
+  "evidence_root": "/home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08",
+  "real_account_access": false,
+  "steps": [
+    {
+      "name": "rust-format",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-check",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-clippy",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-doctests",
+      "exit_code": 0
+    },
+    {
+      "name": "recovery-latency",
+      "exit_code": 0
+    },
+    {
+      "name": "cli-build",
+      "exit_code": 0
+    },
+    {
+      "name": "sdk-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "report-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "original-native-sqlite-recovery",
+      "exit_code": 0
+    },
+    {
+      "name": "maintenance",
+      "exit_code": 0
+    },
+    {
+      "name": "native-service-build",
+      "exit_code": 0
+    },
+    {
+      "name": "smoke-compile",
+      "exit_code": 0
+    },
+    {
+      "name": "native-service",
+      "exit_code": 0
+    },
+    {
+      "name": "native-negative-build",
+      "exit_code": 0
+    },
+    {
+      "name": "common-recovery",
+      "exit_code": 0
+    },
+    {
+      "name": "order-drain",
+      "exit_code": 0
+    },
+    {
+      "name": "timer-compile",
+      "exit_code": 0
+    },
+    {
+      "name": "timer-failure",
+      "exit_code": 0
+    },
+    {
+      "name": "dto-export",
+      "exit_code": 0
+    },
+    {
+      "name": "web-types",
+      "exit_code": 0
+    },
+    {
+      "name": "web-format",
+      "exit_code": 0
+    },
+    {
+      "name": "web-lint",
+      "exit_code": 0
+    },
+    {
+      "name": "web-cache",
+      "exit_code": 0
+    },
+    {
+      "name": "web-build",
+      "exit_code": 0
+    },
+    {
+      "name": "loopback-grid",
+      "exit_code": 0
+    },
+    {
+      "name": "history-query-isolation",
+      "exit_code": 0
+    },
+    {
+      "name": "readonly-image",
+      "exit_code": 0
+    },
+    {
+      "name": "readonly-observation",
+      "exit_code": 0
+    },
+    {
+      "name": "history-build",
+      "exit_code": 0
+    },
+    {
+      "name": "cli-result-bundle",
+      "exit_code": 0
+    },
+    {
+      "name": "historical-matrix",
+      "exit_code": 0
+    },
+    {
+      "name": "local-persistence",
+      "exit_code": 0
+    },
+    {
+      "name": "source-identity",
+      "exit_code": 0
+    }
+  ]
+}

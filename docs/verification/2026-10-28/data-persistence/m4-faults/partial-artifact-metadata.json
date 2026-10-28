@@ -1,0 +1,524 @@
+{
+  "build_host": "192.168.3.88",
+  "public_key": "5305b31f889cbec68aed73a311fa976923aaf47e31a1a1e627429e7228e0e35d",
+  "strategy_file_sha256": "b506c62e1372ced88229f4de2661458305aa3504102f32e3c7ea99b210f9130e",
+  "parameters": {
+    "account_no": 0,
+    "asset_no": 0,
+    "quote_currency_no": 1,
+    "direction": "long_bias",
+    "spacing_mode": "arithmetic",
+    "order_policy": "retain",
+    "anchor_mode": "order_average",
+    "lower_price_ticks": 600000,
+    "upper_price_ticks": 1100000,
+    "grid_levels": 1,
+    "buy_levels": 1,
+    "sell_levels": 0,
+    "size_mode": "fixed_qty",
+    "order_qty_lots": 2,
+    "allocated_capital_tick_lots": 10000000,
+    "leverage": 1,
+    "max_notional_tick_lots": 10000000,
+    "max_position_lots": 2,
+    "quote_units_per_tick_lot": 1000.0,
+    "stop_action": "flatten",
+    "flatten_timeout_ns": 8000000000,
+    "max_slippage_ticks": 5
+  },
+  "metadata": {
+    "abi_fingerprint": [
+      120,
+      100,
+      208,
+      190,
+      142,
+      27,
+      131,
+      176,
+      104,
+      55,
+      71,
+      191,
+      79,
+      223,
+      212,
+      204,
+      225,
+      248,
+      115,
+      119,
+      203,
+      63,
+      219,
+      151,
+      197,
+      106,
+      154,
+      39,
+      12,
+      122,
+      80,
+      237
+    ],
+    "abi_version": 13,
+    "build": {
+      "compiler": "titan-numba-bridge/2",
+      "llvmlite": [
+        20,
+        1,
+        8
+      ],
+      "numba": "0.63.1",
+      "python": "3.11.14"
+    },
+    "business_observation": {
+      "schema": {
+        "fields": [
+          {
+            "description": "",
+            "enum_values": [
+              "created",
+              "error",
+              "initializing",
+              "paused",
+              "reconciling",
+              "resetting",
+              "running",
+              "stopped",
+              "stopping",
+              "warming"
+            ],
+            "kind": "enum",
+            "label": "\u7f51\u683c\u4e1a\u52a1\u9636\u6bb5",
+            "name": "phase",
+            "nullable": false,
+            "unit": "state"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "\u7f51\u683c\u951a\u70b9",
+            "name": "anchor_ticks",
+            "nullable": true,
+            "unit": "price_tick"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "\u5b8c\u6210\u914d\u5bf9",
+            "name": "completed_pairs",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "\u914d\u5bf9\u6570\u91cf",
+            "name": "paired_lots",
+            "nullable": false,
+            "unit": "quantity_lot"
+          },
+          {
+            "description": "\u672a\u8ba1\u624b\u7eed\u8d39\u4e0e\u8d44\u91d1\u8d39\uff0c\u4e0d\u662f\u7b56\u7565\u51c0\u6536\u76ca",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "\u914d\u5bf9\u6bdb\u6536\u76ca",
+            "name": "paired_gross_tick_lots",
+            "nullable": false,
+            "unit": "tick_lot"
+          },
+          {
+            "description": "\u5b9e\u9645\u6301\u4ed3\u7531\u5e73\u53f0\u8d26\u6237\u670d\u52a1\u786e\u8ba4",
+            "enum_values": [],
+            "kind": "int64",
+            "label": "\u7b56\u7565\u671f\u671b\u5e93\u5b58",
+            "name": "expected_inventory_lots",
+            "nullable": false,
+            "unit": "quantity_lot"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "int64",
+            "label": "\u6700\u540e\u5904\u7406\u884c\u60c5\u65f6\u95f4",
+            "name": "last_market_at_ns",
+            "nullable": false,
+            "unit": "ns"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "\u4e1a\u52a1\u9519\u8bef\u7801",
+            "name": "last_error",
+            "nullable": false,
+            "unit": "code"
+          }
+        ],
+        "schema_id": "titan.grid",
+        "schema_version": 1
+      }
+    },
+    "callback_mask": 8179,
+    "callbacks": [
+      "on_start",
+      "on_recover",
+      "on_tick",
+      "on_fill",
+      "on_order",
+      "on_cancel",
+      "on_position",
+      "on_balance",
+      "on_account_state",
+      "on_timer",
+      "on_stop"
+    ],
+    "capabilities": [
+      "market_data",
+      "account_data",
+      "order_execution",
+      "timer",
+      "stop_barrier",
+      "recovery_order_results",
+      "pause_safe"
+    ],
+    "parameter_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "account_no": {
+          "default": 0,
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "allocated_capital_tick_lots": {
+          "default": 10000,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "anchor_mode": {
+          "default": "order_average",
+          "enum": [
+            "order_average",
+            "last_fill"
+          ],
+          "type": "string"
+        },
+        "asset_no": {
+          "default": 0,
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "buy_levels": {
+          "default": 1,
+          "maximum": 16,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cancel_retry_limit": {
+          "default": 3,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "direction": {
+          "default": "neutral",
+          "enum": [
+            "neutral",
+            "long_bias",
+            "short_bias"
+          ],
+          "type": "string"
+        },
+        "flatten_timeout_ns": {
+          "default": 120000000000,
+          "maximum": 1000000000000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "grid_levels": {
+          "default": 8,
+          "maximum": 4096,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "leverage": {
+          "default": 3,
+          "maximum": 125,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "lower_price_ticks": {
+          "default": 80,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "margin_reserve_pct": {
+          "default": 5.0,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "market_stale_after_ns": {
+          "default": 5000000000,
+          "maximum": 1000000000000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_loss_tick_lots": {
+          "default": 0,
+          "maximum": 4503599627370496,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_notional_tick_lots": {
+          "default": 10000,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_position_lots": {
+          "default": 0,
+          "maximum": 4503599627370496,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_rejections": {
+          "default": 5,
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_slippage_ticks": {
+          "default": 2,
+          "maximum": 4503599627370496,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min_notional_tick_lots": {
+          "default": 1,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "min_order_lots": {
+          "default": 1,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "neutral_mode": {
+          "default": "two_sided",
+          "enum": [
+            "two_sided",
+            "inventory_only"
+          ],
+          "type": "string"
+        },
+        "order_notional_tick_lots": {
+          "default": 200,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "order_policy": {
+          "default": "reset_pair",
+          "enum": [
+            "reset_pair",
+            "retain"
+          ],
+          "type": "string"
+        },
+        "order_qty_lots": {
+          "default": 2,
+          "maximum": 4503599627370496,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "order_timeout_ns": {
+          "default": 10000000000,
+          "maximum": 1000000000000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "quote_currency_no": {
+          "default": 0,
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "quote_units_per_tick_lot": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        "retry_backoff_ns": {
+          "default": 500000000,
+          "maximum": 1000000000000000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sell_levels": {
+          "default": 1,
+          "maximum": 16,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size_mode": {
+          "default": "fixed_qty",
+          "enum": [
+            "fixed_qty",
+            "fixed_notional",
+            "allocated",
+            "allocated_fixed_qty"
+          ],
+          "type": "string"
+        },
+        "spacing_mode": {
+          "default": "arithmetic",
+          "enum": [
+            "arithmetic",
+            "geometric"
+          ],
+          "type": "string"
+        },
+        "start_mode": {
+          "default": "strict",
+          "enum": [
+            "strict",
+            "takeover"
+          ],
+          "type": "string"
+        },
+        "stop_above_ticks": {
+          "default": 0,
+          "maximum": 4503599627370496,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stop_action": {
+          "default": "flatten",
+          "enum": [
+            "flatten",
+            "cancel"
+          ],
+          "type": "string"
+        },
+        "stop_below_ticks": {
+          "default": 0,
+          "maximum": 4503599627370496,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "upper_price_ticks": {
+          "default": 120,
+          "maximum": 4503599627370496,
+          "minimum": 2,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "protocol_version": 2,
+    "recovery_state_schema_hash": [
+      207,
+      196,
+      93,
+      38,
+      10,
+      255,
+      25,
+      129,
+      53,
+      207,
+      36,
+      51,
+      236,
+      97,
+      48,
+      147,
+      110,
+      53,
+      165,
+      176,
+      41,
+      206,
+      240,
+      172,
+      14,
+      205,
+      51,
+      31,
+      75,
+      146,
+      118,
+      114
+    ],
+    "recovery_state_schema_version": 3,
+    "source_version": "1.2.1",
+    "state_alignment": 8,
+    "state_len": 8048,
+    "strategy_type": "grid",
+    "subscriptions": [
+      {
+        "event": "bbo",
+        "handler": "on_tick",
+        "qos": "latest",
+        "schema_version": 1
+      },
+      {
+        "event": "fill",
+        "handler": "on_fill",
+        "qos": "reliable_ordered",
+        "schema_version": 2
+      },
+      {
+        "event": "order",
+        "handler": "on_order",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      },
+      {
+        "event": "cancel",
+        "handler": "on_cancel",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      },
+      {
+        "event": "position",
+        "handler": "on_position",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      },
+      {
+        "event": "balance",
+        "handler": "on_balance",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      },
+      {
+        "event": "account_state",
+        "handler": "on_account_state",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      },
+      {
+        "event": "timer",
+        "handler": "on_timer",
+        "qos": "reliable_ordered",
+        "schema_version": 1
+      }
+    ]
+  },
+  "strategy_source_sha256": "8a7c8169cf72ca17466a5bbfb5079e365220af8f3959ccc96a8a757bd5db6bc1",
+  "source_unchanged_from_frozen_candidate05": true,
+  "compiler_prepare_only_no_trading_connection": true
+}

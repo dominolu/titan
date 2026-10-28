@@ -4,6 +4,7 @@
 No credentials or account balances leave its private directory. Trading is performed only by E,
 through the same signed deployment and bounded management lifecycle used by the console.
 """
+import persistence_live_preflight as admission
 import argparse, hashlib, hmac, http.cookiejar, json, os, secrets, signal, socket, sqlite3, subprocess, sys, time
 from decimal import Decimal
 from pathlib import Path
@@ -21,9 +22,11 @@ def unit(c,s=0): return {"coefficient":c,"scale":s}
 def port():
     with socket.socket() as sock: sock.bind(("127.0.0.1",0)); return sock.getsockname()[1]
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("--root",type=Path,required=True);p.add_argument("--release",type=Path,required=True);p.add_argument("--expected-sha256",required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("--root",type=Path,required=True);p.add_argument("--release",type=Path,required=True);p.add_argument("--expected-sha256",required=True);p.add_argument("--preflight",type=Path,required=True);a=p.parse_args()
     assert sys.platform=="linux" and Path("/data/gate_arb").is_dir() and socket.gethostname()=="VM-0-33-ubuntu", "authorized live host required"
     assert a.root.is_absolute() and a.release.is_absolute()
+    preflight=json.loads(a.preflight.read_text());assert preflight["passed"] and 0<=time.time()-preflight["checked_at_unix"]<=600,"fresh GET-only preflight required"
+    assert all(preflight.get(name)==value for name,value in admission.POLICY.items()),"preflight policy mismatch"
     binary=a.release/"bin/titan"; source=a.release/"strategy_version-source"; manifest=json.loads((source/"manifest.json").read_text());strategy_version=manifest["strategy_version"]
     assert hashlib.file_digest(binary.open("rb"),"sha256").hexdigest()==a.expected_sha256
     blob=source/"operations"/strategy_version["body"]["operation_id"]/"strategy.titan"
@@ -54,11 +57,12 @@ def main():
     assert rule["state"]=="live" and Decimal(rule["tick_size"])==Decimal("0.1") and Decimal(rule["lot_size"])==Decimal("0.0001") and Decimal(rule["min_size"])==Decimal("0.0001")
     account=venue("/crossex/accounts");assert account["account_mode"]=="CROSS_EXCHANGE" and account["position_mode"]=="SINGLE"
     assert facts()==([],[]),"preexisting BTC risk prevents acceptance"
+    assert not [line for line in subprocess.check_output(["ps","-eo","comm"]).decode().splitlines() if line.strip()=="titan"],"another Titan owner exists"
     book=venue("/futures/usdt/order_book",(("contract","BTC_USDT"),("limit",1)),False);mid=(Decimal(book["bids"][0]["p"])+Decimal(book["asks"][0]["p"]))/2
     params=manifest["parameters"];assert params["order_qty_lots"]==1 and params["stop_action"]=="flatten" and params["quote_units_per_tick_lot"]==1000
     assert Decimal(params["lower_price_ticks"])/10<mid<Decimal(params["upper_price_ticks"])/10 and Decimal(300)/mid<Decimal("0.005")
     duration=lambda secs,nanos=0:{"secs":secs,"nanos":nanos};instrument={"native_symbol":SYMBOL,"asset_id":1,"price_tick":unit(1,1),"quantity_lot":unit(1,4)}
-    runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret_root),"startup_timeout_ms":30000},"strategy_service":{"trusted_ed25519_keys":{"acceptance":manifest["public_key"]}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":"","instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":"","ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","strategy_id":int(time.time()),"package":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"controlled-100-usdt","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(30),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"run_config_revision":1}]}
+    runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret_root),"startup_timeout_ms":30000},"strategy_service":{"trusted_ed25519_keys":{"acceptance":manifest["public_key"]}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":"","instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":"","ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","runtime_strategy_no":int(time.time()),"strategy_file":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"controlled-100-usdt","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(30),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"run_config_revision":1}]}
     runtime["accounts"][0]["instruments"][0]["linear_quote_currency"]=1
     runtime["strategies"][0]["runtime"]["checkpoint_interval"]=duration(60)
     private(a.root/"runtime.toml",toml(runtime));mp,np,bp=port(),port(),port();origin=f"http://127.0.0.1:{mp}";token,password=secrets.token_hex(32),secrets.token_hex(24);env={**os.environ,"TITAN_CONSOLE_LIVE_TOKEN":token,"RUST_LOG":"warn"}
@@ -98,8 +102,26 @@ def main():
     def resources(kind):return [r for r in call("/api/v2/snapshot")["resources"] if r["kind"]==kind]
     def resource(op,kind):return next(r for r in op["result"]["resources"] if r["kind"]==kind)
     def current():return next((r for r in resources("run") if active and r["id"]==active["id"]),None)
-    def control(kind):return completed(submit({"kind":kind,"run_id":active["id"],"generation":active["body"]["run_generation"]}))
-    def passed(name):checks.append(name);print(name+": passed",flush=True)
+    def control(kind):return completed(submit({"kind":kind,"run_id":active["id"],"expected_run_generation":active["body"]["run_generation"]}))
+    def passed(name):
+        checks.append(name);print(name+": passed",flush=True)
+        progress=a.root/"checks-progress.json";pending=progress.with_suffix(".tmp");pending.write_text(json.dumps(checks));pending.chmod(0o600);pending.replace(progress)
+    def fact_page(item,kind,cursor=None):
+        query={"kind":kind,"limit":200,"run_generation":item["body"]["run_generation"]}
+        if cursor:query["cursor"]=json.dumps(cursor)
+        return call(f"/api/v2/strategies/{item['body']['strategy_id']}/runs/{item['id']}/facts?"+parse.urlencode(query))
+    def archived(item,kind):
+        values=[];cursor=None;upper=None;recording=None
+        for _ in range(32):
+            page=fact_page(item,kind,cursor);recording=page["recording"]
+            if upper is None:upper=page["upper_row"]
+            assert page["upper_row"]==upper
+            values.extend(page["items"]);cursor=page.get("next_cursor")
+            if not cursor:break
+        assert not cursor,"finite acceptance archive exceeds page budget"
+        assert len({v["row_id"] for v in values})==len(values)
+        return values,recording
+
     try:
         buildp=start("build","node");nodep=start("live","node");managerp=start("manager","manager");session=wait(lambda:call("/api/v2/session",{"username":"operator","password":password}));csrf=session["csrf_token"]
         wait(lambda:resources("strategy_version") and resources("binding"));deployment=resource(completed(submit({"kind":"deploy","strategy_version_id":strategy_version["id"],"binding_id":"gate-btc"})),"deployment");passed("signed-remote-deployment")
@@ -121,16 +143,34 @@ def main():
         control("resume");wait(lambda:facts()[0],timeout=15);control("pause");wait(lambda:facts()==([],[]),timeout=15);time.sleep(1.5);passed("same-generation-resume-and-confirmed-cancel")
         observation=current()["body"]["observation"];pid=int(observation["pid"]);assert int(Path(f"/proc/{pid}/stat").read_text().rsplit(")",1)[1].split()[19])==int(observation["start_time"]);os.kill(pid,signal.SIGKILL)
         old=wait(lambda:(r if r["body"]["recovery_point_sha256"] and r["body"]["process_state"]=="UNKNOWN" else None) if (r:=current()) else None,timeout=15);passed("controlled-flat-crash-preserves-checkpoint")
-        checkpoint=next((a.root/"node/checkpoints").rglob("strategy-*.json"))
-        assert any(o["status"] not in (4,6,7,8) for o in json.loads(checkpoint.read_text())["orders_list"])
-        active=resource(completed(submit({"kind":"restore","run_id":old["id"],"generation":old["body"]["run_generation"],"recovery_point_sha256":old["body"]["recovery_point_sha256"]})),"run")
+        checkpoint=next((a.root/"node/checkpoints").rglob("runtime.db"))
+        with sqlite3.connect(checkpoint) as recovery_db:
+            payload=recovery_db.execute("SELECT payload FROM recovery_points WHERE sha256=?",(old["body"]["recovery_point_sha256"],)).fetchone()[0]
+        assert hashlib.sha256(payload).hexdigest()==old["body"]["recovery_point_sha256"]
+        unresolved=sum(o["status"] not in (4,6,7,8) for o in json.loads(payload)["orders_list"]);assert unresolved>0
+        selected_reference=old["body"]["recovery_reference"];assert selected_reference["payload_sha256"]==hashlib.sha256(payload).hexdigest()
+
+        active=resource(completed(submit({"kind":"restore","run_id":old["id"],"expected_run_generation":old["body"]["run_generation"],"recovery_point_sha256":old["body"]["recovery_point_sha256"]})),"run")
         assert int(active["body"]["run_generation"])>int(run["body"]["run_generation"]) and active["body"]["expires_at_ns"]==run["body"]["expires_at_ns"];passed("pinned-recovery-original-budget")
         passed("authoritative-historical-order-reconciliation")
+        managed=json.loads((a.root/"node/managed"/active["body"]["admission_operation_id"]/"managed.json").read_text())
+        assert managed["recovery_reference"]==selected_reference,"restore did not pin the selected SQLite record"
+        private(a.root/"recovery-proof.json",json.dumps({"passed":True,"backend":"local-sqlite","fixed_reference":selected_reference,"unresolved_checkpoint_orders":unresolved,"old_generation":run["body"]["run_generation"],"new_generation":active["body"]["run_generation"],"old_expires_at_ns":run["body"]["expires_at_ns"],"new_expires_at_ns":active["body"]["expires_at_ns"]},indent=2))
+        passed("fixed-sqlite-record-reference-and-original-expiry-preserved")
         control("stop");wait(lambda:(r if r["body"]["release_proof"]["safe"] else None) if (r:=current()) else None,timeout=20);assert facts()==([],[]);passed("engine-stop-proof-zero-residual-risk")
         with sqlite3.connect(a.root/"manager.sqlite3") as db:assert db.execute("SELECT COUNT(*) FROM occupancy").fetchone()[0]==0
         history=call(f"/api/v2/resources/{run['id']}/history?kind=order&generation={run['body']['run_generation']}");assert history["items"]
+        old_orders,old_recording=archived(run,"order");new_orders,new_recording=archived(active,"order");fills,_=archived(run,"fill");new_fills,_=archived(active,"fill")
+        assert old_orders and new_orders
+        for item,rows in ((run,old_orders),(active,new_orders)):
+            assert all(v["fact"]["scope"]["environment"]=="live" and v["fact"]["scope"]["account"]=="gate" and v["fact"]["scope"]["run_id"]==item["body"]["worker_id"] for v in rows)
+        assert int(old_recording["gap_count"])>0 and not old_recording["received_segment_complete"],"crashed source gap hidden"
+        private(a.root/"facts-proof.json",json.dumps({"passed":True,"backend":"sqlite","old_order_records":len(old_orders),"new_order_records":len(new_orders),"independent_fill_records":len(fills)+len(new_fills),"old_recording":old_recording,"new_recording":new_recording,"run_scopes_distinct":run["body"]["worker_id"]!=active["body"]["worker_id"],"venue_history_complete":False},indent=2))
+        passed("live-facts-persist-across-recovery-and-crashed-source-gap-is-visible")
+        inspect=subprocess.run([str(binary),"recovery","--database",str(checkpoint),"inspect"],capture_output=True,text=True,timeout=15);assert inspect.returncode==0;private(a.root/"recovery-inspect.json",inspect.stdout)
+
         elapsed=round(time.monotonic()-started,3);assert elapsed<=120
-        result={"passed":True,"checks":checks,"host":"43.130.234.54","account":"gate","account_id":1,"instrument":SYMBOL,"binary_sha256":a.expected_sha256,"artifact_sha256":manifest["strategy_file_sha256"],"max_exposure_quote":"100","max_price_deviation_bps":50,"maximum_run_seconds":120,"minimum_order_base":"0.0001","stop_action":"flatten","elapsed_seconds":elapsed,"final_target_orders":0,"final_target_positions":[],"order_facts_recorded":len(history["items"])}
+        result={"passed":True,"checks":checks,"host":"43.130.234.54","account":"gate","account_id":1,"instrument":SYMBOL,"binary_sha256":a.expected_sha256,"artifact_sha256":manifest["strategy_file_sha256"],"max_exposure_quote":"100","max_price_deviation_bps":50,"maximum_run_seconds":120,"minimum_order_base":"0.0001","stop_action":"flatten","elapsed_seconds":elapsed,"final_target_orders":0,"final_target_positions":[],"order_facts_recorded":len(history["items"]),"unified_order_facts_recorded":len(old_orders)+len(new_orders),"independent_fill_records":len(fills)+len(new_fills),"recovery_backend":"local-sqlite","preflight_checked_at_unix":preflight["checked_at_unix"]}
         private(a.root/"results.json",json.dumps(result,indent=2));print(json.dumps(result),flush=True)
     finally:
         # Keep A/N alive for a normal bounded Stop before shutting down management processes.
@@ -149,8 +189,14 @@ def main():
                 if stat.exists() and int(stat.read_text().rsplit(")",1)[1].split()[19])==int(stamp):os.kill(pid,signal.SIGTERM)
         deadline=time.monotonic()+20
         while True:
-            orders,positions=facts()
-            if not orders and not positions or time.monotonic()>=deadline:break
+            orders,positions=facts();remaining=[]
+            if registry.exists():
+                for pid,stamp in rows:
+                    stat=Path(f"/proc/{pid}/stat")
+                    if stat.exists() and int(stat.read_text().rsplit(")",1)[1].split()[19])==int(stamp):remaining.append(pid)
+            if not orders and not positions and not remaining or time.monotonic()>=deadline:break
             time.sleep(.5)
-        private(a.root/"postflight.json",json.dumps({"target_order_count":len(orders),"target_positions":[{k:v.get(k) for k in ("symbol","position_side","position_qty")} for v in positions]},indent=2))
+        clean=not orders and not positions and not remaining
+        private(a.root/"postflight.json",json.dumps({"passed":clean,"target_order_count":len(orders),"target_positions":[{k:v.get(k) for k in ("symbol","position_side","position_qty")} for v in positions],"remaining_owned_worker_pids":remaining},indent=2))
+        assert clean,"target exposure or owned worker remains; preserve private evidence"
 if __name__=="__main__":main()

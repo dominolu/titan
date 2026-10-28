@@ -1,0 +1,2 @@
+{"filter":{"account":"simulation","environment":"backtest","kind":null,"run_id":"53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57","strategy_id":null},"format":"titan_facts_v1","object":{"bytes":"1129368","sha256":"cf07dd0e16211d93a15fc84e843b644aa8efedd75d8a24275f387af0d12f90b6"},"recording":{"durable_upper_row":"1563","gap_count":"0","incomplete_sources":"0","received_segment_complete":true,"source_count":"1","unclosed_sources":"0","venue_history_complete":false},"records":"1563","schema_version":1,"upper_row":"1563"}
+

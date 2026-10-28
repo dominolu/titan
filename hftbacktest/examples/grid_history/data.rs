@@ -235,6 +235,15 @@ pub fn prepare(trades: &Path, quotes: &Path, funding: &Path, output: &Path) -> R
         }
     }
     writer.flush()?;
+    writer.get_ref().sync_all()?;
+    let parquet = output.with_extension("parquet");
+    titan_persistence::columnar::write_tape(
+        &parquet,
+        events
+            .iter()
+            .map(|e| [e.ts, i64::from(e.kind), e.a, e.b, e.c, e.d]),
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let summary = json!({
         "schema_version": 1, "trades": trades, "quotes": quotes, "funding": funding,
         "trade_rows": trade_rows, "quote_rows": quote_rows, "invalid_quotes_omitted": invalid_quotes,
@@ -247,7 +256,7 @@ pub fn prepare(trades: &Path, quotes: &Path, funding: &Path, output: &Path) -> R
         "sub_order_tick_trades": sub_tick_trades, "sub_order_tick_quotes": sub_tick_quotes,
         "input_price_unit_usdt": 0.01, "order_tick_usdt": 0.1,
         "market_return_pct": (last_trade.a as f64 / first_trade.a as f64 - 1.0) * 100.0,
-        "funding_events_in_utc_day": funding_count,
+        "funding_events_in_utc_day": funding_count,"parquet":parquet,"parquet_schema":"titan_integer_tape_v1",
     });
     std::fs::write(
         output.with_extension("json"),
@@ -257,7 +266,28 @@ pub fn prepare(trades: &Path, quotes: &Path, funding: &Path, output: &Path) -> R
     Ok(())
 }
 
-pub fn read(path: &Path) -> Result<Vec<MarketEvent>> {
+pub fn scan(path: &Path, mut visit: impl FnMut(MarketEvent) -> Result<()>) -> Result<u64> {
+    if path.extension().is_some_and(|e| e == "parquet") {
+        let mut last = 0;
+        return titan_persistence::columnar::scan_tape(path, |v| {
+            if v[0] < last || !(0..=3).contains(&v[1]) {
+                return Err(titan_persistence::failure(
+                    "unordered/invalid history event",
+                ));
+            }
+            last = v[0];
+            visit(MarketEvent {
+                ts: v[0],
+                kind: v[1] as u8,
+                a: v[2],
+                b: v[3],
+                c: v[4],
+                d: v[5],
+            })
+            .map_err(|e| titan_persistence::failure(&e.to_string()))
+        })
+        .map_err(|e| anyhow::anyhow!(e.to_string()));
+    }
     let mut reader = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut header = [0_u8; 12];
     reader.read_exact(&mut header)?;
@@ -268,7 +298,6 @@ pub fn read(path: &Path) -> Result<Vec<MarketEvent>> {
         reader.get_ref().metadata()?.len() == 12 + count * 48,
         "history cache length mismatch"
     );
-    let mut events = Vec::with_capacity(count as usize);
     let mut bytes = [0_u8; 48];
     let mut last_ts = 0;
     for _ in 0..count {
@@ -281,15 +310,24 @@ pub fn read(path: &Path) -> Result<Vec<MarketEvent>> {
             "unordered/invalid history event"
         );
         last_ts = values[0];
-        events.push(MarketEvent {
+        visit(MarketEvent {
             ts: values[0],
             kind: values[1] as u8,
             a: values[2],
             b: values[3],
             c: values[4],
             d: values[5],
-        });
+        })?;
     }
+    Ok(count)
+}
+#[cfg(test)]
+pub fn read(path: &Path) -> Result<Vec<MarketEvent>> {
+    let mut events = Vec::new();
+    scan(path, |e| {
+        events.push(e);
+        Ok(())
+    })?;
     Ok(events)
 }
 
@@ -302,6 +340,36 @@ mod tests {
         assert_eq!(units("0.01300000", 3).unwrap(), 13);
         for bad in ["0.0001", "NaN", "-1", "1e3"] {
             assert!(units(bad, 3).is_err());
+        }
+    }
+    #[test]
+    fn binary_and_parquet_tapes_preserve_exact_integer_units_and_source_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("tape.bin");
+        let parquet = dir.path().join("tape.parquet");
+        let rows = [
+            [100_i64, 0, 2600001, 13, 2600009, 17],
+            [100, 2, 2600003, 1, 0, 0],
+            [101, 3, 0.0001_f64.to_bits() as i64, 0, 0, 0],
+        ];
+        let mut file = File::create(&binary).unwrap();
+        file.write_all(b"GHB3").unwrap();
+        file.write_all(&(rows.len() as u64).to_le_bytes()).unwrap();
+        for row in rows {
+            for value in row {
+                file.write_all(&value.to_le_bytes()).unwrap();
+            }
+        }
+        drop(file);
+        titan_persistence::columnar::write_tape(&parquet, rows.into_iter()).unwrap();
+        let a = read(&binary).unwrap();
+        let b = read(&parquet).unwrap();
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.into_iter().zip(b) {
+            assert_eq!(
+                (a.ts, a.kind, a.a, a.b, a.c, a.d),
+                (b.ts, b.kind, b.a, b.b, b.c, b.d)
+            );
         }
     }
 }

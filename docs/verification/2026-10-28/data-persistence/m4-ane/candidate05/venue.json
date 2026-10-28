@@ -1,0 +1,550 @@
+{
+  "calls": [
+    [
+      "GET",
+      "rule/symbols"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "open_orders"
+    ],
+    [
+      "GET",
+      "positions"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "account_book"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "rule/symbols"
+    ],
+    [
+      "POST",
+      "orders"
+    ],
+    [
+      "GET",
+      "orders/2072784922592768"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "account_book"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "account_book"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "rule/symbols"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "open_orders"
+    ],
+    [
+      "GET",
+      "positions"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "account_book"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "accounts"
+    ],
+    [
+      "GET",
+      "rule/symbols"
+    ],
+    [
+      "POST",
+      "orders"
+    ],
+    [
+      "GET",
+      "orders/2072784922592769"
+    ],
+    [
+      "GET",
+      "accounts"
+    ]
+  ],
+  "failed": [],
+  "ws_frames": [
+    {
+      "path": "/public",
+      "private": false
+    },
+    {
+      "path": "/private",
+      "private": true
+    },
+    {
+      "received": "login",
+      "channel": null
+    },
+    {
+      "received": "subscribe",
+      "channel": "order"
+    },
+    {
+      "received": "subscribe",
+      "channel": "position"
+    },
+    {
+      "received": "subscribe",
+      "channel": "asset"
+    },
+    {
+      "received": "subscribe",
+      "channel": "usertrades"
+    },
+    {
+      "path": "/public",
+      "private": false
+    },
+    {
+      "received": "subscribe",
+      "channel": "ticker"
+    },
+    {
+      "sent": "order",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": "NEW"
+    },
+    {
+      "sent": "position",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "order",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": "FILLED"
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "path": "/public",
+      "private": false
+    },
+    {
+      "path": "/private",
+      "private": true
+    },
+    {
+      "received": "login",
+      "channel": null
+    },
+    {
+      "received": "subscribe",
+      "channel": "order"
+    },
+    {
+      "received": "subscribe",
+      "channel": "position"
+    },
+    {
+      "received": "subscribe",
+      "channel": "asset"
+    },
+    {
+      "received": "subscribe",
+      "channel": "usertrades"
+    },
+    {
+      "path": "/public",
+      "private": false
+    },
+    {
+      "received": "subscribe",
+      "channel": "ticker"
+    },
+    {
+      "sent": "usertrades",
+      "connections": 2,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "order",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": "NEW"
+    },
+    {
+      "sent": "position",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "order",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": "FILLED"
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "sent": "usertrades",
+      "connections": 1,
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "state": null
+    },
+    {
+      "path": "/public",
+      "private": false
+    }
+  ],
+  "delivery": [
+    {
+      "channel": "position",
+      "position_qty": "0.0001",
+      "opening": true
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "initial"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "initial"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "initial"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "restored"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "restored"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594048",
+      "process_phase": "restored"
+    },
+    {
+      "channel": "position",
+      "position_qty": "0",
+      "opening": false
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594049",
+      "process_phase": "restored"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594049",
+      "process_phase": "restored"
+    },
+    {
+      "channel": "usertrades",
+      "transaction_id": "2072784922594049",
+      "process_phase": "restored"
+    }
+  ],
+  "trades": [
+    {
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "transaction_id": "2072784922594048",
+      "order_id": "2072784922592768",
+      "text": "22ca838c3ae2e0520100000000000000",
+      "side": "BUY",
+      "qty": "0.0001",
+      "price": "80800.1",
+      "fee": "0.00404001",
+      "fee_coin": "USDT",
+      "fee_rate": "0.0005",
+      "rpnl": "0",
+      "match_role": "TAKER",
+      "position_mode": "SINGLE",
+      "position_side": "NONE",
+      "create_time": "1793160302995"
+    },
+    {
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "transaction_id": "2072784922594049",
+      "order_id": "2072784922592769",
+      "text": "22ca838c3ae2e0520100000001000000",
+      "side": "SELL",
+      "qty": "0.0001",
+      "price": "80800.0",
+      "fee": "0.00404000",
+      "fee_coin": "USDT",
+      "fee_rate": "0.0005",
+      "rpnl": "-0.00001",
+      "match_role": "TAKER",
+      "position_mode": "SINGLE",
+      "position_side": "NONE",
+      "create_time": "1793160373343"
+    }
+  ],
+  "orders": {
+    "2072784922592768": {
+      "position_side": "NONE",
+      "price": "80800.6",
+      "qty": "0.0001",
+      "reduce_only": "false",
+      "side": "BUY",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "text": "22ca838c3ae2e0520100000000000000",
+      "time_in_force": "IOC",
+      "type": "LIMIT",
+      "order_id": "2072784922592768",
+      "state": "FILLED",
+      "executed_qty": "0.0001",
+      "executed_avg_price": "80800.1",
+      "create_time": "1793160302992",
+      "update_time": "1793160302994",
+      "last_executed_qty": "0.0001",
+      "last_executed_price": "80800.1",
+      "fee": "0.00404001",
+      "fee_coin": "USDT"
+    },
+    "2072784922592769": {
+      "position_side": "NONE",
+      "price": "80799.5",
+      "qty": "0.0001",
+      "reduce_only": "true",
+      "side": "SELL",
+      "symbol": "GATE_FUTURE_BTC_USDT",
+      "text": "22ca838c3ae2e0520100000001000000",
+      "time_in_force": "IOC",
+      "type": "LIMIT",
+      "order_id": "2072784922592769",
+      "state": "FILLED",
+      "executed_qty": "0.0001",
+      "executed_avg_price": "80800.0",
+      "create_time": "1793160373340",
+      "update_time": "1793160373342",
+      "last_executed_qty": "0.0001",
+      "last_executed_price": "80800.0",
+      "fee": "0.00404000",
+      "fee_coin": "USDT"
+    }
+  }
+}

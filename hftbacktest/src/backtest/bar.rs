@@ -164,6 +164,8 @@ enum BarDelivery {
 
 #[derive(Debug, Error)]
 pub enum BarExecutionError {
+    #[error("persistent audit failed: {0}")]
+    Persistence(String),
     #[error(transparent)]
     Coordinator(#[from] TickCoordinatorError),
     #[error(transparent)]
@@ -270,6 +272,20 @@ impl BarExecutionState {
         self.audit_run_id = run_id;
         self.audit_sequence = 0;
     }
+    pub fn enable_persistent_audit(&mut self, run_id: u64, writer: titan_persistence::RunRecorder) {
+        self.audit = AuditRecorder::persistent(writer);
+        self.audit_run_id = run_id;
+        self.audit_sequence = 0;
+    }
+    pub fn finish_audit(
+        &mut self,
+        timestamp: i64,
+        outcome: serde_json::Value,
+    ) -> Result<(), BarExecutionError> {
+        self.audit
+            .finish(timestamp, outcome)
+            .map_err(|e| BarExecutionError::Persistence(e.to_string()))
+    }
 
     pub fn audit(&self) -> &AuditRecorder {
         &self.audit
@@ -346,6 +362,9 @@ impl BarExecutionState {
         command: OrderCommand,
         local_submit_ts: i64,
     ) -> Result<RiskDecision, BarExecutionError> {
+        self.audit
+            .check()
+            .map_err(|e| BarExecutionError::Persistence(e.to_string()))?;
         self.record_audit(AuditEvent {
             timestamp: local_submit_ts,
             phase: EventPhase::StrategyCallback,
@@ -717,6 +736,9 @@ impl BarExecutionState {
     }
 
     pub fn deliver_next(&mut self) -> Result<bool, BarExecutionError> {
+        self.audit
+            .check()
+            .map_err(|e| BarExecutionError::Persistence(e.to_string()))?;
         if !self
             .deliveries
             .peek()

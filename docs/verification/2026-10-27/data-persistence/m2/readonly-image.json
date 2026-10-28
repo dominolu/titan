@@ -1,0 +1,279 @@
+{
+  "account": "gate",
+  "account_health": {
+    "state": "Ready"
+  },
+  "account_snapshot": {
+    "available": true,
+    "image": {
+      "account": "gate",
+      "account_generation": "1",
+      "account_id": "1",
+      "attribution": "account",
+      "balances": [
+        {
+          "available_units": "100000000",
+          "currency_id": "0",
+          "margin_units": "1000000",
+          "unrealized_pnl_units": "-17",
+          "wallet_units": "123456789"
+        }
+      ],
+      "captured_at_ns": "1700000000000000000",
+      "completeness": {
+        "account_image": true,
+        "missing": [
+          "funding_coverage",
+          "cashflow_coverage",
+          "mark_price",
+          "unsettled_fill_reconciliation"
+        ],
+        "performance": false,
+        "risk": false
+      },
+      "currencies": [
+        {
+          "amount_unit": {
+            "coefficient": "1",
+            "scale": "6"
+          },
+          "currency_id": "0",
+          "native_currency": "USDT"
+        }
+      ],
+      "epoch": "1",
+      "equity": [
+        {
+          "amount": "123.456772",
+          "amount_unit": "0.000001",
+          "amount_units": "123456772",
+          "currency": "USDT",
+          "currency_id": "0",
+          "valuation_complete": true
+        }
+      ],
+      "instruments": [
+        {
+          "asset_id": "1",
+          "contract_multiplier": {
+            "coefficient": "1",
+            "scale": "0"
+          },
+          "native_symbol": "BTC_USDT",
+          "price_tick": {
+            "coefficient": "1",
+            "scale": "1"
+          },
+          "quantity_lot": {
+            "coefficient": "1",
+            "scale": "4"
+          }
+        }
+      ],
+      "max_drawdown": null,
+      "max_exposure": null,
+      "net_pnl": null,
+      "orders": [
+        {
+          "asset_id": "1",
+          "client_order_id": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ],
+          "command_id": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "filled_quantity_lots": "4",
+          "order_type": "0",
+          "position_side": "0",
+          "price_ticks": "1000000",
+          "quantity_lots": "10",
+          "reduce_only": false,
+          "side": "1",
+          "status": "1",
+          "time_in_force": "0",
+          "venue_order_id": [
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1",
+            "1"
+          ]
+        },
+        {
+          "asset_id": "1",
+          "client_order_id": [
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ],
+          "command_id": [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ],
+          "filled_quantity_lots": "3",
+          "order_type": "0",
+          "position_side": "0",
+          "price_ticks": "1000000",
+          "quantity_lots": "3",
+          "reduce_only": false,
+          "side": "1",
+          "status": "1",
+          "time_in_force": "0",
+          "venue_order_id": [
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2",
+            "2"
+          ]
+        }
+      ],
+      "positions": [
+        {
+          "asset_id": "1",
+          "entry_price_ticks": "1000000",
+          "liquidation_price_ticks": "0",
+          "margin_currency_id": "0",
+          "margin_type": "0",
+          "position_side": "1",
+          "quantity_lots": "7",
+          "realized_pnl_units": "0",
+          "unrealized_pnl_units": "0"
+        },
+        {
+          "asset_id": "1",
+          "entry_price_ticks": "1000000",
+          "liquidation_price_ticks": "0",
+          "margin_currency_id": "0",
+          "margin_type": "0",
+          "position_side": "2",
+          "quantity_lots": "-2",
+          "realized_pnl_units": "0",
+          "unrealized_pnl_units": "0"
+        }
+      ],
+      "provider": "test-provider",
+      "risk": {
+        "assets": [
+          {
+            "actual_gross_lots": "9",
+            "asset_id": "1",
+            "known_order_remaining_lots": "6",
+            "known_quantity_bound_lots": "15"
+          }
+        ],
+        "complete": false,
+        "missing": [
+          "mark_price",
+          "unacknowledged_intents",
+          "unsettled_fill_reconciliation"
+        ],
+        "notional": null,
+        "scope": "coherent_account_image"
+      },
+      "version": "7"
+    }
+  },
+  "available": true,
+  "captured_at_ns": "1700000000000000000",
+  "financial": {
+    "attribution": "account",
+    "independent_fills_observed": "0",
+    "max_drawdown": null,
+    "net_pnl": null,
+    "recording": {
+      "history_complete": false,
+      "missing": [
+        "strategy_attribution",
+        "cashflow_coverage"
+      ]
+    }
+  },
+  "generation": "one",
+  "instrument": "BTC_USDT",
+  "mode": "observe",
+  "process_state": "running",
+  "readonly": true,
+  "run_id": "fixture",
+  "source": "test_account_service",
+  "strategies": []
+}

@@ -1,0 +1,17 @@
+{
+  "engine_stop_budget_seconds": 10,
+  "observed_receipt_seconds": 12.453297833912075,
+  "runtime_receipt": {
+    "detail": "stop_drain_deadline_exceeded",
+    "input": {
+      "action": "stop",
+      "digest": "a5557065da295dcd28bb02d73c01ed1d005cf2186852d5bbc62a7e6b3fd0a3ee",
+      "expected_run_generation": "1",
+      "id": "d2f1bb30e48eaf88e615130be800d6818dc2f5ccf63d568621694ce31282de83"
+    },
+    "runtime_operation_id": "3",
+    "state": "failed"
+  },
+  "duplicate_request_same_operation": true,
+  "original_run_expiry_unchanged": true
+}

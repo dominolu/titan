@@ -1,0 +1,27 @@
+[package]
+name = "titan-persistence"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+
+[dependencies]
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "cache", "fallible_uint", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+tempfile = "3"
+libc = "0.2"
+parquet = { version = "=58.4.0", default-features = false }
+titan-domain-types = { path = "../titan-domain-types" }
+postgres = "=0.19.14"
+tokio-postgres = "=0.7.18"
+futures-util = "0.3"
+postgres-native-tls = "=0.5.3"
+native-tls = "0.2"
+aws-sdk-s3 = "=1.116.0"
+tokio = { version = "1", features = ["rt", "time", "fs", "io-util"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+[dev-dependencies]
+

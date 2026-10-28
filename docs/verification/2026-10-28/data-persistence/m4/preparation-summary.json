@@ -1,0 +1,32 @@
+{
+  "stage": "M4/P14",
+  "preparation_passed": true,
+  "live_acceptance_passed": false,
+  "status": "awaiting_ssh_authentication_and_live_preflight",
+  "build_host": "192.168.3.88",
+  "binary_sha256": "40ebe284c1c26ec66bcdc53942803033b521263f44670f752897ace26e01e8d3",
+  "production_source_unchanged_from_M3": true,
+  "existing_source_changes": [
+    "scripts/management_live_control.py"
+  ],
+  "m4_harness_sha256": {
+    "scripts/management_live_control.py": "52866c07c61867df26ec49b0a5536a573a6221d2bd8ad00d0d676eb21abf5c9d",
+    "scripts/persistence_live_preflight.py": "4c2cd6264b8dc2d44b30cabb68f6eeab734290ed7b9e4ea356aeffc5ed234dd6",
+    "scripts/test_persistence_live_preflight.py": "0ec3b497a40b5b170fe7713cf2a7c5f6eac22007a8e75421588f4e63e2c6d1c4"
+  },
+  "admission_unit_tests_passed": 6,
+  "native_signature_validation_passed": true,
+  "package_ready": true,
+  "relative_document_links": 137,
+  "missing_links": [],
+  "live_account_requests_executed": false,
+  "live_orders_submitted": 0,
+  "deployed_to_live": false,
+  "initial_status": "awaiting_ssh_operator_authorization_then_fresh_preflight",
+  "root_login_authorized": true,
+  "specified_key_readable": true,
+  "root_authentication_succeeded": false,
+  "latest_access_record": "ssh-access.json",
+  "record_scope": "Historical preparation snapshot; current outcome is summary.json",
+  "current_outcome": "summary.json"
+}

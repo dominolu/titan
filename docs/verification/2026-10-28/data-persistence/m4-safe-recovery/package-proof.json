@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "candidate": "candidate07",
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "archive_sha256": "71748abe744418a6d7d2f36d3926ca6b6c70bddc2e82a27c7385674c7e20fd5b",
+  "files": 64,
+  "source_files": 563,
+  "rust_tests": {
+    "passed": 655,
+    "ignored": 24
+  },
+  "doctests": {
+    "passed": 2,
+    "ignored": 1
+  },
+  "real_host_contacted": false
+}

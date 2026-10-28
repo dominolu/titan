@@ -1,0 +1,1 @@
+pnpm exec eslint src/views/console src/api/console.ts --max-warnings 0

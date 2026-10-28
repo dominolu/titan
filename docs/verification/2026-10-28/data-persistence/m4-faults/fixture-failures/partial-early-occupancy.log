@@ -1,0 +1,15 @@
+frozen-candidate05-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate05-deployed-without-recompile: passed
+partial-one-lot-consumed-with-one-lot-still-unfilled-no-extra-opening: passed
+two-native-trade-ids-advance-partial-cumulative-quantity-and-fees-once: passed
+fixed-SQLite-cross-process-recovery-replays-preserve-consumed-partial-boundaries-and-original-expiry: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_recovery_smoke.py", line 568, in <module>
+    main()
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_recovery_smoke.py", line 401, in main
+    result = run_case({"root": root, "venue": venue, "args": args, "checkpoint": checkpoint,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_fill_fault_smoke.py", line 327, in run_case
+    assert venue.net == 0 and len(venue.orders) == 2 and occupancy() == 0
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

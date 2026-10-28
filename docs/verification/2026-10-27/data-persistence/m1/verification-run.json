@@ -1,0 +1,112 @@
+{
+  "server": "192.168.3.88",
+  "source_root": "/home/dominolu/dev/titan-recovery-m1-20261027-59973648",
+  "source_baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "evidence_root": "/home/dominolu/dev/titan-recovery-m1-20261027-59973648/evidence/m1-final-09",
+  "exit_code": 0,
+  "steps": [
+    {
+      "name": "rust-format",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-check",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-clippy",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "rust-doctests",
+      "exit_code": 0
+    },
+    {
+      "name": "cli-build",
+      "exit_code": 0
+    },
+    {
+      "name": "sdk-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "report-tests",
+      "exit_code": 0
+    },
+    {
+      "name": "original-native-sqlite-recovery",
+      "exit_code": 0
+    },
+    {
+      "name": "maintenance",
+      "exit_code": 0
+    },
+    {
+      "name": "native-service-build",
+      "exit_code": 0
+    },
+    {
+      "name": "smoke-compile",
+      "exit_code": 0
+    },
+    {
+      "name": "native-service",
+      "exit_code": 0
+    },
+    {
+      "name": "native-negative-build",
+      "exit_code": 0
+    },
+    {
+      "name": "common-recovery",
+      "exit_code": 0
+    },
+    {
+      "name": "order-drain",
+      "exit_code": 0
+    },
+    {
+      "name": "timer-compile",
+      "exit_code": 0
+    },
+    {
+      "name": "timer-failure",
+      "exit_code": 0
+    },
+    {
+      "name": "dto-export",
+      "exit_code": 0
+    },
+    {
+      "name": "web-types",
+      "exit_code": 0
+    },
+    {
+      "name": "web-build",
+      "exit_code": 0
+    },
+    {
+      "name": "loopback-grid",
+      "exit_code": 0
+    },
+    {
+      "name": "history-query-isolation",
+      "exit_code": 0
+    },
+    {
+      "name": "source-identity",
+      "exit_code": 0
+    }
+  ],
+  "latency_probe_exit_code": 0,
+  "frozen_binary": "/home/dominolu/dev/titan-recovery-m1-20261027-59973648/evidence/m1-final-09/artifacts/titan",
+  "frozen_web": "/home/dominolu/dev/titan-recovery-m1-20261027-59973648/evidence/m1-final-09/artifacts/console-dist",
+  "binary_sha256": "c402d1e84ac49ba854a4c48b46a8e376d0b8849966e06b630dbf65dc6c719bae",
+  "real_account_access": false,
+  "live_deployment": false,
+  "sqlite_version": "3.53.2"
+}

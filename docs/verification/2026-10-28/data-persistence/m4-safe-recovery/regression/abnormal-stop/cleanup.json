@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "acceptance_passed": true,
+  "remaining_owned_workers": [],
+  "management_processes_exited": true,
+  "synthetic_credentials_removed": true,
+  "real_host_contacted": false
+}

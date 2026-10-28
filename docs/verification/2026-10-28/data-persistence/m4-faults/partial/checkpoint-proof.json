@@ -1,0 +1,12 @@
+{
+  "reference": {
+    "payload_sha256": "b94f8fc36f9d0a498f807c4e2268a1ef62e95506d459d47d56f310f5c459609e",
+    "record_id": "248a167fd80e03989b1887e3e4c4e1ce",
+    "runtime_strategy_no": 77,
+    "store_id": "363fab19751f8ce24f44758455a901a7"
+  },
+  "position_lots": 2,
+  "pending_execution": false,
+  "checkpoint_seconds": 60,
+  "elapsed_seconds": 65.48548178840429
+}

@@ -1,0 +1,33 @@
+{
+  "passed": true,
+  "repository": "https://github.com/dominolu/titan",
+  "branch": "codex/management-console",
+  "base_commit": "5997364864861fdd5d8c649b93e54161018f703d",
+  "review_host": "192.168.3.88",
+  "reviewed_files": 749,
+  "reviewed_bytes": 5811868,
+  "frozen_candidate07_source_files_verified": 563,
+  "document_links_checked": 461,
+  "credential_material_findings": [],
+  "binaries_databases_and_private_keys_excluded": true,
+  "unrelated_work_retained_locally": [
+    "docs/cross_venue_implementation_plan.md",
+    "docs/cross_venue_trading_design.md",
+    "docs/perp_dex_research.md",
+    "strategies/orderflow_events/"
+  ],
+  "publication_only_document_projection": {
+    "reason": "Publish persistence/recovery sections only; retain unrelated cross-venue drafts in the working tree.",
+    "published_sha256": {
+      "docs/README.md": "b0f87b5d0a2fa173803875568a64c65d2f8ab3e4d570d0e55c6f21af221f949c",
+      "docs/memory/engineering.md": "241c1e3d19f659ca836fd6f0a03e20080e8d5b99927ee94faab444baf7a188ac"
+    },
+    "previous_validation_working_document_sha256": {
+      "docs/README.md": "ba618039549e3dbd8b0a31244552e8841e227e2733ce16c03dc5da89aba35ea4",
+      "docs/memory/engineering.md": "d36a028b773994cbd98f11c8ebc5dd6f361de1c0d1b174e5797fcaf61d302f2a"
+    }
+  },
+  "previous_validation_evidence_retained_unchanged": true,
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

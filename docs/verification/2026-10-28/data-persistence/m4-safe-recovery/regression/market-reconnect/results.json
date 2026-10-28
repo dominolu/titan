@@ -1,0 +1,56 @@
+{
+  "passed": true,
+  "scenario": "market-reconnect",
+  "expected_runtime_outcome": "safe_flat_stop",
+  "candidate": "candidate07",
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "public-socket-reconnects-and-protective-exit-completes-before-original-Stop-deadline",
+    "trusted-facts-Stop-flattens-with-reduce-only-and-releases-only-local-simulated-occupancy"
+  ],
+  "operations": [
+    {
+      "id": "cf067c645fdee919b96d5b843f7577964feb5a0ad19be908e5af673066372126",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "de75f1410a9bbb4ad44f6f163e6348aaa45c029044eefa65039546f4825d46c3",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "c1b657f095d975468c5421254379348ebe15483f13c1180723659e875d24c2f8",
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "elapsed_seconds": 10.589771967381239,
+  "observed_stop_receipt_seconds": 1.686402890831232,
+  "engine_stop_budget_seconds": 10,
+  "checkpoint_seconds": 60,
+  "startup_seconds": 30,
+  "handler_seconds": 1,
+  "maximum_run_seconds": 120,
+  "old_expires_at_ns": "1793166956853571207",
+  "new_expires_at_ns": "1793166956853571207",
+  "old_generation": "1",
+  "new_generation": "1",
+  "reference": null,
+  "simulated_position_base": "0",
+  "local_simulated_occupancy_rows": 0,
+  "independent_fill_rows": 2,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:37833/api/v4",
+    "public_ws_url": "ws://127.0.0.1:37833/public",
+    "private_ws_url": "ws://127.0.0.1:37833/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

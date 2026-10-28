@@ -1,0 +1,42 @@
+{
+  "host": "192.168.3.88",
+  "root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648",
+  "postgres_version": "postgres (PostgreSQL) 15.12",
+  "s3_version": "minio version DEVELOPMENT.GOGET (commit-id=DEVELOPMENT.GOGET)\nRuntime: go1.24.9 linux/amd64\nLicense: GNU AGPLv3 - https://www.gnu.org/licenses/agpl-3.0.html\nCopyright: 2015-0000 MinIO, Inc.",
+  "images": {
+    "postgres_image": "sha256:afbf3abf6aebfb3abfea8826d7cf31971664716a8793c59c70475545d4161f36",
+    "s3_image": "sha256:5bce59c37cd60cc933575b856041f1ed1363beb418acd9c4d4b7e7bdc10ce770"
+  },
+  "s3_image_digest": "sha256:cf23643a6cf9ce159c57643ceb88279e431262282428c9e0bf3a7ef1a97e84b4",
+  "services": {
+    "postgres": {
+      "status": "running",
+      "ports": {
+        "5432/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "32778"
+          }
+        ]
+      },
+      "restart": "no"
+    },
+    "s3": {
+      "status": "running",
+      "ports": {
+        "9000/tcp": [
+          {
+            "HostIp": "127.0.0.1",
+            "HostPort": "32779"
+          }
+        ],
+        "9001/tcp": null
+      },
+      "restart": "no"
+    }
+  },
+  "filesystem": "Filesystem                           Type  1K-blocks       Used  Available Use% Mounted on\n/dev/mapper/ubuntu--vg-ubuntu--lv    ext4 3841964144 2584413644 1062343332  71% /home\n/dev/mapper/ubuntu--vg--1-ubuntu--lv ext4  957682616  591455908  326199328  65% /",
+  "postgres_durability": "on\non\non",
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "git_status": "isolated snapshot; not a Git checkout"
+}

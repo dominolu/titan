@@ -4,7 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -153,15 +153,64 @@ pub struct StrategyOrderRecordV13 {
 }
 
 pub trait StrategyRecoveryStore: Send + Sync {
+    /// Admission budget for a new runtime, never extends an existing runtime deadline.
+    fn minimum_handler_budget(&self) -> Option<Duration> {
+        None
+    }
+    fn durable(&self) -> bool {
+        false
+    }
+    fn load_pinned(
+        &self,
+        _strategy: RuntimeStrategyNo,
+        _sha: Option<&str>,
+    ) -> LocalResult<Option<StrategyRecoveryPoint>> {
+        Err(crate::recovery_storage::storage_error(
+            "recovery_read_unsupported",
+        ))
+    }
+    fn load_reference(&self, _reference: &RecoveryPointRef) -> LocalResult<StrategyRecoveryPoint> {
+        Err(crate::recovery_storage::storage_error(
+            "recovery_read_unsupported",
+        ))
+    }
+    fn reserve_generation(&self, _strategy: RuntimeStrategyNo, _minimum: u64) -> LocalResult<u64> {
+        Err(crate::recovery_storage::storage_error(
+            "recovery_generation_unsupported",
+        ))
+    }
+    fn pin(&self, _reference: &RecoveryPointRef, _operation: &str) -> LocalResult<()> {
+        Err(crate::recovery_storage::storage_error(
+            "recovery_pin_unsupported",
+        ))
+    }
+    fn unpin(&self, _reference: &RecoveryPointRef, _operation: &str) -> LocalResult<()> {
+        Err(crate::recovery_storage::storage_error(
+            "recovery_pin_unsupported",
+        ))
+    }
     fn latest(&self, _strategy: StrategyHandle) -> LocalResult<Option<StrategyRecoveryPoint>> {
         Ok(None)
     }
     fn submit(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()>;
+    fn submit_token(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<RecoverySubmitToken> {
+        self.submit(snapshot)?;
+        Ok(RecoverySubmitToken {
+            session: String::new(),
+            sequence: 0,
+        })
+    }
+    fn flush_through(&self, _token: &RecoverySubmitToken, deadline: Instant) -> LocalResult<()> {
+        self.flush(deadline)
+    }
     fn check_health(&self) -> LocalResult<()> {
         Ok(())
     }
     fn flush(&self, _deadline: Instant) -> LocalResult<()> {
         self.check_health()
+    }
+    fn close(&self, deadline: Instant) -> LocalResult<()> {
+        self.flush(deadline)
     }
     fn enabled(&self) -> bool {
         true
@@ -179,6 +228,14 @@ pub struct StrategyPublicStateSeedV13 {
     pub order_boundaries: Arc<[(u32, u64)]>,
     #[serde(default)]
     pub recovery_orders: Arc<[TitanActiveOrderView]>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecoveryExecutionHistory {
+    pub account_no: u32,
+    pub asset_no: u32,
+    pub order_id: u64,
+    pub fills: Arc<[titan_account_service::FillV2]>,
 }
 
 pub struct StrategyRuntimeBuildContext {
@@ -231,6 +288,21 @@ pub trait StrategyRuntime: EventHandler + Send + Sync {
     }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
     fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
+    fn seed_recovery_executions(
+        &self,
+        evidence: Arc<[RecoveryExecutionHistory]>,
+    ) -> LocalResult<()> {
+        if evidence.is_empty() {
+            Ok(())
+        } else {
+            Err(StrategyError::new(
+                StrategyErrorKind::UnsupportedCapability,
+                "recovery",
+                "execution_history_unsupported",
+                "runtime does not support execution history recovery",
+            ))
+        }
+    }
     fn restore_state(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()>;
     fn fire_timer(&self, timer_id: u64) -> LocalResult<()>;
     fn advance_lifecycle(&self) -> LocalResult<()> {

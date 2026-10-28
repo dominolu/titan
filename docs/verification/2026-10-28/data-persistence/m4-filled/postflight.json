@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "acceptance_passed": false,
+  "emergency_close_used": true,
+  "target_order_count": 0,
+  "target_positions": [],
+  "remaining_owned_worker_pids": []
+}

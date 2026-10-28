@@ -1,0 +1,67 @@
+{
+  "candidate": "candidate04",
+  "passed": false,
+  "failure_phase": "after successful cross-process restore, replayed original execution invalidates inventory before Stop acceptance",
+  "binary_sha256": "9649e59d4cb97d1b8e4be25b2081960d2b728573bf5fd25507fff7bc827d6929",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "successful_checks": [
+    "frozen-candidate04-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate04-deployed-without-recompile",
+    "E-consumes-position-before-native-execution-and-fee",
+    "native-fill-fee-and-same-session-replays-count-once",
+    "original-60s-SQLite-point-retains-consumed-fill-and-healthy-business-state",
+    "owned-E-crash-and-A-N-restart-preserve-reference-and-reservation",
+    "new-E-restores-fixed-SQLite-record-position-and-original-expiry"
+  ],
+  "restored_risk": {
+    "assets": [
+      {
+        "actual_notional": {
+          "amount": "8.08001",
+          "amount_unit": "0.00000001",
+          "amount_units": "808001000",
+          "currency": "USDT"
+        },
+        "asset_id": "1",
+        "captured_at_ns": "1793159815768423855",
+        "complete": false,
+        "currency": "USDT",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "missing": [
+          "execution_inventory_or_intents_unproven"
+        ],
+        "pending_bound_notional": {
+          "amount": "16.16002",
+          "amount_unit": "0.00000001",
+          "amount_units": "1616002000",
+          "currency": "USDT"
+        },
+        "price_captured_at_ns": "1793159815726523283",
+        "price_source_stream": "1"
+      }
+    ],
+    "captured_at_ns": "1793159815768423855",
+    "complete": false,
+    "maximum_method": "observed_samples_not_continuous_market_maximum",
+    "notional": [
+      {
+        "actual_amount": "8.08001",
+        "amount_unit": "0.00000001",
+        "currency": "USDT",
+        "pending_bound_amount": "16.16002"
+      }
+    ],
+    "scope": "account_positions_and_known_execution_intents",
+    "valuation": "fresh_best_ask_conservative"
+  },
+  "financial_opening_digest_assertion_passed_before_timeout": true,
+  "cleanup": {
+    "passed": true,
+    "acceptance_passed": false,
+    "remaining_owned_workers": [],
+    "management_processes_exited": true,
+    "synthetic_credentials_removed": true,
+    "real_host_contacted": false
+  },
+  "real_host_contacted": false
+}

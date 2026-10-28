@@ -1,0 +1,63 @@
+{
+  "cases": [
+    "postgres_batch_and_checkpoint_atomic_rollback",
+    "sqlite_postgres_numeric_dedup_gap_query_parity",
+    "history_resume_final_increment_and_stale_cursor",
+    "metadata_only_gap_is_visible_before_next_projection",
+    "history_prune_increment_backfill_and_rollback",
+    "history_missing_range_refuses_activation",
+    "published_v1_sqlite_snapshot_is_immutable_across_prune_and_backfill",
+    "s3_conditional_concurrent_original_bytes",
+    "objects_evict_s3_to_filesystem_rollback",
+    "objects_missing_catalog_reference_refuses_activation",
+    "s3_namespace_owner_isolation",
+    "s3_hash_corruption_rejected_without_local_fallback",
+    "insecure_transport_requires_explicit_loopback_policy",
+    "local_object_and_history_quota_refuse_without_success"
+  ],
+  "history_digest": {
+    "records": "13",
+    "sha256": "abe5a4e9dd1bac9ecd6363ecfd130b685c90969f64f8c88c8fc2d19076515d00",
+    "through_row": "13"
+  },
+  "passed": true,
+  "recovery_backend": "local_sqlite",
+  "source_id": "4d85cb59e0f8bbfe05b4739125ddc7df",
+  "storage": {
+    "budget": {
+      "max_database_bytes": 21474836480,
+      "max_local_object_bytes": 107374182400,
+      "max_object_bytes": 5000000000,
+      "min_free_bytes": 1073741824,
+      "projection_batch_rows": 200,
+      "projection_interval_ms": 1000
+    },
+    "control_id": "7201feda-3bba-4ae8-8d19-a4e7f81aef55",
+    "history": [
+      {
+        "backend": "sqlite",
+        "path": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05/external/history.db",
+        "revision": 3,
+        "source_id": "4d85cb59e0f8bbfe05b4739125ddc7df",
+        "target_id": "f95cda50-906a-4543-a167-24e695965365"
+      },
+      {
+        "backend": "sqlite",
+        "path": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05/external/snapshot-bundle/history-source.db",
+        "revision": 3,
+        "source_id": "6dab317a1f64a38d65724be7a8a97e71",
+        "target_id": "f95cda50-906a-4543-a167-24e695965365"
+      }
+    ],
+    "objects": {
+      "backend": "filesystem",
+      "revision": 3,
+      "target_id": "bd1d44a0-d43c-4ce1-87c6-0309054833a3"
+    },
+    "profile_sha256": "9531f2910fa79621ee175fcc7fc9d06252259bc3e79857f9049a8a0d0a24546c",
+    "recovery_backend": "local_sqlite",
+    "schema_version": 1,
+    "worker": []
+  },
+  "target_id": "f95cda50-906a-4543-a167-24e695965365"
+}

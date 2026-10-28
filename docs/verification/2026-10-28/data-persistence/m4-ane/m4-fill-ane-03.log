@@ -1,0 +1,10 @@
+frozen-candidate05-binary-web-signature-and-native-bytes-verified: passed
+A-to-N-signed-candidate05-deployed-without-recompile: passed
+E-consumes-position-before-native-execution-and-fee: passed
+native-fill-fee-and-same-session-replays-count-once: passed
+original-60s-SQLite-point-retains-consumed-fill-and-healthy-business-state: passed
+owned-E-crash-and-A-N-restart-preserve-reference-and-reservation: passed
+new-E-restores-fixed-SQLite-record-position-and-original-expiry: passed
+cross-process-original-trade-replay-preserves-fee-inventory-and-order-count: passed
+positioned-reduce-only-Stop-flat-proof-and-reservation-release-within-original-10s: passed
+unified-history-deduplicates-native-replay-and-preserves-crash-gap: passed

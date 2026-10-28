@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "temporary_plaintext_credential_files_removed": 1,
+  "target_orders": 0,
+  "target_nonzero_positions": 0,
+  "titan_processes": 0,
+  "occupancy_rows_preserved": 2,
+  "private_databases_recovery_payloads_failed_receipts_retained": true,
+  "credential_value_matches_in_export": 0,
+  "whitelist_files_checked": 16,
+  "operator_release_performed": false,
+  "status": "awaiting explicit operator disposition; fill recovery acceptance failed"
+}

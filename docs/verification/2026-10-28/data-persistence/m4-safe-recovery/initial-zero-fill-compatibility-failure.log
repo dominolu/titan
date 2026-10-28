@@ -1,0 +1,36 @@
+real-signed-grid-build: passed
+actual-browser-deploy-start-pause-resume-stop-reader: passed
+cross-node-deploy-signature-abi-digest: passed
+tampered-transfer-preserves-good-deployment: passed
+config-drift-rejected-before-activation-and-reservation-released: passed
+direct-cli-bypass-rejected: passed
+start-idempotency: passed
+lost-start-ack-reconciles-same-worker: passed
+actual-runtime-quotes-within-envelope: passed
+E-authoritative-fresh-monetary-risk-and-persisted-sampled-maximum: passed
+native-grid-independent-business-schema-through-worker-node-manager-v2: passed
+public-schema-hash-preserved-and-recovery-schema-separated: passed
+realtime-publications-advance-while-60s-sqlite-recovery-payload-is-byte-identical: passed
+persisted-public-frames-share-history-port-and-preserve-public-schema: passed
+history-cursor-fixed-bound-and-cross-scope-rejected: passed
+latest-history-order-and-cursor-direction-are-preserved: passed
+platform-bootstrap-facts-do-not-invent-strategy-attribution: passed
+business-observation-propagates-through-sse: passed
+pause-consumes-cancel-confirmations: passed
+lost-control-ack-reconciles-same-engine-operation: passed
+A-N-restart-preserves-paused-worker: passed
+resume-same-generation: passed
+crash-retains-checkpoint-and-occupancy: passed
+wrong-checkpoint-rejected: passed
+wrong-historical-order-identity-rejected-before-activation: passed
+Traceback (most recent call last):
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_control_smoke.py", line 412, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_control_smoke.py", line 373, in main
+    recovered=completed(submit({"kind":"restore","run_id":old["id"],"expected_run_generation":generation,"recovery_point_sha256":old["body"]["recovery_point_sha256"]}));new=resource(recovered,"run");assert int(new["body"]["run_generation"])>int(generation) and new["body"]["expires_at_ns"]==old["body"]["expires_at_ns"];passed("pinned-recovery-new-generation-original-budget")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/scripts/management_control_smoke.py", line 164, in completed
+    assert (result["state"]=="succeeded")==success,result;return result
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'account': 'gate', 'actor': 'operator', 'cancel_requested': False, 'created_at_ns': '1793165559580281085', 'error': 'engine did not confirm successful completion; inspect preserved result', 'id': '6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f', 'input': {'expected_run_generation': '2', 'kind': 'restore', 'recovery_point_sha256': '717f07d623e6a0a786d0b8ee66b509f95c80e42c44a1685cbf48473a4038cc9e', 'run_id': 'live-run-fa9c4e447f0edd62ff94ba1f80d48baa55c0e0e5c05064df1cff5133f2ada2b4'}, 'input_digest': 'e28e8e7d6186d82f9e31ae561f09ad8609d198f1eb4eeda6388290feae4f79e2', 'node_id': 'live', 'result': {'business_success': False, 'detail': 'strategy runtime definition failed: DependencyUnavailable [recovery:recovery_execution_history_failed]: [gate-crossex] UNSUPPORTED: /api/v4/crossex/history_trades?symbol=GATE_FUTURE_BTC_USDT&page=1&limit=1000', 'outcome_unknown': False, 'resources': [{'body': {'account': 'gate', 'account_identity': 'synthetic-gate-1', 'admission_operation_id': '6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f', 'allowed_actions': [], 'available': False, 'binding_id': 'gate-btc', 'deployment_id': 'live-deployment-09850b49f6b6091d8cae2449ac4cf6c02ae64af26de8630978e0abe322437395', 'environment': 'live', 'expires_at_ns': '1793165656861602882', 'instrument': 'GATE_FUTURE_BTC_USDT', 'lifecycle': 'Unknown', 'mode': 'trade', 'observation': {'available': False, 'reason': 'strategy activation was never attempted', 'run_id': '6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f', 'source': 'runtime_owner', 'start_admission_absent': True}, 'observation_stale': True, 'parameters': {'account_no': 0, 'allocated_capital_tick_lots': 100000, 'anchor_mode': 'order_average', 'asset_no': 0, 'buy_levels': 1, 'cancel_retry_limit': 3, 'direction': 'neutral', 'flatten_timeout_ns': 120000000000, 'grid_levels': 200, 'leverage': 1, 'lower_price_ticks': 800, 'margin_reserve_pct': 5.0, 'market_stale_after_ns': 5000000000, 'max_loss_tick_lots': 0, 'max_notional_tick_lots': 100000, 'max_position_lots': 0, 'max_rejections': 5, 'max_slippage_ticks': 2, 'min_notional_tick_lots': 1, 'min_order_lots': 1, 'neutral_mode': 'two_sided', 'order_notional_tick_lots': 200, 'order_policy': 'reset_pair', 'order_qty_lots': 1, 'order_timeout_ns': 600000000000, 'quote_currency_no': 1, 'quote_units_per_tick_lot': 100000.0, 'retry_backoff_ns': 500000000, 'sell_levels': 1, 'size_mode': 'fixed_qty', 'spacing_mode': 'arithmetic', 'start_mode': 'strict', 'stop_above_ticks': 0, 'stop_action': 'cancel', 'stop_below_ticks': 0, 'upper_price_ticks': 1200}, 'predecessor_run_id': 'live-run-fa9c4e447f0edd62ff94ba1f80d48baa55c0e0e5c05064df1cff5133f2ada2b4', 'process_state': 'FAILED', 'recovery_point_sha256': None, 'recovery_reference': None, 'release_proof': {'safe': False, 'source': 'trading_runtime', 'worker_id': '6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f'}, 'reservation_operation_id': 'fa9c4e447f0edd62ff94ba1f80d48baa55c0e0e5c05064df1cff5133f2ada2b4', 'run_generation': 'unconfirmed', 'runtime_strategy_no': '77', 'source_started_at_ns': '1793165561098503909', 'stop_action': 'cancel', 'strategy_id': 'grid', 'strategy_name': '网格策略', 'strategy_version_id': 'build-artifact-8645bd399ff6d50a8ea9d2a318cc75bb2feb5d34e8daabd0d65b91b75166bd70', 'worker_id': '6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f'}, 'digest': '3801fc507af0ce206152302360df5a656e8f45aa942f5f4e46769b8429aec989', 'frozen': False, 'id': 'live-run-6af79ba167baa193ff5e61a09b2c4a08fb0f097e01b45c606a29dfa0c0dacb8f', 'kind': 'run', 'node_id': 'live', 'revision': ''}], 'start_admission_absent': True}, 'revision': '295', 'state': 'failed', 'updated_at_ns': '1793165562990775868'}

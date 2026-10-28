@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "ssh_user": "ubuntu",
+  "operator_euid": 0,
+  "target_order_count": 0,
+  "target_nonzero_position_count": 0,
+  "titan_process_count": 0,
+  "temporary_plaintext_credential_files_removed": 1,
+  "transfer_files_removed": 2,
+  "private_account_databases_and_recovery_evidence_retained": true,
+  "unrelated_programs_or_account_settings_modified": false,
+  "long_running_service_registered": false,
+  "credential_value_matches_in_export": 0,
+  "export_files_checked": 11
+}

@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "source_files": 563,
+  "local_remote_frozen_source_bytes_equal": true,
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "real_host_contacted": false
+}

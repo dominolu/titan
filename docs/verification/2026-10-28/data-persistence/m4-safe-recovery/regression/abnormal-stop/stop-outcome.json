@@ -1,0 +1,32 @@
+{
+  "account": "gate",
+  "actor": "operator",
+  "cancel_requested": false,
+  "created_at_ns": "1793166881400546032",
+  "error": "engine did not confirm successful completion; inspect preserved result",
+  "id": "d2f1bb30e48eaf88e615130be800d6818dc2f5ccf63d568621694ce31282de83",
+  "input": {
+    "expected_run_generation": "1",
+    "kind": "stop",
+    "run_id": "live-run-2cfb6ccb0171a164ce17e25663dae474fd04d115374326976d3594034178f597"
+  },
+  "input_digest": "a5557065da295dcd28bb02d73c01ed1d005cf2186852d5bbc62a7e6b3fd0a3ee",
+  "node_id": "live",
+  "result": {
+    "business_success": false,
+    "runtime": {
+      "detail": "stop_drain_deadline_exceeded",
+      "input": {
+        "action": "stop",
+        "digest": "a5557065da295dcd28bb02d73c01ed1d005cf2186852d5bbc62a7e6b3fd0a3ee",
+        "expected_run_generation": "1",
+        "id": "d2f1bb30e48eaf88e615130be800d6818dc2f5ccf63d568621694ce31282de83"
+      },
+      "runtime_operation_id": "3",
+      "state": "failed"
+    }
+  },
+  "revision": "123",
+  "state": "failed",
+  "updated_at_ns": "1793166893782690995"
+}

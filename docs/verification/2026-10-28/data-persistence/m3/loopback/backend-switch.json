@@ -1,0 +1,39 @@
+{
+  "passed": true,
+  "postgres": {
+    "domain": "history",
+    "from_revision": 1,
+    "id": "6221149b-9e31-440d-8a21-56c47f21fdb3",
+    "phase": "committed",
+    "proof": {
+      "range": {
+        "records": "124",
+        "sha256": "add5f89a7a23ec84b150749ddb3ee8079f84a2e3a53f9c4abbf79ff00a86edef",
+        "through_row": "124"
+      },
+      "source_upper_at_verification": "124"
+    },
+    "source_id": "61caada8c2b085cc457c449a671ebbf4",
+    "target": "postgres",
+    "target_id": "f95cda50-906a-4543-a167-24e695965365"
+  },
+  "sqlite": {
+    "domain": "history",
+    "from_revision": 2,
+    "id": "751065c0-40f8-4ba7-acef-8b1d4b6767f3",
+    "phase": "committed",
+    "proof": {
+      "range": {
+        "records": "132",
+        "sha256": "4e18ab89973cd8bbb2fbf96b559a77c31dee6e2e047fbadbfe7b53816fdfa6bb",
+        "through_row": "132"
+      },
+      "source_upper_at_verification": "132"
+    },
+    "source_id": "61caada8c2b085cc457c449a671ebbf4",
+    "target": "sqlite",
+    "target_id": "f95cda50-906a-4543-a167-24e695965365"
+  },
+  "strategy_sha256": "5c7aade5e521014150f604cd5f64db40b991d416599633b053602e6cdb21138a",
+  "recovery_sha256": "32ba8593ce1332230eca86deba5c03ade6a48efbaeb6747d4e676982f0b055f1"
+}

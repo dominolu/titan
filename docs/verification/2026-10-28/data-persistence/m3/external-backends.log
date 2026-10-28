@@ -1,0 +1,24 @@
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/crates/titan-persistence)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.93s
+     Running tests/external_backends.rs (/tmp/titan-deplugin-target/debug/deps/external_backends-1b27148194c2d965)
+
+running 1 test
+test real_driver_contract_and_bidirectional_cutover ... create_bucket status=Some(409) code=Some("BucketAlreadyOwnedByYou") error=service error
+M3_CASE postgres_batch_and_checkpoint_atomic_rollback: passed
+M3_CASE sqlite_postgres_numeric_dedup_gap_query_parity: passed
+M3_CASE history_resume_final_increment_and_stale_cursor: passed
+M3_CASE metadata_only_gap_is_visible_before_next_projection: passed
+M3_CASE history_prune_increment_backfill_and_rollback: passed
+M3_CASE history_missing_range_refuses_activation: passed
+M3_CASE published_v1_sqlite_snapshot_is_immutable_across_prune_and_backfill: passed
+M3_CASE s3_conditional_concurrent_original_bytes: passed
+M3_CASE objects_evict_s3_to_filesystem_rollback: passed
+M3_CASE objects_missing_catalog_reference_refuses_activation: passed
+M3_CASE s3_namespace_owner_isolation: passed
+M3_CASE s3_hash_corruption_rejected_without_local_fallback: passed
+M3_CASE insecure_transport_requires_explicit_loopback_policy: passed
+M3_CASE local_object_and_history_quota_refuse_without_success: passed
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.01s
+

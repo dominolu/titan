@@ -1,0 +1,157 @@
+{
+  "business": {
+    "available": true,
+    "complete": true,
+    "data": {
+      "anchor_ticks": "808001",
+      "completed_pairs": "0",
+      "expected_inventory_lots": "1",
+      "last_error": "0",
+      "last_market_at_ns": "1793160371426074737",
+      "paired_gross_tick_lots": "0",
+      "paired_lots": "0",
+      "phase": "running"
+    },
+    "field_reasons": {},
+    "protocol_version": 2,
+    "reason": null,
+    "schema": {
+      "fields": [
+        {
+          "description": "",
+          "enum_values": [
+            "created",
+            "error",
+            "initializing",
+            "paused",
+            "reconciling",
+            "resetting",
+            "running",
+            "stopped",
+            "stopping",
+            "warming"
+          ],
+          "kind": "enum",
+          "label": "\u7f51\u683c\u4e1a\u52a1\u9636\u6bb5",
+          "name": "phase",
+          "nullable": false,
+          "unit": "state"
+        },
+        {
+          "description": "",
+          "enum_values": [],
+          "kind": "decimal",
+          "label": "\u7f51\u683c\u951a\u70b9",
+          "name": "anchor_ticks",
+          "nullable": true,
+          "unit": "price_tick"
+        },
+        {
+          "description": "",
+          "enum_values": [],
+          "kind": "uint64",
+          "label": "\u5b8c\u6210\u914d\u5bf9",
+          "name": "completed_pairs",
+          "nullable": false,
+          "unit": "count"
+        },
+        {
+          "description": "",
+          "enum_values": [],
+          "kind": "uint64",
+          "label": "\u914d\u5bf9\u6570\u91cf",
+          "name": "paired_lots",
+          "nullable": false,
+          "unit": "quantity_lot"
+        },
+        {
+          "description": "\u672a\u8ba1\u624b\u7eed\u8d39\u4e0e\u8d44\u91d1\u8d39\uff0c\u4e0d\u662f\u7b56\u7565\u51c0\u6536\u76ca",
+          "enum_values": [],
+          "kind": "decimal",
+          "label": "\u914d\u5bf9\u6bdb\u6536\u76ca",
+          "name": "paired_gross_tick_lots",
+          "nullable": false,
+          "unit": "tick_lot"
+        },
+        {
+          "description": "\u5b9e\u9645\u6301\u4ed3\u7531\u5e73\u53f0\u8d26\u6237\u670d\u52a1\u786e\u8ba4",
+          "enum_values": [],
+          "kind": "int64",
+          "label": "\u7b56\u7565\u671f\u671b\u5e93\u5b58",
+          "name": "expected_inventory_lots",
+          "nullable": false,
+          "unit": "quantity_lot"
+        },
+        {
+          "description": "",
+          "enum_values": [],
+          "kind": "int64",
+          "label": "\u6700\u540e\u5904\u7406\u884c\u60c5\u65f6\u95f4",
+          "name": "last_market_at_ns",
+          "nullable": false,
+          "unit": "ns"
+        },
+        {
+          "description": "",
+          "enum_values": [],
+          "kind": "uint64",
+          "label": "\u4e1a\u52a1\u9519\u8bef\u7801",
+          "name": "last_error",
+          "nullable": false,
+          "unit": "code"
+        }
+      ],
+      "schema_id": "titan.grid",
+      "schema_version": 1
+    },
+    "schema_hash": "8097dfc757165adf6c6f267c2c3506ff50d0d357316541ea8f5a6b9fbca55428",
+    "schema_id": "titan.grid",
+    "schema_version": 1,
+    "source": {
+      "callback_sequence": "55",
+      "captured_at_ns": "1793160371476436625",
+      "kind": "runtime_publication",
+      "publication_sequence": "8",
+      "run_generation": "2"
+    }
+  },
+  "account_risk": {
+    "assets": [
+      {
+        "actual_notional": {
+          "amount": "8.08001",
+          "amount_unit": "0.00000001",
+          "amount_units": "808001000",
+          "currency": "USDT"
+        },
+        "asset_id": "1",
+        "captured_at_ns": "1793160371977665176",
+        "complete": true,
+        "currency": "USDT",
+        "instrument": "GATE_FUTURE_BTC_USDT",
+        "missing": [],
+        "pending_bound_notional": {
+          "amount": "8.08001",
+          "amount_unit": "0.00000001",
+          "amount_units": "808001000",
+          "currency": "USDT"
+        },
+        "price_captured_at_ns": "1793160371927344640",
+        "price_source_stream": "1"
+      }
+    ],
+    "captured_at_ns": "1793160371977665176",
+    "complete": true,
+    "maximum_method": "observed_samples_not_continuous_market_maximum",
+    "notional": [
+      {
+        "actual_amount": "8.08001",
+        "amount_unit": "0.00000001",
+        "currency": "USDT",
+        "pending_bound_amount": "8.08001"
+      }
+    ],
+    "scope": "account_positions_and_known_execution_intents",
+    "valuation": "fresh_best_ask_conservative"
+  }
+}

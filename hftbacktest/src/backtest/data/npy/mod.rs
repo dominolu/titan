@@ -15,6 +15,15 @@ mod parser;
 /// Trait
 pub trait NpyDTyped: POD {
     fn descr() -> DType;
+    fn read_parquet(_path: &str) -> std::io::Result<super::Data<Self>>
+    where
+        Self: Clone,
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Parquet is supported only for the canonical Event schema",
+        ))
+    }
 }
 
 pub type DType = Vec<Field>;

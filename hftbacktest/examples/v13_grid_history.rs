@@ -45,6 +45,8 @@ enum Command {
         output: PathBuf,
         #[arg(long)]
         stress: bool,
+        #[arg(long)]
+        storage_root: Option<PathBuf>,
     },
 }
 fn main() -> Result<()> {
@@ -62,8 +64,16 @@ fn main() -> Result<()> {
             data,
             output,
             stress,
+            storage_root,
         } => {
-            let result = engine::run(&compiled_strategy, &layout, &data, &output, stress)?;
+            let result = engine::run(
+                &compiled_strategy,
+                &layout,
+                &data,
+                &output,
+                stress,
+                run_id.as_deref(),
+            )?;
             write_chart(&output)?;
             if let Some(run_id) = run_id {
                 use sha2::{Digest, Sha256};
@@ -106,12 +116,20 @@ fn main() -> Result<()> {
                 )?;
                 // ResultBundle v1 freezes these two historical source keys.
                 // Keep report compatibility while sourcing canonical strategy metadata.
-                std::fs::write(
-                    output.join("manifest.json"),
-                    serde_json::to_vec_pretty(
-                        &serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":inspected.strategy_type,"strategy_version":inspected.source_version,"abi_fingerprint":fingerprint,"committed_at_ns":committed_at_ns,"files":files}),
-                    )?,
+                let manifest = serde_json::to_vec_pretty(
+                    &serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":inspected.strategy_type,"strategy_version":inspected.source_version,"abi_fingerprint":fingerprint,"committed_at_ns":committed_at_ns,"files":files}),
                 )?;
+                titan_persistence::commit_result_bundle(
+                    &output,
+                    &storage_root.unwrap_or_else(|| {
+                        output
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .join("storage")
+                    }),
+                    &manifest,
+                )
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             }
             println!("{}", serde_json::to_string(&result)?);
             ensure!(

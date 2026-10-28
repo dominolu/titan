@@ -1,0 +1,9 @@
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/crates/titan-account-service)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.50s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_account_service-a840900c2f4b8c70)
+
+running 1 test
+test observation::tests::account_quantity_bound_counts_only_unfilled_remainder_and_keeps_hedge_gross ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+

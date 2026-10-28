@@ -1,0 +1,12 @@
+{
+  "scenario": "bootstrap-replay",
+  "events": [
+    {
+      "kind": "bootstrap-replay-before-REST-response",
+      "trades": 1,
+      "private_sessions": 2
+    }
+  ],
+  "private_sessions": 2,
+  "public_sessions": 5
+}

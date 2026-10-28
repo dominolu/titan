@@ -1,0 +1,59 @@
+{
+  "passed": true,
+  "scenario": "private-disconnect",
+  "expected_runtime_outcome": "failed_closed",
+  "independent_fills": 1,
+  "fee_units_USDT_1e8": 404001,
+  "archive_fill_counts_by_replay": [
+    [
+      0,
+      1
+    ]
+  ],
+  "archive_conflicts": 0,
+  "archive_sources": [
+    [
+      "666fbbf4564718188e61171f4a252db10f63165d5b2360f3cd166680f097b8d6:be62a436b3b7b2dfbe363c9a19a46089e044bf9cb8faa888b673f723a7689fe8",
+      1,
+      1
+    ]
+  ],
+  "archive_gaps": [],
+  "financial_issues": [
+    "ACCOUNT_STREAM_GAP"
+  ],
+  "local_simulated_occupancy_rows": 2,
+  "final_point_generation": 1,
+  "manager_terminal_process_state": "FAILED",
+  "manager_terminal_release_safe": false,
+  "all_manager_run_expiries_match_original": true,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    }
+  ],
+  "fixed_record_pin_count": null,
+  "sampled_risk": [
+    {
+      "account": "gate",
+      "amount_unit": "0.00000001",
+      "asset_id": "1",
+      "coverage_complete": false,
+      "currency": "USDT",
+      "instrument": "GATE_FUTURE_BTC_USDT",
+      "last_sample_at_ns": "1793163538859232809",
+      "last_sample_complete": false,
+      "last_source": "666fbbf4564718188e61171f4a252db10f63165d5b2360f3cd166680f097b8d6:be62a436b3b7b2dfbe363c9a19a46089e044bf9cb8faa888b673f723a7689fe8",
+      "max_actual_notional": "8.08001",
+      "max_actual_units": "808001000",
+      "max_pending_bound_notional": "8.08006",
+      "max_pending_bound_units": "808006000",
+      "method": "maximum_of_observed_snapshots"
+    }
+  ],
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

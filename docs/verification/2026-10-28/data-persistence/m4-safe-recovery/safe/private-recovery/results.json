@@ -1,0 +1,74 @@
+{
+  "passed": true,
+  "scenario": "private-recovery",
+  "candidate": "candidate07",
+  "expected_outcome": "safe_flat_stop",
+  "stop_through_exit_seconds": 3.614730683155358,
+  "new_generation": "2",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "old-run-failed-closed-and-exited-before-any-history-backfill-or-new-generation",
+    "authoritative-native-backfill-recovers-one-consumption-and-one-fee-from-fixed-SQLite-BLOB",
+    "new-generation-positioned-Stop-flattens-and-releases-within-original-ten-seconds"
+  ],
+  "operations": [
+    {
+      "id": "a47976a3f956662ddba26aa2023baa2201c93781087fdc84f6f695fc303fb1ce",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "17b9c08cec5443c8a40d0725f93ba4a33c4af02843ceeffa6ae3c80477c7daf4",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "f0d2ee937c97028a024c095fe313bbe85923c5be17811612a082932516b96a0e",
+      "kind": "pause",
+      "state": "succeeded"
+    },
+    {
+      "id": "88387257830197566535162735500bfeeca806c1ec02383ea913fa9612bf8055",
+      "kind": "stop",
+      "state": "failed"
+    },
+    {
+      "id": "ade2085a5262e530d1972562ce473b0f82d6d1ed55a7ea5dcb9682d201cf607b",
+      "kind": "restore",
+      "state": "succeeded"
+    },
+    {
+      "id": "3ade3f3fd36e885fe1fadb722d5a6227aced6a7d707dae45de1b7457030d9d3b",
+      "kind": "stop",
+      "state": "succeeded"
+    }
+  ],
+  "elapsed_seconds": 77.52530676033348,
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "reference": {
+    "record_id": "6895864df17be4805ddf1bcc79f9a7be",
+    "payload_sha256": "aeeacc36121132c8832d53442fff2249b9c9a27900e231208a4806f10ae0e0e9",
+    "store_id": "c3550631ec0206336eb3b23ae182e582",
+    "runtime_strategy_no": 77
+  },
+  "original_expires_at_ns": "1793166693832300175",
+  "handler_seconds": 1,
+  "startup_seconds": 30,
+  "checkpoint_seconds": 60,
+  "stop_seconds": 10,
+  "maximum_run_seconds": 120,
+  "local_simulated_occupancy_rows": 0,
+  "old_run_not_reopened": true,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:40441/api/v4",
+    "public_ws_url": "ws://127.0.0.1:40441/public",
+    "private_ws_url": "ws://127.0.0.1:40441/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

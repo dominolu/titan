@@ -1,0 +1,5 @@
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/crates/titan-persistence)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-persistence-m3-20261027-59973648/hftbacktest)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.55s

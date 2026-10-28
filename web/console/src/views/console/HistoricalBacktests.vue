@@ -10,6 +10,7 @@ import { useStrategy } from "./use-strategy";
 import StrategyHistoryPager from "./StrategyHistoryPager.vue";
 import { useRoute } from "vue-router";
 import ResultChart from "./ResultChart.vue";
+import FactHistory from "./FactHistory.vue";
 const store = useConsoleStore();
 const scope = useStrategy(),
   route = useRoute();
@@ -269,8 +270,10 @@ async function replay() {
             查看完整结果 →
           </button>
         </div>
-        <ResultChart :operation-id="body(activeResult).operation_id" /></section
-    ></template>
+        <ResultChart :operation-id="body(activeResult).operation_id" />
+      </section>
+      <FactHistory :item="activeResult"
+    /></template>
     <div v-else class="console-card compact-empty">
       {{
         selectedResult

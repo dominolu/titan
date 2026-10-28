@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "build_host": "192.168.3.88",
+  "source_files_verified": 563,
+  "release_files_verified": 64,
+  "exported_evidence_files_verified": 143,
+  "relative_document_links_checked": 242,
+  "document_sha256": {
+    "docs/data_persistence_design.md": "ea74338ffb9716fe26ac5d95e9a62cabcff366026a62ba00e6266e95e43ba6fc",
+    "docs/data_persistence_implementation_plan.md": "28b19804bf9b446da9e81ccb40a4f9d788c9acd718c30cb881d41d41de9e42d5",
+    "docs/README.md": "ba618039549e3dbd8b0a31244552e8841e227e2733ce16c03dc5da89aba35ea4",
+    "docs/management_console_operations.md": "d05703f8b86062fa1d014a5c8ede3e67681ba186beb24795ff2bdebe14753323",
+    "docs/recovery_storage_operations.md": "d46341f389b9279f0792e53ea8dde3ccd0315b0d5d9ce3dc73952633feb68bcd",
+    "docs/memory/engineering.md": "d36a028b773994cbd98f11c8ebc5dd6f361de1c0d1b174e5797fcaf61d302f2a",
+    "docs/verification/2026-10-28/data-persistence/m4-safe-recovery/README.md": "85255c0aa328fc3e52ab26ce8ca65ccbfffddd076fdcc3faa37d46ba1c918749"
+  },
+  "new_cases_and_regressions_verified": 10,
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "mechanism": "normal GET-only node catalog ingests matching E runtime_owner non-activation proof",
+  "occupancy_before": 2,
+  "occupancy_after": 0,
+  "failed_start_operation_preserved": "5c80d6cb617ce1d4821cd8a3bf3f2f86b4d24e285dd62ba303d961c102239dc3",
+  "operation_count_unchanged": 2,
+  "original_runtime_strategy_no": 1793153499,
+  "recovery_records": 0,
+  "execution_generations": 0,
+  "no_operation_submitted": true,
+  "same_database_and_namespace": true,
+  "proof": {
+    "available": false,
+    "reason": "strategy activation was never attempted",
+    "run_id": "5c80d6cb617ce1d4821cd8a3bf3f2f86b4d24e285dd62ba303d961c102239dc3",
+    "source": "runtime_owner",
+    "start_admission_absent": true
+  }
+}

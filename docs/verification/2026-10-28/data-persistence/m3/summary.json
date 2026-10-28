@@ -1,0 +1,277 @@
+{
+  "passed": true,
+  "host": "192.168.3.88",
+  "baseline": "5997364864861fdd5d8c649b93e54161018f703d",
+  "source_root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648",
+  "evidence_root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/m3-final-05",
+  "frozen_source_files": 551,
+  "production_source_unchanged_during_verification": true,
+  "source_matches_final_freeze": true,
+  "verification_harness_amendment": {
+    "production_source_unchanged": true,
+    "amended_files": [
+      "scripts/management_console_smoke.py",
+      "scripts/persistence_acceptance.py"
+    ],
+    "reason": "Bulk object migration exceeded the 300s harness wait; per-request/strategy/recovery/stop deadlines unchanged. Resume the same verified plan and complete remaining checks without rerunning engines.",
+    "original_frozen_sha256": "ae3efdd718aa8c0b06be0158b0431d8022b0be9049dfe28fa94fa199e9a6185f",
+    "amended_source_sha256": "9387eb8106ccd0da1eabfffcc95e30015d0c030aea7f2a2e0513f523285e8c46"
+  },
+  "steps": 37,
+  "rust": {
+    "rust-tests": {
+      "passed": 644,
+      "failed": 0,
+      "ignored": 24,
+      "targets": 39
+    },
+    "rust-doctests": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 1,
+      "targets": 11
+    }
+  },
+  "real_driver_cases": 14,
+  "external_fault_cases": 10,
+  "supplemental_identity_cases": 3,
+  "native_loopback_checks": 34,
+  "native_browser_checks": 10,
+  "readonly_checks": 6,
+  "readonly_browser_checks": 8,
+  "historical_checks": 102,
+  "historical_runs": 18,
+  "historical_fill_records": 5468,
+  "pg_pruned_history_queries": 18,
+  "sqlite_backfills": 18,
+  "compiled_artifact_cold_readbacks": 9,
+  "historical_browser_checks": 22,
+  "local_persistence": {
+    "passed": true,
+    "real_account_access": false,
+    "checks": [
+      {
+        "name": "full-facts-match-engine-backtest-sideways-neutral-base",
+        "passed": true,
+        "records": 1563,
+        "fills": 30,
+        "ordered_payload_sha256": "750e0e2da5f39aef56153110097e097c7c5420fb992b9571427dfc85b585449d"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-sideways-neutral-stress",
+        "passed": true,
+        "records": 1580,
+        "fills": 59,
+        "ordered_payload_sha256": "795c589cc0525a7090cd81af35de9563d8c7d43437b4666fc6d3c5e58a7e5842"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-sideways-long_bias-base",
+        "passed": true,
+        "records": 1566,
+        "fills": 31,
+        "ordered_payload_sha256": "14b37a8fb113cd0dce248159d2f078bd7e1f1f94ff45934336d5548f20997872"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-sideways-long_bias-stress",
+        "passed": true,
+        "records": 1603,
+        "fills": 56,
+        "ordered_payload_sha256": "70fa0c8004f7f50f5d1486fca097fb228b7a8ff0dd25a16a58b6f9124a2073ec"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-sideways-short_bias-base",
+        "passed": true,
+        "records": 1567,
+        "fills": 29,
+        "ordered_payload_sha256": "2254f716914385c12564749f3695bcca6287f8a2664bac2a32a3107f92fd445b"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-sideways-short_bias-stress",
+        "passed": true,
+        "records": 1637,
+        "fills": 63,
+        "ordered_payload_sha256": "4a1e4a990868a9c447c763b066b43587252e9156bf4b046dd2273f1c6801040a"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-neutral-base",
+        "passed": true,
+        "records": 3184,
+        "fills": 447,
+        "ordered_payload_sha256": "3a92de008fa78c74ade256ff898847acd015eee2fd155f8e9f961e529e496a9a"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-neutral-stress",
+        "passed": true,
+        "records": 3419,
+        "fills": 789,
+        "ordered_payload_sha256": "b55389842cc8f178a38f25a6dc561f00cff11748e665b09554810f7d47a5d086"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-long_bias-base",
+        "passed": true,
+        "records": 2845,
+        "fills": 358,
+        "ordered_payload_sha256": "88ad716831c0f5b50803a3148eabfd06200982ebee90083b51635ced6ca2e0d6"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-long_bias-stress",
+        "passed": true,
+        "records": 3126,
+        "fills": 651,
+        "ordered_payload_sha256": "7935b4507b8de7477c563fcae8f98cf6163d33be5d641f013eae98c1b43f8062"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-short_bias-base",
+        "passed": true,
+        "records": 2710,
+        "fills": 327,
+        "ordered_payload_sha256": "8b23fc9fce9785b079d3e6f179b9404fe99396238457519e3fdae5c716cf2226"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-up-short_bias-stress",
+        "passed": true,
+        "records": 2900,
+        "fills": 567,
+        "ordered_payload_sha256": "7eefac39f42aa1b0e168576403e3323e01251dfd6367a1f4f68eac9725cf91f5"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-neutral-base",
+        "passed": true,
+        "records": 2465,
+        "fills": 258,
+        "ordered_payload_sha256": "19881ea03ff4a86835a1d2e0428ae7de0b1fc28eb21d1b53d70068bb61c372e0"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-neutral-stress",
+        "passed": true,
+        "records": 2656,
+        "fills": 489,
+        "ordered_payload_sha256": "8b797b19734c7e55af1ceb2c54e3f883a9563b4da6a81ae31bbcaa0fc54dff74"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-long_bias-base",
+        "passed": true,
+        "records": 2343,
+        "fills": 231,
+        "ordered_payload_sha256": "49da8cc494990f3c8e645c499cbde0017358d186bed30a799845cf5bdcb48fae"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-long_bias-stress",
+        "passed": true,
+        "records": 2567,
+        "fills": 393,
+        "ordered_payload_sha256": "33dc9adfc4a7c40bec6cf427908efcddab915135bb7e9e25a7ffc0460fd34708"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-short_bias-base",
+        "passed": true,
+        "records": 2445,
+        "fills": 254,
+        "ordered_payload_sha256": "cddea4bdc087d60262cda632582008e670c612143051e17a75d70e981e444d96"
+      },
+      {
+        "name": "full-facts-match-engine-backtest-down-short_bias-stress",
+        "passed": true,
+        "records": 2567,
+        "fills": 436,
+        "ordered_payload_sha256": "1cf394b5404631ab59d91bdefcbbbec6511a04723d29da98a0bb3aea78898d0a"
+      },
+      {
+        "name": "same-native-file-binary-and-parquet-inputs-have-identical-engine-and-fact-results",
+        "passed": true,
+        "strategy_sha256": "2d094ff451c5fef91cac7b99205559b953c30a55a1f7ad2fce96652fdd4a0dfa",
+        "records_compared": 1561,
+        "binary_input_sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683",
+        "parquet_input_sha256": "e9377df9db8f9d981ffa94f26b0782d8f6d9bb2c51ddf0fa75b0790ada5e9893"
+      },
+      {
+        "name": "bounded-full-audit-replay-resource-measurement",
+        "passed": true,
+        "peak_rss_kib": 29396,
+        "user_seconds": "12.35",
+        "system_seconds": "0.06",
+        "input_bytes": 105094491,
+        "history_bytes": 1679360,
+        "parquet_bytes": 1014263,
+        "sql_chunk_records": 64,
+        "parquet_chunk_records": 64,
+        "fact_max_bytes": 1048576
+      },
+      {
+        "name": "object-publication-registration-retry-and-byte-identical-v1-materialization",
+        "passed": true
+      },
+      {
+        "name": "fixed-bound-streamed-parquet-export-preserves-all-original-envelopes",
+        "passed": true,
+        "records": 1563
+      },
+      {
+        "name": "engine-failure-persists-explicit-diagnostics-without-inventing-final-state",
+        "passed": true
+      },
+      {
+        "name": "report-reader-rejects-tampered-or-uncommitted-materialized-bundle",
+        "passed": true
+      }
+    ]
+  },
+  "recovery_budget": {
+    "burst16_budget_ms": 5000,
+    "default_handler_admitted": false,
+    "default_handler_ms": 5,
+    "existing_runtime_handler_ms": 5000,
+    "existing_stop_ms": 10000,
+    "hardware_power_loss_tested": false,
+    "passed": true,
+    "scenarios": [
+      {
+        "burst16_us": 148334,
+        "max_us": 131405,
+        "online_backup_us": null,
+        "p50_us": 66624,
+        "p95_us": 130024,
+        "p99_us": 131405,
+        "payload_bytes_max": 2000904,
+        "payload_bytes_p50": 1049486,
+        "pressure_commits": 0,
+        "pressure_wal_peak_bytes": 0,
+        "samples": 96,
+        "scenario": "idle"
+      },
+      {
+        "burst16_us": 291471,
+        "max_us": 131758,
+        "online_backup_us": null,
+        "p50_us": 68837,
+        "p95_us": 130604,
+        "p99_us": 131758,
+        "payload_bytes_max": 2000904,
+        "payload_bytes_p50": 1049486,
+        "pressure_commits": 714,
+        "pressure_wal_peak_bytes": 55055592,
+        "samples": 96,
+        "scenario": "history_writer_long_reader"
+      },
+      {
+        "burst16_us": 314449,
+        "max_us": 132230,
+        "online_backup_us": 218224,
+        "p50_us": 68408,
+        "p95_us": 129887,
+        "p99_us": 132230,
+        "payload_bytes_max": 2000904,
+        "payload_bytes_p50": 1049486,
+        "pressure_commits": 364,
+        "pressure_wal_peak_bytes": 27657592,
+        "samples": 96,
+        "scenario": "object_io_and_online_backup"
+      }
+    ],
+    "single_submission_budget_ms": 750,
+    "sqlite": "3.53.2",
+    "synchronous": "FULL"
+  },
+  "no_real_accounts": true,
+  "physical_power_loss_tested": false
+}

@@ -1,0 +1,33 @@
+{
+  "host": "43.130.234.54",
+  "hostname": "VM-0-33-ubuntu",
+  "account": "gate",
+  "account_id": 1,
+  "instrument": "GATE_FUTURE_BTC_USDT",
+  "minimum_order_base": "0.0001",
+  "max_exposure_quote": "100",
+  "max_price_deviation_bps": 50,
+  "maximum_run_seconds": 120,
+  "stop_timeout_seconds": 10,
+  "handler_budget_seconds": 1,
+  "stop_action": "flatten",
+  "tick_size": "0.1",
+  "lot_size": "0.0001",
+  "min_size": "0.0001",
+  "public_bid": "80915.5",
+  "public_ask": "80915.6",
+  "minimum_order_notional_quote": "8.09156",
+  "account_mode": "CROSS_EXCHANGE",
+  "position_mode": "SINGLE",
+  "passed": true,
+  "checked_at_unix": 1793155489,
+  "venue_methods": [
+    "GET"
+  ],
+  "preexisting_target_orders": 0,
+  "preexisting_target_positions": 0,
+  "legacy_target_controllers": 0,
+  "titan_processes": [],
+  "account_backend_access": "SQLite mode=ro, no service registry initialization",
+  "credentials_exported": false
+}

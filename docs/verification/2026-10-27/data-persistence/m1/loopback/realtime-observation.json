@@ -1,0 +1,42 @@
+{
+  "passed": true,
+  "checkpoint_interval_seconds": 60,
+  "checkpoint_sha256_before": "a5903deb5817564d3f4929ac7871899f79fcbd88b12762eff82f40dcf98d3b62",
+  "checkpoint_sha256_after": "a5903deb5817564d3f4929ac7871899f79fcbd88b12762eff82f40dcf98d3b62",
+  "maximum_update_wait_seconds": 1.2282826825976372,
+  "samples": [
+    {
+      "elapsed_seconds": 0.9226703438907862,
+      "source": {
+        "callback_sequence": "57",
+        "captured_at_ns": "1793088613912432441",
+        "kind": "runtime_publication",
+        "publication_sequence": "8",
+        "run_generation": "2"
+      },
+      "last_market_at_ns": "1793088613877064982"
+    },
+    {
+      "elapsed_seconds": 1.2282826825976372,
+      "source": {
+        "callback_sequence": "78",
+        "captured_at_ns": "1793088614915853348",
+        "kind": "runtime_publication",
+        "publication_sequence": "10",
+        "run_generation": "2"
+      },
+      "last_market_at_ns": "1793088614878531399"
+    },
+    {
+      "elapsed_seconds": 1.2218927219510078,
+      "source": {
+        "callback_sequence": "109",
+        "captured_at_ns": "1793088616422802619",
+        "kind": "runtime_publication",
+        "publication_sequence": "13",
+        "run_generation": "2"
+      },
+      "last_market_at_ns": "1793088616380862882"
+    }
+  ]
+}

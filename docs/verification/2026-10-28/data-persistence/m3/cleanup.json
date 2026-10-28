@@ -1,0 +1,22 @@
+{
+  "passed": true,
+  "services": [
+    {
+      "action": "stop",
+      "root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/services-01",
+      "services": [],
+      "passed": true
+    },
+    {
+      "action": "stop",
+      "root": "/home/dominolu/dev/titan-persistence-m3-20261027-59973648/evidence/services-02",
+      "services": [],
+      "passed": true
+    }
+  ],
+  "remaining_task_containers": 0,
+  "remaining_task_volumes": 0,
+  "remaining_task_processes": [],
+  "unrelated_services_untouched": true,
+  "real_accounts_accessed": false
+}

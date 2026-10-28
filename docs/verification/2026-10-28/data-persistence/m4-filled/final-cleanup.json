@@ -1,0 +1,23 @@
+{
+  "passed": true,
+  "user_disposition": "preserve reservations and stop this live retest",
+  "live_retest_stopped": true,
+  "manual_reservation_release_performed": false,
+  "reservation_rows_preserved": 2,
+  "original_unknown_run_and_expiry_preserved": true,
+  "titan_process_count": 0,
+  "temporary_plaintext_credential_files_remaining": 0,
+  "task_transfer_files_removed": [
+    "release.tar.gz",
+    "titan-m4-fill-release-02.tar.gz",
+    "titan-m4-fill-release-03.tar.gz",
+    "titan-m4-fill-repair.py",
+    "titan-m4-fill-finalize-02.py",
+    "titan-m4-fill-audit.py",
+    "titan-m4-fill-release-plan.py"
+  ],
+  "private_account_databases_checkpoints_pins_and_failure_receipts_retained": true,
+  "new_candidate_04_deployed": false,
+  "long_running_service_started": false,
+  "final_account_state_source": "postflight-03-independent.json; no trading after that read-only check"
+}

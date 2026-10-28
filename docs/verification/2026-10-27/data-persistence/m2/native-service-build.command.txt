@@ -1,0 +1,1 @@
+cargo --config /home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/cargo-source.toml build --locked -p titan-strategy-runtime --example v13_service_recovery_smoke

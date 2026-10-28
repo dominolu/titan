@@ -1,0 +1,2 @@
+
+{"error":{"code":"WORKER_FAILED","message":"worker failed: invalid JSON in /home/dominolu/dev/titan-persistence-m2-20261027-59973648/evidence/m2-final-08/local-persistence/invalid-trace.json: unknown variant `unsupported-fact`, expected one of `tick`, `depth`, `fill`, `order`, `cancel`, `position`, `balance`, `account_state`, `timer`, `stop` at line 1 column 86"},"schema_version":1}

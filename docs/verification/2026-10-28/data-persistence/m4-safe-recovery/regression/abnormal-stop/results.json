@@ -1,0 +1,57 @@
+{
+  "passed": true,
+  "scenario": "abnormal-stop",
+  "expected_runtime_outcome": "failed_closed",
+  "candidate": "candidate07",
+  "binary_sha256": "a74369e2d45a980e99a391b3f04318932a7825340438ec4e720e82b544a31035",
+  "strategy_sha256": "dcc71c4a2594641a1d8368b5f248ffcede8b622230eee491f23e453dba616d8a",
+  "checks": [
+    "frozen-candidate07-binary-web-signature-and-native-bytes-verified",
+    "A-to-N-signed-candidate07-deployed-without-recompile",
+    "withheld-native-fill-leaves-position-order-and-strategy-inventory-unsettled",
+    "original-strategy-disagreement-deadline-latches-abnormal-state-without-inventing-a-fill",
+    "abnormal-Stop-fails-closed-at-original-budget-retains-position-and-reservations"
+  ],
+  "operations": [
+    {
+      "id": "13addaa4c0a2f17973191fcc24c33537565f30facdceff9bb67d0f0ca3941d41",
+      "kind": "deploy",
+      "state": "succeeded"
+    },
+    {
+      "id": "2cfb6ccb0171a164ce17e25663dae474fd04d115374326976d3594034178f597",
+      "kind": "start",
+      "state": "succeeded"
+    },
+    {
+      "id": "d2f1bb30e48eaf88e615130be800d6818dc2f5ccf63d568621694ce31282de83",
+      "kind": "stop",
+      "state": "failed"
+    }
+  ],
+  "elapsed_seconds": 30.730529664084315,
+  "observed_stop_receipt_seconds": 12.453297833912075,
+  "engine_stop_budget_seconds": 10,
+  "checkpoint_seconds": 60,
+  "startup_seconds": 30,
+  "handler_seconds": 1,
+  "maximum_run_seconds": 120,
+  "old_expires_at_ns": "1793166985097573692",
+  "new_expires_at_ns": "1793166985097573692",
+  "old_generation": "1",
+  "new_generation": "1",
+  "reference": null,
+  "simulated_position_base": "0.0001",
+  "local_simulated_occupancy_rows": 2,
+  "independent_fill_rows": 0,
+  "connector_urls": {
+    "rest_url": "http://127.0.0.1:34885/api/v4",
+    "public_ws_url": "ws://127.0.0.1:34885/public",
+    "private_ws_url": "ws://127.0.0.1:34885/private",
+    "market_quantity_multipliers": {
+      "GATE_FUTURE_BTC_USDT": 1.0
+    }
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": [
+    "account-equity-risk-history-diagnostics",
+    "separate-hedge-positions-exact-quantity",
+    "account-log-and-alert-acknowledgement",
+    "stale-risk-does-not-show-current-amounts",
+    "source-and-session-late-response-guards",
+    "history-pagination-survives-sse",
+    "mobile-accounts-and-run",
+    "reader-api-and-ui-write-denied"
+  ],
+  "pageErrors": []
+}

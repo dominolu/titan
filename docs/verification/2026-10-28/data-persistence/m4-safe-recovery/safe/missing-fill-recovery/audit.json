@@ -1,0 +1,82 @@
+{
+  "passed": true,
+  "scenario": "missing-fill-recovery",
+  "expected_outcome": "safe_flat_stop",
+  "independent_fills": 2,
+  "fee_units_USDT_1e8": 808001,
+  "archive_fill_counts_by_replay": [
+    [
+      0,
+      2
+    ]
+  ],
+  "archive_conflicts": 0,
+  "issues_preserved": [],
+  "sources": [
+    [
+      "bb5da80c3565cef066f1d6917a36f61d80248881c5e31c25d4b938933f4e86b1:c4eaa95f678f078a2cf5f8651ce78262be6f0678669a20ed7d2841d6f09bf7cb",
+      1,
+      1
+    ],
+    [
+      "f5fdc39e5d99f7b4628507fbe48dd18c9162d07cd7d81bfb533568877bf2087e:38f3f71fbaa93a53cba1c0bddf8f88c17bf6109499069c5a96f932bb09b2affc",
+      1,
+      1
+    ]
+  ],
+  "fixed_reference": {
+    "record_id": "55de2f5379ff98323e66213b95305de9",
+    "payload_sha256": "c899eae94180760dd6bd101db7489608d8486fb0d5fdc27b9748e2fe7d403ca4",
+    "store_id": "1ff583e4d7fe9e7d1dd5ae6b9dc39358",
+    "runtime_strategy_no": 77
+  },
+  "fixed_record_sha_valid": true,
+  "fixed_pin_count": 1,
+  "generation_floor": 2,
+  "original_expiry_unchanged": true,
+  "original_run_still_failed_and_unsafe": true,
+  "original_monotonic_budget_unchanged": {
+    "boot_id": "f4216c2a-feba-4734-a43f-0d57c4013107",
+    "deadline_boottime_ns": "7766499614391360",
+    "expires_at_ns": "1793166600647410789"
+  },
+  "old_terminal_gates": [
+    {
+      "activation_gate_open": false,
+      "command_gate_open": false,
+      "lifecycle": "Failed",
+      "last_error_code": "stop_drain_deadline_exceeded"
+    }
+  ],
+  "local_simulated_occupancy_rows": 0,
+  "final_point_generation": 2,
+  "final_point_orders": [
+    {
+      "order_id": 1,
+      "side": 1,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    },
+    {
+      "order_id": 4294967297,
+      "side": 2,
+      "cumulative_filled_lots": 1,
+      "fill_count": 1
+    }
+  ],
+  "terminal": {
+    "passed": true,
+    "stop_through_exit_and_release_seconds": 3.565926304087043,
+    "old_run_still_failed_and_unsafe": true,
+    "old_expires_at_ns": "1793166600647410789",
+    "new_expires_at_ns": "1793166600647410789",
+    "fixed_blob_unchanged": true,
+    "fixed_pin_count": 1,
+    "position_lots": 0,
+    "occupancy": 0,
+    "independent_fills": 2,
+    "fee_units_USDT_1e8": 808001
+  },
+  "real_host_contacted": false,
+  "real_reservations_touched": false
+}

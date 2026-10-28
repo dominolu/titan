@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "synthetic_history_records": 12000,
+  "metadata_bytes_per_record": 32768,
+  "valid_workspace_id_length": 128,
+  "history_query_seconds": {
+    "/api/v2/strategies": 0.3667885670438409,
+    "/api/v2/resources?strategy_id=research-empty&kind=strategy_version&limit=20": 0.3695460772141814
+  },
+  "concurrent_read_and_admission_seconds": [
+    0.0010371198877692223,
+    0.0707829874008894,
+    0.0007249563932418823,
+    0.07631340902298689,
+    0.0006432626396417618,
+    0.043553260155022144
+  ],
+  "maximum_concurrent_seconds": 0.07631340902298689,
+  "real_account_access": false
+}

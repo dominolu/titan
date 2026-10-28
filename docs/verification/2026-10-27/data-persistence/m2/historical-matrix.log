@@ -1,0 +1,56 @@
+{"name": "reader-api-write-denied", "passed": true}
+{"name": "immutable-dataset-prepare-sideways", "passed": true, "sha256": "830a49e06aab2b0bd6641d1d128215677a5768eb120a4004e515cd41d5376683"}
+{"name": "immutable-dataset-prepare-up", "passed": true, "sha256": "c68533619b959a1b942a4805097f433759df52f325b541b4e317879095a09ca6"}
+{"name": "immutable-dataset-prepare-down", "passed": true, "sha256": "b77d320d1b8fe087b3307667f9d51ecfa8de6c54eda0b94588bc0c1f2a1dc91b"}
+{"name": "manager-and-node-restart-preserve-task", "passed": true}
+{"name": "compile-sideways-neutral", "passed": true, "strategy_version_id": "build-artifact-f2cc1513c161533edebaa87706cf53d2cddc8cb477d2557730b48b2af219bb58", "metadata_schema": 3}
+{"name": "backtest-sideways-neutral-base", "passed": true, "operation_id": "53ccb73acc4f57fedf68bef859fcc2eed2410acefb399ae0d0bb8f26c00e1b57", "metrics": {"net_pnl_usdt": "6.39232967427597", "max_drawdown_pct": "0.07392107182923553", "max_pending_bound_notional_usdt": "3013.0710000000004", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-neutral-base", "passed": true, "records": 30, "upper_row": "1561"}
+{"name": "verified-report-render-and-download", "passed": true}
+{"name": "backtest-sideways-neutral-stress", "passed": true, "operation_id": "7af4d8fbb123e092311d8d4d12d554891a77b5ffc7955c6d51cd6afa4fde5eef", "metrics": {"net_pnl_usdt": "2.4506863542956125", "max_drawdown_pct": "0.0800391911407601", "max_pending_bound_notional_usdt": "3013.0710000000004", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-neutral-stress", "passed": true, "records": 59, "upper_row": "1578"}
+{"name": "compile-sideways-long_bias", "passed": true, "strategy_version_id": "build-artifact-544d1476c793315d87bf1adb05585e9d1769cdcb421eda83ca545ee776b65c0a", "metadata_schema": 3}
+{"name": "backtest-sideways-long_bias-base", "passed": true, "operation_id": "92f860bc5823b54477b1ed0098737b1f2461dbc788e94b6eef07db8c75f6b040", "metrics": {"net_pnl_usdt": "26.469147260288082", "max_drawdown_pct": "1.1782506073750738", "max_pending_bound_notional_usdt": "16457.1781", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-long_bias-base", "passed": true, "records": 31, "upper_row": "1564"}
+{"name": "backtest-sideways-long_bias-stress", "passed": true, "operation_id": "8ed70b9961b9b19cf870fd039bebd256830fb57545442ebca446e6a5121b711c", "metrics": {"net_pnl_usdt": "7.342935070300882", "max_drawdown_pct": "1.1864168903230077", "max_pending_bound_notional_usdt": "16457.8161", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-long_bias-stress", "passed": true, "records": 56, "upper_row": "1601"}
+{"name": "compile-sideways-short_bias", "passed": true, "strategy_version_id": "build-artifact-e722d8dad7d366ee8f10d26f7ba65f9719931ed6946c7eede4922bc98b837077", "metadata_schema": 3}
+{"name": "backtest-sideways-short_bias-base", "passed": true, "operation_id": "6432c77ba708c7190801d08c76fae6779ee8b780eb79d782c94111e1513ee1e8", "metrics": {"net_pnl_usdt": "-43.22850500172899", "max_drawdown_pct": "1.3958117365338276", "max_pending_bound_notional_usdt": "18078.426000000003", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-short_bias-base", "passed": true, "records": 29, "upper_row": "1565"}
+{"name": "backtest-sideways-short_bias-stress", "passed": true, "operation_id": "af7aa2ab006fed403addba5b4c02844852545f10eccced98ace922c6b7f07a9c", "metrics": {"net_pnl_usdt": "-62.31924486173375", "max_drawdown_pct": "1.415509310355041", "max_pending_bound_notional_usdt": "18078.426000000003", "final_position_btc": "0.0"}}
+{"name": "history-port-sideways-short_bias-stress", "passed": true, "records": 63, "upper_row": "1635"}
+{"name": "compile-up-neutral", "passed": true, "strategy_version_id": "build-artifact-578cf5e61fa3fd0ef0877eccd2376a44bf45421b762ff6710f406a86e9164e9b", "metadata_schema": 3}
+{"name": "backtest-up-neutral-base", "passed": true, "operation_id": "f603f9a81222c5a82ab4122331a5f19ce3d513db92ac1ac93d7768bcfda6f0c1", "metrics": {"net_pnl_usdt": "-325.4468597674568", "max_drawdown_pct": "4.118444683559776", "max_pending_bound_notional_usdt": "14962.476250000002", "final_position_btc": "0.0"}}
+{"name": "history-port-up-neutral-base", "passed": true, "records": 447, "upper_row": "2959"}
+{"name": "backtest-up-neutral-stress", "passed": true, "operation_id": "6e48259112e8d031d697f571894fcca6c975f753f6a3dc62e021bce5c77d2024", "metrics": {"net_pnl_usdt": "-414.4401792812987", "max_drawdown_pct": "4.677480166189476", "max_pending_bound_notional_usdt": "15689.375", "final_position_btc": "0.0"}}
+{"name": "history-port-up-neutral-stress", "passed": true, "records": 789, "upper_row": "3194"}
+{"name": "compile-up-long_bias", "passed": true, "strategy_version_id": "build-artifact-2e1b18213e0f62ba3d6926ac555e9142fb11768942f22c0716680cc71e6e756e", "metadata_schema": 3}
+{"name": "backtest-up-long_bias-base", "passed": true, "operation_id": "eed707de9649110bca355179b4647b7c5279eecbcf605bc1605fe9be651351c6", "metrics": {"net_pnl_usdt": "395.51084170812464", "max_drawdown_pct": "1.4291131348960346", "max_pending_bound_notional_usdt": "16485.7", "final_position_btc": "0.0"}}
+{"name": "history-port-up-long_bias-base", "passed": true, "records": 358, "upper_row": "2418"}
+{"name": "backtest-up-long_bias-stress", "passed": true, "operation_id": "574eaf207428c9081b538d19139f2c815351e50b5e486a2fcd83b0dd4a446952", "metrics": {"net_pnl_usdt": "346.6143114081424", "max_drawdown_pct": "1.379966721021592", "max_pending_bound_notional_usdt": "16492.272500000003", "final_position_btc": "0.0"}}
+{"name": "history-port-up-long_bias-stress", "passed": true, "records": 651, "upper_row": "2699"}
+{"name": "compile-up-short_bias", "passed": true, "strategy_version_id": "build-artifact-67112883877b867152c15e11a370851dfa229fd467b5260c0c20b68630576cce", "metadata_schema": 3}
+{"name": "backtest-up-short_bias-base", "passed": true, "operation_id": "624df36d5522247d644a2628c13ef6f25456ad89d4330b754b4ca07d5a477a0c", "metrics": {"net_pnl_usdt": "-1049.502251192871", "max_drawdown_pct": "10.953522680274128", "max_pending_bound_notional_usdt": "27525.356250000004", "final_position_btc": "0.0"}}
+{"name": "history-port-up-short_bias-base", "passed": true, "records": 327, "upper_row": "2476"}
+{"name": "backtest-up-short_bias-stress", "passed": true, "operation_id": "f4cb2e7696644f6458014a6f1d472fd0957ab7a6abea0f6d9ae66fbe99aa671d", "metrics": {"net_pnl_usdt": "-1101.7912626827401", "max_drawdown_pct": "11.35810044535481", "max_pending_bound_notional_usdt": "27502.475000000002", "final_position_btc": "0.0"}}
+{"name": "history-port-up-short_bias-stress", "passed": true, "records": 567, "upper_row": "2666"}
+{"name": "compile-down-neutral", "passed": true, "strategy_version_id": "build-artifact-93f73cf00261e14201097e93ea11fa59c3301b296ea60eede0125402280d1d05", "metadata_schema": 3}
+{"name": "backtest-down-neutral-base", "passed": true, "operation_id": "3af4a563944ae49a6c1697b80fc9298c37745f1895fb8053407971e3041e1767", "metrics": {"net_pnl_usdt": "-361.30433236996396", "max_drawdown_pct": "3.7812999071086955", "max_pending_bound_notional_usdt": "13307.856", "final_position_btc": "0.0"}}
+{"name": "history-port-down-neutral-base", "passed": true, "records": 258, "upper_row": "2325"}
+{"name": "backtest-down-neutral-stress", "passed": true, "operation_id": "7543a8536aa2cefbffe26226e5102cb8c04d97470e4de67552f3e1aec04073f9", "metrics": {"net_pnl_usdt": "-430.946780269951", "max_drawdown_pct": "4.48605668223978", "max_pending_bound_notional_usdt": "13806.9006", "final_position_btc": "0.0"}}
+{"name": "history-port-down-neutral-stress", "passed": true, "records": 489, "upper_row": "2517"}
+{"name": "compile-down-long_bias", "passed": true, "strategy_version_id": "build-artifact-08ad57c6a12e577d13b3b9010f22065cd361ff1bda6e696fe48cd902bbb3087c", "metadata_schema": 3}
+{"name": "backtest-down-long_bias-base", "passed": true, "operation_id": "d32196629f964536bce291dabad64d28050bc534e2dc61914a3405184f22fb43", "metrics": {"net_pnl_usdt": "-1050.3285377000047", "max_drawdown_pct": "10.719224464028173", "max_pending_bound_notional_usdt": "25449.9245", "final_position_btc": "0.0"}}
+{"name": "history-port-down-long_bias-base", "passed": true, "records": 231, "upper_row": "2203"}
+{"name": "backtest-down-long_bias-stress", "passed": true, "operation_id": "295d4edada65d3360cef1d8a3ec2dad043c3ff70aae2d2a7fa12c92a5d7e870e", "metrics": {"net_pnl_usdt": "-1275.5708269999704", "max_drawdown_pct": "12.903761661399471", "max_pending_bound_notional_usdt": "25447.604000000003", "final_position_btc": "0.0"}}
+{"name": "history-port-down-long_bias-stress", "passed": true, "records": 393, "upper_row": "2428"}
+{"name": "compile-down-short_bias", "passed": true, "strategy_version_id": "build-artifact-9e74c893aab0d6742a65e7a9a56c1da99a5923b017390f268551f6baaffac23e", "metadata_schema": 3}
+{"name": "backtest-down-short_bias-base", "passed": true, "operation_id": "adf5c81b4f1e8bd6dececf265f3c09307edba0f9f493f3ea49c7db3dce4aa4a1", "metrics": {"net_pnl_usdt": "382.28776532498523", "max_drawdown_pct": "1.6144194654134743", "max_pending_bound_notional_usdt": "16459.786200000002", "final_position_btc": "0.0"}}
+{"name": "history-port-down-short_bias-base", "passed": true, "records": 254, "upper_row": "2254"}
+{"name": "backtest-down-short_bias-stress", "passed": true, "operation_id": "3fc441bbf87e5e99096151c5598c3f34a74e66fb4c64d388e97450f74adf1af6", "metrics": {"net_pnl_usdt": "370.5018238599805", "max_drawdown_pct": "1.7537526701505095", "max_pending_bound_notional_usdt": "16459.786200000002", "final_position_btc": "0.0"}}
+{"name": "history-port-down-short_bias-stress", "passed": true, "records": 436, "upper_row": "2380"}
+{"name": "engine-validation-rejection", "passed": true}
+{"name": "cancellation-confirmed-by-execution-path", "passed": true}
+{"name": "fault-injection", "passed": true, "checks": ["unproven-prepared-cache-rejected", "tampered-strategy_version-rejected-valid-file-restored", "private-and-symlink-files-rejected", "retained-inventory-keeps-metrics-with-failed-operation", "concurrent-node-dedup-and-real-compiler-timeout", "expired-session-rejected"]}
+{"name":"browser-e2e","passed":true}
+{"name": "browser-e2e", "passed": true}

@@ -280,6 +280,8 @@ fn main() {
                     critical_reserve: 8,
                     reliable_pending_capacity: 16,
                     timer_interval: Some(Duration::from_millis(10)),
+                    // Explicit new-runtime storage admission; startup and stop deadlines stay fixed.
+                    max_handler_duration: Duration::from_millis(750),
                     ..Default::default()
                 },
                 recovery,
