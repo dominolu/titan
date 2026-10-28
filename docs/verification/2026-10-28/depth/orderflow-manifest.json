@@ -1,0 +1,337 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "abi_version": 13,
+    "business_observation_schema": {
+      "schema": {
+        "fields": [
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "中间价",
+            "name": "mid_ticks",
+            "nullable": false,
+            "unit": "price_tick"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "点差",
+            "name": "spread_bp",
+            "nullable": false,
+            "unit": "bp"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "条件波动率",
+            "name": "sigma_bp",
+            "nullable": false,
+            "unit": "bp"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "2 秒 OFI",
+            "name": "ofi_2s",
+            "nullable": false,
+            "unit": "quantity_lot"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "一档深度",
+            "name": "depth1_btc",
+            "nullable": false,
+            "unit": "btc"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "五档深度",
+            "name": "depth5_btc",
+            "nullable": false,
+            "unit": "btc"
+          },
+          {
+            "description": "",
+            "enum_values": [
+              "depth_proxy",
+              "platform_trades"
+            ],
+            "kind": "enum",
+            "label": "流量来源",
+            "name": "flow_source",
+            "nullable": false,
+            "unit": "source"
+          },
+          {
+            "description": "",
+            "enum_values": [
+              "ready",
+              "unavailable"
+            ],
+            "kind": "enum",
+            "label": "盘口就绪",
+            "name": "book_ready",
+            "nullable": false,
+            "unit": "flag"
+          },
+          {
+            "description": "",
+            "enum_values": [
+              "invalid",
+              "valid"
+            ],
+            "kind": "enum",
+            "label": "深度覆盖有效",
+            "name": "book_valid",
+            "nullable": false,
+            "unit": "flag"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "行情代次",
+            "name": "stream_epoch",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "盘口重置次数",
+            "name": "book_resets",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "int64",
+            "label": "剩余预热时间",
+            "name": "warmup_remaining_ms",
+            "nullable": false,
+            "unit": "ms"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "已处理流量笔数",
+            "name": "prints_seen",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "被丢弃的行情条目",
+            "name": "dropped",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "绑定的本地品种号",
+            "name": "asset_no",
+            "nullable": false,
+            "unit": "index"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "事件计算轮次",
+            "name": "computes",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "事件总数",
+            "name": "events_total",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [
+              "e01_bulldozer",
+              "e02_acceleration",
+              "e03_absorption",
+              "e04_iceberg",
+              "e07_sweep",
+              "e08_ofi",
+              "e11_stop_run",
+              "e13_order_impact",
+              "e14_liquidation_proxy",
+              "none"
+            ],
+            "kind": "enum",
+            "label": "最近事件",
+            "name": "last_type",
+            "nullable": false,
+            "unit": "event"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "int64",
+            "label": "最近事件方向",
+            "name": "last_direction",
+            "nullable": false,
+            "unit": "sign"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "最近事件强度",
+            "name": "last_strength",
+            "nullable": false,
+            "unit": "ratio"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "int64",
+            "label": "最近事件时间",
+            "name": "last_ts_ns",
+            "nullable": false,
+            "unit": "ns"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E01 次数",
+            "name": "e01_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E02 次数",
+            "name": "e02_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E03 次数",
+            "name": "e03_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E04 次数",
+            "name": "e04_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E07 次数",
+            "name": "e07_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E08 次数",
+            "name": "e08_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E11 次数",
+            "name": "e11_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E13 次数",
+            "name": "e13_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "uint64",
+            "label": "E14 次数",
+            "name": "e14_count",
+            "nullable": false,
+            "unit": "count"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "E03 最新强度",
+            "name": "e03_strength",
+            "nullable": false,
+            "unit": "ratio"
+          },
+          {
+            "description": "",
+            "enum_values": [],
+            "kind": "decimal",
+            "label": "E13 最新强度",
+            "name": "e13_strength",
+            "nullable": false,
+            "unit": "ratio"
+          }
+        ],
+        "schema_id": "titan.orderflow_events",
+        "schema_version": 2
+      },
+      "schema_hash": "5466ef11de3b38a8afa55182b7aaa8a7efe7f47d4c5045560d9fa5081d8d6209"
+    },
+    "callback_mask": 1035,
+    "compiled_strategy": "/home/dominolu/dev/titan-depth-20261028-28c083bd/verification/orderflow.titan",
+    "compiled_strategy_digest": "11385c2544a16d8a71d614603f72e647ead29243e09c8103bf5c1fa3c927f47f",
+    "cpu_baseline": "x86-64",
+    "key_id": null,
+    "native_library_sha256": "63241243512e9a114455107efedc5f899bdc69ddc5756679e13b60ee528c5249",
+    "recovery_state_schema_hash": "068f37fa93cac94a2a1760a2295e8990c8f7371500c63d6a8f6a9457a96c92f5",
+    "recovery_state_schema_version": 2,
+    "signed": false,
+    "source_version": "0.2.0",
+    "state_alignment": 8,
+    "state_len": 62904,
+    "strategy_type": "orderflow_events",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  }
+}

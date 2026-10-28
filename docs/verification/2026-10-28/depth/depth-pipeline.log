@@ -1,0 +1,4 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-depth-20261028-28c083bd/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.77s
+     Running `/tmp/titan-deplugin-target/debug/examples/v13_depth_pipeline_smoke verification/host-depth.titan`
+PASS: 48,052-byte snapshot -> arena -> PRIMARY -> V13 Top100; unchanged level backfill, invalidation, resnapshot; same offline reconstruction and legacy replay rejection

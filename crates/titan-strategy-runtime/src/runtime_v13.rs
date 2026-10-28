@@ -15,6 +15,7 @@ use titan_account_service::{
 use titan_core_types::{CoreError, EventHandler, EventView};
 use titan_event_engine::{EngineError, LaneProgress, PrimaryAsyncLaneHandle, SubscriberState};
 
+use crate::depth_book::{DEPTH_BATCH_CAPACITY, HostDepthBook};
 use crate::*;
 
 const PUBLIC_CAPACITY: usize = 1_024;
@@ -92,6 +93,10 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
         Ok(Arc::new(NativeV13Runtime {
             core: Arc::new(NativeV13Core {
                 execution_limits: definition.runtime.execution_limits.clone(),
+                host_depth: compiled_strategy
+                    .manifest
+                    .capabilities
+                    .contains(StrategyCapabilitiesV13::HOST_DEPTH_100),
                 pause_safe: compiled_strategy
                     .manifest
                     .capabilities
@@ -131,7 +136,9 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     recovered_identity: None,
                     orders_list: BTreeMap::new(),
                     ticks: Vec::with_capacity(PUBLIC_CAPACITY),
-                    depth: Vec::with_capacity(PUBLIC_CAPACITY),
+                    depth: Vec::with_capacity(DEPTH_BATCH_CAPACITY),
+                    depth_books: BTreeMap::new(),
+                    depth_info: DepthBatchInfoV1::default(),
                     order_versions: BTreeMap::new(),
                     pending_fills: BTreeMap::new(),
                     settled_fills: BTreeMap::new(),
@@ -183,6 +190,7 @@ pub struct NativeV13Runtime {
 }
 
 struct NativeV13Core {
+    host_depth: bool,
     pause_safe: bool,
     execution_limits: Option<ExecutionLimits>,
     business_observation: Option<BusinessObservationPublisher>,
@@ -216,6 +224,8 @@ struct NativeV13Inner {
     orders_list: BTreeMap<u64, StrategyOrderRecordV13>,
     ticks: Vec<TitanTickView>,
     depth: Vec<TitanDepthView>,
+    depth_books: BTreeMap<u32, HostDepthBook>,
+    depth_info: DepthBatchInfoV1,
     order_versions: BTreeMap<(u32, u64), u64>,
     pending_fills: BTreeMap<(u32, u64), TitanFillView>,
     settled_fills: BTreeMap<(u32, u64), i64>,
@@ -409,6 +419,35 @@ impl NativeV13Runtime {
             );
             return Err(v13_runtime_error("recovery_callback_attempted_command"));
         }
+        if core.host_depth
+            && commands
+                .iter()
+                .any(|c| matches!(c, StagedCommandV13::Submit { .. }))
+            && core.context.markets.iter().any(|b| {
+                !inner
+                    .depth_books
+                    .get(&b.local_asset_no)
+                    .is_some_and(|book| book.ready)
+            })
+        {
+            fail_runtime(core, inner, Arc::from("depth_not_ready_for_execution"));
+            return Err(v13_runtime_error("depth_not_ready_for_execution"));
+        }
+        if core.host_depth
+            && commands
+                .iter()
+                .any(|c| matches!(c, StagedCommandV13::Submit { .. }))
+            && core.context.market_service.as_ref().is_some_and(|service| {
+                core.context.markets.iter().any(|b| {
+                    !service
+                        .health(b.source)
+                        .is_ok_and(|h| h.state == titan_market_service::ConnectorHealth::Running)
+                })
+            })
+        {
+            fail_runtime(core, inner, Arc::from("depth_source_unhealthy"));
+            return Err(v13_runtime_error("depth_source_unhealthy"));
+        }
         let committed = commit_commands(core, inner, &commands).and_then(|_| {
             if core.async_failure.load(Ordering::Acquire) {
                 Err(v13_runtime_error("execution_result_queue_full"))
@@ -547,11 +586,59 @@ fn dispatch_event(
             if !invoke_callbacks {
                 return Ok(());
             }
+            if core.host_depth && inner.depth_info.version == 0 {
+                return Ok(());
+            }
             let ptr = inner.depth.as_ptr();
             let len = inner.depth.len() as u64;
+            let info = inner.depth_info;
             NativeV13Runtime::invoke(inner, core, V13EventKind::Depth, 1, |ctx| {
                 ctx.depth_ptr = ptr;
                 ctx.depth_len = len;
+                if core.host_depth {
+                    ctx.event_payload_ptr = (&info as *const DepthBatchInfoV1).cast();
+                    ctx.event_payload_len = std::mem::size_of::<DepthBatchInfoV1>() as u64;
+                }
+            })
+        }
+        (titan_market_service::STREAM_INVALIDATED_EVENT, 1) if core.host_depth => {
+            if event.payload.len() != 12 {
+                return Err(v13_runtime_error("depth_invalidation_length"));
+            }
+            let asset_id = u32::from_le_bytes(event.payload[..4].try_into().unwrap());
+            let epoch = u64::from_le_bytes(event.payload[4..12].try_into().unwrap());
+            let Some(asset_no) = core
+                .context
+                .markets
+                .iter()
+                .find(|b| b.asset_id == asset_id && b.source_stream.0 == event.metadata.source_id)
+                .map(|b| b.local_asset_no)
+            else {
+                return Ok(());
+            };
+            let book = inner.depth_books.entry(asset_no).or_default();
+            // A publication/connection failure may not know the venue epoch.
+            // Its ordered watermark still invalidates the current book.
+            let epoch = if epoch == 0 { book.epoch() } else { epoch };
+            if !book.invalidate_at(epoch, event.metadata.source_sequence) {
+                return Ok(());
+            }
+            inner.depth.clear();
+            let info = DepthBatchInfoV1 {
+                version: 1,
+                asset_no,
+                stream_epoch: epoch,
+                reset: 1,
+                publication_sequence: event.metadata.source_sequence,
+                ..Default::default()
+            };
+            inner.depth_info = info;
+            if !invoke_callbacks {
+                return Ok(());
+            }
+            NativeV13Runtime::invoke(inner, core, V13EventKind::Depth, 1, |ctx| {
+                ctx.event_payload_ptr = (&info as *const DepthBatchInfoV1).cast();
+                ctx.event_payload_len = std::mem::size_of::<DepthBatchInfoV1>() as u64;
             })
         }
         (titan_account_service::FILL_EVENT, titan_account_service::FILL_EVENT_SCHEMA_VERSION) => {
@@ -764,7 +851,13 @@ fn decode_market_batch(
     }
     let asset_id = u32::from_le_bytes(event.payload[0..4].try_into().unwrap());
     let count = usize::from(u16::from_le_bytes(event.payload[8..10].try_into().unwrap()));
-    if count > PUBLIC_CAPACITY {
+    if count
+        > if depth {
+            DEPTH_BATCH_CAPACITY
+        } else {
+            PUBLIC_CAPACITY
+        }
+    {
         return Err(v13_runtime_error("market_capacity"));
     }
     let asset_no = core
@@ -782,6 +875,16 @@ fn decode_market_batch(
     let exchange_ts = i64::from_le_bytes(event.payload[36..44].try_into().unwrap());
     let receive_ts = i64::from_le_bytes(event.payload[44..52].try_into().unwrap());
     let sequence = u64::from_le_bytes(event.payload[28..36].try_into().unwrap());
+    let snapshot = if depth {
+        let kind = u16::from_le_bytes(event.payload[4..6].try_into().unwrap());
+        let flags = u16::from_le_bytes(event.payload[6..8].try_into().unwrap());
+        if !matches!((kind, flags), (1, 1) | (2, 0)) {
+            return Err(v13_runtime_error("depth_header_flags"));
+        }
+        kind == 1
+    } else {
+        false
+    };
     let is_bbo = event.event_type == titan_market_service::BBO_EVENT;
     if is_bbo {
         inner.last_bbo_ns = receive_ts;
@@ -816,7 +919,7 @@ fn decode_market_batch(
                 source_sequence: sequence,
                 side,
                 action,
-                is_snapshot: 0,
+                is_snapshot: u8::from(snapshot),
                 reserved: [0; 5],
             });
         }
@@ -829,6 +932,53 @@ fn decode_market_batch(
             market.best_ask_ticks = price;
             market.best_ask_qty_lots = qty;
         }
+    }
+    if depth && core.host_depth {
+        let mut info = DepthBatchInfoV1 {
+            version: 1,
+            asset_no,
+            stream_epoch: u64::from_le_bytes(event.payload[12..20].try_into().unwrap()),
+            first_update_sequence: u64::from_le_bytes(event.payload[20..28].try_into().unwrap()),
+            last_update_sequence: sequence,
+            publication_sequence: event.metadata.source_sequence,
+            ..Default::default()
+        };
+        let book = inner.depth_books.entry(asset_no).or_default();
+        let mut output = Vec::with_capacity(200);
+        if !book
+            .apply(&mut info, snapshot, &inner.depth, &mut output)
+            .map_err(v13_runtime_error)?
+        {
+            inner.depth_info = DepthBatchInfoV1::default();
+            inner.depth.clear();
+            return Ok(());
+        }
+        if snapshot && !book.ready && info.stream_epoch != 0 {
+            return Err(v13_runtime_error("depth_snapshot_insufficient_coverage"));
+        }
+        if !book.ready && !book.snapshot_pending && !snapshot {
+            let service = core
+                .context
+                .market_service
+                .as_ref()
+                .ok_or_else(|| v13_runtime_error("depth_snapshot_service_missing"))?;
+            let binding = core
+                .context
+                .markets
+                .iter()
+                .find(|b| b.local_asset_no == asset_no)
+                .unwrap();
+            service
+                .request_snapshot(binding.source, titan_market_service::AssetId(asset_id))
+                .map_err(|_| v13_runtime_error("depth_snapshot_request_failed"))?;
+            book.snapshot_pending = true;
+        }
+        for item in &mut output {
+            item.exchange_ts_ns = exchange_ts;
+            item.receive_ts_ns = receive_ts;
+        }
+        inner.depth = output;
+        inner.depth_info = info;
     }
     Ok(())
 }
@@ -2338,6 +2488,54 @@ impl StrategyRuntime for NativeV13Runtime {
                     | StrategyLifecycle::Stopping
             ) {
                 return Ok(());
+            }
+            if core.host_depth
+                && core
+                    .lane
+                    .get()
+                    .is_some_and(|lane| lane.health().state != SubscriberState::Normal)
+            {
+                fail_runtime(&core, &mut inner, Arc::from("depth_delivery_unhealthy"));
+                return Err(EngineError::SafePointPanicked);
+            }
+            if core.host_depth
+                && let Some(service) = &core.context.market_service
+            {
+                for binding in core.context.markets.iter() {
+                    if !service
+                        .health(binding.source)
+                        .is_ok_and(|h| h.state == titan_market_service::ConnectorHealth::Running)
+                    {
+                        let book = inner.depth_books.entry(binding.local_asset_no).or_default();
+                        if book.ready {
+                            let epoch = book.epoch();
+                            book.invalidate(epoch);
+                            let info = DepthBatchInfoV1 {
+                                version: 1,
+                                asset_no: binding.local_asset_no,
+                                stream_epoch: epoch,
+                                reset: 1,
+                                ..Default::default()
+                            };
+                            if NativeV13Runtime::invoke(
+                                &mut inner,
+                                &core,
+                                V13EventKind::Depth,
+                                1,
+                                |ctx| {
+                                    ctx.event_payload_ptr =
+                                        (&info as *const DepthBatchInfoV1).cast();
+                                    ctx.event_payload_len =
+                                        std::mem::size_of::<DepthBatchInfoV1>() as u64;
+                                },
+                            )
+                            .is_err()
+                            {
+                                return Err(EngineError::SafePointPanicked);
+                            }
+                        }
+                    }
+                }
             }
             let timer = TitanTimerView {
                 timer_id,

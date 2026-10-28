@@ -24,6 +24,7 @@ class Capability(IntFlag):
     STOP_BARRIER = 1 << 4
     RECOVERY_ORDER_RESULTS = 1 << 5
     PAUSE_SAFE = 1 << 6
+    HOST_DEPTH_100 = 1 << 7
 
 
 _HANDLERS = (
@@ -89,6 +90,10 @@ class StrategySpec:
             object.__setattr__(self, name, value)
         if legacy:
             raise TypeError(f"unknown strategy fields: {sorted(legacy)}")
+        if capabilities & Capability.HOST_DEPTH_100 and not any(
+            s.event_kind == EventKind.DEPTH and s.qos == EventQos.RELIABLE_ORDERED for s in subscriptions
+        ):
+            raise ValueError("HOST_DEPTH_100 requires reliable ordered depth subscription")
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "subscriptions", subscriptions)
         object.__setattr__(self, "capabilities", capabilities)
@@ -121,6 +126,10 @@ class StrategySpec:
         if any(s.event_kind in (EventKind.BBO, EventKind.BAR, EventKind.DEPTH) for s in subscriptions):
             if not capabilities & Capability.MARKET_DATA:
                 raise ValueError("market subscriptions require MARKET_DATA capability")
+        if capabilities & Capability.HOST_DEPTH_100 and not any(
+            s.event_kind == EventKind.DEPTH and s.qos == EventQos.RELIABLE_ORDERED for s in subscriptions
+        ):
+            raise ValueError("HOST_DEPTH_100 requires reliable ordered depth subscription")
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "subscriptions", subscriptions)
         object.__setattr__(self, "capabilities", capabilities)

@@ -4,6 +4,7 @@
 //! runtime's opaque `EventHandler` on its isolated worker.
 
 mod compiled_strategy;
+mod depth_book;
 mod error;
 mod model;
 mod observation;
@@ -16,6 +17,7 @@ mod service_core;
 mod v13;
 
 pub use compiled_strategy::*;
+pub use depth_book::DepthBatchInfoV1;
 pub use error::*;
 pub use model::*;
 pub use observation::*;

@@ -176,7 +176,43 @@ impl MarketConnector for MarketConnectorRuntime {
         let publish_overflow = overflowed_symbols.clone();
         let publish_health = health.clone();
         let publishing_detail: Arc<str> = Arc::from("connector is publishing data");
+        let recovering_depth = Mutex::new(HashSet::<String>::new());
         let event_tx = direct_publish_sender(move |publication| {
+            let depth_coordinates =
+                match &publication {
+                    DirectPublication::NativeMarket(
+                        crate::connector::NativeMarketBatch::Depth { symbol, stream, .. },
+                    ) => Some((*symbol, *stream)),
+                    DirectPublication::Event(PublishEvent::FeedBatch {
+                        symbol,
+                        stream: Some(stream),
+                        ..
+                    }) => Some((symbol.as_str(), *stream)),
+                    _ => None,
+                };
+            if let Some((symbol, stream)) = depth_coordinates
+                && !stream.snapshot
+                && recovering_depth
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .contains(symbol)
+            {
+                return;
+            }
+            let invalidated_symbol = match &publication {
+                DirectPublication::Event(PublishEvent::StreamInvalidated { symbol, .. }) => {
+                    Some(symbol.as_str())
+                }
+                _ => None,
+            };
+            if let Some(symbol) = invalidated_symbol
+                && event_bridge.depth_active(symbol)
+            {
+                recovering_depth
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(symbol.to_owned());
+            }
             let (result, symbol, connector_error, market_activity) = match publication {
                 DirectPublication::Event(value) => (
                     event_bridge.publish(value),
@@ -215,6 +251,22 @@ impl MarketConnector for MarketConnectorRuntime {
                     "market publication failed; scheduling stream recovery",
                 );
                 if let Some(symbol) = symbol {
+                    recovering_depth
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(symbol.to_owned());
+                    // Close the consumer's depth view synchronously before the
+                    // background recovery request. Never publish later deltas
+                    // over the missing batch.
+                    let epoch = depth_coordinates.map_or(0, |(_, stream)| stream.epoch);
+                    if let Err(invalidation) =
+                        event_bridge.publish(&PublishEvent::StreamInvalidated {
+                            symbol: symbol.to_owned(),
+                            epoch,
+                        })
+                    {
+                        warn!(error = %invalidation, "depth invalidation publication failed");
+                    }
                     publish_overflow
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
@@ -223,6 +275,21 @@ impl MarketConnector for MarketConnectorRuntime {
                 *publish_health.lock().unwrap_or_else(|p| p.into_inner()) =
                     (ConnectorHealth::Degraded, Arc::from(error.to_string()));
             } else if market_activity && !connector_error {
+                if let Some((symbol, stream)) = depth_coordinates
+                    && stream.snapshot
+                {
+                    recovering_depth
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(symbol);
+                }
+                if !recovering_depth
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty()
+                {
+                    return;
+                }
                 let mut health = publish_health.lock().unwrap_or_else(|p| p.into_inner());
                 if health.0 != ConnectorHealth::Running {
                     *health = (ConnectorHealth::Running, publishing_detail.clone());
