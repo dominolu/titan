@@ -1,0 +1,10 @@
+length=532 allocations=0 median_ns=68 min_ns=67 max_ns=68
+length=4852 allocations=0 median_ns=92 min_ns=92 max_ns=92
+length=48052 allocations=0 median_ns=622 min_ns=613 max_ns=624
+length=96052 allocations=1 median_ns=2336 min_ns=2296 max_ns=2360
+length=1572844 allocations=1 median_ns=37596 min_ns=37566 max_ns=37747
+length=532 allocations=0 median_ns=68 min_ns=66 max_ns=68
+length=4852 allocations=0 median_ns=92 min_ns=92 max_ns=94
+length=48052 allocations=0 median_ns=623 min_ns=622 max_ns=623
+length=96052 allocations=1 median_ns=2337 min_ns=2334 max_ns=2339
+length=1572844 allocations=1 median_ns=37261 min_ns=37211 max_ns=37290

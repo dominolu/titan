@@ -49,6 +49,10 @@ pub enum PublishError {
     },
     #[error("{0:?} event pool is exhausted")]
     EventArenaExhausted(PoolKind),
+    #[error("market payload byte budget is exhausted")]
+    MarketPayloadBudgetExhausted,
+    #[error("market payload allocation failed")]
+    MarketPayloadAllocationFailed,
     #[error("critical ingress is full")]
     CriticalIngressFull,
     #[error("market ingress is full")]

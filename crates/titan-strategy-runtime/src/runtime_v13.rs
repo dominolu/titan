@@ -15,7 +15,7 @@ use titan_account_service::{
 use titan_core_types::{CoreError, EventHandler, EventView};
 use titan_event_engine::{EngineError, LaneProgress, PrimaryAsyncLaneHandle, SubscriberState};
 
-use crate::depth_book::{DEPTH_BATCH_CAPACITY, HostDepthBook};
+use crate::depth_book::HostDepthBook;
 use crate::*;
 
 const PUBLIC_CAPACITY: usize = 1_024;
@@ -136,7 +136,8 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     recovered_identity: None,
                     orders_list: BTreeMap::new(),
                     ticks: Vec::with_capacity(PUBLIC_CAPACITY),
-                    depth: Vec::with_capacity(DEPTH_BATCH_CAPACITY),
+                    depth: Vec::with_capacity(200),
+                    depth_projection: Vec::with_capacity(200),
                     depth_books: BTreeMap::new(),
                     depth_info: DepthBatchInfoV1::default(),
                     order_versions: BTreeMap::new(),
@@ -224,6 +225,7 @@ struct NativeV13Inner {
     orders_list: BTreeMap<u64, StrategyOrderRecordV13>,
     ticks: Vec<TitanTickView>,
     depth: Vec<TitanDepthView>,
+    depth_projection: Vec<TitanDepthView>,
     depth_books: BTreeMap<u32, HostDepthBook>,
     depth_info: DepthBatchInfoV1,
     order_versions: BTreeMap<(u32, u64), u64>,
@@ -845,15 +847,6 @@ fn decode_market_batch(
     }
     let asset_id = u32::from_le_bytes(event.payload[0..4].try_into().unwrap());
     let count = usize::from(u16::from_le_bytes(event.payload[8..10].try_into().unwrap()));
-    if count
-        > if depth {
-            DEPTH_BATCH_CAPACITY
-        } else {
-            PUBLIC_CAPACITY
-        }
-    {
-        return Err(v13_runtime_error("market_capacity"));
-    }
     let asset_no = core
         .context
         .markets
@@ -891,17 +884,19 @@ fn decode_market_batch(
         let qty = i64::from_le_bytes(event.payload[offset + 8..offset + 16].try_into().unwrap());
         let side = event.payload[offset + 16];
         let action = event.payload[offset + 17];
-        inner.ticks.push(TitanTickView {
-            asset_no,
-            kind: if depth { 2 } else { 1 },
-            side,
-            exchange_ts_ns: exchange_ts,
-            receive_ts_ns: receive_ts,
-            price_ticks: price,
-            qty_lots: qty,
-            source_sequence: sequence,
-            ..TitanTickView::default()
-        });
+        if !depth {
+            inner.ticks.push(TitanTickView {
+                asset_no,
+                kind: if depth { 2 } else { 1 },
+                side,
+                exchange_ts_ns: exchange_ts,
+                receive_ts_ns: receive_ts,
+                price_ticks: price,
+                qty_lots: qty,
+                source_sequence: sequence,
+                ..TitanTickView::default()
+            });
+        }
         if depth {
             inner.depth.push(TitanDepthView {
                 asset_no,
@@ -918,7 +913,6 @@ fn decode_market_batch(
             });
         }
         let market = &mut inner.markets[asset_no as usize];
-        market.source_sequence = sequence;
         if is_bbo && side == 1 {
             market.best_bid_ticks = price;
             market.best_bid_qty_lots = qty;
@@ -927,6 +921,7 @@ fn decode_market_batch(
             market.best_ask_qty_lots = qty;
         }
     }
+    inner.markets[asset_no as usize].source_sequence = sequence;
     if depth && core.host_depth {
         let mut info = DepthBatchInfoV1 {
             version: 1,
@@ -938,9 +933,9 @@ fn decode_market_batch(
             ..Default::default()
         };
         let book = inner.depth_books.entry(asset_no).or_default();
-        let mut output = Vec::with_capacity(200);
+        let output = &mut inner.depth_projection;
         if !book
-            .apply(&mut info, snapshot, &inner.depth, &mut output)
+            .apply(&mut info, snapshot, &inner.depth, output)
             .map_err(v13_runtime_error)?
         {
             inner.depth_info = DepthBatchInfoV1::default();
@@ -967,11 +962,11 @@ fn decode_market_batch(
                 .map_err(|_| v13_runtime_error("depth_snapshot_request_failed"))?;
             book.snapshot_pending = true;
         }
-        for item in &mut output {
+        for item in output.iter_mut() {
             item.exchange_ts_ns = exchange_ts;
             item.receive_ts_ns = receive_ts;
         }
-        inner.depth = output;
+        std::mem::swap(&mut inner.depth, &mut inner.depth_projection);
         inner.depth_info = info;
     }
     Ok(())

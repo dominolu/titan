@@ -294,7 +294,6 @@ impl ConfigurationAdapter {
             ));
         }
         validate_account_source_capacity(&config.event_engine, &config.accounts)?;
-        validate_binance_depth_capacity(&config.event_engine, &config.market_sources)?;
         if !config.accounts.is_empty() && account_secret_root.is_none() {
             return Err(ConfigurationError::Invalid(
                 "account definitions require account_service.secret_root".into(),
@@ -1037,35 +1036,6 @@ fn validate_runtime_definitions(
     Ok(())
 }
 
-fn validate_binance_depth_capacity(
-    event_engine: &EventEngineConfig,
-    market_sources: &[MarketSourceDefinition],
-) -> Result<(), ConfigurationError> {
-    for source in market_sources
-        .iter()
-        .filter(|s| s.connector_type.as_ref() == "binance-futures")
-    {
-        let connector: toml::Value =
-            toml::from_str(std::str::from_utf8(&source.connector_config).map_err(|_| {
-                ConfigurationError::Invalid("invalid Binance config encoding".into())
-            })?)
-            .map_err(|_| ConfigurationError::Invalid("invalid Binance config".into()))?;
-        let limit = connector
-            .get("depth_snapshot_limit")
-            .and_then(toml::Value::as_integer)
-            .unwrap_or(1000);
-        if !matches!(limit, 5 | 10 | 20 | 50 | 100 | 500 | 1000)
-            || event_engine.arena.market_batch.block_bytes < 52 + 48 * limit as usize
-        {
-            return Err(ConfigurationError::Invalid(format!(
-                "Binance source {} snapshot does not fit market_batch block or has invalid depth_snapshot_limit",
-                source.source_key
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn validate_account_source_capacity(
     event_engine: &EventEngineConfig,
     accounts: &[AccountDefinition],
@@ -1699,29 +1669,5 @@ config = {}
             validate_strategy_unit_consistency(&[strategy], &[market_source], &[account]),
             Err(ConfigurationError::Invalid(_))
         ));
-    }
-}
-
-#[cfg(test)]
-mod depth_capacity_tests {
-    use super::*;
-    #[test]
-    fn startup_rejects_snapshot_that_cannot_fit_the_configured_arena() {
-        let mut engine = EventEngineConfig::default();
-        let mut source = MarketSourceDefinition {
-            source_key: Arc::from("depth"),
-            connector_type: Arc::from("binance-futures"),
-            connector_config: Arc::from(&b"depth_snapshot_limit = 1000"[..]),
-            instruments: Arc::from([]),
-            enabled: true,
-            definition_version: 1,
-        };
-        assert!(validate_binance_depth_capacity(&engine, &[source.clone()]).is_ok());
-        engine.arena.market_batch.block_bytes = 16_384;
-        assert!(validate_binance_depth_capacity(&engine, &[source.clone()]).is_err());
-        source.connector_config = Arc::from(&b"depth_snapshot_limit = 100"[..]);
-        assert!(validate_binance_depth_capacity(&engine, &[source.clone()]).is_ok());
-        source.connector_config = Arc::from(&b"depth_snapshot_limit = 250"[..]);
-        assert!(validate_binance_depth_capacity(&engine, &[source]).is_err());
     }
 }

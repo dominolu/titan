@@ -517,6 +517,8 @@ fn publish_control_error(error: PublishError) -> CoreError {
         | PublishError::ReentrantSource
         | PublishError::PayloadTooLarge { .. } => ErrorKind::SubscriptionRejected,
         PublishError::EventArenaExhausted(_)
+        | PublishError::MarketPayloadBudgetExhausted
+        | PublishError::MarketPayloadAllocationFailed
         | PublishError::CriticalIngressFull
         | PublishError::MarketIngressFull => ErrorKind::ControlQueueFull,
     };

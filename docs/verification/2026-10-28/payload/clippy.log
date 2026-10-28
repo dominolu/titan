@@ -1,0 +1,9 @@
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/crates/titan-event-engine)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/crates/titan-strategy-runtime)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/crates/titan-account-service)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/crates/titan-market-service)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-payload-20261028-4f94a4b1/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.12s

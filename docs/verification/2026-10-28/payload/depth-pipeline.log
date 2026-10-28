@@ -1,0 +1,8 @@
+PASS: 2728 entries / 65524 bytes delivered intact to native Top100
+PASS: 2729 entries / 65548 bytes delivered intact to native Top100
+PASS: 2730 entries / 65572 bytes delivered intact to native Top100
+PASS: 4000 entries / 96052 bytes delivered intact to native Top100
+PASS: 40000 entries / 960052 bytes delivered intact to native Top100
+PASS: 65535 entries / 1572892 bytes delivered intact to native Top100
+PASS: 40000-entry delta applied without reset or stream recovery
+PASS: 48,052-byte snapshot -> arena -> PRIMARY -> V13 Top100; unchanged level backfill, invalidation, resnapshot; same offline reconstruction and legacy replay rejection
