@@ -226,7 +226,7 @@ def _float(name, default, minimum=0.0, maximum=1e12):
 
 
 SPEC = StrategySpec(
-    strategy_type="orderflow_events", source_version="0.2.0", recovery_state_schema_version=2,
+    strategy_type="orderflow_events", source_version="0.2.1", recovery_state_schema_version=2,
     parameters=(
         _int("asset_no", 0, maximum=2**32 - 1),
         _int("compute_interval_ms", 100, 100, 100),
@@ -1549,6 +1549,30 @@ def on_tick(ctx):
 
 
 @njit
+def known_deleted_level(s, side, price, ts_ns):
+    bk = s["book"]
+    # Absence only proves zero within the preceding projection's covered range.
+    if side == SIDE_BID and price < bk["bid_price"][BOOK_LEVELS - 1]:
+        return False
+    if side == SIDE_ASK and price > bk["ask_price"][BOOK_LEVELS - 1]:
+        return False
+    flow = s["flow"]
+    known = False
+    for i in range(TOUCH_SLOTS):
+        if flow["touch_price"][i] == price and flow["touch_side"][i] == side and flow["touch_qmin"][i] == 0.0:
+            known = True
+    if not known:
+        return False
+    window_ns = max(s["cfg"]["e03_window_ms"], s["cfg"]["e04_window_ms"]) * 1000000
+    for i in range(TOUCH_SLOTS):
+        if flow["ice_price"][i] == price and flow["ice_last_ns"][i] > 0:
+            age = ts_ns - flow["ice_last_ns"][i]
+            if age >= 0 and age <= window_ns:
+                return True
+    return False
+
+
+@njit
 def on_depth(ctx):
     s = ctx.state
     cfg = s["cfg"]
@@ -1590,7 +1614,7 @@ def on_depth(ctx):
             qty = float(item["qty_lots"])
             side = item["side"]
             before = bid_qty_at(bk, price) if side == SIDE_BID else ask_qty_at(bk, price)
-            if before > 0.0 and qty != before:
+            if qty != before and (before > 0.0 or known_deleted_level(s, side, price, ts_ns)):
                 track_touch(s, ts_ns, side, price, before, qty)
                 if qty < before and cfg["flow_source"] == FLOW_DEPTH_PROXY:
                     if side == SIDE_BID and price >= previous_best_bid:

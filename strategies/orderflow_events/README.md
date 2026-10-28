@@ -112,10 +112,12 @@ runtime = { timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 
 
 ## 6. 深度运行与升级要求
 
-- 策略 0.2.0 / 恢复 schema 2，需重新编译；旧 checkpoint 不兼容。
+- 策略 0.2.1 / 恢复 schema 2，需重新编译；旧 checkpoint 不兼容。
 - 删除旧参数 `snapshot_items`，默认 `depth_levels=100`。Binance 建议保留 `depth_snapshot_limit=1000`；
   快照少于两侧各 100 个真实价位时宿主明确拒绝，避免产生不完整的 Top100。
 - 默认行情 arena 为 64 KiB 块 / 2048 槽，总块内存仍 128 MiB。已有显式小块配置须相应调整。
 - 默认 E11 回看 15 分钟，恢复后先重新积累该窗口，期间 `book_valid=1` 但 `book_ready=0`。
   BBO 不会覆盖深度盘口或掩盖深度过期。
 - 75 天 25 档历史不能验证深部事件。回放必须提供显式 `depth_batch` 元数据及可证明连续的原始快照/diff。
+
+同代次内已知删空的价位，在上一 Top100 仍能证明其为零且未过期时，补回会进入 E04 跟踪；未知新价位和跨重同步记录不会误算。三项审查修复见[验收记录](../../docs/verification/2026-10-28/depth-review/README.md)。

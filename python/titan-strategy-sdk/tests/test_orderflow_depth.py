@@ -125,3 +125,65 @@ class TestOrderflowNativeDepth(unittest.TestCase):
         self.invoke("on_depth", 3)
         self.assertEqual(self.state[0]["flow"]["prints_seen"], 0)
         self.assertEqual(self.state[0]["flow"]["touch_n"], 0)
+
+    def _depth_time(self, now_ns):
+        self.context[0]["now_ns"] = now_ns
+        self.items["exchange_ts_ns"] = now_ns
+        self.items["receive_ts_ns"] = now_ns
+
+    def test_deleted_price_refill_reaches_native_e04_detector(self):
+        start = 901_000_000_000
+        self._depth_time(start)
+        self.invoke("on_depth", 3)
+        # The detector is exercised after a previously warmed interval.
+        self.state[0]["book"]["warm_since_ns"] = 0
+        self.state[0]["cfg"]["max_spread_bp"] = 20
+        self.info[0]["reset"] = 0
+        self.items["is_snapshot"] = 0
+        for cycle in range(3):
+            self._depth_time(start + (2 * cycle + 1) * 10_000_000)
+            self.items[:100]["price_ticks"] -= 1
+            self.invoke("on_depth", 3)
+            self._depth_time(start + (2 * cycle + 2) * 10_000_000)
+            self.items[:100]["price_ticks"] += 1
+            self.invoke("on_depth", 3)
+        flow = self.state[0]["flow"]
+        slot = next(i for i, price in enumerate(flow["ice_price"]) if price == 1000)
+        self.assertEqual(flow["ice_fills"][slot], 3)
+        self.assertEqual(flow["ice_refill_ms"][slot], 10)
+        self.invoke("on_timer", 10)
+        self.assertEqual(self.state[0]["ev"]["count"][4], 1)
+        self.assertEqual(self.state[0]["obs"]["e04_count"], 1)
+
+    def test_deleted_price_outside_previous_coverage_does_not_count_as_refill(self):
+        self.items[100:]["price_ticks"] += 1000
+        self.invoke("on_depth", 3)
+        self.info[0]["reset"] = 0
+        self._depth_time(1_010_000_000)
+        self.items[:100]["price_ticks"] -= 1
+        self.invoke("on_depth", 3)
+        # Better bids move the deleted price outside the observed Top100.
+        # Existing bids exiting below the window must not consume tracker slots.
+        self._depth_time(1_020_000_000)
+        self.items[:100]["price_ticks"] += 200
+        self.invoke("on_depth", 3)
+        self._depth_time(1_030_000_000)
+        self.items[99]["price_ticks"] = 1000
+        self.invoke("on_depth", 3)
+        flow = self.state[0]["flow"]
+        slot = next(i for i, price in enumerate(flow["ice_price"]) if price == 1000)
+        self.assertEqual(flow["ice_refill_ms"][slot], 0)
+
+    def test_resnapshot_drops_deleted_price_evidence(self):
+        self.invoke("on_depth", 3)
+        self.info[0]["reset"] = 0
+        self.items[:100]["price_ticks"] -= 1
+        self._depth_time(1_010_000_000)
+        self.invoke("on_depth", 3)
+        self.info[0]["reset"] = 1
+        self.info[0]["stream_epoch"] = 2
+        self.items[:100]["price_ticks"] += 1
+        self._depth_time(1_020_000_000)
+        self.invoke("on_depth", 3)
+        self.assertEqual(self.state[0]["flow"]["ice_refill_ms"].sum(), 0)
+        self.assertEqual(self.state[0]["flow"]["touch_n"], 0)
