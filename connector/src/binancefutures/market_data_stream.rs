@@ -74,12 +74,41 @@ impl MarketStreamRoute {
     }
 }
 
+// Bootstrap is a separate owned-message queue while REST is in flight. Bound
+// its memory rather than rescanning all buffered levels on each incoming diff.
+const DEPTH_STAGING_BYTES: usize = 32 * 1024 * 1024;
+#[derive(Default)]
+struct PendingDepth {
+    updates: Vec<(stream::OwnedDepth, i64)>,
+    bytes: usize,
+}
+impl PendingDepth {
+    fn push(&mut self, update: stream::OwnedDepth, receive_ts: i64) -> bool {
+        let bytes = 2 * std::mem::size_of::<(stream::OwnedDepth, i64)>()
+            + update.symbol.capacity()
+            + (update.bids.capacity() + update.asks.capacity())
+                * std::mem::size_of::<(String, String)>()
+            + update
+                .bids
+                .iter()
+                .chain(&update.asks)
+                .map(|(price, quantity)| price.capacity() + quantity.capacity())
+                .sum::<usize>();
+        if bytes > DEPTH_STAGING_BYTES.saturating_sub(self.bytes) {
+            return false;
+        }
+        self.bytes += bytes;
+        self.updates.push((update, receive_ts));
+        true
+    }
+}
+
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: crate::connector::PublishSender,
     command_rx: Receiver<MarketDataCommand>,
     subscriptions: SharedMarketSubscriptions,
-    pending_depth_messages: HashMap<String, Vec<(stream::OwnedDepth, i64)>>,
+    pending_depth_messages: HashMap<String, PendingDepth>,
     prev_u: HashMap<String, i64>,
     snapshot_candidates: HashMap<String, rest::Depth>,
     pending_overflow: bool,
@@ -162,16 +191,9 @@ impl MarketDataStream {
 
     fn buffer_depth(&mut self, symbol: String, update: stream::OwnedDepth, receive_ts: i64) {
         let pending = self.pending_depth_messages.entry(symbol).or_default();
-        let levels = pending
-            .iter()
-            .map(|(u, _)| u.bids.len() + u.asks.len())
-            .sum::<usize>();
-        if pending.len() >= 4096 || levels + update.bids.len() + update.asks.len() > 32_768 {
-            pending.clear();
+        if !pending.push(update, receive_ts) {
             self.pending_overflow = true;
-            return;
         }
-        pending.push((update, receive_ts));
     }
 
     pub fn invalidate_depth(&self) {
@@ -556,7 +578,7 @@ impl MarketDataStream {
         let mut previous = snapshot_sequence;
         let mut bridged = false;
         if let Some(pending) = self.pending_depth_messages.get(&symbol) {
-            for (update, _) in pending {
+            for (update, _) in &pending.updates {
                 if update.last_update_id < snapshot_sequence {
                     continue;
                 }
@@ -653,7 +675,7 @@ impl MarketDataStream {
         let mut previous = snapshot_sequence;
         let mut synchronized = false;
         if let Some(pending) = self.pending_depth_messages.remove(&symbol) {
-            for (update, receive_ts) in pending {
+            for (update, receive_ts) in pending.updates {
                 if update.last_update_id < snapshot_sequence {
                     continue;
                 }
@@ -665,10 +687,7 @@ impl MarketDataStream {
                 };
                 if !valid {
                     warn!(%symbol, previous, first = update.first_update_id, last = update.last_update_id, "pending depth sequence is not contiguous");
-                    self.pending_depth_messages
-                        .entry(symbol.clone())
-                        .or_default()
-                        .push((update, receive_ts));
+                    self.buffer_depth(symbol.clone(), update, receive_ts);
                     self.fetch_snapshot(symbol);
                     return;
                 }
@@ -795,7 +814,7 @@ impl MarketDataStream {
                             symbol: symbol.clone(),
                         });
                         self.prev_u.remove(&symbol);
-                        self.pending_depth_messages.insert(symbol.clone(), Vec::new());
+                        self.pending_depth_messages.insert(symbol.clone(), PendingDepth::default());
                         self.snapshot_candidates.remove(&symbol);
                         self.fetch_snapshot(symbol);
                     }
@@ -904,6 +923,31 @@ impl MarketDataStream {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bootstrap_capacity_tracks_bytes_and_accepts_large_batches() {
+        let mut pending = super::PendingDepth::default();
+        let update = || super::stream::OwnedDepth {
+            transaction_time: 0,
+            event_time: 0,
+            symbol: String::from("BTCUSDT"),
+            first_update_id: 1,
+            last_update_id: 1,
+            prev_update_id: 0,
+            bids: (0..40_000)
+                .map(|_| (String::from("100"), String::from("1")))
+                .collect(),
+            asks: Vec::new(),
+        };
+        assert!(pending.push(update(), 0));
+        assert_eq!(pending.updates[0].0.bids.len(), 40_000);
+        let bytes = pending.bytes;
+        assert!(bytes > 40_000 * std::mem::size_of::<(String, String)>());
+        let mut large = update();
+        large.symbol = String::with_capacity(super::DEPTH_STAGING_BYTES);
+        assert!(!pending.push(large, 0));
+        assert_eq!(pending.bytes, bytes);
+        assert_eq!(pending.updates.len(), 1);
+    }
     use super::*;
     use std::{
         collections::HashSet,

@@ -1,12 +1,10 @@
-//! Bounded host-owned L2 reconstruction. Unknown prices outside the snapshot's
+//! Host-owned L2 reconstruction. Unknown prices outside the snapshot's
 //! covered range never become evidence that a requested Top-N is complete.
 use std::collections::BTreeMap;
 
 use crate::TitanDepthView;
 
-pub const DEPTH_BATCH_CAPACITY: usize = 2_730;
 pub const HOST_DEPTH_LEVELS: usize = 100;
-const BOOK_CAPACITY: usize = 16_384;
 
 /// Versioned event payload for HOST_DEPTH_100, deliberately separate from the
 /// frozen V13 context/item layouts. One payload accompanies every Depth callback.
@@ -100,14 +98,6 @@ impl HostDepthBook {
             {
                 return Err("depth_item_invalid");
             }
-            // Outside the initial snapshot range there may be unchanged,
-            // unobserved levels. Do not silently extend the trusted range.
-            if !snapshot
-                && ((item.side == 1 && item.price_ticks < self.bid_floor)
-                    || (item.side == 2 && item.price_ticks > self.ask_ceiling))
-            {
-                continue;
-            }
             let side = if item.side == 1 {
                 &mut self.bids
             } else {
@@ -118,10 +108,6 @@ impl HostDepthBook {
             } else {
                 side.insert(item.price_ticks, item.qty_lots);
             }
-        }
-        if self.bids.len() + self.asks.len() > BOOK_CAPACITY {
-            self.invalidate(info.stream_epoch);
-            return Err("depth_book_capacity");
         }
         if snapshot {
             self.bid_floor = self.bids.first_key_value().map_or(0, |(p, _)| *p);
@@ -137,35 +123,42 @@ impl HostDepthBook {
             return Ok(true);
         }
         let sample = items.first().copied().unwrap_or_default();
-        for (side, levels) in [
-            (
-                1,
-                self.bids
+        for (side, level, (price, qty)) in self
+            .bids
+            .iter()
+            .rev()
+            .take(HOST_DEPTH_LEVELS)
+            .enumerate()
+            .map(|(level, value)| (1, level, value))
+            .chain(
+                self.asks
                     .iter()
-                    .rev()
                     .take(HOST_DEPTH_LEVELS)
-                    .collect::<Vec<_>>(),
-            ),
-            (
-                2,
-                self.asks.iter().take(HOST_DEPTH_LEVELS).collect::<Vec<_>>(),
-            ),
-        ] {
-            for (level, (price, qty)) in levels.into_iter().enumerate() {
-                output.push(TitanDepthView {
-                    asset_no: info.asset_no,
-                    level: level as u32,
-                    exchange_ts_ns: sample.exchange_ts_ns,
-                    receive_ts_ns: sample.receive_ts_ns,
-                    price_ticks: *price,
-                    qty_lots: *qty,
-                    source_sequence: info.last_update_sequence,
-                    side,
-                    action: 1,
-                    is_snapshot: u8::from(snapshot),
-                    reserved: [0; 5],
-                });
-            }
+                    .enumerate()
+                    .map(|(level, value)| (2, level, value)),
+            )
+        {
+            output.push(TitanDepthView {
+                asset_no: info.asset_no,
+                level: level as u32,
+                exchange_ts_ns: sample.exchange_ts_ns,
+                receive_ts_ns: sample.receive_ts_ns,
+                price_ticks: *price,
+                qty_lots: *qty,
+                source_sequence: info.last_update_sequence,
+                side,
+                action: 1,
+                is_snapshot: u8::from(snapshot),
+                reserved: [0; 5],
+            });
+        }
+        // Keep every received price, but partial updates outside the snapshot
+        // cannot prove that intervening, unchanged prices are known.
+        self.ready = output[HOST_DEPTH_LEVELS - 1].price_ticks >= self.bid_floor
+            && output[2 * HOST_DEPTH_LEVELS - 1].price_ticks <= self.ask_ceiling;
+        info.valid = u8::from(self.ready);
+        if !self.ready {
+            output.clear();
         }
         Ok(true)
     }
@@ -186,6 +179,51 @@ mod tests {
             })
             .collect()
     }
+    #[test]
+    fn large_book_and_outside_updates_are_retained_without_claiming_coverage() {
+        let mut book = HostDepthBook::default();
+        let mut info = DepthBatchInfoV1 {
+            stream_epoch: 1,
+            ..Default::default()
+        };
+        let mut out = Vec::with_capacity(200);
+        let items: Vec<_> = (0..20_000)
+            .flat_map(|i| [(1, 100_000 - i), (2, 100_001 + i)])
+            .map(|(side, price_ticks)| TitanDepthView {
+                side,
+                price_ticks,
+                qty_lots: 1,
+                action: 1,
+                ..Default::default()
+            })
+            .collect();
+        book.apply(&mut info, true, &items, &mut out).unwrap();
+        assert_eq!(book.bids.len() + book.asks.len(), 40_000);
+        assert_eq!(info.valid, 1);
+        assert_eq!(out.len(), 200);
+        book.apply(&mut info, true, &snapshot(100), &mut out)
+            .unwrap();
+        let outside = TitanDepthView {
+            side: 1,
+            action: 1,
+            price_ticks: 800,
+            qty_lots: 3,
+            ..Default::default()
+        };
+        book.apply(&mut info, false, &[outside], &mut out).unwrap();
+        assert_eq!(book.bids.get(&800), Some(&3));
+        assert_eq!(info.valid, 1);
+        let delete = TitanDepthView {
+            price_ticks: 1000,
+            qty_lots: 0,
+            action: 2,
+            ..outside
+        };
+        book.apply(&mut info, false, &[delete], &mut out).unwrap();
+        assert_eq!(info.valid, 0);
+        assert!(out.is_empty());
+    }
+
     #[test]
     fn deletion_backfills_unchanged_level_and_coverage_exhaustion_invalidates() {
         let mut book = HostDepthBook::default();

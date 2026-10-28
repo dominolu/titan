@@ -93,6 +93,8 @@ fn main() {
         run_config_revision: 1,
     };
     let mut config = EventEngineConfig::default();
+    // Deliberately smaller than the original 1000x2 snapshot.
+    config.arena.market_batch.block_bytes = 16_384;
     config.arena.market_batch.slots = 16;
     config.arena.market_batch.low_watermark = 2;
     config.arena.small_event.slots = 16;
@@ -327,6 +329,62 @@ fn main() {
         .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
         .collect();
     assert_eq!(words, [2, 0, 1, 0, 0, 1]);
+
+    // Cross the old decoder (2730), block (64 KiB), and book (16384)
+    // boundaries through the real publication/PRIMARY/native callback path.
+    let large_items = |count| {
+        (0..count)
+            .map(|i| market::DepthItemV1 {
+                side: if i % 2 == 0 { 1 } else { 2 },
+                price_ticks: if i % 2 == 0 {
+                    100_000 - i / 2
+                } else {
+                    100_001 + i / 2
+                },
+                quantity_lots: 10,
+                action: 1,
+                reserved: [0; 6],
+            })
+            .collect::<Vec<_>>()
+    };
+    for (publication, count) in [
+        (5, 2728),
+        (6, 2729),
+        (7, 2730),
+        (8, 4000),
+        (9, 40_000),
+        (10, 65_535),
+    ] {
+        let large = large_items(count);
+        let payload =
+            market::encode_depth_batch(header(publication, publication * 10, true), &large)
+                .unwrap();
+        publish(market::DEPTH_BATCH_EVENT, publication, &payload);
+        assert_eq!(
+            read(publication),
+            [
+                publication as i64,
+                1,
+                1,
+                99_901,
+                100_100,
+                publication as i64
+            ]
+        );
+        println!(
+            "PASS: {} entries / {} bytes delivered intact to native Top100",
+            large.len(),
+            payload.len()
+        );
+    }
+    let delta = large_items(40_000);
+    publish(
+        market::DEPTH_BATCH_EVENT,
+        11,
+        &market::encode_depth_batch(header(10, 101, false), &delta).unwrap(),
+    );
+    assert_eq!(read(11), [11, 1, 0, 99_901, 100_100, 10]);
+    println!("PASS: 40000-entry delta applied without reset or stream recovery");
 
     wait(
         &runtime,
