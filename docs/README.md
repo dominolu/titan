@@ -48,3 +48,5 @@
 ## ABI
 
 仓库策略系统仅支持 Strategy ABI V13；旧 ABI 的运行时 loader、SDK 和迁移文档均已移除。
+
+- [深度快照、可信 Top100 与重同步契约](depth_pipeline.md)：ABI V13 可选能力、容量、策略预热及离线输入；[2026-10-28 验收](verification/2026-10-28/depth/README.md)。

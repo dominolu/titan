@@ -156,6 +156,12 @@ impl MarketEventBridge {
         }
     }
 
+    pub(crate) fn depth_active(&self, symbol: &str) -> bool {
+        self.symbols
+            .get(symbol)
+            .is_some_and(|asset| is_active(&self.active_kinds, *asset, MarketDataKind::Depth))
+    }
+
     pub(crate) fn publish(&self, value: &PublishEvent) -> Result<(), ConnectorError> {
         publish_event(
             &self.context,
@@ -391,7 +397,14 @@ fn publish_event(
             payload.extend_from_slice(&epoch.to_le_bytes());
             context
                 .event_publisher
-                .publish_control(STREAM_INVALIDATED_EVENT, &payload, TraceContext::default())
+                .publish_market(
+                    STREAM_INVALIDATED_EVENT,
+                    &payload,
+                    asset_id,
+                    0,
+                    0,
+                    TraceContext::default(),
+                )
                 .map_err(|error| ConnectorError::new(error.to_string()))
         }
         PublishEvent::FeedBatch {

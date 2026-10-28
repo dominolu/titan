@@ -239,6 +239,8 @@ pub struct RecoveryExecutionHistory {
 }
 
 pub struct StrategyRuntimeBuildContext {
+    /// Used only for bounded public-book resynchronization; absent in standalone probes.
+    pub market_service: Option<Arc<dyn titan_market_service::MarketService>>,
     pub strategy: StrategyHandle,
     pub compiled_strategy_digest: CompiledStrategyDigest,
     pub markets: Arc<[ResolvedMarketBinding]>,

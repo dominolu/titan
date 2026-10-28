@@ -2902,3 +2902,26 @@ fn latency_histogram_reports_required_percentiles_without_allocation_on_record()
     assert!(summary.p99_ns <= summary.p999_ns);
     assert!(summary.p999_ns <= summary.max_ns);
 }
+
+#[test]
+fn default_market_pool_accepts_1000_by_2_snapshot_without_increasing_byte_budget() {
+    let config = ArenaConfig::default();
+    assert_eq!(
+        config.market_batch.slots * config.market_batch.block_bytes,
+        128 * 1024 * 1024
+    );
+    let mut small = config.clone();
+    small.market_batch.slots = 2;
+    small.market_batch.low_watermark = 1;
+    small.small_event.slots = 2;
+    small.small_event.low_watermark = 1;
+    small.snapshot.slots = 2;
+    small.snapshot.low_watermark = 1;
+    let arena = EventArena::new(&small, Arc::new(EngineMetrics::default()));
+    assert!(arena.reserve(PoolKind::MarketBatch, 48_052).is_ok());
+    assert!(arena.reserve(PoolKind::MarketBatch, 65_536).is_ok());
+    assert!(matches!(
+        arena.reserve(PoolKind::MarketBatch, 65_537),
+        Err(PublishError::PayloadTooLarge { .. })
+    ));
+}

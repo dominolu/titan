@@ -512,6 +512,7 @@ impl StrategyServiceCore {
             .collect::<LocalResult<Vec<_>>>()?;
         let activation = Arc::new(StrategyActivationGate::default());
         let context = StrategyRuntimeBuildContext {
+            market_service: Some(self.dependencies.markets.clone()),
             strategy: handle,
             compiled_strategy_digest: compiled_strategy.id,
             markets: resolved_markets.clone().into(),
@@ -549,7 +550,11 @@ impl StrategyServiceCore {
         for subscription in subscriptions.iter_mut().filter(|subscription| {
             matches!(
                 subscription.event_type.as_ref(),
-                BBO_EVENT | DEPTH_BATCH_EVENT | TRADE_BATCH_EVENT | BAR_BATCH_EVENT
+                BBO_EVENT
+                    | DEPTH_BATCH_EVENT
+                    | TRADE_BATCH_EVENT
+                    | BAR_BATCH_EVENT
+                    | titan_market_service::STREAM_INVALIDATED_EVENT
             )
         }) {
             subscription.routing_keys = market_keys.clone().into();

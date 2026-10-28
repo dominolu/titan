@@ -44,9 +44,9 @@ impl Default for ArenaConfig {
                 low_watermark: 4_096,
             },
             market_batch: PoolConfig {
-                slots: 8_192,
-                block_bytes: 16_384,
-                low_watermark: 1_024,
+                slots: 2_048,
+                block_bytes: 65_536,
+                low_watermark: 256,
             },
             snapshot: PoolConfig {
                 slots: 512,
