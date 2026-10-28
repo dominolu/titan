@@ -24,6 +24,7 @@ pub struct OfflineV13Adapter {
     active_orders: Vec<TitanActiveOrderView>,
     stop_barrier: bool,
     host_depth: bool,
+    failed: bool,
     depth_books: BTreeMap<u32, HostDepthBook>,
     stopping: bool,
     stopped: bool,
@@ -56,6 +57,7 @@ impl OfflineV13Adapter {
         } = config;
 
         Ok(Self {
+            failed: false,
             host_depth: compiled_strategy
                 .manifest
                 .capabilities
@@ -270,6 +272,9 @@ impl OfflineV13Adapter {
         now_ns: i64,
         configure: impl FnOnce(&mut StrategyRuntimeContextV13),
     ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+        if self.failed {
+            return Err(V13LoadError::Contract("depth_execution_failed"));
+        }
         let mut context = crate::v13::callback_context_v13(
             now_ns,
             event.schema_version(),
@@ -288,6 +293,24 @@ impl OfflineV13Adapter {
             true,
             &self.active_orders,
         )?;
+        if self.host_depth {
+            let ready = !self.markets.is_empty()
+                && self.markets.iter().all(|m| {
+                    self.depth_books
+                        .get(&m.asset_no)
+                        .is_some_and(|book| book.ready)
+                });
+            if let Err(reason) = crate::depth_execution::validate_depth_commands(
+                ready,
+                &commands,
+                &self.positions,
+                &self.active_orders,
+            ) {
+                self.staging.clear_committed();
+                self.failed = true;
+                return Err(V13LoadError::Contract(reason));
+            }
+        }
         self.staging.clear_committed();
         if self.stopping
             && self.stop_barrier

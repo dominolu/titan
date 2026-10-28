@@ -419,34 +419,28 @@ impl NativeV13Runtime {
             );
             return Err(v13_runtime_error("recovery_callback_attempted_command"));
         }
-        if core.host_depth
-            && commands
-                .iter()
-                .any(|c| matches!(c, StagedCommandV13::Submit { .. }))
-            && core.context.markets.iter().any(|b| {
-                !inner
-                    .depth_books
-                    .get(&b.local_asset_no)
-                    .is_some_and(|book| book.ready)
-            })
-        {
-            fail_runtime(core, inner, Arc::from("depth_not_ready_for_execution"));
-            return Err(v13_runtime_error("depth_not_ready_for_execution"));
-        }
-        if core.host_depth
-            && commands
-                .iter()
-                .any(|c| matches!(c, StagedCommandV13::Submit { .. }))
-            && core.context.market_service.as_ref().is_some_and(|service| {
-                core.context.markets.iter().any(|b| {
-                    !service
-                        .health(b.source)
-                        .is_ok_and(|h| h.state == titan_market_service::ConnectorHealth::Running)
-                })
-            })
-        {
-            fail_runtime(core, inner, Arc::from("depth_source_unhealthy"));
-            return Err(v13_runtime_error("depth_source_unhealthy"));
+        if core.host_depth {
+            let ready = !core.context.markets.is_empty()
+                && core.context.markets.iter().all(|b| {
+                    inner
+                        .depth_books
+                        .get(&b.local_asset_no)
+                        .is_some_and(|book| book.ready)
+                        && core.context.market_service.as_ref().is_none_or(|service| {
+                            service.health(b.source).is_ok_and(|h| {
+                                h.state == titan_market_service::ConnectorHealth::Running
+                            })
+                        })
+                });
+            if let Err(reason) = crate::depth_execution::validate_depth_commands(
+                ready,
+                &commands,
+                &inner.positions,
+                &inner.active_orders,
+            ) {
+                fail_runtime(core, inner, Arc::from(reason));
+                return Err(v13_runtime_error(reason));
+            }
         }
         let committed = commit_commands(core, inner, &commands).and_then(|_| {
             if core.async_failure.load(Ordering::Acquire) {

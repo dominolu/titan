@@ -5,6 +5,7 @@
 
 mod compiled_strategy;
 mod depth_book;
+mod depth_execution;
 mod error;
 mod model;
 mod observation;
