@@ -63,6 +63,10 @@ def main():
             if url.path == "/v1/runs/fixture/history":
                 kind = parse.parse_qs(url.query).get("kind", [""])[0]
                 return self.reply(200, {"items": image["account_snapshot"]["image"].get("orders", []) if kind == "order" else [], "recording": {"history_complete": False}, "source": {"worker_id": "fixture", "generation": "one", "scope": "account", "synthetic": True}})
+            if url.path == "/v1/runs/fixture/facts":
+                kind = parse.parse_qs(url.query).get("kind", [""])[0]
+                items = image["account_snapshot"]["image"].get("orders", []) if kind == "order" else []
+                return self.reply(200, {"items": [{"row_id": str(i+1), "fact": {"scope": {"environment": "live", "account": "gate"}, "kind": kind, "payload": item}} for i,item in enumerate(items)], "next_cursor": None, "upper_row": str(len(items)), "recording": {"source_count": "1", "gap_count": "0", "unclosed_sources": "1", "received_segment_complete": False, "venue_history_complete": False}})
             if url.path == "/v1/runs/fixture/log":
                 return self.reply(200, {"text":"synthetic worker log", "next_offset":"20", "more":False})
             return self.reply(404, {"code": "NOT_FOUND", "message": "not admitted", "request_id": "test"})
@@ -113,6 +117,7 @@ def main():
         checks += ["E-image-propagates-without-financial-transformation", "slow-node-does-not-block-other-node"]
         history = call("/api/v2/resources/observe-run-fixture/history?generation=one&kind=order&limit=20")
         assert len(history["items"]) == 2
+        assert len(call("/api/v2/resources/observe-run-fixture/facts?generation=one&kind=order&limit=20")["items"]) == 2
         for path, data, expected in [
             ("/api/v2/resources/observe-run-fixture/history?generation=stale", None, 409),
             ("/api/v2/operations", {"idempotency_key": "readonly-node", "node_id": "observe", "action": {"kind": "pause", "run_id": "observe-run-fixture", "generation": "one"}}, 403),
@@ -123,7 +128,7 @@ def main():
         hidden = request.build_opener(request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         call("/api/v2/session", {"username": "hidden", "password": password}, who=hidden)
         assert not any(r["kind"] in ("run", "account", "alert") for r in call("/api/v2/snapshot", who=hidden)["resources"])
-        for suffix in ("history", "log"):
+        for suffix in ("history", "facts", "log"):
             try: call("/api/v2/resources/observe-run-fixture/" + suffix, who=hidden); raise AssertionError("unauthorized account query accepted")
             except error.HTTPError as failure: assert failure.code == 403
         checks += ["unauthorized-account-is-hidden"]

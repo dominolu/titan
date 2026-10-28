@@ -4,6 +4,7 @@ members = [
   "hftbacktest",
   "hftbacktest-derive",
   "crates/titan-domain-types",
+  "crates/titan-persistence",
   "crates/titan-event-engine",
   "crates/titan-core-types",
   "crates/titan-market-service",

@@ -127,6 +127,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     accounts,
                     active_orders: Vec::with_capacity(PUBLIC_CAPACITY),
                     recovery_orders: Vec::new(),
+                    recovery_executions: Vec::new(),
                     recovered_identity: None,
                     orders_list: BTreeMap::new(),
                     ticks: Vec::with_capacity(PUBLIC_CAPACITY),
@@ -137,6 +138,7 @@ impl StrategyRuntimeFactory for NativeV13RuntimeFactory {
                     awaiting_fills: BTreeMap::new(),
                     inventory: InventoryProof::default(),
                     checkpoint_dirty: false,
+                    last_checkpoint_token: None,
                     last_checkpoint_ns: 0,
                     checkpoint_interval_ns: definition
                         .runtime
@@ -209,6 +211,7 @@ struct NativeV13Inner {
     accounts: Vec<TitanAccountView>,
     active_orders: Vec<TitanActiveOrderView>,
     recovery_orders: Vec<TitanActiveOrderView>,
+    recovery_executions: Vec<RecoveryExecutionHistory>,
     recovered_identity: Option<[u8; 32]>,
     orders_list: BTreeMap<u64, StrategyOrderRecordV13>,
     ticks: Vec<TitanTickView>,
@@ -219,6 +222,7 @@ struct NativeV13Inner {
     awaiting_fills: BTreeMap<(u32, u64), i64>,
     inventory: InventoryProof,
     checkpoint_dirty: bool,
+    last_checkpoint_token: Option<RecoverySubmitToken>,
     last_checkpoint_ns: i64,
     checkpoint_interval_ns: i64,
     position_versions: BTreeMap<(u32, u32, u8), u64>,
@@ -236,7 +240,7 @@ struct NativeV13Inner {
     flight_records: VecDeque<StrategyFlightRecord>,
 }
 
-fn orders_list_checksum(orders: &[StrategyOrderRecordV13]) -> [u8; 32] {
+pub(crate) fn orders_list_checksum(orders: &[StrategyOrderRecordV13]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     digest.update(b"titan.strategy.orders-list.v13");
@@ -397,6 +401,14 @@ impl NativeV13Runtime {
                 return Err(v13_runtime_error("v13_callback_failed"));
             }
         };
+        if kind == V13EventKind::Recover && inner.staging.attempted_command() {
+            fail_runtime(
+                core,
+                inner,
+                Arc::from("recovery_callback_attempted_command"),
+            );
+            return Err(v13_runtime_error("recovery_callback_attempted_command"));
+        }
         let committed = commit_commands(core, inner, &commands).and_then(|_| {
             if core.async_failure.load(Ordering::Acquire) {
                 Err(v13_runtime_error("execution_result_queue_full"))
@@ -568,7 +580,11 @@ fn dispatch_event(
                 ),
                 reserved: [0; 5],
             };
-            update_active_fill(inner, &view)?;
+            if !update_active_fill(inner, &view)? {
+                // The account journal retains native replay provenance. Strategy inventory,
+                // callbacks and consumed-fill counters advance only for a new cumulative fill.
+                return Ok(());
+            }
             if !invoke_callbacks {
                 return Ok(());
             }
@@ -994,10 +1010,12 @@ fn commit_commands(
     if !commands.is_empty() && core.context.state_snapshot_sink.enabled() {
         let timing = tracing::enabled!(tracing::Level::DEBUG).then(Instant::now);
         checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)?;
-        core.context
-            .state_snapshot_sink
-            .flush(Instant::now() + std::time::Duration::from_secs(5))
-            .map_err(|_| v13_runtime_error("command_intent_flush_failed"))?;
+        flush_checkpoint(
+            core,
+            inner,
+            Instant::now() + std::time::Duration::from_secs(5),
+        )
+        .map_err(|_| v13_runtime_error("command_intent_flush_failed"))?;
         if let Some(started) = timing {
             tracing::debug!(
                 elapsed_us = started.elapsed().as_micros() as u64,
@@ -1185,7 +1203,7 @@ impl InventoryProof {
     }
 }
 
-fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) -> LocalResult<()> {
+fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) -> LocalResult<bool> {
     let key = (fill.account_no, fill.order_id);
     let previous = inner.settled_fills.get(&key).copied().unwrap_or(0);
     let position_side = inner
@@ -1193,6 +1211,9 @@ fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) -> Local
         .get(&fill.order_id)
         .map_or(0, |o| o.position_side);
     inner.inventory.fill(fill, previous, position_side)?;
+    if fill.cumulative_filled_lots <= previous {
+        return Ok(false);
+    }
     inner
         .settled_fills
         .insert(key, previous.max(fill.cumulative_filled_lots));
@@ -1236,7 +1257,26 @@ fn update_active_fill(inner: &mut NativeV13Inner, fill: &TitanFillView) -> Local
             order.status = 3;
         }
     }
-    Ok(())
+    Ok(true)
+}
+
+fn recovered_fill_boundaries(
+    records: &BTreeMap<u64, StrategyOrderRecordV13>,
+) -> LocalResult<BTreeMap<(u32, u64), i64>> {
+    records
+        .iter()
+        .map(|(id, order)| {
+            if *id == 0
+                || *id != order.order_id
+                || order.qty_lots <= 0
+                || order.cumulative_filled_lots < 0
+                || order.cumulative_filled_lots > order.qty_lots
+            {
+                return Err(v13_runtime_error("recovery_fill_boundary_invalid"));
+            }
+            Ok(((order.account_no, *id), order.cumulative_filled_lots))
+        })
+        .collect()
 }
 fn update_active_order(
     inner: &mut NativeV13Inner,
@@ -1655,7 +1695,7 @@ fn checkpoint_state(
     let result = core
         .context
         .state_snapshot_sink
-        .submit(StrategyRecoveryPoint {
+        .submit_token(StrategyRecoveryPoint {
             checkpoint_id: snapshot.checkpoint_id,
             strategy: core.context.strategy,
             strategy_instance_id: snapshot.strategy_instance_id,
@@ -1679,11 +1719,26 @@ fn checkpoint_state(
     if result.is_err() {
         fail_runtime(core, inner, Arc::from("checkpoint_submit_failed"));
     }
-    if result.is_ok() {
+    if let Ok(token) = &result {
+        inner.last_checkpoint_token = Some(token.clone());
         inner.checkpoint_dirty = false;
         inner.last_checkpoint_ns = core.context.clock.now_ns();
     }
-    result
+    result.map(|_| ())
+}
+
+fn flush_checkpoint(
+    core: &NativeV13Core,
+    inner: &NativeV13Inner,
+    deadline: Instant,
+) -> LocalResult<()> {
+    match &inner.last_checkpoint_token {
+        Some(token) => core
+            .context
+            .state_snapshot_sink
+            .flush_through(token, deadline),
+        None => core.context.state_snapshot_sink.flush(deadline),
+    }
 }
 
 fn prune_terminal_history(inner: &mut NativeV13Inner) {
@@ -1749,6 +1804,7 @@ fn fail_runtime(core: &NativeV13Core, inner: &mut NativeV13Inner, reason: Arc<st
         "strategy runtime failed"
     );
     core.context.activation.invalidate();
+    inner.instance.stop();
     inner.lifecycle = StrategyLifecycle::Failed;
     inner.last_error.get_or_insert_with(|| reason.clone());
     fail_pending_stop(core, inner, reason);
@@ -1786,9 +1842,11 @@ fn finish_stop_if_drained(core: &NativeV13Core, inner: &mut NativeV13Inner) -> L
     }
     let checkpoint = checkpoint_state(core, inner, core.context.clock.now_ns().max(1) as u64)
         .and_then(|_| {
-            core.context
-                .state_snapshot_sink
-                .flush(inner.stop_deadline.unwrap_or_else(Instant::now))
+            flush_checkpoint(
+                core,
+                inner,
+                inner.stop_deadline.unwrap_or_else(Instant::now),
+            )
         });
     if let Err(error) = checkpoint {
         fail_runtime(core, inner, error.reason_code.clone());
@@ -2107,6 +2165,17 @@ impl StrategyRuntime for NativeV13Runtime {
         inner.recovery_orders = seed.recovery_orders.to_vec();
         Ok(())
     }
+    fn seed_recovery_executions(
+        &self,
+        evidence: Arc<[RecoveryExecutionHistory]>,
+    ) -> LocalResult<()> {
+        let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if inner.lifecycle != StrategyLifecycle::Defined || evidence.len() > 128 {
+            return Err(v13_runtime_error("recovery_history_invalid_boundary"));
+        }
+        inner.recovery_executions = evidence.to_vec();
+        Ok(())
+    }
     fn restore_state(&self, snapshot: StrategyRecoveryPoint) -> LocalResult<()> {
         let mut inner = self.core.inner.lock().unwrap_or_else(|p| p.into_inner());
         let result = (|| {
@@ -2126,6 +2195,8 @@ impl StrategyRuntime for NativeV13Runtime {
                 }
             }
             let recovery = snapshot.recovery.clone();
+            let consumed = recovered_fill_boundaries(&restored_orders)?;
+            let mut replay = Vec::new();
             if let Some(baseline) = &recovery {
                 baseline
                     .validate(
@@ -2150,8 +2221,13 @@ impl StrategyRuntime for NativeV13Runtime {
                 );
                 // Callback opt-in preserves strict behavior for existing compiled_strategies.
                 if inner.instance.has_callback(V13EventKind::Recover) {
-                    reconcile_recovery(baseline, &current, &mut restored_orders)
-                        .map_err(v13_runtime_error)?;
+                    replay = recovery_execution_plan(
+                        baseline,
+                        &current,
+                        &mut restored_orders,
+                        &inner.recovery_executions,
+                    )
+                    .map_err(v13_runtime_error)?;
                 }
             }
             let restored = snapshot.native_snapshot();
@@ -2160,6 +2236,44 @@ impl StrategyRuntime for NativeV13Runtime {
                 .restore_state(&restored)
                 .map_err(|_| v13_runtime_error("snapshot_restore_failed"))?;
             inner.orders_list = restored_orders;
+            if !replay.is_empty() {
+                let baseline = recovery
+                    .as_ref()
+                    .ok_or_else(|| v13_runtime_error("recovery_history_baseline_missing"))?;
+                inner.settled_fills = consumed;
+                inner.inventory.seed(&baseline.public.positions);
+                for fill in &replay {
+                    if !update_active_fill(&mut inner, fill)? {
+                        return Err(v13_runtime_error("recovery_history_replay_not_new"));
+                    }
+                    let mut context = crate::v13::callback_context_v13(
+                        self.core.context.clock.now_ns(),
+                        2,
+                        &inner.markets,
+                        &inner.positions,
+                        &inner.balances,
+                        &inner.accounts,
+                        &inner.active_orders,
+                    );
+                    if self.core.pause_safe {
+                        context.flags |= V13_PAUSED;
+                    }
+                    context.fills_ptr = fill;
+                    context.fills_len = 1;
+                    let NativeV13Inner {
+                        instance, staging, ..
+                    } = &mut *inner;
+                    instance
+                        .replay_fill(staging, &mut context)
+                        .map_err(|_| v13_runtime_error("recovery_history_callback_rejected"))?;
+                    inner.callback_count = inner.callback_count.saturating_add(1);
+                }
+                inner.pending_fills.clear();
+                inner.awaiting_fills.clear();
+                if !inner.inventory.confirmed(&inner.positions) {
+                    return Err(v13_runtime_error("recovery_history_inventory_unproven"));
+                }
+            }
             let identity = public_state_identity_v13(
                 &inner.accounts,
                 &inner.active_orders,
@@ -2181,16 +2295,27 @@ impl StrategyRuntime for NativeV13Runtime {
                     .map_err(|_| v13_runtime_error("snapshot_reconcile_failed"))?;
             }
             inner.recovered_identity = Some(identity);
+            if reconciled {
+                // Only the validated, no-pending-execution checkpoint and unchanged venue
+                // reconciliation prove these quantities were already consumed. Terminal orders
+                // are absent from the new connector's open-order seed, but their replays must
+                // not advance the inventory seeded from the recovered account position again.
+                for (key, consumed) in recovered_fill_boundaries(&inner.orders_list)? {
+                    let previous = inner.settled_fills.entry(key).or_default();
+                    *previous = (*previous).max(consumed);
+                }
+            }
             checkpoint_state(
                 &self.core,
                 &mut inner,
                 self.core.context.clock.now_ns().max(1) as u64,
             )?;
-            self.core
-                .context
-                .state_snapshot_sink
-                .flush(Instant::now() + std::time::Duration::from_secs(5))
-                .map_err(|_| v13_runtime_error("recovery_checkpoint_flush_failed"))
+            flush_checkpoint(
+                &self.core,
+                &inner,
+                Instant::now() + std::time::Duration::from_secs(5),
+            )
+            .map_err(|_| v13_runtime_error("recovery_checkpoint_flush_failed"))
         })();
         if let Err(error) = &result {
             fail_runtime(&self.core, &mut inner, error.reason_code.clone());
@@ -2554,7 +2679,13 @@ impl StrategyRuntime for NativeV13Runtime {
     ) -> LocalResult<StrategyOperationId> {
         self.schedule(move |core| {
             let mut inner = core.inner.lock().unwrap_or_else(|p| p.into_inner());
-            let result = checkpoint_state(core, &mut inner, request.checkpoint_id);
+            let result = checkpoint_state(core, &mut inner, request.checkpoint_id).and_then(|_| {
+                flush_checkpoint(
+                    core,
+                    &inner,
+                    Instant::now() + std::time::Duration::from_secs(5),
+                )
+            });
             if let Err(error) = &result {
                 fail_runtime(core, &mut inner, error.reason_code.clone());
             }
@@ -2639,6 +2770,67 @@ fn v13_core_error() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_terminal_fill_replay_keeps_inventory_and_consumed_boundary() {
+        let record = StrategyOrderRecordV13 {
+            order_id: 7,
+            account_no: 0,
+            qty_lots: 1,
+            cumulative_filled_lots: 1,
+            fill_count: 1,
+            side: 1,
+            status: 4,
+            ..Default::default()
+        };
+        let boundaries = recovered_fill_boundaries(&BTreeMap::from([(7, record)])).unwrap();
+        let held = TitanPositionView {
+            qty_lots: 1,
+            ..Default::default()
+        };
+        let mut inventory = InventoryProof::default();
+        inventory.seed(&[held]);
+        inventory
+            .fill(
+                &TitanFillView {
+                    order_id: 7,
+                    side: 1,
+                    fill_qty_lots: 1,
+                    cumulative_filled_lots: 1,
+                    ..Default::default()
+                },
+                boundaries[&(0, 7)],
+                0,
+            )
+            .unwrap();
+        assert!(inventory.confirmed(&[held]));
+        inventory
+            .fill(
+                &TitanFillView {
+                    order_id: 8,
+                    side: 2,
+                    fill_qty_lots: 1,
+                    cumulative_filled_lots: 1,
+                    ..Default::default()
+                },
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(inventory.confirmed(&[TitanPositionView::default()]));
+        for cumulative in [-1, 2] {
+            assert!(
+                recovered_fill_boundaries(&BTreeMap::from([(
+                    7,
+                    StrategyOrderRecordV13 {
+                        cumulative_filled_lots: cumulative,
+                        ..record
+                    },
+                )]))
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn inventory_confirmation_handles_fill_position_orderings_and_hedge_legs() {

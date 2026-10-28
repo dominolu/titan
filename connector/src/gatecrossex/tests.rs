@@ -451,11 +451,11 @@ async fn private_ready_waits_for_all_confirmed_subscriptions_and_reconnects() {
             ))
             .await
             .unwrap();
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let request = ws.next().await.unwrap().unwrap();
                 assert!(request.into_text().unwrap().contains("!all"));
             }
-            for channel in ["order", "position"] {
+            for channel in ["order", "position", "usertrades"] {
                 ws.send(Message::Text(
                     json!({"event":"subscribe","channel":channel,"result":{"code":"100000"}})
                         .to_string()
@@ -596,10 +596,15 @@ async fn private_facts_use_payload_and_balances_refresh_all_venues() {
     server.await.unwrap();
     let facts = captured.lock().unwrap();
     assert!(
-        matches!(&facts[0],AccountPublication::OrderWithExecution{venue_order_id:Some(id),client_order_id:Some(client),order,..} if id=="99" && client=="owner_1" && order.exch_timestamp==1700000000010000000)
+        matches!(&facts[0],AccountPublication::OrderWithNativeFills{venue_order_id:Some(id),client_order_id:Some(client),order,..} if id=="99" && client=="owner_1" && order.exch_timestamp==1700000000010000000)
     );
     assert!(
         matches!(&facts[1],AccountPublication::Balance{wallet,exch_ts,..} if *wallet==120.0 && *exch_ts==1700000000000000000)
+    );
+    drop(facts);
+    stream::private_frame(&client(&url), &desired, &orders, &ticks, &tx, &json!({"channel":"usertrades","payload":{"symbol":SYMBOL,"transaction_id":"2072784922594048","order_id":"2072784922592768","text":"owner_1","side":"BUY","qty":"0.0001","price":"80924.4","fee":"0.00404622","fee_coin":"USDT","rpnl":"0","match_role":"TAKER","position_side":"NONE","create_time":"1700000000020"}})).unwrap();
+    assert!(
+        matches!(&captured.lock().unwrap()[2], AccountPublication::NativeFill { fill, position_side: crate::api::ApiPositionSide::Net } if fill.trade_id=="2072784922594048" && fill.qty==0.0001 && fill.fee==0.00404622 && fill.timestamp==1700000000020)
     );
 }
 #[tokio::test]
@@ -805,10 +810,10 @@ async fn review_slow_balance_refresh_does_not_block_order_delivery() {
         ))
         .await
         .unwrap();
-        for _ in 0..3 {
+        for _ in 0..4 {
             ws.next().await.unwrap().unwrap();
         }
-        for channel in ["order", "position", "asset"] {
+        for channel in ["order", "position", "asset", "usertrades"] {
             ws.send(Message::Text(
                 json!({"event":"subscribe","channel":channel,"result":{"code":"100000"}})
                     .to_string()
@@ -834,9 +839,9 @@ async fn review_slow_balance_refresh_does_not_block_order_delivery() {
         DirectPublication::Event(PublishEvent::PrivateStreamReady) => {
             let _ = ready.send(());
         }
-        DirectPublication::Account(crate::connector::AccountPublication::OrderWithExecution {
-            ..
-        }) => {
+        DirectPublication::Account(
+            crate::connector::AccountPublication::OrderWithNativeFills { .. },
+        ) => {
             let _ = delivered.send(());
         }
         _ => {}

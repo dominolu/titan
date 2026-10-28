@@ -1264,6 +1264,12 @@ mod live_ws_tests {
                     venue_order_id,
                     order,
                     ..
+                }
+                | AccountPublication::OrderWithNativeFills {
+                    client_order_id,
+                    venue_order_id,
+                    order,
+                    ..
                 } => {
                     let _ = tx.send(PrivateFact::Order {
                         client_order_id: client_order_id.clone(),
@@ -1274,7 +1280,7 @@ mod live_ws_tests {
                 AccountPublication::Position { symbol, qty, .. } => {
                     let _ = tx.send(PrivateFact::Position(symbol.clone(), *qty));
                 }
-                AccountPublication::Balance { .. } => {}
+                AccountPublication::Balance { .. } | AccountPublication::NativeFill { .. } => {}
                 AccountPublication::Error(e) => {
                     let _ = tx.send(PrivateFact::Error(format!("AccountError: {e:?}")));
                 }

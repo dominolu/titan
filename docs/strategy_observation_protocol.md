@@ -2,7 +2,9 @@
 
 日期：2026-10-27。实现基线：`638bae69324114e8a2447f648c8b7ced832196bb`。当前实时发布与恢复兼容结果见[本轮验证记录](verification/2026-10-27/strategy-observation-realtime/README.md)，前一阶段见[观测协议解耦记录](verification/2026-10-27/strategy-observation/README.md)。
 
-恢复存储后续按[数据持久化设计](data_persistence_design.md)统一迁入节点本地 SQLite，[实施计划](data_persistence_implementation_plan.md)尚待执行。本文所述当前实现仍使用恢复文件；迁移保留原始载荷字节和 SHA256，公开业务观测继续独立发布，不改从恢复 BLOB 读取。
+恢复存储已按[数据持久化设计](data_persistence_design.md)在 M1 统一迁入节点本地 SQLite，当前接口及维护语法见[恢复存储手册](recovery_storage_operations.md)，验证见[M1 记录](verification/2026-10-27/data-persistence/m1/README.md)。迁移保留原始载荷字节和 SHA256，公开业务观测继续独立发布，不从恢复 BLOB 读取。本文开头的历史基线仍指独立观测协议阶段。
+
+M2 已由宿主冷路径将公开帧保存到统一事实归档，按原 schema/hash 与发布序号去重，管理页经 `/facts` 查询；策略不增加存储调用。完整性与历史格式切换证据见[M2 验收](verification/2026-10-27/data-persistence/m2/README.md)，目录、游标和维护命令见[本地存储手册](local_persistence_operations.md)。
 
 ## 1. 统一定义
 
@@ -24,7 +26,7 @@
 | 策略文件校验值 | `strategy_file_sha256` | 策略传输文件完整字节 SHA256 |
 | 原生库校验值 | `native_library_sha256` | 动态库字节 SHA256 |
 | 恢复点序号 | `recovery_sequence` | 恢复点的内部序号 |
-| 恢复点内容校验值 | `recovery_point_sha256` | 固定恢复载荷原始字节；当前为文件，计划迁入 SQLite BLOB 后保留同一字节含义 |
+| 恢复点内容校验值 | `recovery_point_sha256` | 固定 SQLite 恢复载荷 BLOB 的原始字节，与旧文件 SHA256 保持同一含义 |
 
 当前参数会编译进 Numba 原生程序，因此源码版本号不能唯一确定可运行策略版本。原有参数记录和成功编译记录分别映射为参数版本、策略版本，保留历史 ID 与引用。参数预设只是节点登记的策略输入预设。
 
@@ -36,7 +38,7 @@
 
 公开 schema 的 hash 不包含内部路径、偏移或恢复结构 hash。例如恢复结构从 `grid.anchor_ticks` 改为 `pricing.anchor_value`，只要公开定义不变，仍可输出相同的 `titan.grid` 协议。
 
-业务观测独立从成功回调边界发布到该运行的预分配内存槽位，不读取恢复文件，也不调用恢复点提交或 flush。私有投影在加载时解析成有界标量读取计划；发布仅复制声明的值和有效条件，不复制整个私有状态，不执行 JSON、字符串格式化、SHA256、文件或网络操作。
+业务观测独立从成功回调边界发布到该运行的预分配内存槽位，不读取恢复存储，也不调用恢复点提交或 flush。私有投影在加载时解析成有界标量读取计划；发布仅复制声明的值和有效条件，不复制整个私有状态，不执行 JSON、字符串格式化、SHA256、文件或网络操作。
 
 宿主冷采样请求会合并为一个待发布标志。没有请求时，成功边界只检查一个原子标志；有请求时，交易线程以原子标量更新最多 64 个字段及其条件，总原始载荷上限 1 KiB。所有载荷字和帧版本使用顺序一致原子操作，读取前后相同的偶数版本才接受该帧；冷读取最多重试 8 次，持续冲突时明确报告忙并等待下次采样。写方没有锁或重试，不等待读取方，最终 Stop 帧也不会因读取方暂停而丢失。Start 和最终 Stop 发布边界快照，失败回调使观测不可用。未执行新回调时，重复读取不能推进发布序号。
 
@@ -46,7 +48,7 @@
 
 成功停止后，执行边界已经排空。即使执行通道随后关闭，迟到的执行回执也不再把已停止运行改成失败或撤销终态观测；停止完成前仍保留执行结果可靠处理和拒绝时失败关闭的约束。
 
-恢复点仍按原周期及指令持久化、恢复、停止屏障提交和 flush。观测不改变这些条件，不修改恢复文件结构和 checksum，也不向恢复文件写入观测帧。恢复后以新的运行代次重新发布，观测帧不参与恢复或交易准入证明。恢复写入故障继续遵循原有交易门失败语义。
+恢复点仍按原周期及指令持久化、恢复、停止屏障提交，并等待各自 SQLite 提交 token。观测不改变这些条件，不修改恢复载荷结构和 checksum，也不向恢复 BLOB 写入观测帧。恢复后以新的运行代次重新发布，观测帧不参与恢复或交易准入证明。恢复写入故障继续遵循原有交易门失败语义。
 
 更新时效由宿主冷采样、下一个成功回调边界及管理器同步周期决定，与恢复点持久化周期无关。宿主当前每 500 ms 采样；节点和管理器按各自同步周期传输。发布序号、成功回调水位和真实采集时间与宿主心跳分别表达。
 
@@ -123,7 +125,7 @@ flowchart LR
 
 编译动作为 `compile`，输入 `parameter_version_id`；回测和部署输入 `strategy_version_id`。暂停、恢复运行和停止使用 `expected_run_generation`。`resume` 表示从暂停恢复运行，`restore` 表示使用 `recovery_point_sha256` 从恢复点恢复。
 
-业务包络包含 `protocol_version`、`schema_id`、`schema_version`、`schema_hash`、公开 `schema`、`available`、`complete`、原因、`source`、`data` 和逐字段原因。v2 source 使用 `kind=runtime_publication`，携带 `publication_sequence`、`callback_sequence`、`captured_at_ns` 和 `run_generation`，不将发布序号命名为恢复点或引擎持久化水位。`callback_sequence` 表示该运行已成功完成的回调边界，不证明恢复文件已持久化。公开业务 schema 仍为 `titan.grid/v1`，hash 不变；包络版本独立升级。页面兼容 v1 历史包络并明确标记恢复点来源。
+业务包络包含 `protocol_version`、`schema_id`、`schema_version`、`schema_hash`、公开 `schema`、`available`、`complete`、原因、`source`、`data` 和逐字段原因。v2 source 使用 `kind=runtime_publication`，携带 `publication_sequence`、`callback_sequence`、`captured_at_ns` 和 `run_generation`，不将发布序号命名为恢复点或引擎持久化水位。`callback_sequence` 表示该运行已成功完成的回调边界，不证明恢复点已持久化。公开业务 schema 仍为 `titan.grid/v1`，hash 不变；包络版本独立升级。页面兼容 v1 历史包络并明确标记恢复点来源。
 
 快照是采样视图，不是完整事件账本。请求合并可以跳过中间回调，不能据此判断成交历史丢失。页面根据运行代次和资源修订拒绝迟到数据，分别判断账户和业务观测质量，不从任一展示值推导交易准入。
 

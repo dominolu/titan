@@ -38,9 +38,13 @@ const CAPACITY: usize = 4096;
 #[derive(Default)]
 struct Health {
     failed: AtomicBool,
+    integrity_failed: AtomicBool,
     closing: AtomicBool,
     pending: AtomicUsize,
+    pending_bytes: AtomicUsize,
     dropped: AtomicU64,
+    sample_dropped: AtomicU64,
+    durable_row: AtomicU64,
 }
 struct Frame {
     bytes: [u8; 256],
@@ -75,8 +79,44 @@ enum Message {
     Event(Frame),
     Cash(CashMovement),
     Ledger(LedgerBatch),
+    Public(titan_persistence::FactEnvelope),
 }
 
+impl Message {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Event(_) => std::mem::size_of::<Frame>(),
+            Self::Cash(v) => {
+                std::mem::size_of::<CashMovement>()
+                    + v.id.len()
+                    + v.account.len()
+                    + v.provenance.len()
+            }
+            Self::Public(v) => {
+                serde_json::to_vec(v).map_or(usize::MAX, |b| b.len().saturating_mul(3))
+            }
+            Self::Ledger(v) => {
+                std::mem::size_of::<LedgerBatch>()
+                    + v.account.len()
+                    + v.error.as_ref().map_or(0, String::len)
+                    + v.records
+                        .iter()
+                        .map(|r| {
+                            std::mem::size_of::<AccountLedgerRecord>()
+                                + r.id.len()
+                                + r.kind.len()
+                                + r.currency.len()
+                                + r.amount.len()
+                                + r.instrument.len()
+                                + r.exchange.len()
+                        })
+                        .sum::<usize>()
+            }
+        }
+    }
+}
+const QUEUE_BYTES: usize = 16 * 1024 * 1024;
+const MESSAGE_BYTES: usize = 3 * 1024 * 1024;
 #[derive(Clone, Default)]
 struct FillSummary {
     row_id: i64,
@@ -100,11 +140,28 @@ impl AccountFactJournal {
         source: String,
         accounts: &[AccountDefinition],
     ) -> ObservationResult<Arc<Self>> {
+        Self::open_with_environment(
+            path,
+            source,
+            accounts,
+            titan_persistence::FactEnvironment::Live,
+        )
+    }
+    pub fn open_with_environment(
+        path: impl AsRef<Path>,
+        source: String,
+        accounts: &[AccountDefinition],
+        environment: titan_persistence::FactEnvironment,
+    ) -> ObservationResult<Arc<Self>> {
         let path = path.as_ref().to_owned();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let db = Connection::open(&path)?;
+        let wrong_role:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name IN ('recovery_points','resources','object_catalog','storage_control_meta'))",[],|r|r.get(0))?;
+        if wrong_role {
+            return Err("account history database role conflicts with recovery/catalog".into());
+        }
         db.busy_timeout(Duration::from_secs(1))?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.pragma_update(None, "synchronous", "FULL")?;
@@ -130,6 +187,31 @@ impl AccountFactJournal {
             CREATE TABLE IF NOT EXISTS risk_windows(account TEXT NOT NULL,asset TEXT NOT NULL,instrument TEXT NOT NULL,currency TEXT NOT NULL,unit TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(account,asset,instrument,currency,unit));
             PRAGMA user_version=2;")?;
         let lease = recording_lease(&path, &source)?.ok_or("recorder source is already active")?;
+        titan_persistence::initialize_archive(&db)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS archive_account_role(id INTEGER PRIMARY KEY CHECK(id=1),environment TEXT NOT NULL);")?;
+        db.execute(
+            "INSERT OR IGNORE INTO archive_account_role VALUES(1,?1)",
+            [environment.as_str()],
+        )?;
+        let role: String =
+            db.query_row("SELECT environment FROM archive_account_role", [], |r| {
+                r.get(0)
+            })?;
+        if role != environment.as_str() {
+            return Err(
+                "account history environment changed; use a separate history database".into(),
+            );
+        }
+        titan_persistence::begin_source(&db, &source, &environment)?;
+        for account in accounts {
+            titan_persistence::bind_source_scope(
+                &db,
+                &source,
+                &environment,
+                &account.account_key,
+                source.split_once(':').map(|(run, _)| run),
+            )?;
+        }
         let mut query = db.prepare("SELECT id FROM sources WHERE clean=0 LIMIT 4097")?;
         let unclean = query
             .query_map([], |r| r.get::<_, String>(0))?
@@ -139,6 +221,14 @@ impl AccountFactJournal {
         }
         for previous in unclean {
             if let Some(_unowned) = recording_lease(&path, &previous)? {
+                let registered: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM archive_sources WHERE recording=?1)",
+                    [&previous],
+                    |r| r.get(0),
+                )?;
+                if !registered {
+                    titan_persistence::begin_source(&db, &previous, &environment)?;
+                }
                 let mut query = db.prepare("SELECT account FROM source_accounts WHERE source=?1 UNION SELECT DISTINCT account FROM facts WHERE source=?1")?;
                 let mut affected = query
                     .query_map([&previous], |r| r.get::<_, String>(0))?
@@ -147,6 +237,20 @@ impl AccountFactJournal {
                     affected.push(String::new());
                 }
                 for account in affected {
+                    titan_persistence::bind_source_scope(
+                        &db,
+                        &previous,
+                        &environment,
+                        &account,
+                        previous.split_once(':').map(|(run, _)| run),
+                    )?;
+                    titan_persistence::mark_gap(
+                        &db,
+                        &previous,
+                        &account,
+                        "recording_gap",
+                        "an earlier writer did not confirm a clean drain",
+                    )?;
                     db.execute(
                         "INSERT OR IGNORE INTO source_issues VALUES (?1,?2,'RECORDING_GAP',?3)",
                         params![
@@ -207,17 +311,134 @@ impl AccountFactJournal {
         }))
     }
     fn enqueue(&self, message: Message) -> bool {
-        if self.health.closing.load(Ordering::Acquire) {
-            self.health.dropped.fetch_add(1, Ordering::Relaxed);
+        self.enqueue_with_class(message, false)
+    }
+    fn enqueue_with_class(&self, message: Message, optional: bool) -> bool {
+        let bytes = message.bytes();
+        let dropped = if optional {
+            &self.health.sample_dropped
+        } else {
+            &self.health.dropped
+        };
+        if bytes > MESSAGE_BYTES
+            || self
+                .health
+                .pending_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    n.checked_add(bytes).filter(|n| *n <= QUEUE_BYTES)
+                })
+                .is_err()
+        {
+            dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         self.health.pending.fetch_add(1, Ordering::AcqRel);
+        if self.health.closing.load(Ordering::Acquire) {
+            self.health.pending.fetch_sub(1, Ordering::AcqRel);
+            self.health.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
         if self.sender.try_send(message).is_err() {
             self.health.pending.fetch_sub(1, Ordering::AcqRel);
-            self.health.dropped.fetch_add(1, Ordering::Relaxed);
+            self.health.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
+            dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         true
+    }
+    pub fn recording_healthy(&self) -> bool {
+        !self.health.failed.load(Ordering::Acquire)
+            && !self.health.integrity_failed.load(Ordering::Acquire)
+            && self.health.dropped.load(Ordering::Acquire) == 0
+            && !self.health.closing.load(Ordering::Acquire)
+    }
+    /// Cold recovery waits for the facts it just synchronously enqueued to commit. A busy writer
+    /// may reject recovery at the caller's existing deadline; it never extends that deadline.
+    pub fn wait_recovery_durable(&self, deadline: Instant) -> ObservationResult<()> {
+        loop {
+            if !self.recording_healthy() {
+                return Err("recovery fact audit is unhealthy".into());
+            }
+            if self.health.pending.load(Ordering::Acquire) == 0 {
+                return if self.recording_healthy() {
+                    Ok(())
+                } else {
+                    Err("recovery fact audit is unhealthy".into())
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err("recovery fact audit deadline exceeded".into());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    pub fn recording_guard(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        let health = self.health.clone();
+        Arc::new(move || {
+            !health.failed.load(Ordering::Acquire)
+                && !health.integrity_failed.load(Ordering::Acquire)
+                && health.dropped.load(Ordering::Acquire) == 0
+                && !health.closing.load(Ordering::Acquire)
+        })
+    }
+    pub fn public_observation(
+        &self,
+        scope: titan_persistence::FactScope,
+        runtime_no: &str,
+        body: &Value,
+    ) -> ObservationResult<()> {
+        if body["available"] != true {
+            return Ok(());
+        }
+        if !self
+            .definitions
+            .values()
+            .any(|v| v.account_key.as_ref() == scope.account)
+        {
+            return Err("public observation account not bound".into());
+        }
+        let source = &body["source"];
+        let sequence = source["publication_sequence"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .or_else(|| source["publication_sequence"].as_u64())
+            .ok_or("publication sequence missing")?;
+        let timestamp = source["captured_at_ns"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .or_else(|| source["captured_at_ns"].as_i64())
+            .ok_or("publication timestamp missing")?;
+        let run = scope
+            .run_id
+            .as_deref()
+            .ok_or("public observation run missing")?;
+        let generation = scope
+            .run_generation
+            .as_deref()
+            .ok_or("public observation generation missing")?;
+        let stream = format!("business:{run}:{runtime_no}:{generation}");
+        let mut fact = titan_persistence::FactEnvelope::new(
+            scope,
+            &self.source,
+            stream,
+            sequence,
+            "business_observation",
+            timestamp,
+            body.clone(),
+        );
+        fact.sampled = true;
+        if !self.enqueue_with_class(Message::Public(fact), true) {
+            return Err("public observation sample dropped".into());
+        }
+        Ok(())
+    }
+    pub fn history_page(
+        &self,
+        request: &titan_persistence::HistoryRequest,
+    ) -> ObservationResult<titan_persistence::HistoryPage> {
+        use titan_persistence::HistoryQuery;
+        titan_persistence::SqliteHistoryQuery::new(self.path.clone()).page(request)
     }
     /// Called by the owning platform provider, never by a management HTTP request.
     pub fn cash_movement(&self, movement: CashMovement) -> ObservationResult<()> {
@@ -375,7 +596,7 @@ impl AccountFactJournal {
         Ok(body)
     }
     pub fn health(&self) -> Value {
-        json!({"source":self.source,"writer_failed":self.health.failed.load(Ordering::Acquire),"backlog":self.health.pending.load(Ordering::Acquire).to_string(),"dropped":self.health.dropped.load(Ordering::Acquire).to_string(),"history_complete":false,"missing":["pre_observation_history","strategy_attribution"],"ledger_coverage_source":"ledger_coverage"})
+        json!({"source":self.source,"writer_failed":self.health.failed.load(Ordering::Acquire),"backlog":self.health.pending.load(Ordering::Acquire).to_string(),"backlog_bytes":self.health.pending_bytes.load(Ordering::Acquire).to_string(),"queue_byte_budget":QUEUE_BYTES.to_string(),"dropped":self.health.dropped.load(Ordering::Acquire).to_string(),"sample_dropped":self.health.sample_dropped.load(Ordering::Acquire).to_string(),"durable_row":self.health.durable_row.load(Ordering::Acquire).to_string(),"critical_audit_healthy":self.recording_healthy(),"history_complete":false,"missing":["pre_observation_history","strategy_attribution"],"ledger_coverage_source":"ledger_coverage"})
     }
     fn risk_maxima(&self, account: &str) -> ObservationResult<Value> {
         let db =
@@ -525,6 +746,11 @@ impl AccountFactJournal {
         };
         for (code, active, detail) in [
             (
+                "FACT_IDENTITY_CONFLICT",
+                self.health.integrity_failed.load(Ordering::Acquire),
+                "received native identities contain contradictory facts",
+            ),
+            (
                 "WRITER_FAILED",
                 self.health.failed.load(Ordering::Acquire),
                 "account fact writer failed",
@@ -568,8 +794,10 @@ impl AccountFactJournal {
         if let Some(writer) = writer.take() {
             writer.join().map_err(|_| "account recorder panicked")?;
         }
-        if self.health.failed.load(Ordering::Acquire) {
-            return Err("account recorder failed".into());
+        if self.health.failed.load(Ordering::Acquire)
+            || self.health.dropped.load(Ordering::Acquire) > 0
+        {
+            return Err("account recorder failed or lost required facts".into());
         }
         Ok(())
     }
@@ -819,8 +1047,71 @@ fn risk_window(
     let content = serde_json::to_string(risk)?;
     let hash = Sha256::digest(content.as_bytes());
     let key = format!("{source}:risk:{}:{}", account, hex(&hash));
-    db.execute("INSERT OR IGNORE INTO facts(source,account,kind,event_key,digest,body) VALUES (?1,?2,'risk_sample',?3,?4,?5)",params![source,account,key,&hash[..],content])?;
+    if db.execute("INSERT OR IGNORE INTO facts(source,account,kind,event_key,digest,body) VALUES (?1,?2,'risk_sample',?3,?4,?5)",params![source,account,key,&hash[..],content])?>0 {
+        archive_sample(db,source,account,"risk_sample",risk.clone(),None)?;
+    }
     Ok(())
+}
+fn archive_fact(
+    db: &Connection,
+    source: &str,
+    mut fact: titan_persistence::FactEnvelope,
+) -> ObservationResult<()> {
+    let environment: String = db.query_row(
+        "SELECT environment FROM archive_sources WHERE recording=?1",
+        [source],
+        |r| r.get(0),
+    )?;
+    fact.scope.environment = match environment.as_str() {
+        "live" => titan_persistence::FactEnvironment::Live,
+        "simulation" => titan_persistence::FactEnvironment::Simulation,
+        _ => return Err("account archive environment invalid".into()),
+    };
+    if fact.scope.run_id.is_none() {
+        fact.scope.run_id = source.split_once(':').map(|(run, _)| run.to_owned());
+    }
+    titan_persistence::append_in_transaction(db, &fact)?;
+    Ok(())
+}
+fn archive_sample(
+    db: &Connection,
+    source: &str,
+    account: &str,
+    kind: &str,
+    body: Value,
+    business: Option<(String, String)>,
+) -> ObservationResult<()> {
+    let stream = format!("{kind}:{account}");
+    let last:Option<Vec<u8>>=db.query_row("SELECT sequence FROM archive_watermarks WHERE recording=?1 AND stream=?2 AND epoch='1'",params![source,stream],|r|r.get(0)).optional()?;
+    let sequence = last
+        .map(|v| {
+            v.try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| "archive watermark invalid")
+        })
+        .transpose()?
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or("archive sequence exhausted")?;
+    let timestamp = body["captured_at_ns"]
+        .as_str()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut fact = titan_persistence::FactEnvelope::new(
+        titan_persistence::FactScope::account(titan_persistence::FactEnvironment::Live, account),
+        source,
+        stream,
+        sequence,
+        kind,
+        timestamp,
+        body,
+    );
+    fact.sampled = matches!(kind, "equity_sample" | "risk_sample");
+    if let Some((key, hash)) = business {
+        fact.business_key = Some(key);
+        fact.business_sha256 = Some(hash);
+    }
+    archive_fact(db, source, fact)
 }
 fn record(
     mut db: Connection,
@@ -839,18 +1130,24 @@ fn record(
         }
         batch.extend(receiver.try_iter().take(255));
         let count = batch.len();
+        let bytes = batch.iter().map(Message::bytes).sum::<usize>();
         let images = std::mem::take(
             &mut *samples
                 .lock()
                 .map_err(|_| "observation sample lock poisoned")?,
         );
         if count > 0 || !images.is_empty() {
+            let path = db.path().ok_or("account journal path unavailable")?;
+            titan_persistence::check_history_budget(Path::new(path))?;
             let tx = db.transaction()?;
             for message in batch {
                 match message {
                     Message::Event(frame) => event(&tx, source, definitions, frame)?,
                     Message::Cash(cash) => cash_fact(&tx, source, definitions, cash)?,
                     Message::Ledger(batch) => ledger_fact(&tx, source, definitions, batch)?,
+                    Message::Public(fact) => {
+                        archive_fact(&tx, source, fact)?;
+                    }
                 }
             }
             for sample in images.into_values() {
@@ -861,9 +1158,41 @@ fn record(
                 );
                 let content = serde_json::to_string(&sample.body)?;
                 let hash = Sha256::digest(content.as_bytes());
-                if tx.execute("INSERT OR IGNORE INTO facts(source,account,kind,event_key,digest,body) VALUES (?1,?2,'equity_sample',?3,?4,?5)",params![source,sample.account,key,&hash[..],content])?>0{equity_window(&tx,source,&sample.account,&sample.body)?;}
+                if tx.execute("INSERT OR IGNORE INTO facts(source,account,kind,event_key,digest,body) VALUES (?1,?2,'equity_sample',?3,?4,?5)",params![source,sample.account,key,&hash[..],content])?>0{equity_window(&tx,source,&sample.account,&sample.body)?;archive_sample(&tx,source,&sample.account,"equity_sample",sample.body,None)?;}
             }
+            if health.dropped.load(Ordering::Acquire) > 0 {
+                titan_persistence::mark_gap(
+                    &tx,
+                    source,
+                    "",
+                    "recording_overflow",
+                    "bounded account recording queue lost facts",
+                )?;
+            }
+            if health.sample_dropped.load(Ordering::Acquire) > 0 {
+                titan_persistence::mark_gap(
+                    &tx,
+                    source,
+                    "",
+                    "public_sample_overflow",
+                    "optional public observation samples were dropped",
+                )?;
+            }
+            let durable_row: u64 =
+                tx.query_row("SELECT coalesce(max(id),0) FROM archive_records", [], |r| {
+                    r.get(0)
+                })?;
             tx.commit()?;
+            health.durable_row.store(durable_row, Ordering::Release);
+            let conflicts: u64 = db.query_row(
+                "SELECT count(*) FROM archive_conflicts WHERE recording=?1",
+                [source],
+                |r| r.get(0),
+            )?;
+            if conflicts > 0 {
+                health.integrity_failed.store(true, Ordering::Release);
+            }
+            health.pending_bytes.fetch_sub(bytes, Ordering::AcqRel);
             health.pending.fetch_sub(count, Ordering::AcqRel);
         }
         if health.closing.load(Ordering::Acquire) && health.pending.load(Ordering::Acquire) == 0 {
@@ -871,14 +1200,33 @@ fn record(
         }
     }
     if health.dropped.load(Ordering::Acquire) > 0 {
+        titan_persistence::mark_gap(
+            &db,
+            source,
+            "",
+            "recording_overflow",
+            "bounded recorder lost accepted source facts",
+        )?;
         issue(
             &db,
             "RECORDING_OVERFLOW",
             "bounded recorder queue lost facts; continuity is not restored by a later snapshot",
         )?;
     }
+    if health.sample_dropped.load(Ordering::Acquire) > 0 {
+        titan_persistence::mark_gap(
+            &db,
+            source,
+            "",
+            "public_sample_overflow",
+            "optional public observation samples were dropped",
+        )?;
+    }
     if !health.failed.load(Ordering::Acquire) {
-        db.execute("UPDATE sources SET clean=1 WHERE id=?1", [source])?;
+        let tx = db.transaction()?;
+        titan_persistence::finish_source(&tx, source, health.dropped.load(Ordering::Acquire) == 0)?;
+        tx.execute("UPDATE sources SET clean=1 WHERE id=?1", [source])?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -894,6 +1242,7 @@ fn event(
         .get(&h.account_id)
         .ok_or("unregistered observation account")?;
     let mut body = json!({"source":source,"schema_version":frame.schema.to_string(),"account":definition.account_key,"provider":definition.connector_type,"account_id":h.account_id.to_string(),"generation":h.account_generation.to_string(),"epoch":h.account_epoch.to_string(),"version":h.account_version.to_string(),"exchange_ns":h.exchange_ts.to_string(),"receive_ns":h.receive_ts.to_string(),"source_id":frame.source_id.to_string(),"sequence":frame.sequence.to_string(),"flags":h.flags.to_string()});
+    let mut business = None;
     let (kind, details) = match h.kind {
         event_kind::ORDER_CHANGED => {
             let v = OrderChangedV1::decode(bytes)?;
@@ -970,6 +1319,7 @@ fn event(
                     hex(&v.venue_order_id.0)
                 ]))?;
                 let hash = Sha256::digest(fingerprint);
+                business = Some((key.clone(), hex(&hash)));
                 let previous: Option<Vec<u8>> = db
                     .query_row(
                         "SELECT digest FROM trades WHERE trade_key=?1",
@@ -1047,6 +1397,25 @@ fn event(
     };
     body["kind"] = kind.into();
     body["details"] = details;
+    let mut fact = titan_persistence::FactEnvelope::new(
+        titan_persistence::FactScope::account(
+            titan_persistence::FactEnvironment::Live,
+            definition.account_key.to_string(),
+        ),
+        source,
+        frame.source_id.to_string(),
+        frame.sequence,
+        kind,
+        h.exchange_ts,
+        body.clone(),
+    );
+    fact.source_epoch = h.account_epoch.to_string();
+    fact.received_at_ns = h.receive_ts;
+    if let Some((key, hash)) = business {
+        fact.business_key = Some(key);
+        fact.business_sha256 = Some(hash);
+    }
+    archive_fact(db, source, fact)?;
     let key = format!("{source}:{}:{}", frame.source_id, frame.sequence);
     let hash = Sha256::digest(bytes);
     let previous: Option<Vec<u8>> = db
@@ -1140,6 +1509,14 @@ fn ledger_fact(
             )?;
         }
         let content = serde_json::to_string(&body)?;
+        archive_sample(
+            db,
+            source,
+            &batch.account,
+            kind,
+            body.clone(),
+            Some((key.clone(), hex(&hash))),
+        )?;
         if db.execute(
             "INSERT OR IGNORE INTO ledger VALUES (?1,?2,?3,?4)",
             params![key, batch.account, content, &hash[..]],
@@ -1390,6 +1767,14 @@ fn cash_fact(
         kind,
         cash.id.as_str(),
     ))?;
+    archive_sample(
+        db,
+        source,
+        &cash.account,
+        kind,
+        body.clone(),
+        Some((key.clone(), hex(&hash))),
+    )?;
     let previous: Option<Vec<u8>> = db
         .query_row(
             "SELECT digest FROM movements WHERE movement_key=?1",
@@ -1723,6 +2108,8 @@ mod tests {
                 .is_err()
         );
         assert_eq!(journal.health()["writer_failed"], true);
+        assert!(!journal.recording_healthy());
+        assert!(!(journal.recording_guard())());
         assert_eq!(
             db.query_row::<i64, _, _>("SELECT clean FROM sources WHERE id='run'", [], |r| r.get(0))
                 .unwrap(),

@@ -17,7 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 use titan_account_service::AccountService;
-use titan_strategy_runtime::{ExecutionLimits, StrategyAdminService, StrategyRecoveryPolicy};
+use titan_strategy_runtime::{
+    ExecutionLimits, RecoveryPointRef, SqliteRecoveryConfig, SqliteRecoveryStore,
+    StrategyAdminService, StrategyRecoveryPolicy, StrategyRecoveryStore,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Deployment {
@@ -31,6 +34,8 @@ struct ManagedSpec {
     deployment_id: String,
     deployment_sha256: String,
     checkpoint: Option<String>,
+    #[serde(default)]
+    recovery_reference: Option<RecoveryPointRef>,
     previous_generation: Option<String>,
     predecessor_run_id: Option<String>,
     reservation_operation_id: String,
@@ -249,6 +254,7 @@ fn runtime_config(
         max_market_age_ns: 2_000_000_000,
     });
     strategy.runtime.recovery_checkpoint_sha256 = checkpoint.map(str::to_owned);
+    strategy.runtime.recovery_reference = None;
     strategy.recovery = if checkpoint.is_some() {
         StrategyRecoveryPolicy::RequireCheckpoint
     } else {
@@ -259,7 +265,8 @@ fn runtime_config(
         "managed stop timeout exceeds 10 seconds"
     );
     raw.strategy_service.allowed_strategy_roots = vec![config.work_root.join("deployments")];
-    raw.strategy_service.checkpoint_root = Some(
+    raw.strategy_service.checkpoint_root = None;
+    raw.strategy_service.recovery_storage = Some(SqliteRecoveryConfig::new(
         config
             .work_root
             .join("checkpoints")
@@ -269,8 +276,9 @@ fn runtime_config(
                     .as_deref()
                     .context("canonical account identity required")?,
             )
-            .join(strategy.runtime_strategy_no.0.to_string()),
-    );
+            .join(strategy.runtime_strategy_no.0.to_string())
+            .join("runtime.db"),
+    ));
     Ok(raw)
 }
 fn decode_hash(value: &str) -> Result<[u8; 32]> {
@@ -491,25 +499,24 @@ pub(super) async fn execute(
             );
             let deployment = load_deployment(config, &previous.deployment_id)?;
             let raw = runtime_config(config, &deployment, Some(checkpoint_id))?;
-            let checkpoint = checkpoint_path(&raw)?;
-            ensure!(
-                node::digest_file(&checkpoint)? == *checkpoint_id,
-                "checkpoint reference changed"
-            );
-            let snapshot: titan_strategy_runtime::StrategyRecoveryPoint =
-                serde_json::from_slice(&std::fs::read(&checkpoint)?)?;
+            let store = open_recovery(&raw)?;
+            let reference =
+                store.reference_by_sha(raw.strategies[0].runtime_strategy_no, checkpoint_id)?;
+            let snapshot = store.load_reference(&reference)?;
             ensure!(
                 snapshot.generation.to_string() == *generation
                     && snapshot.strategy.runtime_strategy_no
                         == raw.strategies[0].runtime_strategy_no,
                 "checkpoint generation or strategy mismatch"
             );
+            store.pin(&reference, &request.operation_id)?;
             launch(
                 config,
                 request,
                 &deployment,
                 Some(RecoveryLaunch {
                     checkpoint: checkpoint_id.clone(),
+                    reference,
                     run_generation: generation.clone(),
                     previous,
                 }),
@@ -743,16 +750,35 @@ fn trust_policy(raw: &crate::ApplicationConfig) -> Result<titan_strategy_runtime
 fn checkpoint_path(raw: &crate::ApplicationConfig) -> Result<PathBuf> {
     Ok(raw
         .strategy_service
-        .checkpoint_root
+        .recovery_storage
         .as_ref()
-        .context("checkpoint root missing")?
-        .join(format!(
-            "strategy-{}.json",
-            raw.strategies[0].runtime_strategy_no.0
-        )))
+        .context("recovery storage missing")?
+        .path
+        .clone())
+}
+fn open_recovery(raw: &crate::ApplicationConfig) -> Result<Arc<SqliteRecoveryStore>> {
+    Ok(SqliteRecoveryStore::open_existing(
+        raw.strategy_service
+            .recovery_storage
+            .clone()
+            .context("recovery storage missing")?,
+    )?)
+}
+pub(super) fn catalog_recovery(
+    raw: &crate::ApplicationConfig,
+    generation: &str,
+) -> Result<Option<Arc<SqliteRecoveryStore>>> {
+    // The worker creates the file before initializing schema. A catalog read
+    // before any confirmed generation must not turn that window into a failed Start.
+    if generation.parse::<u64>().is_ok_and(|value| value > 0) && checkpoint_path(raw)?.is_file() {
+        Ok(Some(open_recovery(raw)?))
+    } else {
+        Ok(None)
+    }
 }
 struct RecoveryLaunch {
     checkpoint: String,
+    reference: RecoveryPointRef,
     run_generation: String,
     previous: ManagedSpec,
 }
@@ -802,6 +828,9 @@ async fn launch(
     let generation = nonce();
     let spec = ManagedSpec {
         claim: HostClaim {
+            strategy_id: deployment.resource.body["strategy_id"]
+                .as_str()
+                .map(str::to_owned),
             run_id: id.clone(),
             worker_session_id: generation.clone(),
             account: binding.account.clone(),
@@ -817,6 +846,7 @@ async fn launch(
         deployment_id: deployment.resource.id.clone(),
         deployment_sha256: digest(&serde_json::to_vec(deployment)?),
         checkpoint,
+        recovery_reference: recovery.as_ref().map(|r| r.reference.clone()),
         previous_generation,
         predecessor_run_id: request.action.run().map(|(id, _)| id.to_owned()),
         reservation_operation_id: reservation,
@@ -1040,34 +1070,28 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
         }
     }
     let deployment = load_deployment(config, &spec.deployment_id)?;
-    let checkpoint = config
-        .work_root
-        .join("checkpoints")
-        .join(
-            deployment.resource.body["account_identity"]
-                .as_str()
-                .context("canonical account missing")?,
-        )
-        .join(
-            deployment.resource.body["runtime_strategy_no"]
-                .as_str()
-                .context("strategy identity missing")?,
-        )
-        .join(format!(
-            "strategy-{}.json",
-            deployment.resource.body["runtime_strategy_no"]
-                .as_str()
+    let raw = runtime_config(config, &deployment, None)?;
+    let recovery_store = catalog_recovery(&raw, &generation)?;
+    let recovery_reference = recovery_store
+        .as_ref()
+        .map(|store| store.head_reference(raw.strategies[0].runtime_strategy_no))
+        .transpose()?
+        .flatten();
+    let checkpoint_generation = recovery_reference
+        .as_ref()
+        .map(|reference| {
+            recovery_store
+                .as_ref()
                 .unwrap()
-        ));
-    let checkpoint_generation = std::fs::read(&checkpoint)
-        .ok()
-        .and_then(|b| {
-            serde_json::from_slice::<titan_strategy_runtime::StrategyRecoveryPoint>(&b).ok()
+                .load_reference(reference)
+                .map(|s| s.generation.to_string())
         })
-        .map(|s| s.generation.to_string());
+        .transpose()?;
     let checkpoint_id =
         if process.is_none() && checkpoint_generation.as_deref() == Some(generation.as_str()) {
-            Some(node::digest_file(&checkpoint)?)
+            recovery_reference
+                .as_ref()
+                .map(|r| r.payload_sha256.clone())
         } else {
             None
         };
@@ -1082,7 +1106,7 @@ async fn catalog_one(config: &NodeConfig, spec: &ManagedSpec) -> Result<Vec<Reso
         actions.push("restore");
     }
     let safe = record.state == "STOPPED" && observation["release_proof"]["safe"] == true;
-    let body = json!({"strategy_id":deployment.resource.body["strategy_id"],"strategy_name":deployment.resource.body["strategy_name"],"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"runtime_strategy_no":deployment.resource.body["runtime_strategy_no"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"run_generation":generation,"deployment_id":spec.deployment_id,"strategy_version_id":deployment.resource.body["strategy_version_id"],"parameters":deployment.resource.body["normalized_parameters"],"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
+    let body = json!({"strategy_id":deployment.resource.body["strategy_id"],"strategy_name":deployment.resource.body["strategy_name"],"account":spec.claim.account,"account_identity":deployment.resource.body["account_identity"],"runtime_strategy_no":deployment.resource.body["runtime_strategy_no"],"instrument":spec.claim.instrument,"binding_id":spec.claim.binding_id,"source_started_at_ns":record.started_at_ns.to_string(),"worker_id":spec.claim.run_id,"run_generation":generation,"deployment_id":spec.deployment_id,"strategy_version_id":deployment.resource.body["strategy_version_id"],"parameters":deployment.resource.body["normalized_parameters"],"reservation_operation_id":spec.reservation_operation_id,"predecessor_run_id":spec.predecessor_run_id,"admission_operation_id":spec.claim.run_id,"environment":"live","mode":"trade","process_state":if process.is_some() || record.finished_at_ns.is_some(){record.state.as_str()}else{"UNKNOWN"},"lifecycle":lifecycle,"available":available,"observation_stale":!available,"observation":observation,"allowed_actions":actions,"checkpoint_id":checkpoint_id,"recovery_reference":recovery_reference,"stop_action":deployment.resource.body["stop_action"],"release_proof":{"safe":safe,"source":"trading_runtime","worker_id":spec.claim.run_id},"expires_at_ns":spec.budget.expires_at_ns});
     Ok(vec![node::resource(
         config,
         "run",
@@ -1119,7 +1143,8 @@ pub(super) fn managed_worker(config: NodeConfig, id: String, token: String) -> R
             digest(&serde_json::to_vec(&deployment)?) == spec.deployment_sha256,
             "deployment changed after admission"
         );
-        let raw = runtime_config(&config, &deployment, spec.checkpoint.as_deref())?;
+        let mut raw = runtime_config(&config, &deployment, spec.checkpoint.as_deref())?;
+        raw.strategies[0].runtime.recovery_reference = spec.recovery_reference.clone();
         let checkpoint = checkpoint_path(&raw)?;
         // A single host owns the checkpoint namespace, including its generation watermark.
         use std::os::fd::AsRawFd;
@@ -1186,6 +1211,22 @@ pub(super) fn managed_worker(config: NodeConfig, id: String, token: String) -> R
             "start cancelled or runtime budget exhausted"
         );
         let handle = service.list()[0].handle;
+        if spec.checkpoint.is_some() {
+            runtime
+                .observation()
+                .context("journal missing")?
+                .wait_recovery_durable(startup.min(
+                    Instant::now()
+                        + Duration::from_nanos(
+                            spec.budget.remaining()?.saturating_sub(12_000_000_000) as u64,
+                        ),
+                ))
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            ensure!(
+                !stopped.load(Ordering::Acquire) && spec.budget.remaining()? > 12_000_000_000,
+                "recovery audit consumed remaining activation budget"
+            );
+        }
         node::atomic_json(
             &dir.join("runtime-identity.json"),
             &json!({"runtime_strategy_no":handle.runtime_strategy_no.0.to_string(),"run_generation":handle.generation.to_string()}),
@@ -1363,6 +1404,12 @@ pub(super) async fn history(
     )
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     Ok(json!({"items":items,"source":{"worker_id":id,"scope":"account","persisted":true}}))
+}
+pub(super) fn fact_claim(config: &NodeConfig, id: &str) -> Result<HostClaim> {
+    let spec: ManagedSpec =
+        serde_json::from_slice(&std::fs::read(root(config, id)?.join("managed.json"))?)?;
+    ensure!(spec.claim.run_id == id, "managed fact identity changed");
+    Ok(spec.claim)
 }
 
 #[cfg(test)]

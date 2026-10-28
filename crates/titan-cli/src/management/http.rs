@@ -124,6 +124,8 @@ pub(super) struct Login {
 }
 #[derive(Default, Deserialize)]
 pub(super) struct ListQuery {
+    cursor: Option<String>,
+    newest_first: Option<bool>,
     limit: Option<usize>,
     idempotency_key: Option<String>,
     offset: Option<usize>,
@@ -430,6 +432,14 @@ pub(super) async fn resource_history(
 ) -> ApiResult<Json<serde_json::Value>> {
     runtime_query(app, headers, id, query, "history").await
 }
+pub(super) async fn resource_facts(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    runtime_query(app, headers, id, query, "facts").await
+}
 pub(super) async fn resource_log(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -447,7 +457,9 @@ pub(super) async fn runtime_query(
 ) -> ApiResult<Json<serde_json::Value>> {
     let actor = identity(&app, &headers, false)?;
     let resource = app.resource(&actor, &id, false)?;
-    if !matches!(resource.kind.as_str(), "run" | "account") {
+    if !(matches!(resource.kind.as_str(), "run" | "account")
+        || endpoint == "facts" && resource.kind == "backtest")
+    {
         return Err(fault(400, "INVALID_RESOURCE", "resource has no runtime history").into());
     }
     if let Some(generation) = query.generation
@@ -460,6 +472,13 @@ pub(super) async fn runtime_query(
     }
     let worker = resource.body["worker_id"]
         .as_str()
+        .or_else(|| {
+            if endpoint == "facts" && resource.kind == "backtest" {
+                resource.body["operation_id"].as_str()
+            } else {
+                None
+            }
+        })
         .context("resource has no worker identity")?;
     super::checked_id(worker)?;
     let node = app
@@ -475,6 +494,11 @@ pub(super) async fn runtime_query(
         ))
         .bearer_auth(node.token()?)
         .query(&[
+            ("cursor", query.cursor.unwrap_or_default()),
+            (
+                "newest_first",
+                query.newest_first.unwrap_or(false).to_string(),
+            ),
             ("kind", query.kind.unwrap_or_default()),
             (
                 "offset",
@@ -484,9 +508,16 @@ pub(super) async fn runtime_query(
         ])
         .send()
         .await
-        .map_err(anyhow::Error::from)?
-        .error_for_status()
         .map_err(anyhow::Error::from)?;
+    if endpoint == "facts" && response.status() == reqwest::StatusCode::CONFLICT {
+        return Err(fault(
+            409,
+            "STALE_HISTORY_CURSOR",
+            "历史查询范围已变化，请重新查询",
+        )
+        .into());
+    }
+    let response = response.error_for_status().map_err(anyhow::Error::from)?;
     Ok(Json(super::app::node_json(response).await?))
 }
 pub(super) async fn operation(

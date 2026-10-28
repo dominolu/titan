@@ -54,15 +54,7 @@ impl RecoveryBaseline {
         orders: [u8; 32],
         identity: [u8; 32],
     ) -> Result<(), &'static str> {
-        if self.version != 1
-            || self.checksum != self.digest(snapshot, orders)
-            || public_state_identity_v13(
-                &self.public.accounts,
-                &self.public.active_orders,
-                &self.public.positions,
-                &self.public.balances,
-            ) != identity
-        {
+        if !self.integrity_valid(snapshot, orders, identity) {
             return Err("recovery_baseline_invalid");
         }
         if self.pending_execution {
@@ -70,10 +62,24 @@ impl RecoveryBaseline {
         }
         Ok(())
     }
+    pub(crate) fn integrity_valid(
+        &self,
+        snapshot: [u8; 32],
+        orders: [u8; 32],
+        identity: [u8; 32],
+    ) -> bool {
+        !(self.version != 1
+            || self.checksum != self.digest(snapshot, orders)
+            || public_state_identity_v13(
+                &self.public.accounts,
+                &self.public.active_orders,
+                &self.public.positions,
+                &self.public.balances,
+            ) != identity)
+    }
 }
 
-/// Complete known-order results for unchanged executions. Changed fills need a future
-/// complete, deduplicated execution-history provider; current REST images cannot prove them.
+/// Complete known-order results for unchanged executions. Images alone never prove changed fills.
 pub(crate) fn reconcile_recovery(
     baseline: &RecoveryBaseline,
     current: &StrategyPublicStateSeedV13,
@@ -228,9 +234,303 @@ pub(crate) fn recovery_seed(
     }
 }
 
+/// Validate complete per-order native histories before touching private state. The initial
+/// implementation supports net inventory increases with zero realized PnL. Closes, reversals,
+/// ambiguous execution timestamps and fractional average-price rounding stay fail-closed.
+pub(crate) fn recovery_execution_plan(
+    baseline: &RecoveryBaseline,
+    current: &StrategyPublicStateSeedV13,
+    records: &mut BTreeMap<u64, StrategyOrderRecordV13>,
+    histories: &[RecoveryExecutionHistory],
+) -> Result<Vec<TitanFillView>, &'static str> {
+    if baseline.pending_execution || histories.len() > 128 {
+        return Err("recovery_history_invalid_boundary");
+    }
+    let mut positions = baseline.public.positions.to_vec();
+    let mut seen_orders = std::collections::BTreeSet::new();
+    let mut seen_trades = std::collections::BTreeSet::new();
+    let mut replay = Vec::new();
+    for history in histories {
+        if !seen_orders.insert((history.account_no, history.order_id)) || history.fills.len() > 4096
+        {
+            return Err("recovery_history_duplicate_or_capacity");
+        }
+        let prior = *records
+            .get(&history.order_id)
+            .ok_or("recovery_history_unknown_order")?;
+        if prior.account_no != history.account_no
+            || prior.asset_no != history.asset_no
+            || prior.position_side != 0
+        {
+            return Err("recovery_history_binding_mismatch");
+        }
+        let now = current
+            .recovery_orders
+            .iter()
+            .find(|o| o.account_no == prior.account_no && o.order_id == prior.order_id)
+            .ok_or("recovery_history_order_missing")?;
+        let mut cumulative = 0_i64;
+        let mut consumed_boundary = prior.cumulative_filled_lots == 0;
+        let mut previous_ts = 0_i64;
+        for fill in history.fills.iter() {
+            if fill.trade_id == titan_account_service::Id128::default()
+                || !seen_trades.insert((history.account_no, fill.trade_id.0))
+                || fill.side != prior.side
+                || fill.last_fill_quantity_lots <= 0
+                || fill.price_ticks <= 0
+                || fill.header.exchange_ts <= 0
+                || fill.header.exchange_ts < previous_ts
+            {
+                return Err("recovery_history_execution_invalid");
+            }
+            if fill.cumulative_filled_quantity_lots > prior.cumulative_filled_lots
+                && fill.header.exchange_ts == previous_ts
+            {
+                return Err("recovery_history_execution_sequence_ambiguous");
+            }
+            previous_ts = fill.header.exchange_ts;
+            cumulative = cumulative
+                .checked_add(fill.last_fill_quantity_lots)
+                .ok_or("recovery_history_quantity_overflow")?;
+            if fill.cumulative_filled_quantity_lots != cumulative || cumulative > prior.qty_lots {
+                return Err("recovery_history_cumulative_mismatch");
+            }
+            if cumulative == prior.cumulative_filled_lots {
+                consumed_boundary = true;
+            }
+            if cumulative <= prior.cumulative_filled_lots {
+                continue;
+            }
+            if !consumed_boundary {
+                return Err("recovery_history_consumed_boundary_missing");
+            }
+            if replay.len() >= 4096 {
+                return Err("recovery_history_replay_capacity");
+            }
+            replay.push(TitanFillView {
+                order_id: prior.order_id,
+                account_no: prior.account_no,
+                asset_no: prior.asset_no,
+                fill_price_ticks: fill.price_ticks,
+                fill_qty_lots: fill.last_fill_quantity_lots,
+                cumulative_filled_lots: cumulative,
+                exchange_ts_ns: fill.header.exchange_ts,
+                receive_ts_ns: fill.header.exchange_ts,
+                account_sequence: now.account_sequence,
+                side: fill.side,
+                liquidity: fill.liquidity,
+                final_fill: u8::from(cumulative == prior.qty_lots),
+                reserved: [0; 5],
+            });
+            if fill.realized_pnl_units != 0 {
+                return Err("recovery_history_position_transition_unsupported");
+            }
+        }
+        if !consumed_boundary
+            || cumulative != now.cumulative_filled_lots
+            || cumulative < prior.cumulative_filled_lots
+        {
+            return Err("recovery_history_native_fills_incomplete");
+        }
+        records
+            .get_mut(&prior.order_id)
+            .expect("known order")
+            .cumulative_filled_lots = cumulative;
+    }
+    replay.sort_by_key(|f| {
+        (
+            f.exchange_ts_ns,
+            f.account_no,
+            f.order_id,
+            f.cumulative_filled_lots,
+        )
+    });
+    for pair in replay.windows(2) {
+        if pair[0].exchange_ts_ns == pair[1].exchange_ts_ns
+            && pair[0].account_no == pair[1].account_no
+        {
+            return Err("recovery_history_execution_sequence_ambiguous");
+        }
+    }
+    for fill in &replay {
+        let p = positions
+            .iter_mut()
+            .find(|p| {
+                p.account_no == fill.account_no
+                    && p.asset_no == fill.asset_no
+                    && p.position_side == 0
+            })
+            .ok_or("recovery_history_position_binding_missing")?;
+        let delta = if fill.side == 1 {
+            fill.fill_qty_lots
+        } else {
+            -fill.fill_qty_lots
+        };
+        if p.qty_lots != 0 && p.qty_lots.signum() != delta.signum() {
+            return Err("recovery_history_position_transition_unsupported");
+        }
+        let qty = p
+            .qty_lots
+            .checked_add(delta)
+            .ok_or("recovery_history_quantity_overflow")?;
+        let value = i128::from(p.qty_lots).abs() * i128::from(p.average_price_ticks)
+            + i128::from(fill.fill_qty_lots) * i128::from(fill.fill_price_ticks);
+        let denominator = i128::from(qty).abs();
+        if denominator == 0 || value % denominator != 0 {
+            return Err("recovery_history_average_price_unproven");
+        }
+        p.average_price_ticks =
+            i64::try_from(value / denominator).map_err(|_| "recovery_history_price_overflow")?;
+        p.qty_lots = qty;
+    }
+    let mut effective = baseline.clone();
+    effective.public.positions = positions.into();
+    // This final comparison proves that known executions fully explain the current position;
+    // no synthetic fills are inferred from the position and no persisted baseline is rewritten.
+    reconcile_recovery(&effective, current, records)?;
+    Ok(replay)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn history_fixture() -> (
+        RecoveryBaseline,
+        StrategyPublicStateSeedV13,
+        BTreeMap<u64, StrategyOrderRecordV13>,
+        RecoveryExecutionHistory,
+    ) {
+        let (baseline, mut current, records) = fixture();
+        for orders in [&mut current.active_orders, &mut current.recovery_orders] {
+            Arc::make_mut(orders)[0].cumulative_filled_lots = 1;
+            Arc::make_mut(orders)[0].status = 3;
+        }
+        Arc::make_mut(&mut current.positions)[0].qty_lots = 1;
+        Arc::make_mut(&mut current.positions)[0].average_price_ticks = 100;
+        let history = RecoveryExecutionHistory {
+            account_no: 0,
+            asset_no: 0,
+            order_id: 7,
+            fills: Arc::from([titan_account_service::FillV2 {
+                trade_id: titan_account_service::Id128([1; 16]),
+                header: titan_account_service::AccountEventHeaderV1 {
+                    exchange_ts: 10,
+                    ..Default::default()
+                },
+                side: 1,
+                price_ticks: 100,
+                last_fill_quantity_lots: 1,
+                cumulative_filled_quantity_lots: 1,
+                ..Default::default()
+            }]),
+        };
+        (baseline, current, records, history)
+    }
+    #[test]
+    fn complete_native_history_explains_new_inventory_without_rewriting_baseline() {
+        let (baseline, current, mut records, history) = history_fixture();
+        let bytes = serde_json::to_vec(&baseline).unwrap();
+        let plan = recovery_execution_plan(&baseline, &current, &mut records, &[history]).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].fill_qty_lots, 1);
+        assert_eq!(records[&7].cumulative_filled_lots, 1);
+        assert_eq!(bytes, serde_json::to_vec(&baseline).unwrap());
+    }
+    #[test]
+    fn native_history_is_required_and_cannot_explain_unowned_inventory() {
+        let (baseline, mut current, mut records, history) = history_fixture();
+        assert!(recovery_execution_plan(&baseline, &current, &mut records.clone(), &[]).is_err());
+        Arc::make_mut(&mut current.positions)[0].qty_lots = 2;
+        assert!(recovery_execution_plan(&baseline, &current, &mut records, &[history]).is_err());
+    }
+    #[test]
+    fn native_history_rejects_repeated_trade_ids_and_incomplete_orders() {
+        let (baseline, current, records, mut history) = history_fixture();
+        let fill = history.fills[0];
+        history.fills = Arc::from([fill, fill]);
+        assert!(
+            recovery_execution_plan(
+                &baseline,
+                &current,
+                &mut records.clone(),
+                &[history.clone()]
+            )
+            .is_err()
+        );
+        history.fills = Arc::from([]);
+        assert!(
+            recovery_execution_plan(&baseline, &current, &mut records.clone(), &[history]).is_err()
+        );
+    }
+    #[test]
+    fn native_history_rejects_pending_boundary_changed_identity_and_realized_transitions() {
+        let (mut baseline, mut current, records, mut history) = history_fixture();
+        baseline.pending_execution = true;
+        assert!(
+            recovery_execution_plan(
+                &baseline,
+                &current,
+                &mut records.clone(),
+                &[history.clone()]
+            )
+            .is_err()
+        );
+        baseline.pending_execution = false;
+        Arc::make_mut(&mut current.recovery_orders)[0].price_ticks += 1;
+        assert!(
+            recovery_execution_plan(
+                &baseline,
+                &current,
+                &mut records.clone(),
+                &[history.clone()]
+            )
+            .is_err()
+        );
+        Arc::make_mut(&mut current.recovery_orders)[0].price_ticks -= 1;
+        Arc::make_mut(&mut history.fills)[0].realized_pnl_units = 1;
+        assert!(
+            recovery_execution_plan(&baseline, &current, &mut records.clone(), &[history]).is_err()
+        );
+    }
+    #[test]
+    fn native_history_must_align_with_original_consumed_execution_boundary() {
+        let (mut baseline, mut current, mut records, mut history) = history_fixture();
+        records.get_mut(&7).unwrap().cumulative_filled_lots = 1;
+        Arc::make_mut(&mut baseline.public.positions)[0].qty_lots = 1;
+        Arc::make_mut(&mut baseline.public.positions)[0].average_price_ticks = 100;
+        Arc::make_mut(&mut current.positions)[0].qty_lots = 2;
+        Arc::make_mut(&mut current.recovery_orders)[0].cumulative_filled_lots = 2;
+        Arc::make_mut(&mut current.active_orders)[0].cumulative_filled_lots = 2;
+        let fill = &mut Arc::make_mut(&mut history.fills)[0];
+        fill.last_fill_quantity_lots = 2;
+        fill.cumulative_filled_quantity_lots = 2;
+        assert_eq!(
+            recovery_execution_plan(&baseline, &current, &mut records, &[history]).unwrap_err(),
+            "recovery_history_consumed_boundary_missing"
+        );
+    }
+    #[test]
+    fn native_history_cannot_invent_order_for_equal_timestamps_across_consumed_boundary() {
+        let (mut baseline, mut current, mut records, mut history) = history_fixture();
+        records.get_mut(&7).unwrap().cumulative_filled_lots = 1;
+        Arc::make_mut(&mut baseline.public.positions)[0].qty_lots = 1;
+        Arc::make_mut(&mut baseline.public.positions)[0].average_price_ticks = 100;
+        Arc::make_mut(&mut current.positions)[0].qty_lots = 2;
+        for orders in [&mut current.recovery_orders, &mut current.active_orders] {
+            Arc::make_mut(orders)[0].cumulative_filled_lots = 2;
+        }
+        let first = history.fills[0];
+        let second = titan_account_service::FillV2 {
+            trade_id: titan_account_service::Id128([2; 16]),
+            cumulative_filled_quantity_lots: 2,
+            ..first
+        };
+        history.fills = Arc::from([first, second]);
+        assert_eq!(
+            recovery_execution_plan(&baseline, &current, &mut records, &[history]).unwrap_err(),
+            "recovery_history_execution_sequence_ambiguous"
+        );
+    }
     fn fixture() -> (
         RecoveryBaseline,
         StrategyPublicStateSeedV13,

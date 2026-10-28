@@ -1066,6 +1066,117 @@ fn failed_start_releases_only_with_positive_non_activation_evidence() {
 }
 
 #[test]
+fn catalog_waits_for_generation_but_rejects_invalid_confirmed_storage() {
+    use titan_strategy_runtime::{
+        SqliteRecoveryConfig, SqliteRecoveryStore, StrategyRecoveryStore,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("runtime.db");
+    std::fs::write(&path, []).unwrap();
+    let mut raw: crate::ApplicationConfig = toml::from_str("schema_version=1").unwrap();
+    raw.strategy_service.recovery_storage = Some(SqliteRecoveryConfig::new(path.clone()));
+    assert!(
+        super::control::catalog_recovery(&raw, "unconfirmed")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    assert!(super::control::catalog_recovery(&raw, "1").is_err());
+    let store = SqliteRecoveryStore::open(SqliteRecoveryConfig::new(path)).unwrap();
+    let confirmed = super::control::catalog_recovery(&raw, "1")
+        .unwrap()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    confirmed.close(deadline).unwrap();
+    store.close(deadline).unwrap();
+}
+
+#[test]
+fn late_non_activation_proof_releases_only_its_terminal_fresh_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("db")).unwrap();
+    let start = SubmitOperation {
+        idempotency_key: "late-proof-start".into(),
+        node_id: "live".into(),
+        action: Action::Start {
+            deployment_id: "deployment".into(),
+        },
+    };
+    let op = store
+        .accept("operator", &start, vec![], "hash", Some("binding"))
+        .unwrap();
+    let proof = Resource {
+        id: format!("live-run-{}", op.id),
+        kind: "run".into(),
+        node_id: "live".into(),
+        revision: String::new(),
+        digest: String::new(),
+        frozen: false,
+        body: json!({"run_generation":"unconfirmed","admission_operation_id":op.id,"observation":{"source":"runtime_owner","run_id":op.id,"start_admission_absent":true}}),
+    };
+    let competing = SubmitOperation {
+        idempotency_key: "competing".into(),
+        ..start
+    };
+    // A nonterminal receipt, a missing proof, or the wrong owner cannot free it.
+    store.save_resource(proof.clone(), None).unwrap();
+    assert!(
+        store
+            .accept("operator", &competing, vec![], "next", Some("binding"))
+            .is_err()
+    );
+    store
+        .update_operation(&Receipt {
+            operation_id: op.id.clone(),
+            input_digest: op.input_digest,
+            state: OperationState::Failed,
+            result: None,
+            error: Some("catalog initialization race".into()),
+        })
+        .unwrap();
+    for field in ["source", "run_id"] {
+        let mut wrong = proof.clone();
+        wrong.body["observation"][field] = "wrong".into();
+        store.save_resource(wrong, None).unwrap();
+        assert!(
+            store
+                .accept("operator", &competing, vec![], "next", Some("binding"))
+                .is_err()
+        );
+    }
+    let mut wrong_node = proof.clone();
+    wrong_node.node_id = "other".into();
+    store.save_resource(wrong_node, None).unwrap();
+    assert!(
+        store
+            .accept("operator", &competing, vec![], "next", Some("binding"))
+            .is_err()
+    );
+    store.save_resource(proof.clone(), None).unwrap();
+    let next = store
+        .accept("operator", &competing, vec![], "next", Some("binding"))
+        .unwrap();
+    assert_eq!(
+        store.operation(&op.id).unwrap().state,
+        OperationState::Failed
+    );
+    store.save_resource(proof, None).unwrap();
+    let third = SubmitOperation {
+        idempotency_key: "third".into(),
+        ..competing
+    };
+    assert!(
+        store
+            .accept("operator", &third, vec![], "third", Some("binding"))
+            .is_err()
+    );
+    assert_eq!(
+        store.operation(&next.id).unwrap().state,
+        OperationState::Pending
+    );
+}
+
+#[test]
 fn imported_artifact_download_uses_existing_resource_authorization() {
     use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
     let tmp = tempfile::tempdir().unwrap();

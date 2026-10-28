@@ -13,9 +13,13 @@ const kind = ref("equity_sample"),
   currency = ref("");
 const { items, provenance, pending, error, load } = useFactHistory(
   toRef(props, "item"),
-  kind
+  kind,
+  undefined,
+  true
 );
-const samples = computed(() => items.value.map(row => object(row.body ?? row)));
+const samples = computed(() =>
+  items.value.map(row => object(row.fact?.payload ?? row.body ?? row))
+);
 const currencies = computed(() => [
   ...new Set(
     samples.value.flatMap(s => rows(s.equity).map(e => String(e.currency)))

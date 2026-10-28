@@ -223,7 +223,7 @@ async fn session(
             .accounts
             .iter()
             .any(|s| s.contains("_MARGIN_"));
-        let mut private_channels = vec!["order", "position", "asset"];
+        let mut private_channels = vec!["order", "position", "asset", "usertrades"];
         if margin {
             private_channels.extend(["margin_position", "margin_interest"]);
         }
@@ -623,7 +623,10 @@ pub(super) fn private_frame(
         return Ok(());
     };
     let channel = frame["channel"].as_str().unwrap_or("");
-    if !matches!(channel, "order" | "position" | "margin_position") || value.get("symbol").is_none()
+    if !matches!(
+        channel,
+        "order" | "position" | "margin_position" | "usertrades"
+    ) || value.get("symbol").is_none()
     {
         return Ok(());
     }
@@ -645,7 +648,25 @@ pub(super) fn private_frame(
     {
         return Ok(());
     }
-    if matches!(channel, "position" | "margin_position") {
+    if channel == "usertrades" {
+        tx.send_account(AccountPublication::NativeFill {
+            position_side: position_side(&value["position_side"])?,
+            fill: Fill {
+                symbol,
+                trade_id: text(value, "transaction_id")?,
+                order_id: text(value, "order_id")?,
+                client_order_id: text(value, "text")?,
+                price: number(value, "price")?,
+                qty: number(value, "qty")?,
+                side: ApiSide::from_venue_str(&text(value, "side")?),
+                fee: number(value, "fee")?,
+                fee_asset: text(value, "fee_coin")?,
+                realized_pnl: number(value, "rpnl")?,
+                maker: value["match_role"] == "MAKER",
+                timestamp: integer(value, "create_time")?,
+            },
+        });
+    } else if matches!(channel, "position" | "margin_position") {
         let side = position_side(&value["position_side"])?;
         let qty = if channel == "margin_position" {
             number(
@@ -713,13 +734,14 @@ pub(super) fn private_frame(
             if info.status == ApiOrderStatus::Rejected {
                 tracing::warn!(order_id=%info.order_id,reason=%value["reason"],"CrossEx order rejected");
             }
-            tx.send_account(AccountPublication::OrderWithExecution {
+            tx.send_account(AccountPublication::OrderWithNativeFills {
                 symbol,
                 position_side: info.position_side,
                 client_order_id: Some(info.client_order_id),
                 venue_order_id: Some(info.order_id),
                 order,
                 average_price: info.avg_price,
+                reduce_only: info.reduce_only,
             });
         }
     }

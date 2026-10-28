@@ -173,6 +173,7 @@ struct Replay {
     stopped_ns: Option<i64>,
     business_stopped_ns: Option<i64>,
     callbacks: u64,
+    recorder: Option<titan_persistence::RunRecorder>,
 }
 
 impl Replay {
@@ -281,6 +282,7 @@ impl Replay {
             stopped_ns: None,
             business_stopped_ns: None,
             callbacks: 0,
+            recorder: None,
         })
     }
     fn int(&self, name: &str) -> i64 {
@@ -368,6 +370,22 @@ impl Replay {
             self.int("grid.last_error")
         );
         for command in commands {
+            if let Some(recorder) = &mut self.recorder {
+                let body = match &command {
+                    StagedCommandV13::Submit { order_id, request } => {
+                        json!({"kind":"submit","order_id":order_id.to_string(),"request":request})
+                    }
+                    StagedCommandV13::Cancel {
+                        command_id,
+                        request,
+                    } => {
+                        json!({"kind":"cancel","command_id":command_id.to_string(),"request":request})
+                    }
+                };
+                recorder
+                    .record("command", self.now, body)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            }
             match command {
                 StagedCommandV13::Submit { order_id, request } => {
                     ensure!(
@@ -422,7 +440,20 @@ impl Replay {
         }
         Ok(())
     }
-    fn report(&mut self, report: ExecutionReport) {
+    fn report(&mut self, report: ExecutionReport) -> Result<()> {
+        if let Some(recorder) = &mut self.recorder {
+            recorder
+                .record(
+                    if report.kind == ExecutionReportKind::Fill {
+                        "fill"
+                    } else {
+                        "order"
+                    },
+                    report.exchange_ts,
+                    hftbacktest::backtest::result::execution_fact(&report),
+                )
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
         self.version += 1;
         let position = (report.kind == ExecutionReportKind::Fill).then(|| {
             let position = self.exchange.account().position(INSTRUMENT);
@@ -438,6 +469,7 @@ impl Replay {
             self.now + self.model.latency,
             Due::Report(report, self.version, position),
         );
+        Ok(())
     }
     fn spec(&self) -> InstrumentSpec {
         InstrumentSpec {
@@ -505,7 +537,7 @@ impl Replay {
         if report.status == Status::Filled {
             self.exchange_orders.remove(&order_id);
         }
-        self.report(report);
+        self.report(report)?;
         self.measure(false)?;
         Ok(())
     }
@@ -577,14 +609,14 @@ impl Replay {
                         reason,
                     )?;
                     self.metrics.rejects += 1;
-                    self.report(report);
+                    self.report(report)?;
                     return Ok(());
                 }
                 self.exchange_orders.insert(order_id, request);
                 let accepted =
                     self.coordinator
                         .accept(order_id, self.now, self.now + self.model.latency)?;
-                self.report(accepted);
+                self.report(accepted)?;
                 if request.time_in_force == 2 {
                     let price = if request.side == 1 {
                         self.market.best_ask_ticks + self.model.ioc_impact_ticks
@@ -616,7 +648,7 @@ impl Replay {
                             self.now,
                             self.now + self.model.latency,
                         )?;
-                        self.report(report);
+                        self.report(report)?;
                     }
                 }
             }
@@ -628,7 +660,7 @@ impl Replay {
                         self.now,
                         self.now + self.model.latency,
                     )?;
-                    self.report(report);
+                    self.report(report)?;
                 } else {
                     self.metrics.cancel_lost_race += 1;
                     self.schedule(
@@ -855,6 +887,9 @@ impl Replay {
                     ..AccountDelta::zero(INSTRUMENT, CURRENCY)
                 };
                 self.exchange.account_mut().apply(delta)?;
+                if let Some(recorder) = &mut self.recorder {
+                    recorder.record("funding",self.now,json!({"currency":CURRENCY.0,"instrument_id":INSTRUMENT.0,"amount":payment,"rate":rate,"valuation":"full_resolution_bbo_mid"})).map_err(|e|anyhow::anyhow!(e.to_string()))?;
+                }
                 self.schedule(self.now + self.model.latency, Due::Funding(delta));
                 self.measure(true)?;
             }
@@ -898,6 +933,9 @@ impl Replay {
             "maintenance margin breached; no fabricated liquidation fills"
         );
         if force || self.now - self.last_sample >= 60 * SECOND {
+            if let Some(recorder) = &mut self.recorder {
+                recorder.record("equity_sample",self.now,json!({"currency":"USDT","equity":equity,"position_lots":pos.to_string(),"actual_notional":notional,"pending_bound_notional":bound,"sampled":true})).map_err(|e|anyhow::anyhow!(e.to_string()))?;
+            }
             writeln!(
                 self.equity,
                 "{},{:.2},{:.8},{:.3},{:.8},{:.8}",
@@ -912,29 +950,30 @@ impl Replay {
         }
         Ok(())
     }
-    fn replay(&mut self, events: &[MarketEvent]) -> Result<()> {
-        ensure!(!events.is_empty(), "empty history");
-        self.now = events[0].ts;
+    fn replay(&mut self, path: &Path, first: i64, end: i64) -> Result<()> {
+        self.now = first;
         self.next_timer = self.now + 100 * MS;
         self.adapter.start(self.now)?;
-        let end = events.last().unwrap().ts;
         let stop_at = end / (86_400 * SECOND) * (86_400 * SECOND) + (86_400 - 30) * SECOND;
-        let mut index = 0;
-        while index < events.len() {
-            let ts = events[index].ts;
-            self.advance(ts, false)?;
-            if !self.stop_started && ts >= stop_at {
-                self.stop_started = true;
-                self.project();
-                let commands = self.adapter.stop(self.now)?;
-                self.commands(commands, "stop")?;
+        let mut previous = None;
+        data::scan(path, |event| {
+            let ts = event.ts;
+            if previous != Some(ts) {
+                if let Some(previous) = previous {
+                    self.advance(previous, true)?;
+                }
+                self.advance(ts, false)?;
+                if !self.stop_started && ts >= stop_at {
+                    self.stop_started = true;
+                    self.project();
+                    let commands = self.adapter.stop(self.now)?;
+                    self.commands(commands, "stop")?;
+                }
             }
-            while index < events.len() && events[index].ts == ts {
-                self.market_event(events[index])?;
-                index += 1;
-            }
-            self.advance(ts, true)?;
-        }
+            self.market_event(event)?;
+            previous = Some(ts);
+            Ok(())
+        })?;
         self.advance(end, true)?;
         self.measure(true)?;
         ensure!(
@@ -1015,6 +1054,7 @@ pub fn run(
     data_path: &Path,
     output: &Path,
     stress: bool,
+    run_id: Option<&str>,
 ) -> Result<Value> {
     fs::create_dir_all(output)?;
     let loader =
@@ -1025,13 +1065,57 @@ pub fn run(
         "this verification runner is for the grid compiled_strategy"
     );
     let layout = Layout::new(layout_path, &compiled_strategy)?;
-    let events = data::read(data_path)?;
+    let mut first = None;
+    let mut end = 0;
+    let count = data::scan(data_path, |e| {
+        first.get_or_insert(e.ts);
+        end = e.ts;
+        Ok(())
+    })?;
+    ensure!(count > 0, "empty history");
     let mut replay = Replay::new(compiled_strategy, layout, output, Model::new(stress))?;
+    use sha2::{Digest, Sha256};
+    let identity = run_id.map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "history-{:x}",
+            Sha256::digest(output.to_string_lossy().as_bytes())
+        )
+    });
+    let mut scope = titan_persistence::FactScope::account(
+        titan_persistence::FactEnvironment::Backtest,
+        "simulation",
+    );
+    scope.strategy_id = Some("grid".into());
+    scope.run_id = Some(identity.clone());
+    scope.run_generation = Some("1".into());
+    let mut source = File::open(data_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 65536];
+    use std::io::Read;
+    loop {
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    let input_hash = format!("{:x}", hasher.finalize());
+    let metadata = json!({"input_sha256":input_hash,"compiled_strategy_digest":hex(&replay.compiled_strategy.manifest.compiled_strategy_digest),"state_schema_hash":hex(&replay.compiled_strategy.manifest.state.hash),"engine_version":env!("CARGO_PKG_VERSION"),"audit":"full","market_recording":"input_manifest_only","tick_usdt":TICK,"lot_btc":LOT,"balance_unit_usdt":MONEY,"model":replay.result(None,data_path)["model"]});
+    replay.recorder = Some(
+        titan_persistence::RunRecorder::open(output, scope, identity, metadata)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+    );
     let error = replay
-        .replay(&events)
+        .replay(data_path, first.unwrap(), end)
         .err()
         .map(|error| format!("{error:#}"));
-    let result = replay.result(error, data_path);
+    let mut result = replay.result(error, data_path);
+    if let Some(recorder) = replay.recorder.take() {
+        recorder
+            .finish(replay.now, result.clone())
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    }
+    result["persistence"] = json!({"status":"COMMITTED","audit":"full","history":"history.db","archive":"facts.parquet","schema_version":1});
     replay.fills.flush()?;
     replay.equity.flush()?;
     fs::write(

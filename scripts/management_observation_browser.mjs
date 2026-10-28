@@ -42,7 +42,7 @@ try {
   await page.locator(".fact-history .el-select").click();
   await page.getByRole("option", { name: "订单", exact: true }).click();
   await expect(page.locator(".workbench-content")).toContainText(
-    '"scope": "account"',
+    '"environment": "live"',
   );
   await page.getByRole("button", { name: "风险概览", exact: true }).click();
   await page.mouse.move(500, 100);
@@ -124,11 +124,10 @@ try {
   await page.getByRole("option", { name: "订单", exact: true }).click();
   await page.locator(".fact-entry").first().waitFor();
   await page.route(
-    "**/api/v2/resources/observe-run-fixture/history*",
+    "**/api/v2/resources/observe-run-fixture/facts*",
     async (route) => {
-      const offset = Number(
-        new URL(route.request().url()).searchParams.get("offset") || "0",
-      );
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      const offset = cursor ? Number(JSON.parse(cursor).after_row) : 0;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -139,6 +138,8 @@ try {
           })),
           source: { synthetic: true },
           recording: { history_complete: false },
+          next_cursor: { after_row: String(offset + 20), upper_row: "100" },
+          upper_row: "100",
         }),
       });
     },
@@ -162,7 +163,7 @@ try {
   await expect(page.locator(".fact-history .table-footer")).toContainText(
     "偏移 20",
   );
-  await page.unroute("**/api/v2/resources/observe-run-fixture/history*");
+  await page.unroute("**/api/v2/resources/observe-run-fixture/facts*");
   await page.getByRole("button", { name: "参数与版本", exact: true }).click();
   await page.getByText("参数、策略版本与恢复来源", { exact: true }).waitFor();
   await page.getByRole("button", { name: "运行概览", exact: true }).click();
@@ -219,7 +220,7 @@ try {
     historyEntered = resolve;
   });
   await page.route(
-    "**/api/v2/resources/observe-run-fixture/history*",
+    "**/api/v2/resources/observe-run-fixture/facts*",
     async (route) => {
       if (new URL(route.request().url()).searchParams.get("kind") !== "stream")
         return route.continue();
@@ -243,7 +244,7 @@ try {
   await page.goto(origin + "/#/runs/does-not-exist");
   const released = page.waitForResponse(
     (response) =>
-      response.url().includes("observe-run-fixture/history") &&
+      response.url().includes("observe-run-fixture/facts") &&
       response.url().includes("kind=stream"),
   );
   releaseHistory();

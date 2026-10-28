@@ -417,6 +417,23 @@ where
                         }
                     }
                 });
+            } else if key.ends_with(".parquet") {
+                let tx = self.tx.clone();
+                let filepath = key.to_owned();
+                let preprocessor = self.preprocessor.clone();
+                let _ = thread::spawn(move || {
+                    let data = D::read_parquet(&filepath).and_then(|mut data| {
+                        if let Some(p) = preprocessor {
+                            p.preprocess(&mut data)?;
+                        }
+                        Ok(data)
+                    });
+                    let result = match data {
+                        Ok(data) => LoadDataResult::ok(filepath, data),
+                        Err(error) => LoadDataResult::err(filepath, error),
+                    };
+                    let _ = tx.send(result);
+                });
             } else if key.ends_with(".npz") {
                 let tx = self.tx.clone();
                 let filepath = key.to_string();

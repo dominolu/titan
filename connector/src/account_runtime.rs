@@ -15,6 +15,7 @@ use std::{
 };
 
 use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
+use sha2::{Digest, Sha256};
 use titan_account_service as account;
 use titan_account_service::SecretValue;
 use titan_core_types::{ClosureResource, TraceContext};
@@ -248,7 +249,6 @@ async fn execute_shutdown_policy(
 struct IdInterner {
     by_text: HashMap<String, account::Id128>,
     by_id: HashMap<account::Id128, String>,
-    next: u128,
     next_prune: usize,
 }
 impl IdInterner {
@@ -265,8 +265,11 @@ impl IdInterner {
             out[1..1 + bytes.len()].copy_from_slice(bytes);
             account::Id128(out)
         } else {
-            self.next = self.next.saturating_add(1);
-            account::Id128((u128::MAX - (self.next - 1)).to_le_bytes())
+            // Long venue IDs must survive a different arrival order and process restart.
+            let mut hash = Sha256::new();
+            hash.update(b"titan/native-account-id/v1\0");
+            hash.update(text.as_bytes());
+            account::Id128(hash.finalize()[..16].try_into().expect("SHA256 prefix"))
         };
         self.by_text.insert(text.to_owned(), id);
         self.by_id.insert(id, text.to_owned());
@@ -399,6 +402,153 @@ fn close_weak(weak: &Weak<AccountRuntime>) -> Result<(), titan_core_types::CoreE
 }
 
 impl account::AccountConnector for AccountRuntime {
+    fn execution_evidence(
+        &self,
+        asset: account::AssetId,
+        client: account::Id128,
+    ) -> account::OrderExecutionEvidenceFuture {
+        if !self.api.supports_order_execution_evidence() {
+            return Box::pin(async { Ok(None) });
+        }
+        let api = self.api.clone();
+        let context = self.context.clone();
+        let ids = self.ids.clone();
+        let encoder = self
+            .encoder
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let guard = SubmitSession {
+            ready: self.ready.clone(),
+            active: self.active.clone(),
+            committed: self.committed.clone(),
+            fence: self.readiness_fence.clone(),
+            epoch: self.epoch.clone(),
+            publisher: self.context.event_publisher.clone(),
+        }
+        .capture();
+        Box::pin(async move {
+            guard().map_err(|e| rejected(e.to_string()))?;
+            let encoder =
+                encoder.ok_or_else(|| rejected("execution evidence encoder unavailable"))?;
+            let binding = context
+                .instruments
+                .iter()
+                .find(|b| b.asset_id == asset)
+                .ok_or_else(|| rejected("execution evidence asset not bound"))?;
+            let text = resolve_id(&ids, client);
+            let before = api
+                .get_order(&binding.native_symbol, None, Some(&text))
+                .await
+                .map_err(|e| rejected(e.to_string()))?;
+            if before.position_side != ApiPositionSide::Net {
+                return Err(rejected(
+                    "execution history recovery requires net position mode",
+                ));
+            }
+            // An exact-capacity response is ambiguous (the upstream adapter may have truncated).
+            let rows = if before.executed_qty == 0.0 {
+                Vec::new()
+            } else {
+                api.get_fills(&binding.native_symbol, 4096)
+                    .await
+                    .map_err(|e| rejected(e.to_string()))?
+            };
+            if rows.len() >= 4096 {
+                return Err(rejected("execution evidence scan capacity exceeded"));
+            }
+            let after = api
+                .get_order(&binding.native_symbol, None, Some(&text))
+                .await
+                .map_err(|e| rejected(e.to_string()))?;
+            guard().map_err(|e| rejected(e.to_string()))?;
+            let order = order_snapshot(&before, binding, &ids)?;
+            if order != order_snapshot(&after, binding, &ids)?
+                || before.update_time != after.update_time
+                || order.client_order_id != client
+                || before.symbol != binding.native_symbol.as_ref()
+            {
+                return Err(rejected("execution evidence order changed during scan"));
+            }
+            let mut unique = std::collections::BTreeMap::new();
+            for fill in rows {
+                if fill.order_id != before.order_id && fill.client_order_id != text {
+                    continue;
+                }
+                if fill.order_id != before.order_id
+                    || fill.client_order_id != text
+                    || fill.symbol != before.symbol
+                    || fill.side != before.side
+                    || fill.trade_id.is_empty()
+                    || fill.timestamp <= 0
+                {
+                    return Err(rejected("execution evidence native identity mismatch"));
+                }
+                if let Some(prior) = unique.insert(fill.trade_id.clone(), fill.clone())
+                    && prior != fill
+                {
+                    return Err(rejected("execution evidence trade identity conflict"));
+                }
+            }
+            let mut rows: Vec<_> = unique.into_values().collect();
+            rows.sort_by(|a, b| (a.timestamp, &a.trade_id).cmp(&(b.timestamp, &b.trade_id)));
+            let mut cumulative = 0_i64;
+            let mut fills = Vec::new();
+            for fill in &rows {
+                let currency = context
+                    .currencies
+                    .iter()
+                    .find(|c| c.native_currency.as_ref() == fill.fee_asset)
+                    .ok_or_else(|| rejected("execution evidence fee currency not bound"))?;
+                let qty = to_units(fill.qty, binding.quantity_lot)?;
+                if qty <= 0 || fill.price <= 0.0 {
+                    return Err(rejected("execution evidence invalid quantity or price"));
+                }
+                cumulative = cumulative
+                    .checked_add(qty)
+                    .ok_or_else(|| rejected("execution evidence quantity overflow"))?;
+                let mut ids = ids.lock().unwrap_or_else(|p| p.into_inner());
+                fills.push(account::FillV2 {
+                    header: account::AccountEventHeaderV1 {
+                        exchange_ts: fill
+                            .timestamp
+                            .checked_mul(1_000_000)
+                            .ok_or_else(|| rejected("execution evidence timestamp overflow"))?,
+                        ..Default::default()
+                    },
+                    asset_id: asset.0,
+                    side: order.side,
+                    liquidity: u8::from(fill.maker),
+                    price_ticks: to_observation_units(fill.price, binding.price_tick)?,
+                    last_fill_quantity_lots: qty,
+                    cumulative_filled_quantity_lots: cumulative,
+                    fee_amount_units: to_observation_units(fill.fee, currency.amount_unit)?,
+                    fee_currency_id: currency.currency_id.0,
+                    realized_pnl_units: to_observation_units(
+                        fill.realized_pnl,
+                        currency.amount_unit,
+                    )?,
+                    trade_id: ids.intern(&fill.trade_id),
+                    venue_order_id: ids.intern(&fill.order_id),
+                    client_order_id: client,
+                    ..Default::default()
+                });
+            }
+            if cumulative != order.filled_quantity_lots {
+                return Err(rejected("execution evidence native fills incomplete"));
+            }
+            // Reuse the normal native identity/fee journal, never a parallel backfill ledger.
+            for fill in rows {
+                guard().map_err(|e| rejected(e.to_string()))?;
+                encoder.publish(&AccountPublication::NativeFill {
+                    position_side: ApiPositionSide::Net,
+                    fill,
+                })?;
+            }
+            guard().map_err(|e| rejected(e.to_string()))?;
+            Ok(Some(account::OrderExecutionEvidence { order, fills }))
+        })
+    }
     fn ledger_page(
         &self,
         from_ms: i64,
@@ -1385,6 +1535,7 @@ impl AccountEventEncoder {
         snapshot: AccountBootstrapSnapshot,
     ) -> Result<(), account::AccountConnectorError> {
         let mut image = AccountProjection::default();
+        image.inherit_native_executions(&self.projection.lock().unwrap_or_else(|p| p.into_inner()));
         image.epoch = self.epoch.load(Ordering::Acquire);
         for (value, ts) in snapshot.orders {
             let event = order_event(
@@ -1397,6 +1548,7 @@ impl AccountEventEncoder {
             );
             self.emit(&event)?;
             image.order(&event);
+            image.seed_native_order(&event);
         }
         for (value, ts) in snapshot.positions {
             let event = position_event(
@@ -1520,6 +1672,14 @@ impl AccountEventEncoder {
                 venue_order_id,
                 order,
                 ..
+            }
+            | AccountPublication::OrderWithNativeFills {
+                position_side,
+                symbol,
+                client_order_id,
+                venue_order_id,
+                order,
+                ..
             } => {
                 let binding = self
                     .context
@@ -1557,7 +1717,9 @@ impl AccountEventEncoder {
                     return Ok(());
                 }
                 let publish_fill =
-                    order.exec_qty > 0.0 && cumulative_filled_quantity_lots > previous;
+                    !matches!(event, AccountPublication::OrderWithNativeFills { .. })
+                        && order.exec_qty > 0.0
+                        && cumulative_filled_quantity_lots > previous;
                 if publish_fill
                     && to_units(order.exec_qty, binding.quantity_lot)?
                         != cumulative_filled_quantity_lots - previous
@@ -1579,6 +1741,12 @@ impl AccountEventEncoder {
                         )?) | if account::is_hedge_close(
                             account_position_side(*position_side)?,
                             if order.side == Side::Buy { 1 } else { -1 },
+                        ) || matches!(
+                            event,
+                            AccountPublication::OrderWithNativeFills {
+                                reduce_only: true,
+                                ..
+                            }
                         ) {
                             account::event_flags::REDUCE_ONLY
                         } else {
@@ -1595,7 +1763,8 @@ impl AccountEventEncoder {
                     quantity_lots: to_units(order.qty, binding.quantity_lot)?,
                     filled_quantity_lots: cumulative_filled_quantity_lots,
                     average_price_ticks: match event {
-                        AccountPublication::OrderWithExecution { average_price, .. } => {
+                        AccountPublication::OrderWithExecution { average_price, .. }
+                        | AccountPublication::OrderWithNativeFills { average_price, .. } => {
                             to_observation_units(*average_price, binding.price_tick)?
                         }
                         _ => order.exec_price_tick,
@@ -1637,6 +1806,103 @@ impl AccountEventEncoder {
                         "Account fill event published."
                     );
                 }
+                Ok(())
+            }
+            AccountPublication::NativeFill {
+                position_side,
+                fill,
+            } => {
+                let binding = self
+                    .context
+                    .instruments
+                    .iter()
+                    .find(|b| b.native_symbol.as_ref() == fill.symbol.as_str())
+                    .ok_or_else(|| rejected("unbound native execution symbol"))?;
+                let currency = self
+                    .context
+                    .currencies
+                    .iter()
+                    .find(|c| c.native_currency.as_ref() == fill.fee_asset.as_str())
+                    .ok_or_else(|| rejected("unbound native execution fee currency"))?;
+                if fill.trade_id.is_empty()
+                    || fill.order_id.is_empty()
+                    || fill.qty <= 0.0
+                    || fill.price <= 0.0
+                    || !matches!(fill.side, ApiSide::Buy | ApiSide::Sell)
+                {
+                    return Err(rejected("invalid native execution identity or quantity"));
+                }
+                let (trade_id, venue_order_id, client_order_id) = {
+                    let mut ids = self.ids.lock().unwrap_or_else(|p| p.into_inner());
+                    (
+                        ids.intern(&fill.trade_id),
+                        ids.intern(&fill.order_id),
+                        if fill.client_order_id.is_empty() {
+                            account::Id128::default()
+                        } else {
+                            ids.intern(&fill.client_order_id)
+                        },
+                    )
+                };
+                let quantity = to_units(fill.qty, binding.quantity_lot)?;
+                if quantity <= 0 {
+                    return Err(rejected("invalid native execution quantity"));
+                }
+                let timestamp = fill
+                    .timestamp
+                    .checked_mul(1_000_000)
+                    .ok_or_else(|| rejected("native execution timestamp overflow"))?;
+                let price_ticks = to_observation_units(fill.price, binding.price_tick)?;
+                let fee_amount_units = to_observation_units(fill.fee, currency.amount_unit)?;
+                let realized_pnl_units =
+                    to_observation_units(fill.realized_pnl, currency.amount_unit)?;
+                let fingerprint =
+                    serde_json::to_vec(&(fill, account_position_side(*position_side)?))
+                        .map_err(|e| rejected(e.to_string()))?;
+                let cumulative = self
+                    .projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .native_execution(
+                        binding.asset_id.0,
+                        trade_id,
+                        venue_order_id,
+                        fingerprint,
+                        quantity,
+                        timestamp,
+                    )
+                    .map_err(rejected)?;
+                let Some(cumulative_filled_quantity_lots) = cumulative else {
+                    return Ok(());
+                };
+                let event = account::FillV2 {
+                    header: self.header(
+                        account::event_kind::FILL,
+                        account::event_flags::UPSERT
+                            | account::event_flags::position_flags(account_position_side(
+                                *position_side,
+                            )?),
+                        timestamp,
+                    ),
+                    asset_id: binding.asset_id.0,
+                    side: if fill.side == ApiSide::Buy { 1 } else { 2 },
+                    liquidity: u8::from(fill.maker),
+                    price_ticks,
+                    last_fill_quantity_lots: quantity,
+                    cumulative_filled_quantity_lots,
+                    trade_id,
+                    venue_order_id,
+                    client_order_id,
+                    fee_amount_units,
+                    fee_currency_id: currency.currency_id.0,
+                    realized_pnl_units,
+                    ..Default::default()
+                };
+                self.emit(&event)?;
+                self.projection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .commit(event.header);
                 Ok(())
             }
             AccountPublication::Position {
@@ -3227,5 +3493,88 @@ mod tests {
         let position = account::PositionChangedV1::decode(&events.last().unwrap().1).unwrap();
         assert_eq!(position.margin_currency_id, 10);
         assert_eq!(position.unrealized_pnl_units, 30);
+        drop(events);
+        sink.events.lock().unwrap().clear();
+        let mut native_order = Order::new(
+            2,
+            1000,
+            0.1,
+            0.02,
+            Side::Sell,
+            OrdType::Limit,
+            TimeInForce::IOC,
+        );
+        native_order.status = Status::Filled;
+        native_order.leaves_qty = 0.0;
+        native_order.exec_qty = 0.02;
+        native_order.exec_price_tick = 1000;
+        native_order.exch_timestamp = 2_000_000;
+        encoder
+            .publish(&AccountPublication::OrderWithNativeFills {
+                position_side: ApiPositionSide::Net,
+                symbol: "BTCUSDC".into(),
+                client_order_id: Some("native-client".into()),
+                venue_order_id: Some("2072784922592768".into()),
+                order: native_order,
+                average_price: 100.0,
+                reduce_only: true,
+            })
+            .unwrap();
+        let mut native = crate::api::Fill {
+            symbol: "BTCUSDC".into(),
+            trade_id: "2072784922594048".into(),
+            order_id: "2072784922592768".into(),
+            client_order_id: "native-client".into(),
+            price: 100.0,
+            qty: 0.01,
+            side: ApiSide::Sell,
+            fee: 0.003,
+            fee_asset: "USDC".into(),
+            realized_pnl: 0.002,
+            maker: false,
+            timestamp: 1,
+        };
+        let publish = |fill: crate::api::Fill| {
+            encoder.publish(&AccountPublication::NativeFill {
+                position_side: ApiPositionSide::Net,
+                fill,
+            })
+        };
+        publish(native.clone()).unwrap();
+        publish(native.clone()).unwrap();
+        let mut conflict = native.clone();
+        conflict.fee = 0.004;
+        assert!(publish(conflict).is_err());
+        native.trade_id = "2072784922594049".into();
+        native.timestamp = 2;
+        publish(native).unwrap();
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 3); // one order, exactly two native executions
+        let order = account::OrderChangedV1::decode(&events[0].1).unwrap();
+        assert_ne!(order.header.flags & account::event_flags::REDUCE_ONLY, 0);
+        let first = account::FillV2::decode(&events[1].1).unwrap();
+        let second = account::FillV2::decode(&events[2].1).unwrap();
+        assert_eq!(
+            (
+                first.fee_currency_id,
+                first.fee_amount_units,
+                first.realized_pnl_units
+            ),
+            (10, 3, 2)
+        );
+        assert_eq!(
+            (
+                first.last_fill_quantity_lots,
+                first.cumulative_filled_quantity_lots,
+                second.cumulative_filled_quantity_lots
+            ),
+            (1, 1, 2)
+        );
+        assert_ne!(first.trade_id, account::Id128::default());
+        assert_eq!(first.venue_order_id, order.venue_order_id);
+        let mut independent = IdInterner::default();
+        independent.intern("a-different-long-first-arrival");
+        assert_eq!(independent.intern("2072784922594048"), first.trade_id);
+        assert_eq!(independent.intern("2072784922592768"), first.venue_order_id);
     }
 }

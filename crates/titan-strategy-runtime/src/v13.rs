@@ -418,6 +418,7 @@ pub struct CallbackCommandStagingV13 {
     next_command_id: u64,
     gate_open: bool,
     reducing_only: bool,
+    attempted: bool,
     active_orders_ptr: *const TitanActiveOrderView,
     active_orders_len: usize,
 }
@@ -452,6 +453,7 @@ impl CallbackCommandStagingV13 {
             next_command_id: generation_prefix | 1,
             gate_open: false,
             reducing_only: false,
+            attempted: false,
             active_orders_ptr: std::ptr::null(),
             active_orders_len: 0,
         })
@@ -461,6 +463,7 @@ impl CallbackCommandStagingV13 {
         self.commands.clear();
         self.gate_open = gate_open;
         self.reducing_only = false;
+        self.attempted = false;
         self.active_orders_ptr = active_orders.as_ptr();
         self.active_orders_len = active_orders.len();
     }
@@ -484,6 +487,9 @@ impl CallbackCommandStagingV13 {
     pub fn clear_committed(&mut self) {
         self.commands.clear();
     }
+    pub(crate) fn attempted_command(&self) -> bool {
+        self.attempted
+    }
 
     fn active_orders(&self) -> &[TitanActiveOrderView] {
         if self.active_orders_ptr.is_null() {
@@ -503,6 +509,7 @@ unsafe extern "C" fn stage_submit_order_v13(
         return -1;
     }
     let staging = unsafe { &mut *context.cast::<CallbackCommandStagingV13>() };
+    staging.attempted = true;
     let mut request = unsafe { *request };
     if !staging.gate_open
         || staging.commands.len() >= staging.capacity
@@ -554,6 +561,7 @@ unsafe extern "C" fn stage_cancel_order_v13(
         return -1;
     }
     let staging = unsafe { &mut *context.cast::<CallbackCommandStagingV13>() };
+    staging.attempted = true;
     let request = unsafe { *request };
     if !staging.gate_open || staging.commands.len() >= staging.capacity {
         return -2;
@@ -940,6 +948,14 @@ impl StrategyInstanceV13 {
                 "callback is not allowed in the current lifecycle state",
             ));
         }
+        self.invoke_callback(event, context)
+    }
+
+    fn invoke_callback(
+        &mut self,
+        event: V13EventKind,
+        context: &mut StrategyRuntimeContextV13,
+    ) -> Result<(), V13LoadError> {
         context.struct_size = std::mem::size_of::<StrategyRuntimeContextV13>() as u32;
         context.abi_version = STRATEGY_ABI_V13;
         context.strategy_instance_id = self.strategy_instance_id;
@@ -955,6 +971,28 @@ impl StrategyInstanceV13 {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(crate) fn replay_fill(
+        &mut self,
+        staging: &mut CallbackCommandStagingV13,
+        context: &mut StrategyRuntimeContextV13,
+    ) -> Result<(), V13LoadError> {
+        if self.lifecycle != StrategyInstanceLifecycleV13::Restoring || self.command_gate_open {
+            return Err(V13LoadError::Contract(
+                "execution replay requires a closed restoring instance",
+            ));
+        }
+        staging.begin_callback(false, &[]);
+        staging.bind_context(context);
+        let result = self.invoke_callback(V13EventKind::Fill, context);
+        staging.finish_callback(-1);
+        if staging.attempted {
+            return Err(V13LoadError::Contract(
+                "execution replay attempted a command",
+            ));
+        }
+        result
     }
 
     pub fn start(&mut self) -> Result<(), V13LoadError> {
@@ -1214,7 +1252,7 @@ fn resolved_route_digest(
     digest.finalize().into()
 }
 
-fn snapshot_checksum(snapshot: &StrategyStateSnapshotV13) -> [u8; 32] {
+pub(crate) fn snapshot_checksum(snapshot: &StrategyStateSnapshotV13) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"titan.strategy.snapshot.v13");
     for value in [
@@ -2059,6 +2097,43 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closed_recovery_staging_remembers_rejected_command_attempts() {
+        let mut staging = CallbackCommandStagingV13::new(2, 5, 2).unwrap();
+        staging.begin_callback(false, &[]);
+        let mut context = StrategyRuntimeContextV13::default();
+        staging.bind_context(&mut context);
+        let request = TitanSubmitOrderRequest {
+            qty_lots: 1,
+            price_ticks: 100,
+            side: 1,
+            order_type: 1,
+            time_in_force: 3,
+            ..Default::default()
+        };
+        let mut id = 0;
+        assert_ne!(
+            unsafe { context.submit_order.unwrap()(context.command_context, &request, &mut id) },
+            0
+        );
+        assert!(staging.attempted);
+        assert!(staging.finish_callback(0).is_empty());
+        assert_eq!(id, 0);
+        staging.begin_callback(false, &[]);
+        assert!(!staging.attempted);
+        assert_ne!(
+            unsafe {
+                context.cancel_order.unwrap()(
+                    context.command_context,
+                    &TitanCancelOrderRequest::default(),
+                    &mut id,
+                )
+            },
+            0
+        );
+        assert!(staging.attempted);
+        assert!(staging.finish_callback(0).is_empty());
+    }
 
     #[test]
     #[ignore = "requires explicit previous-binary synthetic recovery and signed strategy fixtures"]
@@ -2066,7 +2141,15 @@ mod tests {
         use crate::*;
         let bytes =
             std::fs::read(std::env::var("TITAN_TEST_PREVIOUS_RECOVERY_POINT").unwrap()).unwrap();
-        let point: StrategyRecoveryPoint = serde_json::from_slice(&bytes).unwrap();
+        let legacy: StrategyRecoveryPoint = serde_json::from_slice(&bytes).unwrap();
+        let recovery_root = tempfile::tempdir().unwrap();
+        let store = SqliteRecoveryStore::open(SqliteRecoveryConfig::new(
+            recovery_root.path().join("runtime.db"),
+        ))
+        .unwrap();
+        let reference = store.import_legacy(&bytes, legacy.generation).unwrap();
+        assert_eq!(store.payload(&reference).unwrap(), bytes);
+        let point = store.load_reference(&reference).unwrap();
         assert!(point.native_snapshot().checksum_valid());
         let key = std::env::var("TITAN_TEST_PREVIOUS_PUBLIC_KEY").unwrap();
         let key: Vec<u8> = (0..key.len())

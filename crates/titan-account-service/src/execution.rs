@@ -17,6 +17,7 @@ pub const fn is_hedge_close(position_side: u8, side: i8) -> bool {
 }
 
 pub type ExecutionTaskId = u64;
+pub type RecordingGuard = Arc<dyn Fn() -> bool + Send + Sync>;
 const LATENCY_BUCKETS: usize = 64;
 pub type ExecutionFuture =
     Pin<Box<dyn Future<Output = Result<DirectOrderInfo, DirectExecutionError>> + Send + 'static>>;
@@ -76,17 +77,36 @@ pub trait DirectExecutionConnector: Send + Sync + 'static {
 
 pub(crate) struct AccountConnectorExecution {
     connector: Arc<dyn AccountConnector>,
+    recording: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl AccountConnectorExecution {
-    pub(crate) fn new(connector: Arc<dyn AccountConnector>) -> Self {
-        Self { connector }
+    pub(crate) fn new(
+        connector: Arc<dyn AccountConnector>,
+        recording: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) -> Self {
+        Self {
+            connector,
+            recording,
+        }
     }
 }
 
 impl DirectExecutionConnector for AccountConnectorExecution {
     fn submit(&self, request: DirectNewOrderRequest) -> ExecutionFuture {
-        self.connector.direct_submit(request)
+        let connector = self.connector.clone();
+        let recording = self.recording.clone();
+        Box::pin(async move {
+            if recording.as_ref().is_some_and(|g| !g()) {
+                return Err(DirectExecutionError {
+                    exchange: "platform",
+                    code: "CRITICAL_AUDIT_UNAVAILABLE".into(),
+                    message: "account fact recording is unavailable".into(),
+                    outcome_unknown: false,
+                });
+            }
+            connector.direct_submit(request).await
+        })
     }
 
     fn cancel(&self, request: DirectCancelOrderRequest) -> ExecutionFuture {
@@ -596,6 +616,104 @@ mod tests {
             reduce_only: false,
             client_order_id: Id128([3; 16]),
         }
+    }
+
+    struct CountedAccountConnector(AtomicUsize);
+    impl AccountConnector for CountedAccountConnector {
+        fn start(&self) -> Result<(), crate::AccountConnectorError> {
+            Ok(())
+        }
+        fn stop(&self, _: Instant) -> Result<(), crate::AccountConnectorError> {
+            Ok(())
+        }
+        fn orders(
+            &self,
+            _: crate::OrderFilter,
+        ) -> Result<crate::AccountStateSnapshot<crate::OrderSnapshot>, crate::AccountConnectorError>
+        {
+            unimplemented!()
+        }
+        fn positions(
+            &self,
+            _: crate::PositionFilter,
+        ) -> Result<
+            crate::AccountStateSnapshot<crate::PositionSnapshot>,
+            crate::AccountConnectorError,
+        > {
+            unimplemented!()
+        }
+        fn balances(
+            &self,
+        ) -> Result<crate::AccountStateSnapshot<crate::BalanceSnapshot>, crate::AccountConnectorError>
+        {
+            unimplemented!()
+        }
+        fn health(&self) -> crate::AccountConnectorHealthSnapshot {
+            unimplemented!()
+        }
+        fn diagnostics(&self) -> crate::AccountConnectorDiagnosticSnapshot {
+            unimplemented!()
+        }
+        fn operation(&self, _: crate::OperationId) -> crate::AccountConnectorOperationSnapshot {
+            unimplemented!()
+        }
+        fn direct_submit(&self, _: DirectNewOrderRequest) -> ExecutionFuture {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async {
+                Ok(DirectOrderInfo {
+                    client_order_id: None,
+                    venue_order_id: None,
+                    status: 0,
+                })
+            })
+        }
+        fn direct_cancel(&self, _: DirectCancelOrderRequest) -> ExecutionFuture {
+            Box::pin(async {
+                Ok(DirectOrderInfo {
+                    client_order_id: None,
+                    venue_order_id: None,
+                    status: 0,
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn critical_audit_is_checked_at_dispatch_and_cancels_remain_available() {
+        let connector = Arc::new(CountedAccountConnector(AtomicUsize::new(0)));
+        let healthy = Arc::new(AtomicBool::new(true));
+        let flag = healthy.clone();
+        let execution = AccountConnectorExecution::new(
+            connector.clone(),
+            Some(Arc::new(move || flag.load(Ordering::Acquire))),
+        );
+        let mut pending = execution.submit(order());
+        // Failure after admission but before first poll must not construct a transport future.
+        healthy.store(false, Ordering::Release);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Err(error)) = pending.as_mut().poll(&mut context) else {
+            panic!("audit failure must reject synchronously")
+        };
+        assert_eq!(error.code, "CRITICAL_AUDIT_UNAVAILABLE");
+        assert!(!error.outcome_unknown);
+        assert_eq!(connector.0.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            execution
+                .cancel(DirectCancelOrderRequest {
+                    asset_id: AssetId(9),
+                    client_order_id: Some(Id128([3; 16])),
+                    venue_order_id: None
+                })
+                .as_mut()
+                .poll(&mut context),
+            std::task::Poll::Ready(Ok(_))
+        ));
+        healthy.store(true, Ordering::Release);
+        assert!(matches!(
+            execution.submit(order()).as_mut().poll(&mut context),
+            std::task::Poll::Ready(Ok(_))
+        ));
+        assert_eq!(connector.0.load(Ordering::Acquire), 1);
     }
 
     #[test]

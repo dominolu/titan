@@ -99,6 +99,8 @@ pub mod scheduler;
 /// Errors that can occur during backtesting.
 #[derive(Error, Debug)]
 pub enum BacktestError {
+    #[error("persistent audit failed: {0}")]
+    Persistence(String),
     #[error("Order related to a given order id already exists")]
     OrderIdExist,
     #[error("Order request is in process")]
@@ -913,6 +915,20 @@ where
         self.audit_run_id = run_id;
         self.audit_sequence = 0;
     }
+    pub fn enable_persistent_audit(&mut self, run_id: u64, writer: titan_persistence::RunRecorder) {
+        self.audit = AuditRecorder::persistent(writer);
+        self.audit_run_id = run_id;
+        self.audit_sequence = 0;
+    }
+    pub fn finish_audit(
+        &mut self,
+        timestamp: i64,
+        outcome: serde_json::Value,
+    ) -> Result<(), BacktestError> {
+        self.audit
+            .finish(timestamp, outcome)
+            .map_err(|e| BacktestError::Persistence(e.to_string()))
+    }
 
     pub fn audit(&self) -> &AuditRecorder {
         &self.audit
@@ -1162,6 +1178,10 @@ where
                 .map(|(_, report)| *report),
         );
         (result.exchange_final, result.local_delivered_final) = self.shared_account_snapshots();
+        if let Err(error) = self.audit.check() {
+            result.termination = RunTermination::Failed;
+            result.warnings.push(error.to_string());
+        }
         result
     }
 
@@ -2036,6 +2056,9 @@ where
                 .update_local_order(asset_no, local.earliest_recv_order_timestamp());
         }
         loop {
+            self.audit
+                .check()
+                .map_err(|e| BacktestError::Persistence(e.to_string()))?;
             match self.evs.next() {
                 Some(ev) => {
                     if ev.timestamp > timestamp
@@ -2728,6 +2751,30 @@ mod test {
                         ExecutionReason::PositionLimit,
                     )
         }));
+
+        let directory = tempfile::tempdir()?;
+        let mut scope = titan_persistence::FactScope::account(
+            titan_persistence::FactEnvironment::Backtest,
+            "simulation",
+        );
+        scope.run_id = Some("tick-risk".into());
+        let writer = titan_persistence::RunRecorder::open(
+            directory.path(),
+            scope,
+            "tick-risk".into(),
+            serde_json::json!({"engine":"tick"}),
+        )
+        .unwrap();
+        backtester.enable_persistent_audit(10, writer);
+        backtester.submit_buy_order(0, 78, 1.0, 1.0, TimeInForce::GTC, OrdType::Limit, true)?;
+        backtester.finish_audit(4, serde_json::json!({"outcome":"completed"}))?;
+        let mut risk_recorded = false;
+        titan_persistence::columnar::scan_facts(&directory.path().join("facts.parquet"), |fact| {
+            risk_recorded |= fact.kind == "risk_decision" && fact.payload["order_id"] == "78";
+            Ok(())
+        })
+        .unwrap();
+        assert!(risk_recorded);
 
         Ok(())
     }

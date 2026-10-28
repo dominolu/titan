@@ -4,7 +4,9 @@ import { useConsoleStore } from "@/store/modules/console";
 
 export function useFactHistory(
   item: Ref<Resource | undefined>,
-  kind: Ref<string>
+  kind: Ref<string>,
+  legacy?: Ref<boolean>,
+  newestFirst = false
 ) {
   const store = useConsoleStore();
   const items = ref<any[]>([]),
@@ -12,6 +14,8 @@ export function useFactHistory(
   const offset = ref(0),
     pending = ref(false),
     error = ref("");
+  const hasNext = ref(false);
+  const cursors = new Map<number, unknown>();
   let sequence = 0,
     disposed = false;
   const available = () => (item.value?.body as any)?.available === true;
@@ -37,14 +41,34 @@ export function useFactHistory(
         ((item.value?.body as any)?.run_generation ??
           (item.value?.body as any)?.worker_session_id);
     try {
-      const result = await consoleApi.history(source, kind.value, next);
+      const result = legacy?.value
+        ? await consoleApi.history(source, kind.value, next)
+        : await consoleApi.facts(
+            source,
+            kind.value,
+            next === 0 ? undefined : cursors.get(next),
+            newestFirst
+          );
       if (!active()) return;
       items.value = result.items;
-      provenance.value = { source: result.source, recording: result.recording };
+      const page = result as typeof result & {
+        next_cursor?: unknown;
+        upper_row?: string;
+      };
+      hasNext.value = legacy?.value
+        ? result.items.length === 20
+        : Boolean(page.next_cursor);
+      if (page.next_cursor) cursors.set(next + 20, page.next_cursor);
+      provenance.value = {
+        source: result.source,
+        recording: result.recording,
+        upper_row: page.upper_row
+      };
       offset.value = next;
     } catch (failure) {
       if (active()) {
         error.value = (failure as Error).message;
+        hasNext.value = false;
         items.value = [];
         provenance.value = null;
       }
@@ -67,6 +91,7 @@ export function useFactHistory(
         (item.value?.body as any)?.run_generation ??
         (item.value?.body as any)?.worker_session_id,
       kind,
+      () => legacy?.value,
       () => store.sessionGeneration
     ],
     () => {
@@ -74,6 +99,8 @@ export function useFactHistory(
       items.value = [];
       provenance.value = null;
       offset.value = 0;
+      cursors.clear();
+      hasNext.value = false;
       error.value = "";
       load(0);
     },
@@ -86,5 +113,5 @@ export function useFactHistory(
     disposed = true;
     sequence++;
   });
-  return { items, provenance, offset, pending, error, load };
+  return { items, provenance, offset, pending, error, hasNext, load };
 }

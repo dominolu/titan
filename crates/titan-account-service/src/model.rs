@@ -648,7 +648,26 @@ pub type OrderEvidenceFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<OrderSnapshot, AccountConnectorError>> + Send>,
 >;
 
+/// Complete native executions of one immutable, authoritatively looked-up order.
+/// Completeness is per order (sum of unique executions equals its stable cumulative quantity),
+/// never a claim that the venue's entire account history is covered.
+#[derive(Clone, Debug)]
+pub struct OrderExecutionEvidence {
+    pub order: OrderSnapshot,
+    pub fills: Vec<crate::FillV2>,
+}
+pub type OrderExecutionEvidenceFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<Option<OrderExecutionEvidence>, AccountConnectorError>,
+            > + Send,
+    >,
+>;
+
 pub trait AccountConnector: Send + Sync + 'static {
+    fn execution_evidence(&self, _asset: AssetId, _client: Id128) -> OrderExecutionEvidenceFuture {
+        Box::pin(async { Ok(None) })
+    }
     /// Read-only authoritative lookup; absence and transport errors are never terminal evidence.
     fn order_evidence(&self, _asset: AssetId, _client: Id128) -> OrderEvidenceFuture {
         Box::pin(async {

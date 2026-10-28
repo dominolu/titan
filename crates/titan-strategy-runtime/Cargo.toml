@@ -21,6 +21,8 @@ titan-core-types = { path = "../titan-core-types" }
 titan-domain-types = { path = "../titan-domain-types" }
 tracing = "0.1"
 zip = { version = "6", default-features = false }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "cache", "backup", "fallible_uint"] }
+libc = "0.2"
 
 [dev-dependencies]
 crossbeam-channel = "0.5"

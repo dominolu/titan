@@ -57,6 +57,29 @@ export const consoleApi = {
         }
       }
     ),
+  facts: (
+    item: Resource,
+    kind: string,
+    cursor?: unknown,
+    newestFirst = false
+  ) =>
+    http.get<{
+      items: unknown[];
+      source: unknown;
+      recording: unknown;
+      next_cursor?: unknown;
+      upper_row: string;
+    }>(`/api/v2/resources/${encodeURIComponent(item.id)}/facts`, {
+      params: {
+        ...((item.body as any).mode === "observe"
+          ? { worker_session_id: (item.body as any).worker_session_id }
+          : { run_generation: (item.body as any).run_generation }),
+        kind,
+        cursor: cursor ? JSON.stringify(cursor) : undefined,
+        newest_first: newestFirst,
+        limit: 20
+      }
+    }),
   acknowledge: (item: Resource) =>
     http.post<Resource>(
       `/api/v2/resources/${encodeURIComponent(item.id)}/acknowledge`,
