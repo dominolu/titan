@@ -45,6 +45,8 @@ EVENT_TYPES = 16               # event codes are used as indices (E01..E14)
 EWM_SERIES = 8
 
 BUCKET_NS = 100_000_000
+WARM_SLACK_MS = 200            # one bucket plus one compute interval
+WARM_SAMPLER_MS = 1500         # EWMA / sigma detectors need several computes and seconds
 KIND_TRADE = 3
 FLOW_DEPTH_PROXY, FLOW_PLATFORM_TRADES = 1, 2
 
@@ -62,7 +64,6 @@ cfg_dtype = record(
     cooldown_ms=int64,
     stale_after_ns=int64,
     qty_lot=float64,
-    depth_levels=int64,
     sigma_floor_bp=float64,
     max_spread_bp=float64,
     min_depth_btc=float64,
@@ -169,7 +170,7 @@ state_dtype = record(cfg=cfg_dtype, book=book_dtype, ring=ring_dtype, flow=flow_
                      ev=ev_dtype, obs=obs_dtype)
 
 OBSERVATION = BusinessObservationSpec(
-    schema_id="titan.orderflow_events", schema_version=2,
+    schema_id="titan.orderflow_events", schema_version=3,
     fields=(
         ObservationField("mid_ticks", "decimal", "price_tick", "obs.mid_ticks", label="中间价"),
         ObservationField("spread_bp", "decimal", "bp", "obs.spread_bp", label="点差"),
@@ -180,13 +181,13 @@ OBSERVATION = BusinessObservationSpec(
         ObservationField("flow_source", "enum", "source", "obs.flow_source", label="流量来源",
                          enum_mapping=((FLOW_DEPTH_PROXY, "depth_proxy"),
                                        (FLOW_PLATFORM_TRADES, "platform_trades"))),
-        ObservationField("book_ready", "enum", "flag", "obs.book_ready", label="盘口就绪",
+        ObservationField("book_ready", "enum", "flag", "obs.book_ready", label="盘口可用",
                          enum_mapping=((0, "unavailable"), (1, "ready"))),
         ObservationField("book_valid", "enum", "flag", "obs.book_valid", label="深度覆盖有效",
                          enum_mapping=((0, "invalid"), (1, "valid"))),
         ObservationField("stream_epoch", "uint64", "count", "obs.stream_epoch", label="行情代次"),
-        ObservationField("book_resets", "uint64", "count", "obs.book_resets", label="盘口重置次数"),
-        ObservationField("warmup_remaining_ms", "int64", "ms", "obs.warmup_remaining_ms", label="剩余预热时间"),
+        ObservationField("book_resets", "uint64", "count", "obs.book_resets", label="丢弃可用盘口次数"),
+        ObservationField("warmup_remaining_ms", "int64", "ms", "obs.warmup_remaining_ms", label="最慢事件剩余预热"),
         ObservationField("prints_seen", "uint64", "count", "obs.prints_seen", label="已处理流量笔数"),
         ObservationField("dropped", "uint64", "count", "obs.dropped", label="被丢弃的行情条目"),
         ObservationField("asset_no", "uint64", "index", "obs.asset_no", label="绑定的本地品种号"),
@@ -226,7 +227,7 @@ def _float(name, default, minimum=0.0, maximum=1e12):
 
 
 SPEC = StrategySpec(
-    strategy_type="orderflow_events", source_version="0.2.1", recovery_state_schema_version=2,
+    strategy_type="orderflow_events", source_version="0.2.2", recovery_state_schema_version=3,
     parameters=(
         _int("asset_no", 0, maximum=2**32 - 1),
         _int("compute_interval_ms", 100, 100, 100),
@@ -236,7 +237,6 @@ SPEC = StrategySpec(
                   values=("depth_proxy", "platform_trades")),
         _int("cooldown_ms", 500, 0, 600000),
         _int("stale_after_ms", 2000, 100, 600000),
-        _int("depth_levels", BOOK_LEVELS, 1, BOOK_LEVELS),
         _float("max_spread_bp", 5.0, 0.0, 1000.0),
         _float("min_depth_btc", 0.0, 0.0, 1e7),
         BoolParam("e01_enabled", required=False, default=True),
@@ -431,7 +431,7 @@ def apply_ask(bk, price, qty):
 
 
 @njit
-def refresh_book(bk, levels):
+def refresh_book(bk):
     n_bid = bid_count(bk)
     n_ask = ask_count(bk)
     if n_bid > 0:
@@ -1352,13 +1352,8 @@ def compute_events(s, now_ns):
     if bk["best_bid_ticks"] > 0 and bk["best_ask_ticks"] > 0:
         spread_bp = (float(bk["best_ask_ticks"]) - float(bk["best_bid_ticks"])) / mid * 10000.0
     depth5_btc = (bk["depth5_bid"] + bk["depth5_ask"]) * cfg["qty_lot"]
-    if cfg["max_spread_bp"] > 0.0 and spread_bp > cfg["max_spread_bp"]:
-        return
-    if cfg["min_depth_btc"] > 0.0 and depth5_btc < cfg["min_depth_btc"]:
-        return
-    if now_ns - s["flow"]["view_ns"] >= 1000000000:
-        refresh_view(s, now_ns)
-    update_baselines(s, now_ns)
+    # Observation first: the spread/depth filters must not freeze the visible
+    # book state, warmup progress or the event counters.
     obs["mid_ticks"] = mid
     obs["spread_bp"] = spread_bp
     obs["sigma_bp"] = ring["sigma_bp"]
@@ -1368,37 +1363,118 @@ def compute_events(s, now_ns):
     obs["prints_seen"] = s["flow"]["prints_seen"]
     obs["dropped"] = s["flow"]["dropped"]
     obs["asset_no"] = cfg["asset_no"]
-    obs["book_ready"] = bk["ready"]
+    obs["book_ready"] = 1
     obs["flow_source"] = cfg["flow_source"]
     obs["book_valid"] = 1
     obs["stream_epoch"] = bk["epoch"]
     obs["book_resets"] = bk["resets"]
-    # A reset discards all historical windows. Accumulate fresh observations
-    # for the longest configured lookback before enabling any detector.
-    warm_ms = max(cfg["e11_lookback_ms"], cfg["e14_lookback_ms"], cfg["e14_window_ms"])
-    obs["warmup_remaining_ms"] = max(0, warm_ms - (now_ns - bk["warm_since_ns"]) // 1000000)
-    if obs["warmup_remaining_ms"] > 0:
-        obs["book_ready"] = 0
+    # Per-event warmup: every detector waits only for its own window, so short
+    # window events resume right after a resync while E11 keeps its 15 min
+    # lookback. warmup_remaining_ms still reports the slowest enabled detector.
+    elapsed_ms = (now_ns - bk["warm_since_ns"]) // 1000000
+    warm = 0
+    e01_ready = 0
+    if cfg["e01_enabled"] != 0:
+        need = cfg["e01_window_ms"] + WARM_SLACK_MS
+        if elapsed_ms >= need:
+            e01_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e02_ready = 0
+    if cfg["e02_enabled"] != 0:
+        need = max(cfg["e02_window_ms"], cfg["e02_min_ms"]) + WARM_SAMPLER_MS
+        if elapsed_ms >= need:
+            e02_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e03_ready = 0
+    if cfg["e03_enabled"] != 0:
+        need = cfg["e03_window_ms"] + WARM_SLACK_MS
+        if elapsed_ms >= need:
+            e03_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e04_ready = 0
+    if cfg["e04_enabled"] != 0:
+        need = cfg["e04_window_ms"] + WARM_SLACK_MS
+        if elapsed_ms >= need:
+            e04_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e07_ready = 0
+    if cfg["e07_enabled"] != 0:
+        need = cfg["e07_window_ms"] + WARM_SLACK_MS + 1000
+        if elapsed_ms >= need:
+            e07_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e08_ready = 0
+    if cfg["e08_enabled"] != 0:
+        need = cfg["e08_window_ms"] + WARM_SAMPLER_MS
+        if elapsed_ms >= need:
+            e08_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e11_ready = 0
+    if cfg["e11_enabled"] != 0:
+        need = cfg["e11_lookback_ms"] + 1000
+        if elapsed_ms >= need:
+            e11_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e13_ready = 0
+    if cfg["e13_enabled"] != 0:
+        need = cfg["e13_window_ms"] + WARM_SAMPLER_MS
+        if elapsed_ms >= need:
+            e13_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    e14_ready = 0
+    if cfg["e14_enabled"] != 0:
+        need = max(cfg["e14_lookback_ms"], cfg["e14_window_ms"]) + WARM_SAMPLER_MS
+        if elapsed_ms >= need:
+            e14_ready = 1
+        else:
+            warm = max(warm, need - elapsed_ms)
+    obs["warmup_remaining_ms"] = warm
+    if cfg["max_spread_bp"] > 0.0 and spread_bp > cfg["max_spread_bp"]:
         return
-    detect_e01(s, now_ns)
-    detect_e02(s, now_ns)
-    detect_e03(s, now_ns)
-    detect_e04(s, now_ns)
-    detect_e07(s, now_ns)
-    detect_e08(s, now_ns)
-    detect_e11(s, now_ns)
-    detect_e13(s, now_ns)
-    detect_e14(s, now_ns)
+    if cfg["min_depth_btc"] > 0.0 and depth5_btc < cfg["min_depth_btc"]:
+        return
+    if now_ns - s["flow"]["view_ns"] >= 1000000000:
+        refresh_view(s, now_ns)
+    update_baselines(s, now_ns)
+    if e01_ready != 0:
+        detect_e01(s, now_ns)
+    if e02_ready != 0:
+        detect_e02(s, now_ns)
+    if e03_ready != 0:
+        detect_e03(s, now_ns)
+    if e04_ready != 0:
+        detect_e04(s, now_ns)
+    if e07_ready != 0:
+        detect_e07(s, now_ns)
+    if e08_ready != 0:
+        detect_e08(s, now_ns)
+    if e11_ready != 0:
+        detect_e11(s, now_ns)
+    if e13_ready != 0:
+        detect_e13(s, now_ns)
+    if e14_ready != 0:
+        detect_e14(s, now_ns)
 
 
 
 @njit
-def reset_depth_epoch(s, now_ns):
+def reset_depth_epoch(s, now_ns, count_reset):
     book_clear(s["book"])
     s["book"]["warm_since_ns"] = now_ns
     s["book"]["last_update_ns"] = 0
     s["book"]["stale"] = 0
-    s["book"]["resets"] += 1
+    # Count only discards of a usable book (invalidations, stale gaps, epoch
+    # changes). The first snapshot after a gap must not count twice.
+    if count_reset != 0:
+        s["book"]["resets"] += 1
     s["obs"]["book_ready"] = 0
     s["obs"]["book_valid"] = 0
     s["obs"]["mid_ticks"] = 0.0
@@ -1511,7 +1587,7 @@ def on_start(ctx):
     s = ctx.state
     bk = s["book"]
     cfg = s["cfg"]
-    reset_depth_epoch(s, ctx.now)
+    reset_depth_epoch(s, ctx.now, 0)
 
 
 @njit
@@ -1579,7 +1655,7 @@ def on_depth(ctx):
     bk = s["book"]
     batches = ctx.depth_batch()
     if len(batches) != 1:
-        reset_depth_epoch(s, ctx.now)
+        reset_depth_epoch(s, ctx.now, 0)
         return
     info = batches[0]
     if info["version"] != 1 or info["asset_no"] != cfg["asset_no"]:
@@ -1587,8 +1663,10 @@ def on_depth(ctx):
     reset = info["reset"] != 0 or bk["epoch"] != info["stream_epoch"] or bk["ready"] == 0 or bk["stale"] != 0
     if bk["last_update_ns"] > 0 and ctx.now - bk["last_update_ns"] > cfg["stale_after_ns"]:
         reset = True
+    # Count a discard only when the book was usable before the reset.
+    was_ready = 1 if bk["ready"] != 0 else 0
     if reset or info["valid"] == 0:
-        reset_depth_epoch(s, ctx.now)
+        reset_depth_epoch(s, ctx.now, was_ready)
         bk["epoch"] = info["stream_epoch"]
         s["obs"]["stream_epoch"] = info["stream_epoch"]
         s["obs"]["book_resets"] = bk["resets"]
@@ -1596,16 +1674,21 @@ def on_depth(ctx):
         return
     items = ctx.depth()
     if len(items) != 2 * BOOK_LEVELS:
-        reset_depth_epoch(s, ctx.now)
+        reset_depth_epoch(s, ctx.now, 0)
         return
     ts_ns = items[0]["exchange_ts_ns"]
     if ts_ns <= 0:
         ts_ns = items[0]["receive_ts_ns"]
     if ts_ns <= 0 or items[0]["receive_ts_ns"] > ctx.now + 1000000000:
-        reset_depth_epoch(s, ctx.now)
+        reset_depth_epoch(s, ctx.now, 0)
         return
     previous_best_bid = bk["best_bid_ticks"]
     previous_best_ask = bk["best_ask_ticks"]
+    # The replacement view is best-first on both sides. A price that vanished
+    # strictly above the new best was necessarily consumed; a price that only
+    # left the Top100 (at or below the new best) is not removal evidence.
+    new_best_bid = items[0]["price_ticks"]
+    new_best_ask = items[BOOK_LEVELS]["price_ticks"]
     # Compare against the old projection before replacing it. Prices entering
     # the window have unknown prior size and must not count as refills.
     if not reset:
@@ -1617,9 +1700,9 @@ def on_depth(ctx):
             if qty != before and (before > 0.0 or known_deleted_level(s, side, price, ts_ns)):
                 track_touch(s, ts_ns, side, price, before, qty)
                 if qty < before and cfg["flow_source"] == FLOW_DEPTH_PROXY:
-                    if side == SIDE_BID and price >= previous_best_bid:
+                    if side == SIDE_BID and price >= new_best_bid:
                         push_print(s, ts_ns, AGGRESSOR_SELL, before - qty, price)
-                    elif side == SIDE_ASK and price <= previous_best_ask:
+                    elif side == SIDE_ASK and price <= new_best_ask:
                         push_print(s, ts_ns, AGGRESSOR_BUY, before - qty, price)
         # Explicitly removed levels are absent from the replacement. Only
         # infer removal within the new covered range, never on window exit.
@@ -1639,9 +1722,9 @@ def on_depth(ctx):
                 if before > 0.0 and covered and not present:
                     track_touch(s, ts_ns, side, price, before, 0.0)
                     if cfg["flow_source"] == FLOW_DEPTH_PROXY:
-                        if side == SIDE_BID and price >= previous_best_bid:
+                        if side == SIDE_BID and price > new_best_bid and price <= previous_best_bid:
                             push_print(s, ts_ns, AGGRESSOR_SELL, before, price)
-                        elif side == SIDE_ASK and price <= previous_best_ask:
+                        elif side == SIDE_ASK and price < new_best_ask and price >= previous_best_ask:
                             push_print(s, ts_ns, AGGRESSOR_BUY, before, price)
     for i in range(BOOK_LEVELS):
         bk["bid_price"][i] = items[i]["price_ticks"]
@@ -1649,7 +1732,7 @@ def on_depth(ctx):
         bk["ask_price"][i] = items[BOOK_LEVELS + i]["price_ticks"]
         bk["ask_qty"][i] = float(items[BOOK_LEVELS + i]["qty_lots"])
     bk["last_update_ns"] = ts_ns
-    refresh_book(bk, cfg["depth_levels"])
+    refresh_book(bk)
 
 
 @njit
@@ -1668,7 +1751,7 @@ def on_timer(ctx):
 # --------------------------------------------------------------------------- build
 _RAW_PARAM_SKIP = {
     "asset_no", "compute_interval_ms", "qty_lot", "sigma_floor_bp", "flow_source",
-    "cooldown_ms", "stale_after_ms", "depth_levels", "max_spread_bp",
+    "cooldown_ms", "stale_after_ms", "max_spread_bp",
     "min_depth_btc",
 }
 
@@ -1702,7 +1785,6 @@ def build(parameters):
     cfg["cooldown_ms"] = p["cooldown_ms"]
     cfg["stale_after_ns"] = int(p["stale_after_ms"]) * 1000000
     cfg["qty_lot"] = p["qty_lot"]
-    cfg["depth_levels"] = min(int(p["depth_levels"]), BOOK_LEVELS)
     cfg["sigma_floor_bp"] = p["sigma_floor_bp"]
     cfg["max_spread_bp"] = p["max_spread_bp"]
     cfg["min_depth_btc"] = p["min_depth_btc"]

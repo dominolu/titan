@@ -24,9 +24,10 @@ L0 事件字典**（E01/E02/E03/E04/E07/E08/E11/E13/E14）。每个事件一个 
 
 1. **逐笔成交当前进不来**。V13 只把 BBO 和深度批次路由进策略（`compiled_strategy.rs` 里
    `Tick → titan.market.Bbo`），没有 trade 事件类型。`on_tick` 已按 `kind == 3` 预留 trade 分支，
-   `ingest_trade()` 就是切换点。在平台补上之前，策略用 **深度触价减量推断成交**
-   （`flow_source=depth_proxy`）：买单方向 = 卖一价档位被减量，卖单方向 = 买一价档位被减量。
-   这是代理，会把手动撤单误计为成交；事件按 `proxy` 处理。
+   `ingest_trade()` 就是切换点。在平台补上之前，策略用 **深度减少推断成交**
+   （`flow_source=depth_proxy`）：卖一价档位被减量、或被买盘穿掉（消失在新最优买价之上）的价位
+   计为卖单成交；买一价档位被减量、或被卖盘穿掉（消失在新最优卖价之下）的价位计为买单成交。
+   这是代理，仍可能把手动撤单误计为成交；事件按 `proxy` 处理。
 2. **爆仓标记不可得**。连接器没有订阅 `forceOrder`，E14 只能是价格+量能代理（`proxy`）。
 3. **深度采用 HOST_DEPTH_100 能力**。Rust 校验快照语义、维护较深盘口、补回未变化的第 101 档，
    再提供完整 Top100 替换视图。策略读取 `ctx.depth_batch()` 的代次、有效性和 reset，
@@ -58,10 +59,11 @@ L0 事件字典**（E01/E02/E03/E04/E07/E08/E11/E13/E14）。每个事件一个 
 ## 4. 观测字段（管理页/快照可见）
 
 `mid_ticks`、`spread_bp`、`sigma_bp`、`ofi_2s`、`depth1_btc`、`depth5_btc`、`flow_source`、
-`book_ready`（enum：unavailable/ready，完成预热后就绪）、`prints_seen`、`dropped`、`asset_no`、`computes`、
+`book_ready`（enum：unavailable/ready，深度视图可用即 ready）、`prints_seen`、`dropped`、`asset_no`、`computes`、
 `events_total`、`last_type`、`last_direction`、`last_strength`、`last_ts_ns`，以及
 `e01_count`…`e14_count` 九个计数器与 `e03_strength`、`e13_strength`。schema：
-`titan.orderflow_events/v2`；另有 `book_valid`、`stream_epoch`、`book_resets`、`warmup_remaining_ms`。
+`titan.orderflow_events/v3`；另有 `book_valid`、`stream_epoch`、`book_resets`（丢弃可用盘口的次数）、
+`warmup_remaining_ms`（最慢的已启用事件还需多久预热）。
 
 排查最常用的三个：`asset_no`（必须等于部署绑定里的本地品种号，否则三个 handler 会过滤掉全部
 行情且 `book_ready=0`）、`dropped`（跨越 1 s 时钟容差被丢弃的条目）、`book_ready`。
@@ -69,6 +71,8 @@ L0 事件字典**（E01/E02/E03/E04/E07/E08/E11/E13/E14）。每个事件一个 
 ## 5. 构建与验证（必须在编译服务器 192.168.3.88 执行）
 
 本地只写代码，不编译、不测试、不跑 Numba（见仓库 `AGENTS.md`）。
+主网只读冒烟部署模板、编译/签名/`expected_digest` 固定与观察清单见
+[deploy/orderflow_events/README.md](../../deploy/orderflow_events/README.md)。
 
 ```bash
 # 1) 编译原生策略
@@ -100,24 +104,32 @@ runtime = { timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 
 - 逐笔/爆仓为代理或不支持（见 §2）；E14 只有 `proxy`。
 - 窗口粒度为 100 ms（E13 的 200 ms 窗口只有 2 个桶）。
 - `ρ`（E01 的最大逆行）用「运行起点的 mid 到当前 mid」逐笔更新，未做窗口内 MAE 路径。
-- **预热**：`sigma_c` 需要约 15 s 才有效；E11 的 15 min 高/低与 E14 的 5 min 基准在启动后
-  头 15 min 内只有已采集的样本，早期的破位/位移会偏短视。`z` 统计用 EWMA，需要 ≥8 次采样才
-  输出非零 z（约 0.8 s）。
+- **预热按事件独立**：每个检测器只等自己的窗口（E01/E03/E04/E07/E08/E13 在各自窗口填满后
+  即恢复；E11 需要 15 min、E14 需要 5 min 回看）。`warmup_remaining_ms` 给出最慢的已启用
+  事件的剩余时间；`sigma_c` 约 15 s 才稳定，`z` 统计需要 ≥8 次采样（约 0.8 s）。
+- 冰山/补单证据只保留 8 个冰山槽（E04）和 8 个触价槽（E03）：同一窗口内已知删空的价位超过
+  8 个时最早的证据会被挤出，E04 可能漏报。
+- 每个深度批次做一次旧/新 Top100 比较（2×100×100 次价格比较，另加删除扫描）；`@depth@0ms`
+  高频更新时仍在 100 ms 预算内，若要进一步降低可改为归并走查（待做）。
 - `asset_no` 默认 0，必须与部署绑定一致（见 §4 排查项）。
 - 事件不落盘：策略只做实时消费/观测；研究数据由 `collector` 录原始行情后离线重算。
 - 无 `on_recover`：重启依赖平台恢复 typed state；`on_start` 会用 `ctx.market()` 的 BBO 重建
   一档，其余档位等深度批次补齐。
-- 深度快照识别是启发式（见 §2 第 3 条）。
+- 深度失效、恢复和超时后 `book_resets` 只按“丢弃可用盘口”计数；同一缺口的首个快照不重复计数。
 
 
-## 6. 深度运行与升级要求
+## 7. 深度运行与升级要求
 
-- 策略 0.2.1 / 恢复 schema 2，需重新编译；旧 checkpoint 不兼容。
-- 删除旧参数 `snapshot_items`，默认 `depth_levels=100`。Binance 建议保留 `depth_snapshot_limit=1000`；
+- 策略 0.2.2 / 恢复 schema 3、状态 62,896 B，需重新编译；旧 checkpoint 不兼容。
+- 深度档位固定 100（`depth_levels` 参数已删除，部署参数里再带该键会被参数校验拒绝）。Binance
+  建议保留 `depth_snapshot_limit=1000`；
   快照少于两侧各 100 个真实价位时宿主明确拒绝，避免产生不完整的 Top100。
 - 默认行情 arena 为 64 KiB 块 / 2048 槽，总块内存仍 128 MiB。已有显式小块配置须相应调整。
-- 默认 E11 回看 15 分钟，恢复后先重新积累该窗口，期间 `book_valid=1` 但 `book_ready=0`。
-  BBO 不会覆盖深度盘口或掩盖深度过期。
+- 预热按事件独立：恢复后短窗事件（E01/E03/E07/E08/E13）在各自窗口填满后即恢复，E11 需重新
+  积累 15 分钟、E14 需 5 分钟；期间 `book_valid=1`、`book_ready=1`，`warmup_remaining_ms`
+  给出最慢的已启用事件的剩余时间。BBO 不会覆盖深度盘口或掩盖深度过期。
+- 成交推断以“新最优价之外消失的价位”为穿价带：扫单穿掉多档时逐档计入成交量，只有离开 Top100
+  的价位不算消耗；仍可能把最优价撤单误计为成交（`proxy`）。
 - 75 天 25 档历史不能验证深部事件。回放必须提供显式 `depth_batch` 元数据及可证明连续的原始快照/diff。
 
 同代次内已知删空的价位，在上一 Top100 仍能证明其为零且未过期时，补回会进入 E04 跟踪；未知新价位和跨重同步记录不会误算。三项审查修复见[验收记录](../../docs/verification/2026-10-28/depth-review/README.md)。

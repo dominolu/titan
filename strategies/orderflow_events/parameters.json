@@ -6,7 +6,6 @@
   "flow_source": "depth_proxy",
   "cooldown_ms": 500,
   "stale_after_ms": 2000,
-  "depth_levels": 100,
   "max_spread_bp": 5.0,
   "min_depth_btc": 0.0,
   "e01_enabled": true,
