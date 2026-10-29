@@ -38,13 +38,13 @@
 
 ## orderflow_events
 
-策略版本 0.2.1、恢复 schema 2；旧 checkpoint 不直接加载。采用 100 档，删除 `snapshot_items` 参数与批次大小启发式。BBO 只供 OFI，不改写深度或延长深度新鲜度。
+策略版本 0.2.2、恢复 schema 3；旧 checkpoint 不直接加载。采用 100 档，删除 `snapshot_items` 与 `depth_levels` 参数。BBO 只供 OFI，不改写深度或延长深度新鲜度。
 
 整批比较旧/新视图后替换；来源快照、恢复、失效和超时后的首批都清理 flow、refill/冰山、价格/量窗口及 EWMA 基线。新进入 Top100 的价位没有已知旧数量，不能当成 refill；离开 Top100 的价位不能当成撤单或被消耗。
 
-`depth5` 固定累加真正的前 5 档，不随 `depth_levels=100` 变成百档总量。E07 过去视图只保存价位和两侧 Top5 数量合计，省去两条 100 项数量副本，保留真实所需事前深度。秒窗口增加当前秒所需一个槽，容纳原默认 15 分钟回看。
+`depth5` 固定累加真正的前 5 档。E07 过去视图只保存价位和两侧 Top5 数量合计，省去两条 100 项数量副本，保留真实所需事前深度。秒窗口增加当前秒所需一个槽，容纳原默认 15 分钟回看。
 
-重同步后按最长配置回看预热，默认 E11 为 15 分钟。观测 schema 2 新增 `book_valid`、`stream_epoch`、`book_resets`、`warmup_remaining_ms`，区分深度有效与事件可计算。`book_ready=0` 时禁止检测信号。
+重同步后按事件各自的最长窗口预热：短窗事件在窗口填满后即恢复，E11 默认需要 15 分钟、E14 默认 5 分钟。观测 schema 3（0.2.2）包含 `book_valid`、`stream_epoch`、`book_resets`、`warmup_remaining_ms`；`book_valid` 表示深度覆盖有效，`book_ready` 表示盘口可用（不再等待最长预热），`warmup_remaining_ms` 给出最慢已启用事件的剩余预热。成交推断以“新最优价之外消失的价位”为穿价带；只有离开 Top100 的价位不算消耗。
 
 ## 离线输入
 

@@ -50,7 +50,7 @@ class TestOrderflowNativeDepth(unittest.TestCase):
         row["state_ptr"] = self.state.ctypes.data
         row["state_len"] = self.state.nbytes
         row["state_alignment"] = result.state_layout.alignment
-        row["state_schema_version"] = 2
+        row["state_schema_version"] = 3
         row["state_schema_hash"] = list(result.schema_hash)
         row["now_ns"] = 1_000_000_000
         self.info = np.zeros(1, dtype=_DEPTH_BATCH_DTYPE)
@@ -86,7 +86,8 @@ class TestOrderflowNativeDepth(unittest.TestCase):
         self.assertEqual(self.state[0]["flow"]["touch_n"], 0)
         self.invoke("on_timer", 10)
         self.assertEqual(self.state[0]["ev"]["events_total"], 0)
-        self.assertEqual(self.state[0]["obs"]["book_ready"], 0)
+        self.assertEqual(self.state[0]["obs"]["book_ready"], 1)
+        self.assertGreater(self.state[0]["obs"]["warmup_remaining_ms"], 0)
 
     def test_quantity_reduction_then_resync_clears_windows_and_ghosts(self):
         self.invoke("on_depth", 3)
@@ -125,6 +126,30 @@ class TestOrderflowNativeDepth(unittest.TestCase):
         self.invoke("on_depth", 3)
         self.assertEqual(self.state[0]["flow"]["prints_seen"], 0)
         self.assertEqual(self.state[0]["flow"]["touch_n"], 0)
+
+    def test_sweep_band_counts_levels_consumed_below_the_old_best(self):
+        self.invoke("on_depth", 3)
+        self.info[0]["reset"] = 0
+        self._depth_time(1_010_000_000)
+        # Three bid levels are swept: 1000/999/998 disappear, new best bid is 997.
+        self.items[:100]["price_ticks"] -= 3
+        self.invoke("on_depth", 3)
+        self.assertEqual(self.state[0]["flow"]["prints_seen"], 3)
+        self.assertEqual(self.state[0]["ring"]["bkt_sell"].sum(), 30)
+        self.assertEqual(self.state[0]["ring"]["bkt_buy"].sum(), 0)
+
+    def test_short_window_events_warm_before_the_long_lookback(self):
+        self.invoke("on_depth", 3)
+        self.invoke("on_timer", 10)
+        self.assertGreater(self.state[0]["obs"]["warmup_remaining_ms"], 800_000)
+        # Six seconds of history covers E01/E07/E08/E13 but not E11 (15 min)
+        # and E14 (5 min).
+        self.state[0]["book"]["warm_since_ns"] = self.context[0]["now_ns"] - 6_000_000_000
+        self._depth_time(self.context[0]["now_ns"] + 200_000_000)
+        self.invoke("on_timer", 10)
+        self.assertEqual(self.state[0]["obs"]["book_ready"], 1)
+        self.assertGreater(self.state[0]["obs"]["warmup_remaining_ms"], 0)
+        self.assertLess(self.state[0]["obs"]["warmup_remaining_ms"], 900_000)
 
     def _depth_time(self, now_ns):
         self.context[0]["now_ns"] = now_ns

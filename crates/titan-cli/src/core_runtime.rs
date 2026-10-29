@@ -1477,6 +1477,36 @@ mod tests {
     }
 
     #[test]
+    fn orderflow_events_runtime_template_deserializes_as_read_only_mainnet() {
+        let config: ApplicationConfig = toml::from_str(include_str!(
+            "../../../deploy/orderflow_events/runtime.toml"
+        ))
+        .unwrap();
+        assert_eq!(config.schema_version, APPLICATION_CONFIG_SCHEMA_VERSION);
+        assert_eq!(config.market_sources.len(), 1);
+        let source = &config.market_sources[0];
+        assert_eq!(source.connector_type.as_ref(), "binance-futures");
+        assert!(source.enabled);
+        let connector = std::str::from_utf8(&source.connector_config).unwrap();
+        assert!(connector.contains("depth_snapshot_limit = 1000"));
+        assert!(config.accounts.is_empty());
+        assert_eq!(config.strategies.len(), 1);
+        let strategy = &config.strategies[0];
+        assert!(strategy.enabled);
+        assert!(strategy.accounts.is_empty());
+        assert_eq!(strategy.recovery, StrategyRecoveryPolicy::Fresh);
+        assert_eq!(strategy.markets.len(), 1);
+        assert_eq!(strategy.markets[0].local_asset_no, 0);
+        assert_eq!(strategy.markets[0].asset_id, 1001);
+        assert_eq!(strategy.markets[0].data_mode, StrategyDataMode::Tick);
+        assert_eq!(
+            strategy.runtime.timer_interval,
+            Some(std::time::Duration::from_millis(100))
+        );
+        assert!(config.strategy_service.allow_unsigned_strategies);
+    }
+
+    #[test]
     fn legacy_plugin_configuration_is_rejected() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
