@@ -10,6 +10,11 @@
 - `runtime.toml`：部署定义（源、绑定、timer 100 ms、初始 `expected_digest` 占位）。
 - `artifacts/orderflow_events.titan`：不提交，由编译服务器产出后拷入本目录。
 
+仓库中的 `runtime.toml` 已固定为编译服务器产出的 0.2.2 冒烟制品（bundle
+`2405eb55…`，digest `a7be38b5…`），`artifacts/orderflow_events.titan` 随仓库提交，便于直接下发。
+重编后必须重新执行下文的固定步骤。构建与测试证据见
+[验收记录](../../docs/verification/2026-10-30/orderflow-0.2.2/README.md)。
+
 ## 1. 编译（在编译服务器 192.168.3.88，本机不编译）
 
 ```bash

@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+    Checking titan-domain-types v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-domain-types)
+    Checking titan-core-types v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-core-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/hftbacktest-derive)
+    Checking titan-event-engine v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-event-engine)
+    Checking titan-persistence v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-persistence)
+    Checking titan-market-service v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-market-service)
+    Checking titan-account-service v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.66s
+EXIT=0
