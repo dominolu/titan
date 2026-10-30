@@ -43,7 +43,7 @@ definition_version = 1
 strategy_key = "orderflow_events"
 strategy_id = 9501
 # 编译后必须用 titan strategy show --json 的 compiled_strategy_digest 替换（见同目录 README）。
-package = { loader_type = "native-v13", uri = "file://artifacts/orderflow_events.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+package = { loader_type = "native-v13", uri = "file://artifacts/orderflow_events.titan", expected_digest = [167, 190, 56, 181, 97, 8, 49, 209, 95, 69, 94, 240, 48, 55, 122, 27, 166, 47, 4, 177, 144, 41, 34, 164, 197, 160, 173, 2, 189, 191, 93, 169] }
 markets = [
   { local_market_no = 0, local_asset_no = 0, source_key = "binance-btc-mainnet", asset_id = 1001, data_mode = "tick" },
 ]
