@@ -294,6 +294,7 @@ impl ConfigurationAdapter {
             ));
         }
         validate_account_source_capacity(&config.event_engine, &config.accounts)?;
+        validate_strategy_run_capacity(&config.event_engine, &config.strategies)?;
         if !config.accounts.is_empty() && account_secret_root.is_none() {
             return Err(ConfigurationError::Invalid(
                 "account definitions require account_service.secret_root".into(),
@@ -1036,6 +1037,27 @@ fn validate_runtime_definitions(
     Ok(())
 }
 
+fn validate_strategy_run_capacity(
+    event_engine: &EventEngineConfig,
+    strategies: &[StrategyDefinition],
+) -> Result<(), ConfigurationError> {
+    // The PRIMARY lane derives its snapshot staging capacity from async_lane_capacity;
+    // the engine rejects lanes above the per-barrier staging budget at registration time.
+    let per_barrier = event_engine.snapshot_barriers.per_barrier_staging_capacity;
+    for definition in strategies {
+        if !definition.enabled {
+            continue;
+        }
+        if definition.runtime.async_lane_capacity > per_barrier {
+            return Err(ConfigurationError::Invalid(format!(
+                "strategy {} async_lane_capacity {} exceeds event_engine.snapshot_barriers.per_barrier_staging_capacity {}",
+                definition.strategy_key, definition.runtime.async_lane_capacity, per_barrier
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_account_source_capacity(
     event_engine: &EventEngineConfig,
     accounts: &[AccountDefinition],
@@ -1504,6 +1526,17 @@ mod tests {
             Some(std::time::Duration::from_millis(100))
         );
         assert!(config.strategy_service.allow_unsigned_strategies);
+    }
+
+    #[test]
+    fn deployment_template_rejects_async_lane_capacity_above_snapshot_staging() {
+        let mut config: ApplicationConfig = toml::from_str(include_str!(
+            "../../../deploy/orderflow_events/runtime.toml"
+        ))
+        .unwrap();
+        validate_strategy_run_capacity(&config.event_engine, &config.strategies).unwrap();
+        config.strategies[0].runtime.async_lane_capacity = 16_384;
+        assert!(validate_strategy_run_capacity(&config.event_engine, &config.strategies).is_err());
     }
 
     #[test]

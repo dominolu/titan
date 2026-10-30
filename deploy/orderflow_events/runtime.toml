@@ -35,7 +35,8 @@ api_key = ""
 secret = ""
 safety_timeout_ms = 30000
 '''
-instruments = [{ native_symbol = "BTCUSDT", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 3 } }]
+# Binance connector canonicalises symbols to lowercase; published events use that casing.
+instruments = [{ native_symbol = "btcusdt", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 3 } }]
 enabled = true
 definition_version = 1
 
@@ -49,7 +50,7 @@ markets = [
 ]
 accounts = []
 risk_scope = "orderflow-events-mainnet-readonly"
-runtime = { async_lane_capacity = 16384, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
+runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 15, nanos = 0 } }
 recovery = "fresh"
 enabled = true
 definition_version = 1
