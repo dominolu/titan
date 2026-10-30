@@ -109,4 +109,8 @@ titan logs <run_id> --json
 - 需要跨重启续算时增加 `strategy_service.checkpoint_root` 并把 `recovery` 改为
   `restore_latest_checkpoint`；当前模板是 `fresh`，重启后重新预热（短窗事件秒级恢复，E11 15 分钟）。
 - 长期运行观察宿主 book 价位增长（RSS）与 `event_engine.arena.market_overflow_bytes` 预算。
+- `market_sources[].instruments[].native_symbol` 必须与 connector 发布事件时使用的符号大小写一致：
+  Binance connector 会统一转小写（`btcusdt`），写成 `BTCUSDT` 会导致 `unbound symbol btcusdt`。
+- `runtime.async_lane_capacity` 不得大于 `event_engine.snapshot_barriers.per_barrier_staging_capacity`
+  （默认 8192）；PRIMARY lane 的 snapshot staging 容量由前者推导，超出会在启动时失败（配置加载已提前校验）。
 - 策略参数在编译时烘焙；改 `parameters.json` 必须重编并重新固定 `expected_digest`。
