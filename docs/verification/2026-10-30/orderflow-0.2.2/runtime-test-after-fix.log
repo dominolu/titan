@@ -1,0 +1,124 @@
+   Compiling titan-domain-types v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-domain-types)
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-core-types)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-event-engine)
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-market-service)
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-persistence)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-strategy-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.43s
+     Running unittests src/lib.rs (/tmp/titan-deplugin-target/debug/deps/titan_strategy_runtime-f8114d4d6e0bc21e)
+
+running 90 tests
+test depth_execution::tests::net_and_hedge_positions_keep_their_identity ... ok
+test depth_execution::tests::unproven_wrong_side_and_excess_reductions_are_rejected ... ok
+test depth_execution::tests::pending_cancel_does_not_release_reduction_reservation ... ok
+test depth_execution::tests::unavailable_depth_retains_cancel_and_proven_reduction ... ok
+test depth_book::tests::small_snapshot_and_delta_before_snapshot_stay_invalid ... ok
+test observation::tests::reads_preserve_u64_and_reject_non_finite_values ... ok
+test observation::tests::projection_is_bounded_and_does_not_publish_recovery_internals ... ok
+test depth_book::tests::deletion_backfills_unchanged_level_and_coverage_exhaustion_invalidates ... ok
+test observation::tests::no_callback_does_not_publish_or_consume_the_initial_request ... ok
+test observation::tests::public_schema_is_independent_of_private_name_offset_and_hash ... ok
+test observation::tests::publication_coalesces_requests_and_never_replays_a_recovery_point ... ok
+test depth_book::tests::invalidation_watermark_rejects_queued_old_snapshot_and_delta ... ok
+test observation::tests::missing_initialization_is_nullable_and_unknown_enum_is_incomplete ... ok
+test observation::tests::panicking_clock_does_not_leave_an_incomplete_frame ... ok
+test observation::tests::projection_rejects_unknown_paths_outside_bounds_and_incompatible_types ... ok
+test depth_book::tests::resnapshot_removes_ghosts_and_old_epoch_cannot_restore_readiness ... ok
+test observation::tests::request_during_capture_remains_pending_for_the_next_boundary ... ok
+test recovery::tests::confirmed_cancellation_is_consumed_by_the_common_order_history ... ok
+test recovery::tests::changed_fills_require_complete_execution_history_even_with_same_net_position ... ok
+test recovery::tests::hedge_recovery_preserves_sides_even_when_net_exposure_is_unchanged ... ok
+test depth_book::tests::large_delta_preserves_untouched_prices_and_is_never_a_reset ... ok
+test recovery::tests::missing_order_is_never_inferred_to_be_canceled ... ok
+test recovery::tests::native_history_is_required_and_cannot_explain_unowned_inventory ... ok
+test recovery::tests::changed_positions_and_unready_accounts_do_not_reopen_trading ... ok
+test recovery::tests::incomplete_checkpoint_does_not_hide_a_fill_delivery_gap ... ok
+test recovery::tests::native_history_cannot_invent_order_for_equal_timestamps_across_consumed_boundary ... ok
+test recovery::tests::native_history_rejects_pending_boundary_changed_identity_and_realized_transitions ... ok
+test recovery::tests::native_history_must_align_with_original_consumed_execution_boundary ... ok
+test recovery::tests::baseline_checksum_binds_public_facts_private_snapshot_and_order_history ... ok
+test recovery::tests::native_history_rejects_repeated_trade_ids_and_incomplete_orders ... ok
+test recovery::tests::session_and_balance_changes_reconcile_without_replaying_trades ... ok
+test recovery::tests::complete_native_history_explains_new_inventory_without_rewriting_baseline ... ok
+test recovery_storage::tests::crash_child ... ignored, subprocess fixture invoked only by sqlite_kill_boundaries
+test recovery::tests::unknown_orders_and_changed_order_identity_are_rejected ... ok
+test observation::tests::busy_reads_are_bounded_and_invalidation_wins_over_an_inflight_writer ... ok
+test observation::tests::stopped_reader_cannot_block_the_writer_or_terminal_publication ... ok
+test depth_book::tests::large_book_and_outside_updates_are_retained_without_claiming_coverage ... ok
+test recovery_storage::tests::recovery_contention_budget_probe ... ignored, explicit build-server contention/performance gate
+test observation::tests::publication_performance_probe ... ok
+test observation::tests::concurrent_readers_only_see_whole_published_frames ... ok
+test recovery_storage::tests::foreign_and_unaccepted_tokens_are_rejected ... ok
+test recovery_storage::tests::invalid_configuration_database_role_and_future_schema_are_rejected ... ok
+test recovery_storage::tests::sqlite_runtime_includes_upstream_wal_reset_fix ... ok
+test runtime::activation_tests::invalidation_cannot_be_undone_by_a_late_open_or_close ... ok
+test runtime_v13::tests::account_enums_are_explicitly_translated_to_v13 ... ok
+test runtime_v13::tests::client_order_ownership_is_stable_across_generations ... ok
+test runtime_v13::tests::execution_envelope_bounds_batch_price_staleness_hedges_and_reductions ... ok
+test runtime_v13::tests::filled_risk_stays_reserved_until_positions_confirm_and_protective_exits_remain_allowed ... ok
+test runtime_v13::tests::inventory_confirmation_handles_fill_position_orderings_and_hedge_legs ... ok
+test runtime_v13::tests::newer_public_seed_advances_existing_order_history ... ok
+test runtime_v13::tests::orders_list_checksum_detects_tampering ... ok
+test runtime_v13::tests::recovered_terminal_fill_replay_keeps_inventory_and_consumed_boundary ... ok
+test scheduler::tests::cancel_waits_for_current_callback_and_removes_task ... ok
+test service_core::host_subscription_tests::bbo_only_strategy_receives_all_host_account_facts ... ok
+test service_core::host_subscription_tests::host_depth_invalidation_subscription_is_supported ... ok
+test recovery_storage::tests::generation_only_legacy_migration_preserves_failed_start_reservations ... ok
+test v13::compiler::tests::malformed_bridge_and_failed_pair_publication_preserve_previous_artifacts ... ok
+test recovery_storage::tests::ignored_head_update_cannot_acknowledge_an_unpublished_point ... ok
+test v13::tests::aligned_state_is_independent_and_hides_tail_padding ... ok
+test v13::tests::closed_recovery_staging_remembers_rejected_command_attempts ... ok
+test v13::tests::command_ids_do_not_overlap_between_generations ... ok
+test v13::tests::command_staging_is_atomic_and_cancel_checks_ownership ... ok
+test v13::tests::hedge_staging_preserves_side_and_normalizes_closing_semantics ... ok
+test v13::tests::historical_recovery_point_loads_original_native_strategy ... ignored, requires explicit previous-binary synthetic recovery and signed strategy fixtures
+test v13::tests::paused_command_staging_allows_cancels_and_venue_reduce_only_but_rejects_opening ... ok
+test v13::tests::public_identity_is_order_independent_but_fact_sensitive ... ok
+test v13::tests::recovery_bindings_cover_execution_asset_routes_and_ignore_session_generations ... ok
+test recovery_storage::tests::actual_sqlite_full_and_read_only_fail_without_partial_head ... ok
+test recovery_storage::tests::runtime_payload_budget_is_fail_closed_without_advancing_head ... ok
+test recovery_storage::tests::owner_lease_rejects_competing_store_and_releases_after_writer ... ok
+test v13::compiler::tests::native_library_sha256_and_required_signature_are_checked_by_rust ... ok
+test recovery_storage::tests::legacy_import_preserves_original_bytes_and_is_idempotent ... ok
+test recovery_storage::tests::queue_overflow_does_not_forge_or_skip_a_commit_token ... ok
+test recovery_storage::tests::explicit_close_releases_owner_even_if_runtime_keeps_store_alive ... ok
+test recovery_storage::tests::reservation_fences_previous_generation_before_next_head_exists ... ok
+test recovery_storage::tests::generations_survive_restart_failed_start_and_overflow ... ok
+test recovery_storage::tests::failed_head_write_rolls_back_point_but_not_reserved_generation ... ok
+test recovery_storage::tests::close_timeout_keeps_owner_until_writer_has_drained ... ok
+test recovery_storage::tests::busy_writer_timeout_never_reopens_after_late_commit ... ok
+test recovery_storage::tests::immutable_reference_survives_head_changes_and_preserves_u64 ... ok
+test recovery_storage::tests::bad_payload_metadata_store_and_reference_are_rejected ... ok
+test recovery_storage::tests::sqlite_new_runtime_refuses_unmeasured_five_ms_default_without_extending_it ... ok
+test recovery_storage::tests::head_metadata_and_non_head_corruption_are_not_silently_ignored ... ok
+test recovery_storage::tests::copied_database_cannot_activate_at_another_location ... ok
+test v13::compiler::tests::pair_bundle_signatures_and_reproducible_overwrite_share_runtime_validation ... ok
+test recovery_storage::tests::deleted_database_cannot_silently_reset_generation_at_existing_namespace ... ok
+test recovery_storage::tests::backup_is_consistent_immutable_and_quarantined ... ok
+test recovery_storage::tests::sqlite_kill_boundaries ... ok
+test recovery_storage::tests::recovery_commit_latency_probe ... ok
+test recovery_storage::tests::consecutive_tokens_and_stale_generation_fail_closed ... ok
+
+test result: ok. 87 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 2.18s
+
+     Running tests/observation_boundaries.rs (/tmp/titan-deplugin-target/debug/deps/observation_boundaries-61b9d041ec4a4e35)
+
+running 8 tests
+test observation_runtime_checkpoint_and_stop_failure_invalidate ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_control_rejection_finishes_operation_without_failing_strategy ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_execution_rejection_while_callback_owns_state ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_invalidation_after_inflight_start_closes_reopened_gate ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_invalidation_survives_control_rejection ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_late_result_after_lane_shutdown_keeps_stopped_frame ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_never_started_and_stopped_frames ... ignored, requires explicit original signed synthetic grid fixture
+test observation_runtime_rejected_invalidation_cannot_be_undone_by_inflight_start ... ignored, requires explicit original signed synthetic grid fixture
+
+test result: ok. 0 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests titan_strategy_runtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

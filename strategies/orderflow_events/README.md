@@ -130,6 +130,7 @@ runtime = { timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 
   给出最慢的已启用事件的剩余时间。BBO 不会覆盖深度盘口或掩盖深度过期。
 - 成交推断以“新最优价之外消失的价位”为穿价带：扫单穿掉多档时逐档计入成交量，只有离开 Top100
   的价位不算消耗；仍可能把最优价撤单误计为成交（`proxy`）。
+- 2026-10-30 主网只读冒烟 30 分钟通过（BTCUSDT，`RUNNING → STOPPED`，无告警），证据见 [冒烟记录](../../docs/verification/2026-10-30/orderflow-0.2.2/live-smoke/README.md)。
 - 75 天 25 档历史不能验证深部事件。回放必须提供显式 `depth_batch` 元数据及可证明连续的原始快照/diff。
 
 同代次内已知删空的价位，在上一 Top100 仍能证明其为零且未过期时，补回会进入 E04 跟踪；未知新价位和跨重同步记录不会误算。三项审查修复见[验收记录](../../docs/verification/2026-10-28/depth-review/README.md)。

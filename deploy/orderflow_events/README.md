@@ -97,6 +97,10 @@ titan logs <run_id> --json
 - `strategy package ... is outside allowed_strategy_roots`：bundle 没放到 `artifacts/`。
 - 制品 digest 不匹配：第 2 步未执行，或重编后未更新。
 
+2026-10-30 已在主网只读机器（43.130.234.54）完成 30 分钟冒烟：`RUNNING → STOPPED`、
+`exit_code=0`、`WARN/ERROR=0`，BBO 743,868 / DepthBatch 68,523 / 失效 4 次。
+证据见 [验收记录](../../docs/verification/2026-10-30/orderflow-0.2.2/live-smoke/README.md)。
+
 ## 6. 停止
 
 前台 `Ctrl-C`；或 `titan stop <run_id>`。

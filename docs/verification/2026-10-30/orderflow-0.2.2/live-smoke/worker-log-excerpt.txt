@@ -1,0 +1,51 @@
+=== first 20 lines ===
+2026-10-30T06:00:29.277566Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=7
+2026-10-30T06:00:29.402561Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=3
+2026-10-30T06:00:29.402590Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.403134Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.404661Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.409623Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=2
+2026-10-30T06:00:29.413445Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=1
+2026-10-30T06:00:29.414180Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.415863Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.416599Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.419312Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=281
+2026-10-30T06:00:29.419335Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=7
+2026-10-30T06:00:29.419340Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=0
+2026-10-30T06:00:29.421481Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=4
+2026-10-30T06:00:29.422227Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=2
+2026-10-30T06:00:29.423731Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=2
+2026-10-30T06:00:29.424808Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=3
+2026-10-30T06:00:29.426245Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=2
+2026-10-30T06:00:29.435110Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=36
+2026-10-30T06:00:29.438635Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=4
+
+=== first depth dispatches ===
+2026-10-30T06:00:29.419312Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=281
+2026-10-30T06:00:29.419335Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=7
+2026-10-30T06:00:29.435110Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=36
+2026-10-30T06:00:29.461221Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=49
+2026-10-30T06:00:29.490304Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=59
+
+=== stream invalidated dispatches ===
+2026-10-30T06:00:29.277566Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=7
+2026-10-30T06:00:29.409623Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=2
+2026-10-30T06:30:05.043895Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=552
+2026-10-30T06:30:05.063444Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=14
+
+=== last 15 lines ===
+2026-10-30T06:30:41.051152Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.Bbo" elapsed_us=4
+2026-10-30T06:30:41.057587Z  INFO titan_cli::core_runtime: direct execution runtime summary active_tasks=0 spawned_tasks=0 saturated_rejections=0 stopping_rejections=0 connector_future_allocations=0 spawn_p50_ns=0 spawn_p99_ns=0 spawn_p999_ns=0 spawn_max_ns=0
+{
+  "compiled_strategy_digest": "a7be38b5610831d15f455ef030377a1ba62f04b1902922a4c5a0ad02bdbf5da9",
+  "config_sha256": "2f96505fc30d1e23c4e3c1b1e0bbd29b2187806be59b68d709b3cab2259cdeb7",
+  "environment": "live",
+  "event_mode": "tick",
+  "returns": [],
+  "run_id": "run-18e339413ecda4a5-2fb319",
+  "schema_version": 1,
+  "status": "STOPPED",
+  "strategy_id": "orderflow_events",
+  "strategy_version": "0.2.2",
+  "wall_time_ns": 1811632061227
+}
