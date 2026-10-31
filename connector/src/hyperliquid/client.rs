@@ -27,6 +27,7 @@ pub struct HyperliquidClient {
 #[allow(dead_code)]
 impl HyperliquidClient {
     pub fn new(info_url: &str, exchange_url: &str) -> Self {
+        crate::ensure_rustls_crypto_provider();
         Self {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
