@@ -350,7 +350,7 @@ submit、1 次 cancel，最终状态 `COMPLETED`；制品 digest、trace digest 
 - `crates/titan-strategy-runtime/src/artifact.rs`
 - `crates/titan-account-service/src/execution.rs`
 - `connector/src/account_runtime.rs`
-- `strategies/pair_arb/strategy.py`
+- `strategies/pair_arb.py`
 - `crates/titan-domain-types/src/lib.rs`
 - `crates/titan-strategy-runtime/src/offline_v13.rs`
 - `hftbacktest/src/backtest/strategy_v13.rs`

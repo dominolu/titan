@@ -6,13 +6,11 @@ from unittest.mock import patch
 import numpy as np
 
 from titan_strategy import abi_v13
-from strategies.pair_arb import strategy
+from strategies import pair_arb as strategy
 
 
 def fresh_state(**overrides):
-    parameters = json.loads(
-        (Path(__file__).parents[3] / "strategies" / "pair_arb" / "parameters.json").read_text()
-    )
+    parameters = strategy.SPEC.validate_parameters({})
     parameters.update(overrides)
     definition = strategy.build(strategy.SPEC.validate_parameters(parameters))
     return definition.state.copy()[0]

@@ -12,7 +12,7 @@ import numpy as np
 
 from titan_strategy import abi_v13
 from titan_strategy.state import canonical_state_schema, state_schema_hash, validate_state_dtype
-from strategies.grid import strategy as grid
+from strategies import grid
 from test_grid import Context, row
 
 
@@ -25,8 +25,7 @@ class TestGridNative(unittest.TestCase):
         output = Path(cls.temporary.name) / "grid"
         binary = os.environ.get("TITAN_TEST_BINARY", str(cls.root / "target/debug/titan"))
         result = subprocess.run([
-            binary, "strategy", "compile", "--strategy", str(cls.root / "strategies/grid/strategy.py"),
-            "--parameters", str(cls.root / "strategies/grid/parameters.json"),
+            binary, "strategy", "compile", "--strategy", str(cls.root / "strategies/grid.py"),
             "--target", "x86_64-unknown-linux-gnu", "--cpu-baseline", "x86-64-v2",
             "--artifact-format", "pair", "--output", str(output), "--json",
         ], capture_output=True, text=True, timeout=360)

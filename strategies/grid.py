@@ -1034,3 +1034,9 @@ def build(parameters):
         "on_account_state": on_account_state, "on_timer": on_timer, "on_stop": on_stop,
     }
     return StrategyDefinition(SPEC, state, handlers, {"description": "Bounded linear-contract grid; platform owns net accounting"}, business_observation=GRID_OBSERVATION)
+
+
+TESTS = (
+    {"name": "missing_account_fails_closed", "steps": [{"callback": "on_start", "status": -1}],
+     "expect": {"commands.submit_count": 0, "commands.cancel_count": 0, "context.last_error_code": -2, "grid.last_error": 701, "state_bytes": {"le": 65536}}},
+)

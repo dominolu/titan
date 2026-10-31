@@ -222,7 +222,7 @@ direct_submit 检查 ready/active/readiness_fence 后返回 future，但 future 
 
 ### R5 — P1：允许下单但未声明账户回调的策略缺少宿主必需的私有事实订阅
 
-位置：[订阅自动补齐条件](../crates/titan-strategy-runtime/src/service_core.rs#L705)、[REST 终态等待私有事实](../crates/titan-strategy-runtime/src/runtime_v13.rs#L1233)、[仓库 smoke 策略](../strategies/v13_smoke/strategy.py#L19)。
+位置：[订阅自动补齐条件](../crates/titan-strategy-runtime/src/service_core.rs#L705)、[REST 终态等待私有事实](../crates/titan-strategy-runtime/src/runtime_v13.rs#L1233)、[仓库 smoke 策略](../strategies/v13_smoke.py#L19)。
 
 ServiceCore 只在 manifest 已声明至少一个 titan.account 订阅时补齐内部私有事件。SDK 允许 BBO-only + ORDER_EXECUTION，仓库 v13_smoke 就是该配置。这类策略可以下单，但宿主接收不到 Order/Fill/Position/账户失效事件。新增 REST 处理又明确保留已成交订单为非终态，等待私有事实，因此订单不能正常退役、停止排空可超时，公共持仓和账户会话也不能更新。业务回调是否订阅与宿主是否需要维护账户状态是两回事。
 

@@ -77,12 +77,12 @@ run report-tests "$TITAN_VERIFY_PYTHON" -m unittest discover -s python/titan-rep
 run original-native-sqlite-recovery "$TITAN_VERIFY_PYTHON" scripts/verify_observation_recovery_compat.py --repo "$repo" --fixture "$TITAN_PREVIOUS_RECOVERY_FIXTURE" --output "$out/original-native-sqlite-recovery.json" --cargo-config "$out/cargo-source.toml"
 run maintenance "$TITAN_VERIFY_PYTHON" scripts/verify_recovery_maintenance.py --binary "$TITAN_TEST_BINARY" --fixture "$TITAN_PREVIOUS_RECOVERY_FIXTURE" --output "$out/maintenance"
 run native-service-build "${cargo_cmd[@]}" build --locked -p titan-strategy-runtime --example v13_service_recovery_smoke
-run smoke-compile "$TITAN_TEST_BINARY" strategy compile --strategy strategies/v13_smoke/strategy.py --parameters strategies/v13_smoke/parameters.json --artifact-format bundle --output "$out/smoke.titan"
+run smoke-compile "$TITAN_TEST_BINARY" strategy compile --strategy strategies/v13_smoke.py --set initial_counter=4 --artifact-format bundle --output "$out/smoke.titan"
 run native-service "$CARGO_TARGET_DIR/debug/examples/v13_service_recovery_smoke" "$out/smoke.titan" "$out/native-service"
 run native-negative-build "${cargo_cmd[@]}" build --locked -p titan-strategy-runtime --example v13_common_recovery_smoke --example v13_order_drain_smoke --example v13_timer_failure_smoke
 run common-recovery "$CARGO_TARGET_DIR/debug/examples/v13_common_recovery_smoke" "$out/smoke.titan"
 run order-drain "$CARGO_TARGET_DIR/debug/examples/v13_order_drain_smoke" "$out/smoke.titan"
-run timer-compile "$TITAN_TEST_BINARY" strategy compile --strategy python/titan-strategy-sdk/tests/fixtures/v13_timer_submit.py --parameters strategies/v13_smoke/parameters.json --artifact-format bundle --output "$out/timer.titan"
+run timer-compile "$TITAN_TEST_BINARY" strategy compile --strategy python/titan-strategy-sdk/tests/fixtures/v13_timer_submit.py --set initial_counter=4 --artifact-format bundle --output "$out/timer.titan"
 run timer-failure "$CARGO_TARGET_DIR/debug/examples/v13_timer_failure_smoke" "$out/timer.titan"
 run dto-export "$TITAN_TEST_BINARY" console export-types --output web/console/src/generated
 (

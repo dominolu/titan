@@ -61,17 +61,12 @@ export TITAN_STRATEGY_PYTHON="$PWD/.venv/bin/python"
 使用仓库中的只读事件计数策略与 Tick trace，体验从策略源码到事件回放的完整流程，无需交易所账户：
 
 ```bash
-mkdir -p target/strategies
-titan strategy compile \
-  --strategy strategies/event_counter/strategy.py \
-  --parameters strategies/event_counter/parameters.json \
-  --strategy-format bundle \
-  --output target/strategies/event_counter.titan
+titan strategy compile strategies/event_counter.py
 
-titan validate target/strategies/event_counter.titan \
+titan validate build/strategies/event_counter.titan \
   -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
 
-titan run target/strategies/event_counter.titan \
+titan run build/strategies/event_counter.titan \
   -e backtest -m tick -c configs/pair_arb_v13_backtest.toml --json
 ```
 
@@ -102,7 +97,7 @@ titan report RUN_ID --renderer native --output report.html
 
 策略通过 `StrategySpec` 声明事件订阅和参数，通过 `@njit` 回调处理行情、账户事件与定时器。策略状态、盘口和订单接口由 SDK 提供。
 
-下面是[事件计数示例](strategies/event_counter/strategy.py)中的行情回调：
+下面是[事件计数示例](strategies/event_counter.py)中的行情回调：
 
 ```python
 from numba import njit
@@ -113,13 +108,15 @@ def on_tick(ctx):
     ctx.state["tick_callbacks"] += 1
 ```
 
-每份策略提供 `StrategySpec`、`state_dtype` 和 `build(parameters)`，将订阅、类型化状态与回调组合起来。参数在编译时写入策略文件；修改参数或策略逻辑后，使用快速开始中的 `titan strategy compile` 重新编译。签名与可信公钥配置见 [CLI 指南](docs/titan_cli.md)。
+每份策略只需一个 `strategies/<name>.py`，提供 `StrategySpec`、参数默认值、`state_dtype` 和 `build(parameters)`，将订阅、类型化状态与回调组合起来。参数在编译时写入策略文件；修改参数或策略逻辑后，使用快速开始中的 `titan strategy compile` 重新编译。签名与可信公钥配置见 [CLI 指南](docs/titan_cli.md)。
 
 | 示例 | 用途 | 入口 |
 | :--- | :--- | :--- |
-| `event_counter` | 了解事件回调与策略状态 | [源码](strategies/event_counter/strategy.py) |
-| `pair_arb` | Maker-Taker / Taker-Taker 配对套利 | [指南](strategies/pair_arb/README.md) |
-| `grid` | 等差 / 等比、多空 / 中性合约网格 | [指南](strategies/grid/README.md) |
+| `event_counter` | 了解事件回调与策略状态 | [源码](strategies/event_counter.py) |
+| `pair_arb` | Maker-Taker / Taker-Taker 配对套利 | [指南](strategies/pair_arb.md) |
+| `grid` | 等差 / 等比、多空 / 中性合约网格 | [指南](strategies/grid.md) |
+
+单文件发现、测试、工作区工具链和发布见[单文件策略工作区](docs/single_file_strategies.md)。
 
 完整策略结构、参数类型和回调接口见 [Python/Numba SDK](python/titan-strategy-sdk/README.md)。
 

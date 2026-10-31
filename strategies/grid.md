@@ -1,8 +1,8 @@
 # Numba 合约网格（ABI V13）
 
-`grid` 是单账户、单品种、线性合约、NET 持仓模式的原生策略。分析来源及差异见 [迁移分析](../../docs/gate_arb_grid_analysis.md)。这是交易策略组件；账户杠杆、保证金模式、交易所规则和最终风险审批仍由 Titan 平台管理。策略不会修改账户设置。
+`grid` 是单账户、单品种、线性合约、NET 持仓模式的原生策略。分析来源及差异见 [迁移分析](../docs/gate_arb_grid_analysis.md)。这是交易策略组件；账户杠杆、保证金模式、交易所规则和最终风险审批仍由 Titan 平台管理。策略不会修改账户设置。
 
-当前版本 `1.2.1`，state schema `3`。全面复核见 [网格审查](../../docs/verification/2026-10-22/grid-review/README.md)，真实历史行情、保护性退出修复及新验证见 [历史回测](../../docs/verification/2026-10-22/grid-history/README.md)。旧版本 checkpoint 不能直接恢复到本版；需要先用原制品完成停止，再按平台流程启动新版本。
+当前版本 `1.2.1`，state schema `3`。全面复核见 [网格审查](../docs/verification/2026-10-22/grid-review/README.md)，真实历史行情、保护性退出修复及新验证见 [历史回测](../docs/verification/2026-10-22/grid-history/README.md)。旧版本 checkpoint 不能直接恢复到本版；需要先用原制品完成停止，再按平台流程启动新版本。
 
 ## 行为
 
@@ -19,14 +19,13 @@
 
 ## 编译与验证
 
-以下命令仅在 `titan-build` 执行。参数文件是小整数的离线示例，实际品种须先转换真实 tick、lot、货币单位及账户绑定。
+以下命令仅在 `titan-build` 执行。源码默认参数是小整数的离线示例，实际品种须先转换真实 tick、lot、货币单位及账户绑定。
 
 ```bash
 export TITAN_STRATEGY_PYTHON="$PWD/.venv/bin/python"
 export TITAN_STRATEGY_SDK="$PWD/python/titan-strategy-sdk"
 target/debug/titan strategy compile \
-  --strategy strategies/grid/strategy.py \
-  --parameters strategies/grid/parameters.json \
+  --strategy strategies/grid.py \
   --target x86_64-unknown-linux-gnu --cpu-baseline x86-64-v2 \
   --artifact-format bundle --output verification-artifacts/grid/grid.titan
 
@@ -55,7 +54,7 @@ bash scripts/run_grid_history.sh data/grid-history verification-artifacts/grid-h
   --output backtest_reports/grid_history_20261022
 ```
 
-下载脚本获取固定 UTC 日期的官方 BBO、聚合成交与资金费归档并检查官方 SHA256；运行脚本执行 3 种行情 × 3 种方向 × 2 种费用/延迟/参与率模型。全部盘口用于撮合和逐更新回撤/敞口，只有策略 BBO 回调限制为最短 100ms。最小订单规则、费用和流动性假设见 [报告](../../docs/verification/2026-10-22/grid-history/README.md)，不能把模型结果当作实际交易所执行保证。
+下载脚本获取固定 UTC 日期的官方 BBO、聚合成交与资金费归档并检查官方 SHA256；运行脚本执行 3 种行情 × 3 种方向 × 2 种费用/延迟/参与率模型。全部盘口用于撮合和逐更新回撤/敞口，只有策略 BBO 回调限制为最短 100ms。最小订单规则、费用和流动性假设见 [报告](../docs/verification/2026-10-22/grid-history/README.md)，不能把模型结果当作实际交易所执行保证。
 
 ## 参数和单位
 
@@ -91,7 +90,7 @@ bash scripts/run_grid_history.sh data/grid-history verification-artifacts/grid-h
 
 保证金检查同时限制分配额度和可用余额，预留本策略所有尚未确认释放的订单。可用余额可能已经冻结部分订单资金，因此本地预算有意保守；交易所阶梯保证金、动态规则和账户组合风险由平台执行器再次验证。单实例需要独占其账户品种的 NET 仓位；其他来源的持仓变化会触发对账。
 
-要沿用源项目的创建时资金分配和固定数量，可使用 [兼容参数示例](parameters.gate_arb.json)。其中的价格、数量单位仍是离线示例；`neutral_mode` 用于切换到中性方向时保持库存约束。
+要沿用源项目的创建时资金分配和固定数量，可使用 [兼容参数示例](../configs/strategy_parameters/grid.gate_arb.json)。其中的价格、数量单位仍是离线示例；`neutral_mode` 用于切换到中性方向时保持库存约束。
 
 ## 停止、恢复与收益
 

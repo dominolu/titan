@@ -64,13 +64,13 @@ SPEC = StrategySpec(
                   values=("MAKER_TAKER", "TAKER_TAKER")),
         IntParam("hedge_ratio_numerator", required=False, default=1, minimum=1),
         IntParam("hedge_ratio_denominator", required=False, default=1, minimum=1),
-        IntParam("max_position_lots", minimum=1), IntParam("slot_lots", minimum=1),
+        IntParam("max_position_lots", required=False, default=10, minimum=1), IntParam("slot_lots", required=False, default=2, minimum=1),
         IntParam("spread_ticks", required=False, default=0, minimum=0),
         IntParam("requote_distance_ticks", required=False, default=1, minimum=0),
         IntParam("dust_lots", required=False, default=0, minimum=0),
         IntParam("start_time_ns", required=False, default=0, minimum=0),
         IntParam("cancel_timeout_ns", required=False, default=1_000_000_000, minimum=1),
-        IntParam("slot_timeout_ns", minimum=1),
+        IntParam("slot_timeout_ns", required=False, default=5_000_000_000, minimum=1),
         IntParam("max_unhedged_duration_ns", required=False, default=5_000_000_000, minimum=1),
         IntParam("max_unhedged_lots_soft", required=False, default=10, minimum=1),
         IntParam("max_unhedged_lots_hard", required=False, default=20, minimum=1),
@@ -742,3 +742,9 @@ def build(parameters):
                 "on_balance": on_balance, "on_account_state": on_account_state,
                 "on_timer": on_timer, "on_stop": on_stop}
     return StrategyDefinition(SPEC, state, handlers, {"description": "Slot-based pair arbitrage V3"})
+
+
+TESTS = (
+    {"name": "missing_account_fails_closed", "steps": [{"callback": "on_start", "status": -1}],
+     "expect": {"commands.submit_count": 0, "commands.cancel_count": 0, "context.last_error_code": -2, "pair.last_error": 301, "state_bytes": {"le": 65536}}},
+)

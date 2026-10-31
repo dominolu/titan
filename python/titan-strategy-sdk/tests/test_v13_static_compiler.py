@@ -69,7 +69,7 @@ class TestV13StaticCompiler(unittest.TestCase):
                 validate_strategy_definition(definition, runtime_abi)
 
     def test_smoke_strategy_builds_pair_and_bundle(self):
-        source = Path(__file__).parents[3] / "strategies" / "v13_smoke" / "strategy.py"
+        source = Path(__file__).parents[3] / "strategies" / "v13_smoke.py"
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -162,10 +162,8 @@ class TestV13StaticCompiler(unittest.TestCase):
 
     def test_pair_arb_full_state_machine_aot_compiles(self):
         root = Path(__file__).parents[3]
-        source = root / "strategies" / "pair_arb" / "strategy.py"
-        parameters = json.loads(
-            (root / "strategies" / "pair_arb" / "parameters.json").read_text()
-        )
+        source = root / "strategies" / "pair_arb.py"
+        parameters = {}
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
         with tempfile.TemporaryDirectory() as temporary:
             result = _compile_with_rust(_Request(
@@ -181,10 +179,10 @@ class TestV13StaticCompiler(unittest.TestCase):
         runtime_abi = {"abi_version": 13, "fingerprint": abi_v13.ABI_FINGERPRINT.hex()}
         for name in ("dual_ma", "event_counter"):
             with self.subTest(strategy=name), tempfile.TemporaryDirectory() as temporary:
-                strategy_root = root / "strategies" / name
-                parameters = json.loads((strategy_root / "parameters.json").read_text())
+                strategy_source = root / "strategies" / f"{name}.py"
+                parameters = {}
                 result = _compile_with_rust(_Request(
-                    strategy_root / "strategy.py", parameters,
+                    strategy_source, parameters,
                     "x86_64-unknown-linux-gnu", "x86-64-v2", "bundle",
                     Path(temporary) / f"{name}.titan", runtime_abi,
                 ))

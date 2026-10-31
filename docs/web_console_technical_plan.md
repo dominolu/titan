@@ -278,5 +278,5 @@ M2 必须等待实盘事实留存与指标输出补齐，不能用当前 live wo
 - [管理平台需求文档](management_console_requirements.md)：功能范围、唯一职责和跨模块验收。
 - [Titan CLI](titan_cli.md)：当前入口与 worker 管理能力。
 - [ResultBundle schema](result_bundle_schema.md)：当前结果与完整性约定。
-- [Numba 网格](../strategies/grid/README.md)：当前网格能力、停止方式与恢复约束。
+- [Numba 网格](../strategies/grid.md)：当前网格能力、停止方式与恢复约束。
 - [可复用工程经验](memory/engineering.md)：账户事实、恢复和远端验证边界。

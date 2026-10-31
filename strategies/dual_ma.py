@@ -47,3 +47,9 @@ def build(parameters):
     state = new_state(state_dtype)
     state[0]["fast"], state[0]["slow"] = parameters["fast"], parameters["slow"]
     return StrategyDefinition(SPEC, state, {"on_tick": on_tick})
+
+
+TESTS = (
+    {"name": "two_prices", "steps": [{"callback": "on_tick", "views": {"ticks": [{"price_ticks": 100}, {"price_ticks": 102}]}}],
+     "expect": {"count": 2, "slow_mean": 101}},
+)

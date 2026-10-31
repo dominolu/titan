@@ -22,7 +22,7 @@ fn strategy_identity_groups_aliases_without_using_source_bytes_or_runtime_ids() 
         legacy_research_id: None,
         strategy_name: Some("网格策略".into()),
         source: source.clone(),
-        parameters: temp.path().join("parameters.json"),
+        parameters: Some(temp.path().join("parameters.json")),
         layout: None,
     };
     let first = template.strategy_identity("build").unwrap();
@@ -46,6 +46,33 @@ fn strategy_identity_groups_aliases_without_using_source_bytes_or_runtime_ids() 
         template.legacy_research_id = Some("a".repeat(length));
         assert!(template.strategy_identity("build").is_err());
     }
+}
+
+#[test]
+fn single_file_preset_uses_source_defaults_without_parameter_sidecar() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("grid.py");
+    std::fs::write(&source, "# source identity only").unwrap();
+    let preset: super::config::StrategyParameterPreset =
+        serde_json::from_value(json!({"source":source})).unwrap();
+    assert!(preset.parameters.is_none());
+    assert_eq!(preset.strategy_identity("build").unwrap().1, "grid");
+}
+
+#[test]
+fn frozen_node_builds_keep_the_original_source_workspace() {
+    let project = tempfile::tempdir().unwrap();
+    let strategies = project.path().join("strategies");
+    std::fs::create_dir(&strategies).unwrap();
+    let source = strategies.join("grid.py");
+    std::fs::write(&source, "# source").unwrap();
+    let workspace = project.path().join("titan.toml");
+    std::fs::write(&workspace, "schema_version=1").unwrap();
+    assert_eq!(super::node::source_workspace(&source), Some(workspace));
+    let operation = tempfile::tempdir().unwrap();
+    let snapshot = operation.path().join("strategy.py");
+    std::fs::copy(source, &snapshot).unwrap();
+    assert!(super::node::source_workspace(&snapshot).is_none());
 }
 
 #[test]
