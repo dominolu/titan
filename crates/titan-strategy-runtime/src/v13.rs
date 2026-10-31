@@ -786,6 +786,8 @@ pub struct CompiledStrategyMetadataV13 {
     pub native_library: Arc<str>,
     pub callback_mask: u64,
     pub parameter_schema: Arc<serde_json::Value>,
+    /// Source identity covered by the manifest signature; optional for older V13 producers.
+    pub source_digest: Option<[u8; 32]>,
     pub parameters_digest: [u8; 32],
     pub subscriptions: Arc<[EventSubscriptionV13]>,
     pub capabilities: StrategyCapabilitiesV13,
@@ -1755,6 +1757,10 @@ fn parse_manifest(
         native_library: Arc::from(value_text(map_get(value, "native_library")?)?),
         callback_mask: value_u64(map_get(value, "callback_mask")?)?,
         parameter_schema: Arc::new(cbor_to_json(map_get(value, "parameter_schema")?)?),
+        source_digest: map_get(value, "source_digest")
+            .ok()
+            .map(value_bytes32)
+            .transpose()?,
         parameters_digest: value_bytes32(map_get(value, "parameters_digest")?)?,
         subscriptions: subscriptions.into(),
         capabilities,

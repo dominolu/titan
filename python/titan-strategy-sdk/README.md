@@ -14,6 +14,8 @@
 Rust 拥有编译进程调度、超时/资源限制、原生链接与依赖审计、规范 CBOR manifest、制品摘要、Ed25519 签名及制品校验。
 Python 不读取签名私钥，也不生成或校验 `.titan` / `.manifest.cbor`；不再依赖 `cryptography` 或提供 Python 制品 API。
 
+每份策略默认只有一个 `strategies/<name>.py`；默认参数和可选 TESTS 都在源码内。完整工作流见[单文件策略工作区](../../docs/single_file_strategies.md)。
+
 策略必须导出模块常量 `SPEC`、`state_dtype` 和 `build(parameters) -> StrategyDefinition`；handler 使用 `@njit`，签名为
 `handler(context)`。参数在编译期校验并写入 initial state；部署期不能覆盖参数。
 
@@ -21,8 +23,7 @@ Python 不读取签名私钥，也不生成或校验 `.titan` / `.manifest.cbor`
 
 ```bash
 titan strategy compile \
-  --strategy strategies/pair_arb/strategy.py \
-  --parameters strategies/pair_arb/parameters.json \
+  --strategy strategies/pair_arb.py \
   --target x86_64-unknown-linux-gnu \
   --cpu-baseline x86-64-v2 \
   --artifact-format bundle \
@@ -68,7 +69,7 @@ SDK 将完成确认写入现有 context.flags 的位 0；布局和指纹不变�
 CLI 的 V13 trace 支持显式 `{"kind":"stop","now_ns":...}`，后续事件负责交付停止阶段的
 撤单、成交与持仓确认；文件结束而策略尚未完成停止时，运行失败，不写成功结果。
 
-示例和完整用法见 [Numba 合约网格](../../strategies/grid/README.md)。
+示例和完整用法见 [Numba 合约网格](../../strategies/grid.md)。
 
 ## 恢复订单结果（2026-10-22）
 

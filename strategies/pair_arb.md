@@ -12,8 +12,7 @@ Build on the compilation server:
 
 ```text
 titan strategy compile \
-  --strategy strategies/pair_arb/strategy.py \
-  --parameters strategies/pair_arb/parameters.json \
+  --strategy strategies/pair_arb.py \
   --target x86_64-unknown-linux-gnu \
   --cpu-baseline x86-64-v2 \
   --artifact-format bundle \

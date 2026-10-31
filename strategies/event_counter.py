@@ -20,3 +20,11 @@ def on_tick(ctx):
 
 def build(_parameters):
     return StrategyDefinition(SPEC, new_state(state_dtype), {"on_tick": on_tick})
+
+
+TESTS = (
+    {"name": "empty_callback", "steps": [{"callback": "on_tick"}],
+     "expect": {"tick_callbacks": 1, "tick_items": 0}},
+    {"name": "count_items", "steps": [{"callback": "on_tick", "views": {"ticks": [{"price_ticks": 100}, {"price_ticks": 101}]}}],
+     "expect": {"tick_callbacks": 1, "tick_items": 2}},
+)

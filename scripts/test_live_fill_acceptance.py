@@ -114,7 +114,7 @@ class NativeOneLotTests(unittest.TestCase):
         from test_grid import grid
         cls.tmp=tempfile.TemporaryDirectory();cls.addClassCleanup(cls.tmp.cleanup)
         binary=os.environ['TITAN_TEST_BINARY'];target=Path(cls.tmp.name)/'one-lot'
-        result=subprocess.run([binary,'strategy','compile','--strategy',os.environ.get('TITAN_GRID_TEST_SOURCE',str(ROOT/'strategies/grid/strategy.py')),'--parameters',str(ROOT/'configs/live-fill-recovery-acceptance.parameters.json'),'--target','x86_64-unknown-linux-gnu','--cpu-baseline','x86-64-v2','--artifact-format','pair','--output',str(target),'--json'],capture_output=True,text=True,timeout=360)
+        result=subprocess.run([binary,'strategy','compile','--strategy',os.environ.get('TITAN_GRID_TEST_SOURCE',str(ROOT/'strategies/grid.py')),'--parameters',str(ROOT/'configs/live-fill-recovery-acceptance.parameters.json'),'--target','x86_64-unknown-linux-gnu','--cpu-baseline','x86-64-v2','--artifact-format','pair','--output',str(target),'--json'],capture_output=True,text=True,timeout=360)
         assert result.returncode==0,result.stderr
         cls.library=ctypes.CDLL(next(p for p in json.loads(result.stdout)['paths'] if p.endswith('.so')))
         cls.schema_hash=state_schema_hash(canonical_state_schema(validate_state_dtype(grid.state_dtype,max_state_bytes=65536,max_alignment=8),schema_version=grid.SPEC.state_schema_version))

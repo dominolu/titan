@@ -22,6 +22,15 @@ use std::{
 };
 use titan_domain_types::json_numbers_as_strings as precise;
 
+pub(super) fn source_workspace(source: &FsPath) -> Option<PathBuf> {
+    let source = source.canonicalize().ok()?;
+    source
+        .parent()?
+        .ancestors()
+        .map(|root| root.join("titan.toml"))
+        .find(|path| path.is_file())
+}
+
 pub(crate) fn atomic_json(path: &FsPath, value: &impl serde::Serialize) -> Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", nonce()));
     let mut file = std::fs::OpenOptions::new()
@@ -377,7 +386,10 @@ fn catalog_items(config: &NodeConfig) -> Result<Vec<Resource>> {
     for (id, template) in &config.parameter_presets {
         let (strategy_id, strategy_name) = template.strategy_identity(&config.id)?;
         let source = std::fs::read(&template.source)?;
-        let parameters: Value = serde_json::from_slice(&std::fs::read(&template.parameters)?)?;
+        let parameters: Value = match &template.parameters {
+            Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+            None => json!({}),
+        };
         out.push(resource(config,"parameter_preset",id,false,json!({"strategy_id":strategy_id,"strategy_name":strategy_name,"parameter_preset_id":id,"parameters":parameters,"source_digest":digest(&source),"environment":"backtest"})));
     }
     for (id, dataset) in &config.datasets {
@@ -856,6 +868,9 @@ async fn execute(
                 .arg("--parameters")
                 .arg(dir.join("parameters.json"))
                 .arg("--json");
+            if let Some(workspace) = source_workspace(&template.source) {
+                cmd.arg("--workspace").arg(workspace);
+            }
             run_command(config, cmd, dir, stop).await
         }
         Action::Compile { .. } => {
@@ -898,6 +913,9 @@ async fn execute(
                     .arg(key)
                     .arg("--key-id")
                     .arg(key_id);
+            }
+            if let Some(workspace) = source_workspace(&template.source) {
+                cmd.arg("--workspace").arg(workspace);
             }
             let result = run_command(config, cmd, dir, stop).await?;
             let actual = result.get("result").unwrap_or(&result);

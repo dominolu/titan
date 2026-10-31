@@ -30,6 +30,7 @@
 ## CLI
 
 - [Titan CLI 与 Agent 接口](titan_cli.md)
+- [单文件策略、工具链与发布](single_file_strategies.md)
 - [管理模块运行与验证](management_console_operations.md)
 - [SQLite 恢复存储维护](recovery_storage_operations.md)
 - [历史、PostgreSQL/S3 及切换维护](local_persistence_operations.md)

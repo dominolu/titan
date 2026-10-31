@@ -28,7 +28,7 @@
 
 ## Titan 中的交付
 
-入口为 [`strategies/grid/strategy.py`](../strategies/grid/strategy.py)，参数示例为 [`parameters.json`](../strategies/grid/parameters.json)，详细行为与参数见 [使用说明](../strategies/grid/README.md)。
+入口为 [`strategies/grid.py`](../strategies/grid.py)，默认参数声明在同一源码中，特定环境覆盖示例见 [`grid.gate_arb.json`](../configs/strategy_parameters/grid.gate_arb.json)，详细行为与参数见 [使用说明](../strategies/grid.md)。
 
 保留源策略的默认成交均价锚点和成交后撤剩余挂单。增加 `last_fill` 和 `retain`，以覆盖 Titan 既有网格需求中“最后一笔成交锚点”和“旧挂单保留”的行为；没有改写既有需求文档。增加多层、真正固定名义规模、退避、待确认订单预占、风险上限和有保护价格的初始化/退出。
 

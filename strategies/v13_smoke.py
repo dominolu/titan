@@ -14,7 +14,7 @@ SPEC = StrategySpec(
     strategy_type="v13_smoke",
     source_version="1.0.0",
     recovery_state_schema_version=1,
-    parameters=(IntParam("initial_counter", minimum=0),),
+    parameters=(IntParam("initial_counter", required=False, default=4, minimum=0),),
     subscriptions=(EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST),),
     capabilities=Capability.MARKET_DATA | Capability.ORDER_EXECUTION,
 )
@@ -38,3 +38,9 @@ def build(parameters):
     state = new_state(state_dtype)
     state[0]["counter"] = parameters["initial_counter"]
     return StrategyDefinition(SPEC, state, {"on_tick": on_tick, "on_recover": on_recover}, {})
+
+
+TESTS = (
+    {"name": "native_tick_and_mock_command", "steps": [{"callback": "on_tick", "views": {"markets": [{"asset_no": 0, "best_bid_ticks": 99, "best_ask_ticks": 101}]}}],
+     "expect": {"window.2": 3, "nested.value": 1, "commands.submit_count": 1}},
+)
