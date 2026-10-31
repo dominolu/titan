@@ -1,222 +1,170 @@
 # Titan
 
-Titan 是面向加密货币永续合约的 Rust 高频交易框架。策略使用 Python/Numba 编写并在编译服务器离线生成签名 ABI V13 `.titan` 策略文件；回测和实盘加载同一策略文件，运行进程不启动 Python。
+**用 Python 编写策略，以 Rust 执行回测与实盘。**
 
-## 支持的交易所与数据服务
+[![Rust](https://img.shields.io/badge/Rust-1.94.1-orange?logo=rust)](rust-toolchain.toml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](python/titan-strategy-sdk/README.md)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-Titan 当前提供以下交易所、跨所网关和统计数据接入。交易适配器统一接入行情、账户与执行服务；各家的市场范围和验收状态见下表。
+Titan 是面向加密货币永续合约的事件驱动交易框架，连接 CEX 与 DEX，覆盖策略开发、订单簿回测和实盘运行。
+Python/Numba 策略离线编译为 `.titan` 原生策略文件；同一份文件可用于回测与实盘，策略执行热路径由 Rust 与原生回调完成。
+
+[快速开始](#快速开始) · [编写策略](#编写策略) · [交易所接入](#交易所接入) · [实盘部署](#实盘部署) · [文档](#文档)
+
+## 为什么选择 Titan
+
+- **从研究走向实盘**：复用同一套策略逻辑和编译产物，减少回测代码与实盘代码分开维护的成本。
+- **Python 开发，原生执行**：使用 Numba 编写策略回调，运行预编译策略无需 Python 解释器，热路径不经过 GIL。
+- **贴近市场微观结构的回测**：底层 HftBacktest 提供 L2/L3 订单簿、队列位置、部分成交、延迟、手续费与资金费建模。
+- **统一 CEX 与 DEX 接口**：通过一致的行情、账户和订单接口接入多个交易场所，并保留各所的原生 API 能力。
+- **实盘运行可管理**：平台负责账户对账、订单事实、风险门禁、停止流程与检查点恢复；每次运行保留独立日志和结果。
+- **适合自动化与 Agent**：使用统一 `titan` CLI 编译、校验、运行、查询和停止策略，主要命令支持 `--json`。
+
+## 交易所接入
 
 | 名称 | 标识 | 类型 | 支持范围 | 状态 | 文档 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | [Binance Futures](https://binance.com) | `binance-futures` | CEX | USD-M 永续；主网 / 测试网 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/binancefutures.toml) |
 | [OKX](https://okx.com) | `okx` | CEX | V5 SWAP；实盘 / 模拟盘 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/okx.toml) |
-| [Hyperliquid](https://hyperliquid.xyz) | `hyperliquid` | DEX | 永续合约；主网 / 测试网 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/hyperliquid.toml) · [验收](docs/validation/hyperliquid_2026-09-07/README.md) |
-| [Gate CrossEx](https://www.gate.com/docs/developers/crossex/en/) | `gate-crossex` | 跨所交易网关 | FUTURE / SPOT / MARGIN 与原生扩展 | ![限定范围验证](https://img.shields.io/badge/live-scoped-blue) | [指南](docs/gate_crossex_broker.md) · [验收](docs/verification/2026-10-21/gate-crossex-live/README.md) |
-| [Backpack](https://backpack.exchange) | `backpack` | CEX | 统一 USDC 永续；原生现货、RFQ、借贷和钱包等 API | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) · [API 目录](docs/exchange_api_catalog.md) |
-| [Lighter Core](https://lighter.xyz) | `lighter` | DEX | 统一 Simple / cross USDC 永续；原生 API 与官方 signer | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) · [API 目录](docs/exchange_api_catalog.md) |
-| [Variational Omni](https://docs.variational.io/technical-documentation/api) | — | DEX 统计数据 | 公开 v1 / v2 统计 API | ![仅统计数据](https://img.shields.io/badge/data-only-blue) | [范围与配置](docs/exchange_onboarding.md) |
+| [Hyperliquid](https://hyperliquid.xyz) | `hyperliquid` | DEX | 永续合约；主网 / 测试网 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/hyperliquid.toml) |
+| [Gate CrossEx](https://www.gate.com/docs/developers/crossex/en/) | `gate-crossex` | 跨所交易网关 | FUTURE / SPOT / MARGIN 与原生扩展 | ![限定范围验证](https://img.shields.io/badge/live-scoped-blue) | [指南](docs/gate_crossex_broker.md) |
+| [Backpack](https://backpack.exchange) | `backpack` | CEX | 统一 USDC 永续；原生现货、RFQ、借贷和钱包等 API | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) |
+| [Lighter Core](https://lighter.xyz) | `lighter` | DEX | 统一 Simple / cross USDC 永续；原生 API 与官方 signer | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) |
+| [Variational Omni](https://docs.variational.io/technical-documentation/api) | — | DEX 统计数据 | 公开 v1 / v2 统计 API | ![仅统计数据](https://img.shields.io/badge/data-only-blue) | [指南](docs/exchange_onboarding.md) |
 
-- **标识**：行情源配置中的 `connector_type`；对应账户适配器使用 `<标识>-account`。Variational 通过独立 Rust 统计客户端调用。
-- **live verified**：已有主网验收记录，具体品种与操作以各连接器文档为准。
-- **live scoped**：Gate CrossEx 已通过 Gate BTC 被动下单、改单、撤单验收，其他底层所和真实成交链路仍需分别验证。
-- **beta**：代码与非实盘回归已完成。Lighter 公开 API 已验证；Backpack 公网验证仍受连接重置影响。两者的私有账户和实盘下撤单验收待完成，详见[最新验证记录](docs/verification/2026-10-31/native-venues-review-fixes/README.md)。
-- **data only**：Variational 当前只提供公开统计读取，官方 Trading API 尚未开放。
+标识对应行情源的 `connector_type`，账户适配器使用 `<标识>-account`。Variational 使用独立 Rust 统计客户端，官方交易 API 尚未开放。
 
-## 架构
+`live verified` 表示已有主网验收记录；`live scoped` 表示限定账户与品种的验收，Gate CrossEx 当前为 Gate BTC 被动下单、改单和撤单；`beta` 表示已通过非实盘验证，私有账户和实盘交易验收待完成。各所配置、能力边界和原生接口见[接入指南](docs/exchange_onboarding.md)与 [API 目录](docs/exchange_api_catalog.md)。
 
-```text
-titan CLI controller
-└── spawn titan run-worker
-    ├── 校验并加载 ABI V13 原生策略文件
-    ├── TradingRuntime
-    │   ├── EventEngine
-    │   │   ├── Primary / Async lane（可靠账户事实）
-    │   │   └── FastLane（低延迟行情）
-    │   ├── StrategyService
-    │   ├── MarketService → 静态 venue connector
-    │   ├── AccountService → 静态 venue connector
-    │   └── ExecutionRuntime → 直接异步 REST Future
-    ├── 驱动 V13 Tick trace backtest 或 Core Live backend
-    └── 原子写入 ResultBundle
-```
+## 快速开始
 
-- `titan` 是唯一用户入口；`run`/`validate` controller 和交易 worker 均不初始化 Python。
-- 每次运行使用独立 worker；`titan strategy compile` 通过 Rust 控制器启动短生命周期 Numba 桥接进程，打包、签名和策略编译结果校验均由 Rust 执行。
-- Python SDK 只提供策略声明、typed state、Numba 编译和 ABI 桥接；报告输出继续使用独立 Python renderer。
-- 事件热路径为 `Rust Runtime → C ABI → Numba nopython callback`，不经过 Python、PyO3 或 GIL。
-- 撮合、账户、手续费、资金费和结果均以 Rust Runtime 为唯一权威来源。
-- Python reporting 只读取并渲染 ResultBundle，不重新计算交易结果。
+当前原生策略编译与运行面向 **Linux x86_64**。Rust 工具链由 [`rust-toolchain.toml`](rust-toolchain.toml) 固定；Python 3.11+ 用于策略编译和可选 HTML 报告，运行已编译策略无需 Python。
 
-管理页面与现有框架的模块职责、能力盘点、新增需求和分阶段验收见 [管理平台需求文档](docs/management_console_requirements.md)；PureAdmin 选型、页面结构、API/SSE、部署及验证见 [Web 管理模块技术方案](docs/web_console_technical_plan.md)。
+### 1. 准备编译环境
 
-对应的任务依赖、代码迁移、M1/M2/M3 交付与验收安排见 [管理平台实施计划](docs/management_console_implementation_plan.md)。
-
-## 近期重要重构
-
-### EventEngine：统一的有界事件运行时
-
-- 使用预分配的多级 `EventArena`、带 generation 校验的事件句柄和最后引用回收，限制实盘热路径的内存增长。
-- 账户等可靠事实通过 Primary/Async lane 投递，支持有界 pending、FIFO 重试、sequence gap 检测、
-  `RESYNC_REQUIRED` 截止和订阅者健康状态。
-- 高频行情通过 zero-copy MarketBatch reservation 和 FastLane 投递；支持 inline handler 或有界异步 worker，
-  保留事件顺序并统计 queue drop、最大队列深度和 P50/P99/P99.9/max 延迟。
-- 路由变更由 `EventControl` 在 EventLoop safe point 原子提交；启动、订阅退休、handler 退出和 Arena lease
-  释放纳入 `TradingRuntime` 的统一生命周期。
-- 目标机 release 基准已冻结：默认容量、100 万事件、30 万 events/s 连续三轮无 drop、resync 或 Arena
-  exhaustion；dispatch/subscriber P99.9 门槛分别为 8.39 ms 和 16.78 ms。
-
-详细设计与运行方法见 [Titan EventEngine](crates/titan-event-engine/README.md)。
-
-### 静态核心服务与直接执行
-
-- Binance Futures、OKX、Hyperliquid、Gate CrossEx、Backpack、Lighter connector 直接编译进主程序，由构造期静态 catalog 注入
-  `MarketService` 和 `AccountService`；运行时不加载 connector manifest、插件 cdylib 或 JSON/C ABI 网关。
-  Lighter 原生签名使用固定版本、SHA-256 校验的官方 signer 库。
-- `TradingRuntime` 直接持有并按顺序启动/停止 EventEngine、Market、Account、Strategy 和共享 execution runtime，
-  服务间不通过字符串 endpoint 或 ServiceRegistry 查找。
-- 策略下单由进程级有界 execution runtime 立即 spawn REST Future；回调不等待网络，REST completion 仅进入
-  日志/指标观察路径，订单事实仍以 private WS 为准。
-- 停机 admission gate 与进程级 active-task 硬上限防止停止期间继续下单或交易所变慢时任务无限增长。
-
-迁移边界与临时限制见 [去插件化技术方案](docs/strategy_command_deplugin_technical_plan.md)。
-
-### Hyperliquid Connector：主网闭环完成
-
-- 已接入统一 MarketConnector、AccountConnector 和 Broker API，覆盖公共 REST/WS 行情、EIP-712 签名、
-  私有 `orderUpdates`/`userEvents`、orders/positions/balances reconcile 及 scheduled-cancel heartbeat。
-- 完成真实 socket 断线重连与订阅重放，以及 `submit → amend → cancel` 的 REST/私有 WS 逐字段对账；
-  cloid、oid、status、price、qty、executed/leaves 和 exchange timestamp 均一致。
-- 完成 0.01 ETH 开仓/reduce-only 平仓，以及 20 USDC 风险上限内 GAS 10.2/16.1 的真实部分成交；
-  REST、私有 WS、fills 对账一致，测试结束后均为零挂单、零仓位。
-- 实盘探针推动修复了 amend 新旧 oid 乱序、WS amend 字段刷新、价格/数量浮点 wire 格式、公共行情关闭
-  错误要求签名，以及 rustls provider 初始化冲突。
-- Hyperliquid 主网 MarketService → EventEngine 60 秒验证零 drop/resync；FastLane enqueue/handler P99.9
-  分别为 8.19 µs 和 4.10 µs。该 connector 的外部实盘验收门禁已全部解除。
-
-完整记录与原始证据见 [Hyperliquid 主网验收报告](docs/validation/hyperliquid_2026-09-07/README.md)。
-
-## 环境
-
-- Rust 1.94.0
-- Python 3.11+：编译服务器上的 Numba 策略构建，以及可选的离线报告生成；运行预编译策略不需要 Python。
+在仓库根目录执行：
 
 ```bash
+cargo build --release -p titan-cli --bin titan
+export PATH="$PWD/target/release:$PATH"
+
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ./python/titan-strategy-sdk
-pip install -e './python/titan-reporting[quantstats]'
-
-cargo build --release -p titan-cli
+export TITAN_STRATEGY_PYTHON="$PWD/.venv/bin/python"
 ```
 
-## 支持 Agent 调用的 Titan CLI
+策略编译还需要 `cc`、`nm`、`objcopy` 等原生工具。CLI 命令可通过 `titan --help` 查询。
 
-`titan` 以 V13 策略文件（回测）或部署中的 `strategy_key`（实盘）启动任务。controller 先完成静态校验并生成内部 RunSpec，再启动隔离 worker。
+### 2. 编译并运行示例
+
+使用仓库中的只读事件计数策略与 Tick trace，体验从策略源码到事件回放的完整流程，无需交易所账户：
 
 ```bash
-# 仅做静态校验，不启动 Python
-target/release/titan validate deploy/pair_arb_v13/artifacts/pair_arb.titan \
+mkdir -p target/strategies
+titan strategy compile \
+  --strategy strategies/event_counter/strategy.py \
+  --parameters strategies/event_counter/parameters.json \
+  --strategy-format bundle \
+  --output target/strategies/event_counter.titan
+
+titan validate target/strategies/event_counter.titan \
   -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
 
-# 回测
-target/release/titan run deploy/pair_arb_v13/artifacts/pair_arb.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
-
-# 实盘
-target/release/titan run pair-arb-mainnet \
-  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+titan run target/strategies/event_counter.titan \
+  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml --json
 ```
 
-当前已发布的 V13 profile 仅支持 Tick。Bar/Hybrid 在 producer、聚合和端到端契约完整前会被配置层明确拒绝。
+CLI 当前支持 Tick 模式。订单簿历史回测的撮合、延迟和队列模型由底层 HftBacktest 提供，使用方式见[回测接口](docs/titan_cli.md#v13-tick-trace-回测)和[历史回测示例](docs/verification/2026-10-22/grid-history/README.md)。
 
-公开配置使用 TOML：
+### 3. 查看结果
 
-```toml
-schema_version = 1
-history_capacity = 1024
-
-[backtest]
-data = "../fixtures/pair_arb_v13_trace.json"
-command_capacity = 64
-```
-
-回测数据是版本化 V13 event trace；HftBacktest 通过 `backtest::strategy_v13` adapter 使用同一策略文件。实盘使用 Core Runtime 部署配置，策略编译元数据 是参数、订阅和 callback 的唯一权威。
-
-前台运行等待 worker 结束并返回 ResultBundle 中的 `result.json`。后台运行立即返回 `run_id`，之后通过管理命令查询：
+`run` 返回 `run_id`，运行记录默认保存在 `.titan/`。将下面的 `RUN_ID` 替换为返回值：
 
 ```bash
-run_id=$(target/release/titan run deploy/pair_arb_v13/artifacts/pair_arb.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml --detach)
-
-target/release/titan ls --active
-target/release/titan show "$run_id" --json
-target/release/titan logs "$run_id"
-target/release/titan stop "$run_id"
-target/release/titan report "$run_id" --output report.html
+titan ls --json
+titan show RUN_ID --json
+titan logs RUN_ID
+titan report RUN_ID --json
 ```
 
-`run`、`validate`、`ls`、`show`、`logs`、`stop`、`report` 和策略目录命令均支持 `--json`。机器模式下 stdout 只包含 JSON，worker、Python 和策略输出写入运行日志；失败信息从 stderr 返回。
-
-策略目录命令用于发现和预编译策略：
+运行结果写入带摘要校验的 ResultBundle，运行状态与日志通过 CLI 查询。需要 HTML 报告时安装可选的报告模块：
 
 ```bash
-target/release/titan strategy ls --json
-target/release/titan strategy show deploy/pair_arb_v13/artifacts/pair_arb.titan --json
-target/release/titan strategy validate deploy/pair_arb_v13/artifacts/pair_arb.titan --json
-target/release/titan strategy compile --strategy strategies/pair_arb/strategy.py \
-  --parameters strategies/pair_arb/parameters.json --strategy-format bundle \
-  --output pair_arb.titan --signing-key ed25519.key --key-id production-2026-09 --json
+pip install -e ./python/titan-reporting
+
+titan report RUN_ID --renderer native --output report.html
 ```
 
-详细命令和配置格式见 [Titan CLI](docs/titan_cli.md)。
+[ResultBundle 格式](docs/result_bundle_schema.md)记录了可供分析和归档的结果字段；使用 QuantStats 报告时可安装 `./python/titan-reporting[quantstats]`。
 
-Numba 策略位于 [`strategies/`](strategies/)，通过 `StrategySpec` 和 `build(parameters)` 静态编译，不存在运行时 `module:function` entrypoint。
+## 编写策略
 
-完整的线性合约网格示例见 [Numba 网格](strategies/grid/README.md)，包含等差/等比、多空/中性、部分成交、撤单确认、停止平仓与 checkpoint 恢复；来源分析见 [gate_arb 网格迁移](docs/gate_arb_grid_analysis.md)。
+策略通过 `StrategySpec` 声明事件订阅和参数，通过 `@njit` 回调处理行情、账户事件与定时器。策略状态、盘口和订单接口由 SDK 提供。
 
-真实 BTCUSDT 历史成交与盘口的网格回测、成本假设、收益、回撤和在途敞口见 [历史回测报告](docs/verification/2026-10-22/grid-history/README.md)。
+下面是[事件计数示例](strategies/event_counter/strategy.py)中的行情回调：
 
 ```python
 from numba import njit
 
 @njit
 def on_tick(ctx):
-    # 只访问 V13 typed state 与只读 public views
-    pass
+    ctx.state["tick_items"] += len(ctx.ticks())
+    ctx.state["tick_callbacks"] += 1
 ```
 
-## 核心能力
+每份策略提供 `StrategySpec`、`state_dtype` 和 `build(parameters)`，将订阅、类型化状态与回调组合起来。参数在编译时写入策略文件；修改参数或策略逻辑后，使用快速开始中的 `titan strategy compile` 重新编译。签名与可信公钥配置见 [CLI 指南](docs/titan_cli.md)。
 
-- Level-2 / Level-3 订单簿回放与队列位置模拟
-- 行情延迟、订单延迟、手续费和资金费建模
-- Tick 回测与 Live 共享 ABI V13 策略文件 和事件生命周期
-- 多资产、多交易所回测
-- EventEngine 与静态核心服务驱动的交易所连接器
-- 带 SHA-256 manifest 的权威 ResultBundle
-- worker 状态、日志、停止和异常恢复
+| 示例 | 用途 | 入口 |
+| :--- | :--- | :--- |
+| `event_counter` | 了解事件回调与策略状态 | [源码](strategies/event_counter/strategy.py) |
+| `pair_arb` | Maker-Taker / Taker-Taker 配对套利 | [指南](strategies/pair_arb/README.md) |
+| `grid` | 等差 / 等比、多空 / 中性合约网格 | [指南](strategies/grid/README.md) |
 
-## 数据与结果
+完整策略结构、参数类型和回调接口见 [Python/Numba SDK](python/titan-strategy-sdk/README.md)。
 
-当前 CLI 从 TOML 引用版本化 V13 Tick trace；底层 HftBacktest 可通过 V13 adapter 接入撮合、延迟和队列模型。原始 WebSocket 数据可通过 `collector` 采集并归一化。
+## 实盘部署
 
-worker 完成后原子提交带 SHA-256 manifest 的 ResultBundle。`titan report <run-id>` 读取权威结果；指定 `--output` 时才启动 Python renderer。报告只能写到 ResultBundle 目录之外，且不会重新计算成交、费用、资金费或 PnL；没有 canonical returns 时，QuantStats 输出 no-data 页面。格式说明见 [`docs/result_bundle_schema.md`](docs/result_bundle_schema.md)。
-
-## 测试
+将编译后的策略文件部署到目标节点，在部署配置中更新文件路径与摘要，并绑定行情源、账户、交易品种和风险域。[配对套利部署模板](deploy/pair_arb_v13/README.md)提供了配置与服务示例；完成凭据引用、品种单位、风险配置及所需组件的启用后，通过同一 CLI 启动：
 
 ```bash
-PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --workspace --all-features
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features
+titan validate pair-arb-mainnet \
+  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+
+titan run pair-arb-mainnet \
+  -e live -m tick -c deploy/pair_arb_v13/runtime.toml --detach --json
 ```
+
+实盘以部署文件中的 `strategy_key` 为入口。使用 `titan show RUN_ID` 和 `titan logs RUN_ID` 查询状态，使用 `titan stop RUN_ID` 发起策略的停止流程。
+
+## 工作原理
+
+```text
+Python / Numba 策略
+        │ titan strategy compile
+        ▼
+   .titan 原生策略文件
+        ├── 回测：历史事件 → 策略回调 → 撮合与账户模型
+        └── 实盘：交易所事件 → 策略回调 → 订单执行
+                         │
+                         ▼
+                运行记录与 ResultBundle
+```
+
+Rust 运行时统一管理行情、账户、策略与执行；EventEngine 在服务之间传递事件，Python 回调在编译后以原生机器码运行。架构和扩展方式见 [EventEngine](crates/titan-event-engine/README.md)与[策略运行时](docs/strategy_abi_v13_implementation_status.md)。
 
 ## 文档
 
-- [公开文档索引](docs/README.md)
-- [Titan CLI 与 Agent 接口](docs/titan_cli.md)
-- [Bar/Tick 与 Numba 策略接口](docs/bar_tick_numba_strategy.md)
-- [ResultBundle schema](docs/result_bundle_schema.md)
-- [连接器说明](connector/README.md)
+| 主题 | 文档 |
+| :--- | :--- |
+| CLI 与自动化 | [命令、回测与运行管理](docs/titan_cli.md) |
+| 策略开发 | [Python/Numba SDK](python/titan-strategy-sdk/README.md) · [策略接口](docs/bar_tick_numba_strategy.md) |
+| 交易所接入 | [接入指南](docs/exchange_onboarding.md) · [原生 API 目录](docs/exchange_api_catalog.md) |
+| 部署与恢复 | [部署模板](deploy/pair_arb_v13/README.md) · [恢复存储](docs/recovery_storage_operations.md) |
+| 结果与报告 | [ResultBundle](docs/result_bundle_schema.md) |
+| 管理平台 | [管理平台说明](docs/management_console_requirements.md) |
+| 开发与验证 | [工程约定](AGENTS.md) · [完整文档索引](docs/README.md) |
 
 ## License
 
-MIT。项目源自 [hftbacktest](https://github.com/nkaz001/hftbacktest)。
+[MIT](LICENSE)。项目源自 [hftbacktest](https://github.com/nkaz001/hftbacktest)。
