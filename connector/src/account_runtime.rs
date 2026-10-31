@@ -2562,6 +2562,19 @@ fn build_lighter(config: &str) -> Result<Box<dyn Connector>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "evm")]
+fn build_evm(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::evm::Evm::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
+#[cfg(feature = "solana")]
+fn build_solana(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::solana::Solana::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
+
 pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory>> {
     let values: Vec<Arc<dyn account::AccountConnectorFactory>> = vec![
         #[cfg(feature = "backpack")]
@@ -2590,6 +2603,13 @@ pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory
         Arc::new(VenueAccountConnectorFactory::new(
             "hyperliquid-account",
             build_hyperliquid,
+        )),
+        #[cfg(feature = "evm")]
+        Arc::new(VenueAccountConnectorFactory::new("evm-account", build_evm)),
+        #[cfg(feature = "solana")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "solana-account",
+            build_solana,
         )),
     ];
     values

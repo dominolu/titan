@@ -1,0 +1,3 @@
+    Checking connector v0.1.0 (/tmp/titan-merge-all-20261031-nH6qpB/candidate/connector)
+    Checking titan-cli v0.1.0 (/tmp/titan-merge-all-20261031-nH6qpB/candidate/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.30s

@@ -841,6 +841,52 @@ impl MarketConnectorFactory for OkxMarketFactory {
     }
 }
 
+#[cfg(feature = "evm")]
+pub struct EvmMarketFactory;
+#[cfg(feature = "evm")]
+impl MarketConnectorFactory for EvmMarketFactory {
+    fn connector_type(&self) -> &str {
+        "evm"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        crate::ensure_rustls_crypto_provider();
+        let config = std::str::from_utf8(&definition.connector_config)
+            .map_err(|_| ConnectorError::new("connector_config must be UTF-8 TOML"))?;
+        let venue = crate::evm::Evm::build_market_from(config)
+            .map_err(|error| ConnectorError::new(format!("invalid connector config: {error:?}")))?;
+        let connector = MarketConnectorRuntime::new(Box::new(venue), context);
+        register_resource(&connector)?;
+        Ok(connector)
+    }
+}
+
+#[cfg(feature = "solana")]
+pub struct SolanaMarketFactory;
+#[cfg(feature = "solana")]
+impl MarketConnectorFactory for SolanaMarketFactory {
+    fn connector_type(&self) -> &str {
+        "solana"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        crate::ensure_rustls_crypto_provider();
+        let config = std::str::from_utf8(&definition.connector_config)
+            .map_err(|_| ConnectorError::new("connector_config must be UTF-8 TOML"))?;
+        let venue = crate::solana::Solana::build_market_from(config)
+            .map_err(|error| ConnectorError::new(format!("invalid connector config: {error:?}")))?;
+        let connector = MarketConnectorRuntime::new(Box::new(venue), context);
+        register_resource(&connector)?;
+        Ok(connector)
+    }
+}
+
 #[cfg(feature = "hyperliquid")]
 pub struct HyperliquidMarketFactory;
 #[cfg(feature = "hyperliquid")]
@@ -927,6 +973,10 @@ pub fn venue_market_factories() -> Vec<Arc<dyn MarketConnectorFactory>> {
         Arc::new(OkxMarketFactory),
         #[cfg(feature = "hyperliquid")]
         Arc::new(HyperliquidMarketFactory),
+        #[cfg(feature = "evm")]
+        Arc::new(EvmMarketFactory),
+        #[cfg(feature = "solana")]
+        Arc::new(SolanaMarketFactory),
     ];
     values
 }
@@ -1227,6 +1277,33 @@ passphrase = ""
 info_url = "https://api.hyperliquid.xyz/info"
 exchange_url = "https://api.hyperliquid.xyz/exchange"
 ws_url = "wss://api.hyperliquid.xyz/ws"
+"#,
+        );
+    }
+
+    #[cfg(feature = "evm")]
+    #[test]
+    fn evm_factory_obeys_the_unified_local_connector_contract() {
+        assert_venue_factory_local_contract(
+            &EvmMarketFactory,
+            r#"
+rpc_url = "http://127.0.0.1:1"
+ws_url = "ws://127.0.0.1:1"
+router_address = "0x0000000000000000000000000000000000000001"
+pools = []
+"#,
+        );
+    }
+
+    #[cfg(feature = "solana")]
+    #[test]
+    fn solana_factory_obeys_the_unified_local_connector_contract() {
+        assert_venue_factory_local_contract(
+            &SolanaMarketFactory,
+            r#"
+rpc_url = "http://127.0.0.1:1"
+ws_url = "ws://127.0.0.1:1"
+pools = []
 "#,
         );
     }

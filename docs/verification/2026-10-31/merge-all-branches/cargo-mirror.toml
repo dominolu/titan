@@ -1,0 +1,5 @@
+[source.crates-io]
+replace-with = "titan-mirror"
+
+[source.titan-mirror]
+registry = "sparse+https://rsproxy.cn/index/"

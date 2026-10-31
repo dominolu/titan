@@ -1,13 +1,15 @@
 # 链上 Venue 接入方案：EVM 链与 Solana 双 Broker 设计
 
-> 状态：方案 A（EVM）与方案 B（Solana，JSON-RPC 全链路）均已实现（见下方"实现状态"）。
+> 状态：方案 A（EVM）与方案 B（Solana）的行情与原生工具已实现；统一账户交易尚不支持，等待真实成交、费用、库存及估值投影完成。下方历史实现记录不表示当前统一账户已验收。
 > 范围：为 connector 新增两类链上 venue —— 方案 A（EVM：Ethereum / Arbitrum / Arbitrum Orbit 类链，含 Robinhood Chain）与方案 B（Solana）。
-> 前置结论：两者共享现有 `BrokerApi` / `Connector` / 插件注册抽象，差异只在链上技术栈与数据模型适配层。
+> 前置结论：两者共享现有 `BrokerApi` / `Connector` / 静态工厂注册抽象，差异只在链上技术栈与数据模型适配层。
+>
+> 2026-10-31 合并适配：沿用 master 的静态接入，行情由 `connector/src/market_runtime.rs`、账户由 `connector/src/account_runtime.rs` 注册；不恢复动态插件 crate。发送前遵守账户 fence，关闭和确认超时保留未知交易，不能据此伪造拒绝或撤销。下列早期测试及实盘描述属于分支历史，不能作为本次合并已验证或已部署的证明；本轮验证另见[全部分支合并记录](verification/2026-10-31/merge-all-branches/README.md)。
 
 ## 实现状态（方案 B：Solana，2026-09-05）
 
 - `connector/src/solana/`（feature = `solana`，已入 default features）：`config` / `types`（vault 储备模型）/ `rpc`（JSON-RPC 封装，finalized blockhash）/ `market`（WS accountSubscribe 行情后端，BBO+快照+推演 Trade）/ `raydium`（V4 swap 指令构造 + 恒乘行情推演）/ `tx`（消息编码/ed25519 签名/WSOL wrap-unwrap/确认监视）/ `ordermanager` / `brokerapi`。
-- 注册：`DynamicVenue::Solana`（"solana" / "solana-account"）、`SolanaMarketFactory`、`crates/titan-connector-solana-plugin`。
+- 注册：静态 `SolanaMarketFactory`（"solana"）和 `VenueAccountConnectorFactory`（"solana-account"）。
 - 实盘验证（mainnet，`examples/solana_swap_probe.rs`）：WS 行情加载 → BUY 200k tokens 成交 → SELL 回卖成交 → 订单状态机与余额对账全通。签名 `yyWArCpX...` / `5HM3oTbS...`。
 - 实盘踩坑（已固化在代码注释）：系统程序指令 tag 为 u32（Token/ATA/Raydium 为 u8）；ComputeBudget tag 2=CU limit、3=CU price、4=loaded accounts data size limit；消息账户必须按 [可写签名者, 只读签名者, 可写未签名者, 只读未签名者] 连续分区；公共 RPC 上 blockhash 用 finalized 档；公共节点预检偶发误报，预检被拒时降级 skipPreflight 由确认循环回报真实结果。
 - gRPC：`solana-grpc.publicnode.com` 可达但服务需认证；yellowstone-grpc 接入待提供凭证（prechain 插槽已在 `PoolReserves` 中预留）。
@@ -25,7 +27,7 @@
   - `tx.rs` EIP-1559 swap 构造/签名/nonce 管理/自动 approve + 收据确认循环（发布 `AccountPublication::Order`）；
   - `ordermanager.rs` tx hash 订单状态机（pending→filled/rejected/canceled）；
   - `brokerapi.rs` `BrokerApi` 全量 AMM 语义映射（GTC/条件单显式拒绝，cancel 幂等）。
-- 注册：`DynamicVenue::Evm`（"evm" / "evm-account"）、`EvmMarketFactory`、`venue_account_factories`、`crates/titan-connector-evm-plugin`（cdylib）。
+- 注册：静态 `EvmMarketFactory`（"evm"）和 `VenueAccountConnectorFactory`（"evm-account"），经 `venue_market_factories` / `venue_account_factories` 提供。
 - 配置示例：`connector/examples/evm.toml`。
 - 验证：`cargo test -p connector --no-default-features --features binancefutures,okx,hyperliquid,evm --lib evm::` 通过 30 个 EVM 测试；`titan-connector-evm-plugin` 构建测试通过。
 - 依赖注记：本机 cargo mirror 为部分快照，alloy 版本线为 primitives/sol-types 1.7 + 其余 2.4；`arb_sequencer_consensus` 依赖 consensus 1.8，测试经 RLP 往返对齐两套类型（见 `evm/feed.rs` 测试辅助）。工具链已升至 1.94.1（alloy 2.4 的 MSRV）。
@@ -56,9 +58,9 @@ connector/src/solana/     方案 B：Solana venue（feature = "solana"）
 
 1. `connector/src/lib.rs`：`#[cfg(feature = "evm")] pub mod evm;`、`#[cfg(feature = "solana")] pub mod solana;`
 2. `connector/Cargo.toml`：新增 feature 与链上依赖（见各方案）。
-3. `dynamic_plugin.rs`：`DynamicVenue` 枚举加 `Evm` / `Solana` 变体 + 四处 match 分支。
-4. `market_plugin.rs` / `account_plugin.rs`：各加一个 factory。
-5. 新建插件 crate：`crates/titan-connector-evm-plugin/`、`crates/titan-connector-solana-plugin/`（复制 hyperliquid-plugin boilerplate）。
+3. `market_runtime.rs`：增加 `EvmMarketFactory` / `SolanaMarketFactory` 并加入静态行情目录。
+4. `account_runtime.rs`：增加两种 builder 并加入静态账户目录。
+5. 复用现有进程内 runtime、资源释放与账户事实投影；不引入动态插件 crate。
 
 ### 0.1 高频行情通道（两方案统一设计，P0 必备能力）
 
@@ -136,7 +138,7 @@ DEX 没有 order book，`BrokerApi::get_order_book` 返回的是**合成的深�
 |---|---|---|
 | `submit_order` | 构造 router swap calldata → EIP-1559 tx → `send_raw_transaction`；`OrderInfo.order_id = tx hash`，`client_order_id` 保留传入 | AMM swap 广播后不可撤回 |
 | `cancel_order` / `cancel_all_orders` / `cancel_all_after` | 返回 `ApiError`（不支持）或仅作用于限价单协议 | 空实现需在上层文档化 |
-| `get_order` / `get_open_orders` | 按 tx hash 查收据：pending / success / revert / not-found-but-timeout=dropped | open 状态只有 pending，语义收窄 |
+| `get_order` / `get_open_orders` | 按 tx hash 查收据：pending / success / revert；缺失或超时保留未知 | 不用超时推断 dropped 或撤销；成功状态仍需真实成交解码 |
 | `get_fills` | 解析收据中的 `Swap`/`Transfer` log | price = 实际成交比例 |
 | `get_positions` / `get_account` | `eth_call` 读取代币余额（+ permit2/vault 授权状态） | spot 无杠杆，`set_leverage` 空操作 |
 | `get_instruments` | 部署时静态配置（tokens/pools 列表）+ 链上校验 | 不存在动态拉取 |
@@ -216,7 +218,7 @@ connector/src/solana/
 与 A.5 同构，差异点：
 
 - `submit_order` → 构建 swap 指令 + 计算/设置优先费 + 最近 blockhash → 签名 → `sendTransaction`；`order_id = 签名（signature）`。
-- `get_order` → `getSignatureStatuses` + 本地状态机（processing/landed/dropped），dropped 需主动重试。
+- `get_order` → `getSignatureStatuses` + 本地状态机；未查到或超时保留原签名与未知结果，不能据此自动重签重发。
 - `get_positions` → 读取 SPL token 账户（含 Token-2022）余额与 ATA 状态。
 - `get_instruments` → 静态配置 pool/mint 列表，启动时 `getAccountInfo` 校验并解码 pool 状态。
 
@@ -231,7 +233,7 @@ connector/src/solana/
 
 ## 共享工作与排期建议
 
-- **一次性改动（两方案共用）**：lib.rs / Cargo.toml / dynamic_plugin / 两个 plugin factory / 两个插件 crate —— 约 1-2 天。
+- **共同接入点**：lib.rs / Cargo.toml / market_runtime / account_runtime；复用统一静态运行时，不新增插件 crate。
 - **建议顺序**：先做方案 A（P0+P1）。理由：alloy 的抽象层更成熟、Arbitrum 块间隔短更接近现有 HFT 心智模型、且 Orbit 链复用即得（Robinhood Chain 只是换配置）；方案 B 复用同一套 `DexAdapter`/`AmmAdapter` 思想，等 EVM 路径踩平语义映射后再启动。
 - **定位约束**：接入预链流（sequencer feed / Geyser）后，两类 venue 具备亚秒级行情能力，可参与跨所价差博弈；但下单确认仍受出块与 landing 不确定性约束，与 CEX 腿 组合时建议以 CEX 为快腿、链上为对手腿做库存对冲（详见 §0.1）。
 

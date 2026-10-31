@@ -1,0 +1,32 @@
+{
+  "baseline": "5808b4b1",
+  "environment": {
+    "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+    "host": "192.168.3.88",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)"
+  },
+  "gates": {
+    "check": 0,
+    "clippy": 0,
+    "doctest": 0,
+    "fmt-check": 0,
+    "format": 0,
+    "rust": 0
+  },
+  "incoming": "71324f27de9ea5b994c96f5d1f4c2957695033cc",
+  "source_files": 2576,
+  "source_identity": "matched_after_verification",
+  "tested_staged_tree": "06b157a9a5ef44bc9ad15f3c6492e38908929ba9",
+  "tests": {
+    "doctest": {
+      "failed": 0,
+      "ignored": 1,
+      "passed": 2
+    },
+    "rust": {
+      "failed": 0,
+      "ignored": 26,
+      "passed": 788
+    }
+  }
+}
