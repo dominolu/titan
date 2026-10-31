@@ -67,3 +67,8 @@ titan run orderflow_events -e live -m tick -c runtime.toml --detach --json
 titan show <run_id> --json   # STOPPED / HEALTHY / exit_code
 titan stop <run_id>
 ```
+
+> 迁移说明（2026-10-31）：策略源码与部署目录已从 titan 仓库迁至 hft_quant 项目
+> （`strategies/orderflow_events/`、`deployment/orderflow_events/`）。本记录保留当时的
+> 路径与命令，供追溯；之后的构建/发布按 hft_quant 的 `deployment/orderflow_events/build.sh`
+> 与 `publish_smoke.sh` 执行。
