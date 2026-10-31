@@ -880,10 +880,45 @@ impl MarketConnectorFactory for GateCrossExMarketFactory {
     }
 }
 
+#[cfg(feature = "backpack")]
+pub struct BackpackMarketFactory;
+#[cfg(feature = "backpack")]
+impl MarketConnectorFactory for BackpackMarketFactory {
+    fn connector_type(&self) -> &str {
+        "backpack"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        create_runtime::<crate::backpack::Backpack>(definition, context)
+    }
+}
+#[cfg(feature = "lighter")]
+pub struct LighterMarketFactory;
+#[cfg(feature = "lighter")]
+impl MarketConnectorFactory for LighterMarketFactory {
+    fn connector_type(&self) -> &str {
+        "lighter"
+    }
+    fn create(
+        &self,
+        definition: &MarketSourceDefinition,
+        context: MarketConnectorContext,
+    ) -> Result<Arc<dyn MarketConnector>, ConnectorError> {
+        create_runtime::<crate::lighter::Lighter>(definition, context)
+    }
+}
+
 /// Static venue catalog used by TradingRuntime. The returned factories are ordinary in-process
 /// implementations; no manifest, shared library or JSON ABI participates in construction.
 pub fn venue_market_factories() -> Vec<Arc<dyn MarketConnectorFactory>> {
     let values: Vec<Arc<dyn MarketConnectorFactory>> = vec![
+        #[cfg(feature = "backpack")]
+        Arc::new(BackpackMarketFactory),
+        #[cfg(feature = "lighter")]
+        Arc::new(LighterMarketFactory),
         #[cfg(feature = "gatecrossex")]
         Arc::new(GateCrossExMarketFactory),
         #[cfg(feature = "binancefutures")]
@@ -989,7 +1024,12 @@ mod tests {
             let delay = self.shutdown_delay;
             let error = self.shutdown_error.clone();
             Box::pin(async move {
-                tokio::task::yield_now().await;
+                // The delayed case models a non-cooperative first poll. Yielding before it can
+                // instead let an already-expired Tokio timeout cancel the future, which tests a
+                // different shutdown path and makes the later-reap assertion scheduling-dependent.
+                if delay.is_zero() {
+                    tokio::task::yield_now().await;
+                }
                 calls.lock().unwrap().push("shutdown".to_owned());
                 // Deliberately model a non-cooperative third-party shutdown call. The adapter's
                 // outer thread deadline still has to return promptly and retain the JoinHandle for
@@ -1131,6 +1171,17 @@ mod tests {
             .unwrap();
         drop(connector);
         scope.close().unwrap();
+    }
+
+    #[cfg(feature = "backpack")]
+    #[test]
+    fn backpack_factory_obeys_the_unified_local_connector_contract() {
+        assert_venue_factory_local_contract(&BackpackMarketFactory, "");
+    }
+    #[cfg(feature = "lighter")]
+    #[test]
+    fn lighter_factory_obeys_the_unified_local_connector_contract() {
+        assert_venue_factory_local_contract(&LighterMarketFactory, "");
     }
 
     #[cfg(feature = "gatecrossex")]

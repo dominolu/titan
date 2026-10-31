@@ -1,0 +1,6 @@
+# Lighter Core mainnet, public feeds only. Public WS adds the official readonly=true parameter.
+rest_url = "https://mainnet.zklighter.elliot.ai"
+ws_url = "wss://mainnet.zklighter.elliot.ai/stream"
+chain_id = 304
+reconnect_ms = 1000
+confirmation_ms = 5000

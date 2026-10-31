@@ -322,7 +322,9 @@ pub(crate) fn recovery_execution_plan(
                 final_fill: u8::from(cumulative == prior.qty_lots),
                 reserved: [0; 5],
             });
-            if fill.realized_pnl_units != 0 {
+            if fill.header.flags & titan_account_service::event_flags::REALIZED_PNL_UNAVAILABLE != 0
+                || fill.realized_pnl_units != 0
+            {
                 return Err("recovery_history_position_transition_unsupported");
             }
         }
@@ -491,6 +493,13 @@ mod tests {
         assert!(
             recovery_execution_plan(&baseline, &current, &mut records.clone(), &[history]).is_err()
         );
+    }
+    #[test]
+    fn native_history_rejects_unavailable_realized_pnl_as_zero_proof() {
+        let (baseline, current, mut records, mut history) = history_fixture();
+        Arc::make_mut(&mut history.fills)[0].header.flags |=
+            titan_account_service::event_flags::REALIZED_PNL_UNAVAILABLE;
+        assert!(recovery_execution_plan(&baseline, &current, &mut records, &[history]).is_err());
     }
     #[test]
     fn native_history_must_align_with_original_consumed_execution_boundary() {

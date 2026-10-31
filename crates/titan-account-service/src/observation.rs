@@ -1283,9 +1283,14 @@ fn event(
             let fee = currency
                 .map(|c| exact(i128::from(v.fee_amount_units), c.amount_unit))
                 .transpose()?;
-            let details = wire(
+            let mut details = wire(
                 json!({"asset_id":v.asset_id,"instrument":symbol,"instrument_binding":binding,"side":v.side,"position_side":event_flags::position_side(h.flags),"price_ticks":v.price_ticks,"last_fill_quantity_lots":v.last_fill_quantity_lots,"cumulative_filled_quantity_lots":v.cumulative_filled_quantity_lots,"trade_id":hex(&v.trade_id.0),"venue_order_id":hex(&v.venue_order_id.0),"client_order_id":hex(&v.client_order_id.0),"command_id":hex(&v.command_id.0),"fee_amount_units":v.fee_amount_units,"fee_currency_id":v.fee_currency_id,"fee_currency":currency.map(|c|c.native_currency.as_ref()),"fee_amount_unit":currency.map(|c|c.amount_unit.to_string()),"observed_fee_amount":fee,"realized_pnl_units":v.realized_pnl_units}),
             );
+            let pnl_unavailable = h.flags & event_flags::REALIZED_PNL_UNAVAILABLE != 0;
+            if pnl_unavailable {
+                details["realized_pnl_units"] = Value::Null;
+                details["realized_pnl_available"] = Value::Bool(false);
+            }
             if v.trade_id.0 == [0; 16] {
                 issue(
                     db,
@@ -1305,7 +1310,7 @@ fn event(
                     binding.linear_quote_currency = None;
                     binding
                 });
-                let fingerprint = serde_json::to_vec(&json!([
+                let mut fingerprint = json!([
                     v.asset_id,
                     v.side,
                     v.price_ticks,
@@ -1317,8 +1322,14 @@ fn event(
                     execution_binding,
                     currency.map(|c| (c.native_currency.as_ref(), c.amount_unit.to_string())),
                     hex(&v.venue_order_id.0)
-                ]))?;
-                let hash = Sha256::digest(fingerprint);
+                ]);
+                if pnl_unavailable {
+                    fingerprint
+                        .as_array_mut()
+                        .expect("execution fingerprint")
+                        .push(json!({"realized_pnl_available":false}));
+                }
+                let hash = Sha256::digest(serde_json::to_vec(&fingerprint)?);
                 business = Some((key.clone(), hex(&hash)));
                 let previous: Option<Vec<u8>> = db
                     .query_row(
@@ -2276,6 +2287,29 @@ mod tests {
             venue_order_id: Id128([8; 16]),
             ..Default::default()
         }
+    }
+    #[test]
+    fn unavailable_fill_pnl_is_null_while_native_fee_remains_known() {
+        let tmp = tempfile::tempdir().unwrap();
+        let journal = AccountFactJournal::open(
+            tmp.path().join("facts.db"),
+            "unknown-pnl".into(),
+            &[definition()],
+        )
+        .unwrap();
+        let mut event = fill(1, 1);
+        event.header.flags |= event_flags::REALIZED_PNL_UNAVAILABLE;
+        publish(&journal, event, 1);
+        journal
+            .close(Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        let history = journal.history("gate", Some("fill"), 0, 10).unwrap();
+        assert!(history[0]["details"]["realized_pnl_units"].is_null());
+        assert_eq!(history[0]["details"]["realized_pnl_available"], false);
+        assert_eq!(
+            journal.summary("gate").unwrap()["observed_fees"][0]["amount"],
+            "0.000017"
+        );
     }
     #[test]
     fn terminal_orders_do_not_fabricate_fills_and_reconnects_do_not_repeat_fees() {
