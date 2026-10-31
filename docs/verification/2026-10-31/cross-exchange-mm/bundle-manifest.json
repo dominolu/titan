@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "abi_version": 13,
+    "business_observation_schema": null,
+    "callback_mask": 7923,
+    "compiled_strategy": "/home/dominolu/dev/titan-cross-exchange-mm-20261031-1a7cc720/artifacts/cross_exchange_mm.titan",
+    "compiled_strategy_digest": "1ce8ea7068a2dcb112c16611644d73727b96aac11d118ecdd26d56cd284a4e94",
+    "cpu_baseline": "x86-64",
+    "key_id": null,
+    "native_library_sha256": "474ebee0a128b96b46a7ae0a20b5a35e7cb1797c049519a0858d4243ed814ded",
+    "recovery_state_schema_hash": "372741c3df3819f3276ff9335be2a4451af9148d46fa26357fc21ecf8838fdbe",
+    "recovery_state_schema_version": 2,
+    "signed": false,
+    "source_version": "2.0.0",
+    "state_alignment": 8,
+    "state_len": 8072,
+    "strategy_type": "cross_exchange_mm",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  }
+}

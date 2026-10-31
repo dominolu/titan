@@ -1,0 +1,4 @@
+d37b566f00f91598cd04e7d0d152550e0f2e74eace6ef2af3458fce669716a88  strategies/reference_mm/strategy.py
+6da80eaf0f1d3fd83839a87d2d87b89d69f119ea9e03b854840e64cd4cd91c17  python/titan-strategy-sdk/tests/test_reference_mm.py
+499522d213a3156b1006391674093d77909a0d76998dffc75fd2f9b01fa41f9f  Cargo.lock
+e34195fc24e55c0b8403b6af7b04bf64b6b8f4b5cca9a4804f83cd202e58ab80  ../artifacts/reference_mm.titan

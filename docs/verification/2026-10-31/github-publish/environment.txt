@@ -1,0 +1,5 @@
+rustc 1.94.1 (e408947bf 2026-03-25)
+Python 3.11.14
+3f6244a2becdc46fd9552f51048ab2cefe9d3c2bc41b8767bdee6f3a7fb903d0  strategies/cross_exchange_mm.py
+f91018d21ceb7cef8978b6c6906aee882196b987f1c67cc81aceb41766d0d3e9  python/titan-strategy-sdk/tests/test_cross_exchange_mm.py
+705d5d5e186c838fbb45482528d3e047bec3ff37e6fa6b14044f7e9da972de70  /tmp/titan-single-file-target/debug/titan

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "strategy": {
+    "abi_version": 13,
+    "business_observation_schema": null,
+    "callback_mask": 7923,
+    "compiled_strategy": "/home/dominolu/dev/titan-reference-mm-20261030-c67acf9c/artifacts/reference_mm.titan",
+    "compiled_strategy_digest": "c497419d03036ce88ba30cba9d04ab603276ca870f8d0e8663cab94f6c99553e",
+    "cpu_baseline": "x86-64",
+    "key_id": null,
+    "native_library_sha256": "42f3893609a92ca8b92c892b72f45b46466be6daa83d857b7b5467e8dfc0e13e",
+    "recovery_state_schema_hash": "76890ab3d16a041282edc4d3f410df770671857537fe7668f922a8a69df6c6f3",
+    "recovery_state_schema_version": 1,
+    "signed": false,
+    "source_version": "1.0.0",
+    "state_alignment": 8,
+    "state_len": 5648,
+    "strategy_type": "reference_mm",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  }
+}
