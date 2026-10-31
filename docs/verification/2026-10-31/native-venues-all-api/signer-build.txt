@@ -1,0 +1,33 @@
+source=https://github.com/elliottech/lighter-go/tree/aefa96848a105d82a6bbb55d3d05663293a71713
+go version go1.27.3 linux/amd64
+/tmp/titan-lighter-native-all-signer-20261031/lighter-signer.so: go1.27.3
+	path	github.com/elliottech/lighter-go/sharedlib
+	mod	github.com/elliottech/lighter-go	v1.0.13-0.20261030104708-aefa96848a10	
+	dep	github.com/bits-and-blooms/bitset	v1.17.0	h1:1X2TS7aHz1ELcC0yU1y2stUs/0ig5oMU6STFZGrhvHI=
+	dep	github.com/consensys/bavard	v0.1.22	h1:Uw2CGvbXSZWhqK59X0VG/zOjpTFuOMcPLStrp1ihI0A=
+	dep	github.com/consensys/gnark-crypto	v0.14.0	h1:DDBdl4HaBtdQsq/wfMwJvZNE80sHidrK3Nfrefatm0E=
+	dep	github.com/crate-crypto/go-ipa	v0.0.0-20240724233137-53bbb0ceb27a	h1:W8mUrRp6NOVl3J+MYp5kPMoUZPp7aOYHtaua31lwRHg=
+	dep	github.com/crate-crypto/go-kzg-4844	v1.1.0	h1:EN/u9k2TF6OWSHrCCDBBU6GLNMq88OspHHlMnHfoyU4=
+	dep	github.com/elliottech/poseidon_crypto	v0.0.15	h1:+f/YTnIFEWX1Xss75Ky7QRvhDpR372XAAMtpWxKvp+k=
+	dep	github.com/ethereum/go-ethereum	v1.15.6	h1:jgLoUM6/pNjp0uEnXyWcWikDwa4j1wZlcqkX8Pm8A+I=
+	dep	github.com/ethereum/go-verkle	v0.2.2	h1:I2W0WjnrFUIzzVPwm8ykY+7pL2d4VhlsePn4j7cnFk8=
+	dep	github.com/holiman/uint256	v1.3.2	h1:a9EgMPSC1AAaj1SZL5zIQD3WbwTuHrMGOerLjGmM/TA=
+	dep	github.com/mmcloughlin/addchain	v0.4.0	h1:SobOdjm2xLj1KkXN5/n0xTIWyZA2+s99UCY1iPfkHRY=
+	dep	golang.org/x/crypto	v0.56.0	h1:GUh5Ii4J5jtcseSMiRqr1jXCNHoxjeV9Fmekc2oLy6Y=
+	dep	golang.org/x/sync	v0.11.0	h1:GGz8+XQP4FvTTrjZPzNKTMFtSXH80RAzG+5ghFPgK9w=
+	dep	golang.org/x/sys	v0.47.0	h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+	dep	rsc.io/tmplfunc	v0.0.3	h1:53XFQh69AfOa8Tw0Jm7t+GV7KZhOi6jzsCzTtKbMvzU=
+	build	-buildmode=c-shared
+	build	-compiler=gc
+	build	-trimpath=true
+	build	DefaultGODEBUG=tracebacklabels=0,x509sslcertoverrideplatform=0
+	build	CGO_ENABLED=1
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=aefa96848a105d82a6bbb55d3d05663293a71713
+	build	vcs.time=2026-10-30T10:47:08Z
+	build	vcs.modified=false
+1e1a81619a006de4cc44a65901f9832521655969eed48169615c358d231f2a08  /tmp/titan-lighter-native-all-signer-20261031/lighter-signer.so
+fcbe90e05378e51f6cb2370db6836badc3e65f7dd87b5363ce8cf131a9fbc743  /tmp/titan-lighter-native-all-signer-20261031/lighter-signer.h

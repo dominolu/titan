@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "okx", "hyperliquid", "gatecrossex"]
+default = ["binancefutures", "okx", "hyperliquid", "gatecrossex", "backpack", "lighter", "variational"]
 binancefutures = []
 okx = []
 hyperliquid = []
 gatecrossex = []
+backpack = []
+lighter = ["dep:libloading"]
+variational = []
 
 [dependencies]
 hftbacktest = { path = "../hftbacktest" }
@@ -16,7 +19,7 @@ tracing = "0.1.43"
 anyhow = "1.0.100"
 thiserror = "2.0.17"
 bincode = "2.0.1"
-chrono = { version = "0.4.42" }
+chrono = { version = "0.4.42", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 tokio = { version = "1.48.0", features = ["full"] }
@@ -54,8 +57,14 @@ sha3 = "0.10"
 hex = "0.4"
 smallvec = { version = "1", features = ["serde"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+libloading = { version = "0.8.9", optional = true }
 
 [dev-dependencies]
+tokio = { version = "1.48.0", features = ["test-util"] }
 titan-strategy-runtime = { path = "../crates/titan-strategy-runtime" }
 semver = "1"
 titan-event-engine = { path = "../crates/titan-event-engine" }
+
+[[example]]
+name = "native_venues_public_probe"
+required-features = ["backpack", "lighter", "variational"]

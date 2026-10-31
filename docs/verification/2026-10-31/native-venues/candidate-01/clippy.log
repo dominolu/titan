@@ -1,0 +1,3 @@
+    Checking connector v0.1.0 (/tmp/titan-native-venues-20261030/connector)
+    Checking titan-cli v0.1.0 (/tmp/titan-native-venues-20261030/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.96s

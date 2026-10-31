@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe backpack`
+instruments: transport failure, public read attempt 1/3
+instruments: transport failure, public read attempt 2/3
+backpack: instruments: [backpack] TRANSPORT: error sending request
+Error: public probes failed: backpack

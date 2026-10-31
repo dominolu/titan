@@ -1,0 +1,11 @@
+   Compiling connector v0.1.0 (/tmp/titan-native-review-fixes-20261031/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.66s
+     Running unittests src/lib.rs (/tmp/titan-native-venues-target/debug/deps/connector-cae151a511e5a87a)
+
+running 3 tests
+test lighter::stream::tests::positions_keep_absent_execution_time_unknown_and_reject_invalid_values ... ok
+test lighter::stream::tests::public_session_stays_connected_past_500_seconds ... ok
+test lighter::stream::tests::private_session_stays_ready_past_500_seconds_and_emits_ready_once ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 345 filtered out; finished in 0.34s
+

@@ -1,0 +1,4 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe variational`
+variational: statistics rate limited; retry after 1 seconds
+Error: public probes failed: variational

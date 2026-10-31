@@ -143,7 +143,9 @@ async fn main() -> Result<()> {
             AccountPublication::Position { symbol, qty, .. } => {
                 let _ = tx.send((format!("Position {symbol}={qty}"), Instant::now()));
             }
-            AccountPublication::Balance { .. } | AccountPublication::NativeFill { .. } => {}
+            AccountPublication::Balance { .. }
+            | AccountPublication::NativeFill { .. }
+            | AccountPublication::NativeFillWithoutRealizedPnl { .. } => {}
             AccountPublication::Error(e) => {
                 let _ = tx.send((format!("AccountError: {e:?}"), Instant::now()));
             }

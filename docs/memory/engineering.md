@@ -316,3 +316,27 @@
 - 删除 V13 2730 条与 host book 16384 价位限制，bootstrap 4096 批/32768 条组合限制改为增量估算字节记账。保留 V1 u16 编码边界、精确长度、源序号、快照替换及可信覆盖，不能把零星远档更新冒充完整覆盖。
 - 深度输入不再构建 Tick，输入/投影 Vec 复用，Top100 遍历不再 collect 临时 Vec。性能对照必须使用独立构建缓存并检查旧版对超块输入确实拒绝，避免 Cargo 跨 checkout 复用新二进制污染基线。
 - 本轮验证证据见[载荷重构验收](../verification/2026-10-28/payload/README.md)；上面的旧固定块/条数容量记录仅代表历史实现。
+
+## 22. Lighter、Backpack 与 Variational 原生接入
+
+2026-10-31 的实现与范围见[接入说明](../exchange_onboarding.md)，新证据见[本轮验收](../verification/2026-10-31/native-venues/README.md)。这是交易所基础能力接入，不代表跨所策略或三家实盘交易已完成。
+
+- Lighter Core 与 Robinhood Chain、Simple 与 Unified、cross 与 isolated 必须分开。签名整数按 price/size_decimals，允许步长按 supported_*_decimals；原生费用是 ppm 费率，应以 usd_amount 换算 USDC 金额并保留抵押账本 12 位精度。公共 WS 使用官方 readonly=true，深度按 begin_nonce 接续而非 offset 连号。
+- Lighter 官方 signer 固定提交与 C ABI，并在编译服务器构建、记录摘要和离线签名验证。每 account/API key 串行共享 nonce；传输前先置结果未确定，future 取消同样冻结，不能自动重发或通过热替换重置。sendTx ACK 后查询原订单事实，查不到不等于未受理。
+- 数字 clientId 不能截断或哈希完整 Titan 身份。追加日志 fsync 后才能发送，头部绑定网络/账户，跨进程文件锁防重叠分配；同进程账户替换会先创建候选，因此前后代次必须共享同一个日志句柄和映射。映射还要保存 Backpack 历史接口省略的自有 reduce-only 属性，不能删日志后从 1 重启。
+- Backpack 私有订阅以原生初始 position image 确认就绪，空数组合法，超时仍拒绝。capital.available 不是可用保证金，财务投影以 collateral 的 netEquityAvailable/netEquity/pnlUnrealized 为准；后台刷新不得阻塞私有接收，版本过期丢弃、失败关闭。活动订单接口 404 必须查终态历史，不能当作确定不存在。
+- 缺少逐笔 realized PnL 必须明确标记 unavailable，不能补零后用于恢复证明。新增账户事件标记不改序列化长度/schema，历史展示 null；旧已知盈亏事实指纹保持原样。Backpack 原生成交和费用可采集，但当前历史恢复不能证明的零盈亏路径保持拒绝，部署需连同观察器/恢复代码更新。
+- Variational 官方 v2 只有统计，PERP 与 SWAP 的资金费字段、单位和空值分别保留；报价可缓存 600 秒，不能登记为可执行盘口。Trading API 未向用户开放前不得伪造交易适配器。
+- 本轮在 192.168.3.88 完成 fmt、全 workspace/all-targets/all-features Clippy、696 Rust/2 doctest、单独 1 项官方 signer 测试，645 输入文件字节一致。Lighter 公开接口通过，Variational 限流后复验通过；Backpack 本轮公开访问连接重置未通过。未访问新实盘账户、未部署；私有与交易验收仍需新账户及风险范围，不沿用其他所的历史授权。
+
+### 全量原生 API 扩展
+
+- 用户随后要求全部 API；当前[目录](../exchange_api_catalog.md)覆盖 Backpack 75、Lighter 104、Variational 2 个公开 HTTP 操作，以及 20/25 个 WS 模式与 Lighter 23 类签名。原生层保留完整字段/单位，统一 Broker 与账户事实层继续只声明经过专门适配的能力；SDK 操作存在不等于可从策略绕过账户执行所有权。
+- 用官方 OpenAPI 与固定 SDK 的路径并集核对覆盖，不猜测未公布的内部路由。生成器只在编译服务器运行，保留来源摘要与字段清单。精简规范时不能把 properties/schema 名称表中的业务字段 description 当成说明文字删除；组件字段 census 也必须参与审计。
+- Lighter 已升级到固定 aefa968 的 64 位 market-index C ABI，原生有效下标 48 位、255 保留；REST、WS 映射及 signer 全链路不能截断到 i32，不能根据 ID 段猜市场类型。旧 v1.0.10 库拒绝加载，须重新构建/验证并更新摘要。
+- Backpack 批量签名逐项添加 instruction 后拼接，保留逐项成功/失败。Lighter WS 单笔 tx_info 为对象，批量 tx_types/tx_infos 为 JSON 字符串，超过 2^53 的整数也不可变成 f64。部分官方 schema 的 integer enum 写成字符串，只兼容声明差异，不把实际线上整数改成字符串。
+- NativeSigner 保留 L1 授权消息，外部钱包 EIP-191 签名写入 L1Sig；字段格式检查不证明钱包所有权。显式 nonce/sendTx/WS 路径由调用方独占身份并对账，不能与平台 writer 独立混用；换 key 或模式前完成维护与对账，同 key 的进程内身份不会自动替换或清除未知 nonce。
+- [全量 API 验收](../verification/2026-10-31/native-venues-all-api/README.md)：706 Rust/2 doctest、官方覆盖/字段审计和单独覆盖 23 类交易的真实官方离线签名测试通过，660 输入一致；Lighter（含原生/Explorer）与 Variational v1/v2 公开读取通过。Backpack 公网连接重置未通过；没有实盘账户/资金/订单调用、部署或长期策略，Variational Trading API 仍未开放。
+- 非协作停机夹具不能先 yield：当初次 poll 晚于原期限时会被 Tokio 取消，实际测试的是协作超时而非不可抢占阻塞。只在非阻塞分支保留 yield，原产品逻辑及 5ms/80ms/1s 期限不变；最终恢复默认并行验证，不用串行诊断结果冒充并行通过。
+- [原生接入审查修复](../verification/2026-10-31/native-venues-review-fixes/README.md)：健康 Lighter 会话不能因固定认证计时主动断开并暂停策略；真实断线仍对账。缺少持仓执行时间保留零时间语义，不借用发布时钟。有效初始确认只发布一次 ready。Backpack 查询签名必须使用多值参数序列，提现 `recipientInformation` 原样发送但明确排除在签名之外，不能泛化为嵌套 JSON 签名。
+- 本次在最新策略迁移基线 `82b9bef9` 上通过 710 Rust/2 doctest、Clippy 零告警、覆盖审计及独立官方 signer 验证，651 输入前后及本地一致；新增五项回归包含两个 720 秒模拟会话，既有 CLI 测试因独立迁移减少一项。早期夹具路径和模块排列失败记录保留，未部署或访问真实账户。

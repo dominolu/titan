@@ -16,12 +16,26 @@
 mod account_projection;
 pub mod account_runtime;
 pub mod api;
+#[cfg(feature = "backpack")]
+pub mod backpack;
 pub mod connector;
 pub mod decimal;
+#[cfg(feature = "lighter")]
+pub mod lighter;
 mod market_event;
 pub mod market_runtime;
+#[cfg(any(feature = "backpack", feature = "lighter"))]
+pub mod native_api;
+#[cfg(test)]
+mod native_api_tests;
+#[cfg(any(feature = "backpack", feature = "lighter"))]
+pub mod native_ws;
 mod units;
 mod utils;
+#[cfg(feature = "variational")]
+pub mod variational;
+#[cfg(any(feature = "backpack", feature = "lighter", feature = "variational"))]
+mod venue;
 
 /// Installs the connector crate's process-wide TLS crypto provider before any
 /// reqwest or websocket client is constructed. Static connector factories each

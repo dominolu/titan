@@ -1,0 +1,76 @@
+    Checking tokio v1.53.1
+    Checking tokio-util v0.7.19
+    Checking aws-smithy-async v1.2.14
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.4
+    Checking tokio-rustls v0.24.1
+    Checking tokio-native-tls v0.3.1
+    Checking titan-core-types v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-core-types)
+    Checking tokio-tungstenite v0.28.0
+    Checking aws-smithy-types v1.5.0
+    Checking h2 v0.4.18
+    Checking h2 v0.3.27
+    Checking tokio-postgres v0.7.18
+    Checking tower-http v0.6.11
+    Checking aws-smithy-runtime-api v1.12.3
+    Checking aws-smithy-eventstream v0.60.21
+    Checking aws-smithy-json v0.61.9
+    Checking aws-smithy-query v0.60.15
+    Checking titan-event-engine v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-event-engine)
+    Checking titan-market-service v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-market-service)
+    Checking aws-smithy-schema v0.1.0
+    Checking aws-smithy-http v0.63.6
+    Checking aws-credential-types v1.2.14
+    Checking aws-smithy-observability v0.2.6
+    Checking aws-smithy-http v0.62.6
+    Checking aws-sigv4 v1.4.5
+    Checking postgres-native-tls v0.5.3
+    Checking postgres v0.19.14
+    Checking aws-types v1.3.16
+    Checking aws-smithy-json v0.62.7
+    Checking aws-smithy-checksums v0.63.12
+    Checking hyper v0.14.32
+    Checking hyper v1.11.0
+    Checking hyper-util v0.1.20
+    Checking hyper-rustls v0.27.9
+    Checking hyper-tls v0.6.0
+    Checking axum v0.8.9
+    Checking reqwest v0.12.28
+    Checking hyper-rustls v0.24.2
+    Checking aws-smithy-http-client v1.1.13
+    Checking aws-smithy-runtime v1.11.3
+    Checking aws-runtime v1.7.5
+    Checking aws-sdk-s3 v1.116.0
+    Checking aws-sdk-sts v1.107.0
+    Checking aws-sdk-sso v1.102.0
+    Checking aws-sdk-ssooidc v1.104.0
+    Checking aws-config v1.8.11
+    Checking titan-persistence v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-persistence)
+    Checking titan-account-service v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-account-service)
+    Checking titan-strategy-runtime v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/tmp/titan-native-review-fixes-20261031/hftbacktest)
+    Checking connector v0.1.0 (/tmp/titan-native-review-fixes-20261031/connector)
+    Checking collector v0.1.0 (/tmp/titan-native-review-fixes-20261031/collector)
+    Checking titan-cli v0.1.0 (/tmp/titan-native-review-fixes-20261031/crates/titan-cli)
+error: items after a test module
+   --> connector/src/lighter/stream.rs:351:1
+    |
+351 |   mod tests {
+    |   ^^^^^^^^^
+...
+601 | / fn private_frame(
+602 | |     c: &LighterClient,
+603 | |     kind: &str,
+604 | |     v: &Value,
+...   |
+607 | |     tx: &PublishSender,
+608 | | ) -> Result<(), ApiError> {
+    | |_________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: could not compile `connector` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

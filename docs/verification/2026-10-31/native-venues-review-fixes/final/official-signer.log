@@ -1,0 +1,9 @@
+   Compiling connector v0.1.0 (/tmp/titan-native-review-fixes-20261031/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.81s
+     Running unittests src/lib.rs (/tmp/titan-native-venues-target/debug/deps/connector-cae151a511e5a87a)
+
+running 1 test
+test lighter::signer::official_tests::official_signer_offline_abi_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 347 filtered out; finished in 0.04s
+

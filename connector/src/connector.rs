@@ -127,6 +127,11 @@ pub enum AccountPublication {
         position_side: crate::api::ApiPositionSide,
         fill: crate::api::Fill,
     },
+    /// Native execution and fee are known, but the venue does not report per-fill realized PnL.
+    NativeFillWithoutRealizedPnl {
+        position_side: crate::api::ApiPositionSide,
+        fill: crate::api::Fill,
+    },
     /// An order average is independent of the incremental execution price in `Order`.
     OrderWithExecution {
         position_side: crate::api::ApiPositionSide,

@@ -1,0 +1,33 @@
+9d38261d1a4cc5c7211b383ba07a4d6e41604708
+go version go1.27.3 linux/amd64
+/tmp/titan-lighter-signer-sparse-20261030/lighter-signer.so: go1.27.3
+	path	github.com/elliottech/lighter-go/sharedlib
+	mod	github.com/elliottech/lighter-go	v1.0.10	
+	dep	github.com/bits-and-blooms/bitset	v1.17.0	h1:1X2TS7aHz1ELcC0yU1y2stUs/0ig5oMU6STFZGrhvHI=
+	dep	github.com/consensys/bavard	v0.1.22	h1:Uw2CGvbXSZWhqK59X0VG/zOjpTFuOMcPLStrp1ihI0A=
+	dep	github.com/consensys/gnark-crypto	v0.14.0	h1:DDBdl4HaBtdQsq/wfMwJvZNE80sHidrK3Nfrefatm0E=
+	dep	github.com/crate-crypto/go-ipa	v0.0.0-20240724233137-53bbb0ceb27a	h1:W8mUrRp6NOVl3J+MYp5kPMoUZPp7aOYHtaua31lwRHg=
+	dep	github.com/crate-crypto/go-kzg-4844	v1.1.0	h1:EN/u9k2TF6OWSHrCCDBBU6GLNMq88OspHHlMnHfoyU4=
+	dep	github.com/elliottech/poseidon_crypto	v0.0.15	h1:+f/YTnIFEWX1Xss75Ky7QRvhDpR372XAAMtpWxKvp+k=
+	dep	github.com/ethereum/go-ethereum	v1.15.6	h1:jgLoUM6/pNjp0uEnXyWcWikDwa4j1wZlcqkX8Pm8A+I=
+	dep	github.com/ethereum/go-verkle	v0.2.2	h1:I2W0WjnrFUIzzVPwm8ykY+7pL2d4VhlsePn4j7cnFk8=
+	dep	github.com/holiman/uint256	v1.3.2	h1:a9EgMPSC1AAaj1SZL5zIQD3WbwTuHrMGOerLjGmM/TA=
+	dep	github.com/mmcloughlin/addchain	v0.4.0	h1:SobOdjm2xLj1KkXN5/n0xTIWyZA2+s99UCY1iPfkHRY=
+	dep	golang.org/x/crypto	v0.35.0	h1:b15kiHdrGCHrP6LvwaQ3c03kgNhhiMgvlhxHQhmg2Xs=
+	dep	golang.org/x/sync	v0.11.0	h1:GGz8+XQP4FvTTrjZPzNKTMFtSXH80RAzG+5ghFPgK9w=
+	dep	golang.org/x/sys	v0.30.0	h1:QjkSwP/36a20jFYWkSue1YwXzLmsV5Gfq7Eiy72C1uc=
+	dep	rsc.io/tmplfunc	v0.0.3	h1:53XFQh69AfOa8Tw0Jm7t+GV7KZhOi6jzsCzTtKbMvzU=
+	build	-buildmode=c-shared
+	build	-compiler=gc
+	build	-trimpath=true
+	build	DefaultGODEBUG=containermaxprocs=0,cryptocustomrand=1,decoratemappings=0,gotestjsonbuildtext=1,httpcookiemaxnum=0,httpservecontentmaxranges=1,multipathtcp=0,randseednop=0,rsa1024min=0,tlsmlkem=0,tlssecpmlkem=0,tlssha1=1,tracebacklabels=0,updatemaxprocs=0,urlmaxqueryparams=0,urlstrictcolons=0,x509rsacrt=0,x509sha256skid=0,x509sslcertoverrideplatform=0,x509usepolicies=0
+	build	CGO_ENABLED=1
+	build	GOARCH=amd64
+	build	GOOS=linux
+	build	GOAMD64=v1
+	build	vcs=git
+	build	vcs.revision=9d38261d1a4cc5c7211b383ba07a4d6e41604708
+	build	vcs.time=2026-09-15T12:26:05Z
+	build	vcs.modified=false
+4eda0bfe101f61c7aacfeebdda83359646eb2f856d71a96ec12f5ca3d0a0cde4  /tmp/titan-lighter-signer-sparse-20261030/lighter-signer.so
+0861712530d66789b201b136419021d4f422f6c928e092b49eb9b9fbe38e7464  /tmp/titan-lighter-signer-sparse-20261030/lighter-signer.h

@@ -1,0 +1,12 @@
+   Compiling titan-account-service v0.1.0 (/tmp/titan-native-venues-20261030/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/tmp/titan-native-venues-20261030/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/tmp/titan-native-venues-20261030/hftbacktest)
+   Compiling connector v0.1.0 (/tmp/titan-native-venues-20261030/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.87s
+     Running unittests src/lib.rs (/tmp/titan-native-venues-target/debug/deps/connector-199b26026965c241)
+
+running 1 test
+test lighter::signer::official_tests::official_signer_offline_abi_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 328 filtered out; finished in 0.02s
+

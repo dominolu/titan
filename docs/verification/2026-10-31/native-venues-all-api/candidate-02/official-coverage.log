@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/tmp/titan-native-venues-20261030/scripts/verify_native_api_coverage.py", line 59, in <module>
+    assert component_fields(document) == component_fields(lr_catalog[file.name]), source["url"]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: https://docs.lighter.xyz/api/models.md

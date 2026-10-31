@@ -1,0 +1,5 @@
+# Public native USDC perpetual connector. Credentials belong in the account SecretProvider.
+rest_url = "https://api.backpack.exchange"
+ws_url = "wss://ws.backpack.exchange"
+reconnect_ms = 1000
+window_ms = 5000

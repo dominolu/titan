@@ -1,0 +1,10 @@
+{
+  "rust": {
+    "passed": 710,
+    "ignored": 26
+  },
+  "doctest": {
+    "passed": 2,
+    "ignored": 1
+  }
+}
