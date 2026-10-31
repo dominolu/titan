@@ -1,0 +1,43 @@
+{
+  "baseline": "69717434b6dca1c3f461d9ea451583a0654260e8",
+  "deployment": false,
+  "doctest": {
+    "failed": 0,
+    "ignored": 1,
+    "passed": 2
+  },
+  "extra_frontend_regressions": {
+    "web-research-view": "{\"passed\":true,\"checks\":[\"last-copy-selection-wins\",\"late-copy-preserves-new-user-input\",\"late-copy-rejected-after-session\",\"late-copy-rejected-after-unmount\",\"embedded-run-deployment-survives-600-events-and-sibling-edits\",\"unmount-releases-all-pin-owners\",\"pin-capacity-rejection-is-atomic\",\"released-owner-cannot-merge-late-resource\"]}",
+    "web-run-view": "run presentation: precision, units, stale facts, instrument/node identity and native statuses passed"
+  },
+  "frontend_requests": 40,
+  "gates": {
+    "cli-build": "0",
+    "clippy": "0",
+    "doctest": "0",
+    "fmt-check": "0",
+    "format": "0",
+    "reporting": "0",
+    "rust": "0",
+    "sdk": "0",
+    "web-api": "0",
+    "web-build": "0",
+    "web-cache": "0",
+    "web-check": "0",
+    "web-lint": "0"
+  },
+  "input_files": 759,
+  "live_access": false,
+  "reporting": {
+    "passed": 5
+  },
+  "rust": {
+    "failed": 0,
+    "ignored": 26,
+    "passed": 734
+  },
+  "sdk": {
+    "passed": 155
+  },
+  "source_unchanged": true
+}

@@ -1,0 +1,54 @@
+{
+  "baseline": "e31594fda0facacfce3807f9a4147e7e20eeb0b0",
+  "deployment": false,
+  "doctest": {
+    "failed": 0,
+    "ignored": 1,
+    "passed": 2
+  },
+  "gates": {
+    "cli-build": "0",
+    "clippy": "0",
+    "doctest": "0",
+    "fmt-check": "0",
+    "format": "0",
+    "heartbeat-1": "0",
+    "heartbeat-10": "0",
+    "heartbeat-2": "0",
+    "heartbeat-3": "0",
+    "heartbeat-4": "0",
+    "heartbeat-5": "0",
+    "heartbeat-6": "0",
+    "heartbeat-7": "0",
+    "heartbeat-8": "0",
+    "heartbeat-9": "0",
+    "reporting": "0",
+    "rust": "0",
+    "sdk": "0",
+    "targeted-api": "0",
+    "targeted-collector": "0",
+    "web-api": "0",
+    "web-build": "0",
+    "web-cache": "0",
+    "web-check": "0",
+    "web-lint": "0",
+    "web-research-view": "0",
+    "web-run-view": "0"
+  },
+  "heartbeat_repetitions": 10,
+  "input_tree": "e1d307ff872c6fadce4f9f4fccf01b9bbd4e15b6",
+  "live_access": false,
+  "reporting": {
+    "passed": 5
+  },
+  "rust": {
+    "failed": 0,
+    "ignored": 26,
+    "passed": 736
+  },
+  "sdk": {
+    "passed": 120
+  },
+  "source_files": 759,
+  "source_unchanged": true
+}

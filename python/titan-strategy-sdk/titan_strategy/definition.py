@@ -90,10 +90,6 @@ class StrategySpec:
             object.__setattr__(self, name, value)
         if legacy:
             raise TypeError(f"unknown strategy fields: {sorted(legacy)}")
-        if capabilities & Capability.HOST_DEPTH_100 and not any(
-            s.event_kind == EventKind.DEPTH and s.qos == EventQos.RELIABLE_ORDERED for s in subscriptions
-        ):
-            raise ValueError("HOST_DEPTH_100 requires reliable ordered depth subscription")
         object.__setattr__(self, "parameters", parameters)
         object.__setattr__(self, "subscriptions", subscriptions)
         object.__setattr__(self, "capabilities", capabilities)

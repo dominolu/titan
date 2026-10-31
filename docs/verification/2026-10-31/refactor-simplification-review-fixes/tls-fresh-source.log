@@ -1,0 +1,79 @@
+   Compiling serde_core v1.0.229
+   Compiling zip v6.0.0
+   Compiling tungstenite v0.28.0
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/hftbacktest-derive)
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling semver v1.0.28
+   Compiling serde_spanned v1.1.1
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling smallvec v1.15.2
+   Compiling chrono v0.4.45
+   Compiling ed25519 v2.2.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling rmp-serde v1.3.1
+   Compiling serde_qs v0.15.0
+   Compiling parking_lot_core v0.9.12
+   Compiling icu_normalizer v2.3.0
+   Compiling parking_lot v0.12.5
+   Compiling rusqlite v0.40.2
+   Compiling ed25519-dalek v2.2.0
+   Compiling tokio v1.53.1
+   Compiling idna_adapter v1.2.2
+   Compiling titan-domain-types v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-domain-types)
+   Compiling idna v1.1.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling url v2.5.8
+   Compiling parquet v58.4.0
+   Compiling tokio-util v0.7.19
+   Compiling aws-smithy-async v1.2.14
+   Compiling tokio-rustls v0.26.4
+   Compiling tower v0.5.3
+   Compiling tokio-rustls v0.24.1
+   Compiling tokio-native-tls v0.3.1
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-core-types)
+   Compiling tokio-tungstenite v0.28.0
+   Compiling tower-http v0.6.11
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-market-service)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-event-engine)
+   Compiling aws-smithy-types v1.5.0
+   Compiling h2 v0.4.18
+   Compiling h2 v0.3.27
+   Compiling tokio-postgres v0.7.18
+   Compiling aws-smithy-runtime-api v1.12.3
+   Compiling aws-smithy-eventstream v0.60.21
+   Compiling hyper v1.11.0
+   Compiling hyper v0.14.32
+   Compiling aws-smithy-schema v0.1.0
+   Compiling aws-credential-types v1.2.14
+   Compiling hyper-util v0.1.20
+   Compiling aws-smithy-http v0.63.6
+   Compiling aws-smithy-observability v0.2.6
+   Compiling aws-sigv4 v1.4.5
+   Compiling aws-types v1.3.16
+   Compiling aws-smithy-http v0.62.6
+   Compiling aws-smithy-json v0.61.9
+   Compiling hyper-rustls v0.27.9
+   Compiling aws-smithy-checksums v0.63.12
+   Compiling postgres v0.19.14
+   Compiling hyper-rustls v0.24.2
+   Compiling aws-smithy-http-client v1.1.13
+   Compiling postgres-native-tls v0.5.3
+   Compiling reqwest v0.12.28
+   Compiling aws-smithy-runtime v1.11.3
+   Compiling aws-runtime v1.7.5
+   Compiling aws-sdk-s3 v1.116.0
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-persistence)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/hftbacktest)
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.33s
+     Running tests/hyperliquid_tls_provider.rs (/tmp/titan-single-file-target/debug/deps/hyperliquid_tls_provider-e65d8a5a0e3fede7)
+
+running 1 test
+test concurrent_client_construction_initializes_tls_in_a_fresh_process ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

@@ -1,0 +1,9 @@
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/crates/titan-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.75s
+     Running unittests src/lib.rs (/tmp/titan-single-file-target/debug/deps/titan_cli-73a91170fec19884)
+
+running 1 test
+test management::http::tests::version_page_projects_private_state_before_response_limit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 2.74s
+

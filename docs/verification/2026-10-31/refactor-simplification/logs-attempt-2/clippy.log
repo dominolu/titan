@@ -1,0 +1,21 @@
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-simplify-20261031-69717434/src/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-simplify-20261031-69717434/src/collector)
+error: the `Err`-variant returned from this closure is very large
+   --> collector/src/binance_transport.rs:321:21
+    |
+321 | /                     |request: &server::Request, response: server::Response| {
+322 | |                         assert_eq!(
+323 | |                             request.uri().path_and_query().unwrap().as_str(),
+324 | |                             "/stream?streams=btcusdt@trade"
+325 | |                         );
+326 | |                         Ok(response)
+327 | |                     },
+    | |_____________________^ the `Err`-variant is at least 136 bytes
+    |
+    = help: try reducing the size of `tokio_tungstenite::tungstenite::http::Response<std::option::Option<std::string::String>>`, for example by boxing large elements or replacing it with `Box<tokio_tungstenite::tungstenite::http::Response<std::option::Option<std::string::String>>>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: could not compile `collector` (bin "collector" test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

@@ -1,0 +1,1 @@
+{"passed":true,"checks":["last-copy-selection-wins","late-copy-preserves-new-user-input","late-copy-rejected-after-session","late-copy-rejected-after-unmount","embedded-run-deployment-survives-600-events-and-sibling-edits","unmount-releases-all-pin-owners","pin-capacity-rejection-is-atomic","released-owner-cannot-merge-late-resource"]}

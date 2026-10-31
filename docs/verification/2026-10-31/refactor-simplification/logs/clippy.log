@@ -1,0 +1,4 @@
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-simplify-20261031-69717434/src/connector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-simplify-20261031-69717434/src/crates/titan-cli)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-simplify-20261031-69717434/src/collector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.49s

@@ -1,0 +1,5 @@
+
+> titan-console@6.2.0 test:cache /home/dominolu/dev/titan-simplify-review-fixes-20261031-e31594fd/src/web/console
+> node ../../scripts/management_web_cache_test.mjs
+
+resource cache: catalog survives 600 updates; selected resource retained; per-kind limits and revision ordering passed

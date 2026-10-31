@@ -37,23 +37,12 @@ fn scoped(
         .next()
         .ok_or_else(|| fault(404, "NOT_FOUND", "strategy record not found"))
 }
-fn public_version(mut value: Resource) -> Resource {
-    if let Some(metadata) = value
-        .body
-        .get_mut("metadata")
-        .and_then(Value::as_object_mut)
-    {
-        metadata.remove("recovery_state_schema");
-        metadata.remove("state_schema");
-        metadata.remove("initial_state");
-        if let Some(observation) = metadata
-            .get_mut("business_observation")
-            .and_then(Value::as_object_mut)
-        {
-            observation.remove("projection");
-        }
-    }
-    value
+
+// Project before JSON serialization so private state cannot consume the response
+// body limit. HTTP/SSE and resource handlers share the same field rules.
+fn public_resource(mut resource: Resource) -> Resource {
+    public_response(&mut resource.body);
+    resource
 }
 
 // HTTP/SSE expose only public metadata. Internal stored records and signed
@@ -142,7 +131,7 @@ async fn list(
     })
     .await
     .context("strategy history query failed")??;
-    Ok(Json(values.into_iter().map(public_version).collect()))
+    Ok(Json(values.into_iter().map(public_resource).collect()))
 }
 async fn versions(
     State(app): State<Arc<App>>,
@@ -175,7 +164,7 @@ async fn version(
 ) -> ApiResult<Json<Resource>> {
     let actor = identity(&app, &headers, false)?;
     let value = scoped(&app, &actor, &strategy, "strategy_version", &id)?;
-    Ok(Json(public_version(value)))
+    Ok(Json(public_resource(value)))
 }
 async fn observation_schema(
     State(app): State<Arc<App>>,

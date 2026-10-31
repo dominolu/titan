@@ -1,0 +1,13 @@
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-simplify-review-20261031-69717434/src/connector)
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-simplify-review-20261031-69717434/src/crates/titan-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.89s
+     Running unittests src/lib.rs (/tmp/titan-single-file-target/debug/deps/titan_cli-73a91170fec19884)
+
+running 1 test
+raw_bytes=8530981 projected_bytes=10196
+refactored: status=500 Internal Server Error
+pre_projection: status=200 OK
+test management::http::review_response_size_limit::review_legal_version_page_exceeds_limit_before_public_projection ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 56 filtered out; finished in 1.27s
+

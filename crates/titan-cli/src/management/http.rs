@@ -709,3 +709,195 @@ async fn static_file(State(app): State<Arc<App>>, request: axum::extract::Reques
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn version_page_projects_private_state_before_response_limit() {
+        use super::super::{config::User, store::Store};
+        use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("manager.db");
+        let store = Store::open(&database).unwrap();
+        store
+            .session_create("reader", "test-token", "csrf", "9223372036854775807")
+            .unwrap();
+        let mut digests = std::collections::BTreeMap::new();
+        let mut unprojected_bytes = 0;
+        for i in 0..65 {
+            let resource = store.save_resource(Resource {
+                id: format!("version-{i}"), kind: "strategy_version".into(), node_id: "build".into(),
+                revision: String::new(), frozen: true, digest: String::new(),
+                body: json!({"strategy_id":"sample","environment":"backtest","metadata":{
+                    "initial_state":vec![0_u8;65536],"recovery_state_schema":{"fields":[]},
+                    "state_schema":{},"state_description":{},
+                    "business_observation":{"schema":{"schema_id":"public"},"projection":[{"source":"private"}]}
+                }}),
+            }, None).unwrap();
+            unprojected_bytes += serde_json::to_vec(&resource).unwrap().len();
+            digests.insert(resource.id, resource.digest);
+        }
+        assert!(unprojected_bytes > 8 * 1024 * 1024);
+        let hash = Argon2::default()
+            .hash_password(
+                b"test-password",
+                &SaltString::generate(&mut rand::rngs::OsRng),
+            )
+            .unwrap()
+            .to_string();
+        let app = manager_router(ManagerConfig {
+            listen: "127.0.0.1:0".into(),
+            public_origin: "http://127.0.0.1:3200".into(),
+            database,
+            web_root: temp.path().into(),
+            secure_cookie: false,
+            session_seconds: 3600,
+            nodes: Default::default(),
+            users: vec![User {
+                username: "reader".into(),
+                password_hash: hash,
+                role: Role::Reader,
+                nodes: vec!["build".into()],
+                accounts: vec![],
+                environments: vec!["backtest".into()],
+            }],
+        })
+        .unwrap();
+        for path in [
+            "/api/v2/strategies/sample/versions?limit=65",
+            "/api/v2/strategies/sample/versions/version-0",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::COOKIE, "titan_session=test-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            let items = if let Some(items) = value.as_array() {
+                assert_eq!(items.len(), 65);
+                items.clone()
+            } else {
+                vec![value]
+            };
+            for item in items {
+                assert_eq!(
+                    item["digest"].as_str(),
+                    Some(digests[item["id"].as_str().unwrap()].as_str())
+                );
+                let metadata = &item["body"]["metadata"];
+                for field in [
+                    "initial_state",
+                    "recovery_state_schema",
+                    "state_schema",
+                    "state_description",
+                ] {
+                    assert!(metadata.get(field).is_none(), "{path}: {field}");
+                }
+                assert!(metadata["business_observation"].get("projection").is_none());
+                assert_eq!(
+                    metadata["business_observation"]["schema"]["schema_id"],
+                    "public"
+                );
+            }
+        }
+        let stored = store.resource("version-0").unwrap();
+        assert_eq!(
+            stored.body["metadata"]["initial_state"]
+                .as_array()
+                .unwrap()
+                .len(),
+            65536
+        );
+        assert_eq!(stored.digest, digests["version-0"]);
+    }
+
+    #[tokio::test]
+    async fn public_json_boundary_filters_detail_and_list_but_preserves_download_bytes() {
+        let resource = json!({"id":"original", "digest":"signed", "body":{"metadata":{
+            "recovery_state_schema":{}, "state_schema":{}, "state_description":{},
+            "initial_state":[1], "business_observation":{
+                "schema":{"schema_id":"public"}, "projection":[{"source":"private"}]
+            }
+        }}});
+        let download_bytes = serde_json::to_vec_pretty(&resource).unwrap();
+        let app =
+            Router::new()
+                .route(
+                    "/api/v2/detail",
+                    get({
+                        let resource = resource.clone();
+                        move || async move { Json(resource) }
+                    }),
+                )
+                .route(
+                    "/api/v2/list",
+                    get({
+                        let resource = resource.clone();
+                        move || async move { Json(vec![resource]) }
+                    }),
+                )
+                .route(
+                    "/api/v2/files/original/manifest.json",
+                    get({
+                        let download_bytes = download_bytes.clone();
+                        move || async move {
+                            ([(header::CONTENT_TYPE, "application/json")], download_bytes)
+                        }
+                    }),
+                )
+                .layer(axum::middleware::from_fn(management_response));
+        for path in [
+            "/api/v2/detail",
+            "/api/v2/list",
+            "/api/v2/files/original/manifest.json",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            if path.starts_with("/api/v2/files/") {
+                assert_eq!(bytes.as_ref(), download_bytes.as_slice());
+                continue;
+            }
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            let item = if value.is_array() { &value[0] } else { &value };
+            assert_eq!(item["id"], "original");
+            assert_eq!(item["digest"], "signed");
+            let metadata = &item["body"]["metadata"];
+            for field in [
+                "recovery_state_schema",
+                "state_schema",
+                "state_description",
+                "initial_state",
+            ] {
+                assert!(metadata.get(field).is_none(), "{path}: {field}");
+            }
+            assert!(metadata["business_observation"].get("projection").is_none());
+            assert_eq!(
+                metadata["business_observation"]["schema"]["schema_id"],
+                "public"
+            );
+        }
+    }
+}
