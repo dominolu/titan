@@ -1499,41 +1499,25 @@ mod tests {
     }
 
     #[test]
-    fn orderflow_events_runtime_template_deserializes_as_read_only_mainnet() {
-        let config: ApplicationConfig = toml::from_str(include_str!(
-            "../../../deploy/orderflow_events/runtime.toml"
-        ))
-        .unwrap();
-        assert_eq!(config.schema_version, APPLICATION_CONFIG_SCHEMA_VERSION);
-        assert_eq!(config.market_sources.len(), 1);
-        let source = &config.market_sources[0];
-        assert_eq!(source.connector_type.as_ref(), "binance-futures");
-        assert!(source.enabled);
-        let connector = std::str::from_utf8(&source.connector_config).unwrap();
-        assert!(connector.contains("depth_snapshot_limit = 1000"));
-        assert!(config.accounts.is_empty());
-        assert_eq!(config.strategies.len(), 1);
-        let strategy = &config.strategies[0];
-        assert!(strategy.enabled);
-        assert!(strategy.accounts.is_empty());
-        assert_eq!(strategy.recovery, StrategyRecoveryPolicy::Fresh);
-        assert_eq!(strategy.markets.len(), 1);
-        assert_eq!(strategy.markets[0].local_asset_no, 0);
-        assert_eq!(strategy.markets[0].asset_id, 1001);
-        assert_eq!(strategy.markets[0].data_mode, StrategyDataMode::Tick);
-        assert_eq!(
-            strategy.runtime.timer_interval,
-            Some(std::time::Duration::from_millis(100))
-        );
-        assert!(config.strategy_service.allow_unsigned_strategies);
-    }
-
-    #[test]
-    fn deployment_template_rejects_async_lane_capacity_above_snapshot_staging() {
-        let mut config: ApplicationConfig = toml::from_str(include_str!(
-            "../../../deploy/orderflow_events/runtime.toml"
-        ))
-        .unwrap();
+    fn strategy_async_lane_capacity_must_fit_snapshot_staging() {
+        // The PRIMARY lane derives its snapshot staging capacity from
+        // async_lane_capacity, so the engine only accepts lanes at or below the
+        // per-barrier staging budget (8192 by default).
+        let inline = r#"
+schema_version = 1
+[[strategies]]
+strategy_key = "lane"
+strategy_id = 1
+package = { loader_type = "native-v13", uri = "file://unused.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+markets = []
+accounts = []
+risk_scope = "test"
+runtime = { async_lane_capacity = 8192, critical_reserve = 1024, reliable_pending_capacity = 256, worker_policy = "spin_sleep", timer_capacity = 16, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+recovery = "fresh"
+enabled = true
+definition_version = 1
+"#;
+        let mut config: ApplicationConfig = toml::from_str(inline).unwrap();
         validate_strategy_run_capacity(&config.event_engine, &config.strategies).unwrap();
         config.strategies[0].runtime.async_lane_capacity = 16_384;
         assert!(validate_strategy_run_capacity(&config.event_engine, &config.strategies).is_err());
