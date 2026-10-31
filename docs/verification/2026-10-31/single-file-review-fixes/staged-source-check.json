@@ -1,0 +1,10 @@
+{
+  "documentation_only_differences": [
+    "docs/memory/engineering.md",
+    "docs/single_file_strategies.md"
+  ],
+  "files_checked": 2437,
+  "functional_differences": [],
+  "note": "Only usage wording and final verification receipts were added after server verification.",
+  "valid": true
+}

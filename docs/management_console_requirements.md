@@ -106,7 +106,7 @@ flowchart TB
 | 本机任务记录 | 已有 SQLite Registry、owner token、PID/启动时间核对和心跳。[Registry](../crates/titan-cli/src/registry.rs) | N 保留本机权威，补充操作 ID 对应的幂等回执；A 仅存索引 |
 | 暂停、停止与恢复 | 已有进程内策略管理、停止屏障、恢复点 与账户对账。[管理接口](../crates/titan-strategy-runtime/src/service.rs)、[恢复实现](../crates/titan-strategy-runtime/src/service_core.rs) | E 增加薄控制适配，N 增加 IPC，A 跟踪操作结果 |
 | 账户与诊断 | 已有余额、持仓、订单、一致快照、生命周期和诊断。[账户接口](../crates/titan-account-service/src/service.rs)、[策略模型](../crates/titan-strategy-runtime/src/model.rs) | E 导出版本化只读数据，N 转发，A 建立查询入口 |
-| 网格业务与风险 | 已有网格、成交/撤单处理、风险预占、退出期限和证明式恢复。[网格说明](../strategies/grid/README.md) | E 导出业务快照；U 新增网格面板 |
+| 网格业务与风险 | 已有网格、成交/撤单处理、风险预占、退出期限和证明式恢复。[网格说明](../strategies/grid.md) | E 导出业务快照；U 新增网格面板 |
 | 真实历史回测 | 已有 Rust example 和固定场景脚本，完成三段行情十八组验证。[回放](../hftbacktest/examples/v13_grid_history.rs)、[脚本](../scripts/run_grid_history.sh) | E 将已有输入显式化并统一结果描述；A/N 接入操作流程 |
 | 结果与报告 | CLI 有 ResultBundle；历史回放另行输出 result、equity、fills、journal。[历史输出](../hftbacktest/examples/grid_history/engine.rs) | E 增加一次结果适配与完整性清单；A 索引，U 展示 |
 | 实盘交易历史与净收益 | 事实基础已有，持续留存和管理查询需扩展；当前 live worker 仍输出空 `returns` 和零订单/成交计数。[实盘入口](../crates/titan-cli/src/main.rs) | E 补齐记录与计算；A/U 不从现有任务计数推造实盘结果 |

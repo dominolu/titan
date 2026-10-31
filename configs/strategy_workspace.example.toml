@@ -1,0 +1,14 @@
+# Copy to the strategy project's root as titan.toml and adjust the SDK/interpreter paths.
+# Titan itself uses rust-toolchain.toml, Cargo.lock and the SDK dependency declarations.
+schema_version = 1
+
+[strategy]
+source_dir = "strategies"
+build_dir = "build/strategies"
+cpu_baseline = "x86-64-v2"
+
+[toolchain]
+sdk = "../titan/python/titan-strategy-sdk"
+python = "../titan/.venv/bin/python"
+python_version = "3.11.14"
+rust_version = "1.94.1"

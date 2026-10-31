@@ -97,12 +97,12 @@ Rust runtime：只知道 address、byte length、alignment 和 schema hash
 ## 4. 策略包结构
 
 ```text
-strategies/pair_arb/
-  strategy.py          # 唯一策略源文件
+strategies/
+  pair_arb.py          # 唯一策略源文件
+  pair_arb.md          # 可选说明
 ```
 
-测试放在仓库统一测试目录，通过 strategy ID 关联，不进入策略发布包。README 属于项目文档而非
-编译输入。参数、能力、state dtype、初始状态和 handler 全部在 `strategy.py` 中声明。
+复杂业务回归放在平台统一测试目录；可独立交付的原生回归场景写在策略文件 TESTS 中，由通用编译流水线执行。Markdown 是可选说明。参数、能力、state dtype、初始状态和 handler 全部在单个 Python 文件中声明。见[工作区与发布](single_file_strategies.md)。
 
 公共内容归入 `titan_strategy` SDK：
 

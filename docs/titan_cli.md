@@ -2,12 +2,13 @@
 
 `titan` 是 V13 回测与实盘的统一入口。策略参数、订阅和 callback 只来自已编译 `.titan` manifest；运行时不导入策略 Python，也不接受 `strategy.json` 或 `module:function`。
 
+单文件源码发现、默认参数、内嵌测试、工具链锁及不可变发布参见[单文件策略工作区](single_file_strategies.md)。
+
 ## 编译与检查 artifact
 
 ```bash
 titan strategy compile \
-  --strategy strategies/pair_arb/strategy.py \
-  --parameters strategies/pair_arb/parameters.json \
+  --strategy strategies/pair_arb.py \
   --artifact-format bundle \
   --output pair_arb.titan \
   --signing-key ed25519-private.key \
@@ -21,7 +22,7 @@ titan strategy validate pair_arb.titan --require-signature \
   --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
 ```
 
-编译是唯一启动 Python/Numba 的 CLI 路径。生产部署默认要求 Ed25519 签名；开发或 shadow 配置只有显式设置 `strategy_service.allow_unsigned_artifacts = true` 才能加载 unsigned artifact。`trusted_ed25519_keys` 支持同时保留多个 key id 以完成轮换。
+源码描述、编译和原生回归测试在有界 Python/Numba worker 中执行；运行、产物检查与发布校验不依赖 Python。生产部署默认要求 Ed25519 签名；开发或 shadow 配置只有显式设置 `strategy_service.allow_unsigned_artifacts = true` 才能加载 unsigned artifact。`trusted_ed25519_keys` 支持同时保留多个 key id 以完成轮换。
 
 回测也执行制品信任校验。签名制品在 `[backtest].trusted_ed25519_keys` 中配置 `key_id = "64位十六进制公钥"`；仅开发用 unsigned 制品必须显式设置 `allow_unsigned_artifact = true`。解析阶段和隔离 worker 会使用同一份策略重复校验，防止 RunSpec 生成后替换制品或降低信任要求。
 

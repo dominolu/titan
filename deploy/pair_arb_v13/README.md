@@ -9,5 +9,5 @@ instrument units, set a dedicated risk scope, and independently enable the requi
 accounts, and strategy under a controlled rollout.
 
 Strategy parameters are baked into the signed/digested artifact at compile time. Rebuild the
-artifact and update `package.expected_digest` whenever `strategies/pair_arb/parameters.json`
-changes; deployment-time `parameters` must remain `{}`.
+artifact and update `package.expected_digest` whenever source defaults or compile-time parameter overrides
+change; deployment-time `parameters` must remain `{}`.

@@ -18,6 +18,7 @@ use std::{
 mod compiler;
 mod recovery_cli;
 mod storage_cli;
+mod strategy_workspace;
 use registry::{Registry, StopAction, now_ns, process_start_time};
 use titan_cli::registry;
 
@@ -158,17 +159,55 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum StrategyCommands {
-    /// Describe and validate frozen strategy inputs in the bounded compiler bridge.
-    Describe {
+    /// Describe one source using its default parameters and optional overrides.
+    Describe(strategy_workspace::SourceArgs),
+    /// Discover flat strategy source files without importing Python.
+    Discover {
+        directory: Option<PathBuf>,
         #[arg(long)]
-        strategy: PathBuf,
+        workspace: Option<PathBuf>,
         #[arg(long)]
-        parameters: PathBuf,
+        json: bool,
+    },
+    /// Execute the source's inline TESTS against real native callbacks.
+    Test(strategy_workspace::CompileArgs),
+    /// Build an immutable, verified release, with an optional runtime definition.
+    Build {
+        #[command(flatten)]
+        args: strategy_workspace::CompileArgs,
+        #[arg(long)]
+        runtime: Option<PathBuf>,
+        #[arg(long, requires = "runtime")]
+        strategy_key: Option<String>,
+    },
+    /// Verify an immutable release without Python or compilation.
+    VerifyRelease {
+        release: PathBuf,
+        #[arg(long = "trusted-key")]
+        trusted_keys: Vec<String>,
+        #[arg(long)]
+        require_signature: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Publish a verified release into an immutable filesystem destination; never starts it.
+    Publish {
+        release: PathBuf,
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long = "trusted-key")]
+        trusted_keys: Vec<String>,
+        #[arg(long)]
+        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
     /// List compiled ABI V13 compiled_strategies without importing strategy Python.
     Ls {
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
         trusted_keys: Vec<String>,
         #[arg(long)]
@@ -196,27 +235,8 @@ enum StrategyCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Compile an ABI V13 strategy to a native compiled_strategy.
-    Compile {
-        #[arg(long, value_name = "strategy.py")]
-        strategy: PathBuf,
-        #[arg(long, default_value = "{}")]
-        parameters: String,
-        #[arg(long)]
-        target: Option<String>,
-        #[arg(long, default_value = "x86-64")]
-        cpu_baseline: String,
-        #[arg(long, alias = "artifact-format", default_value = "pair", value_parser = ["pair", "bundle"])]
-        strategy_format: String,
-        #[arg(long, value_name = "STRATEGY_FILE")]
-        output: Option<PathBuf>,
-        #[arg(long, value_name = "PRIVATE_KEY")]
-        signing_key: Option<PathBuf>,
-        #[arg(long, requires = "signing_key")]
-        key_id: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    /// Compile one source file; defaults to a bundle with inline parameters and tests.
+    Compile(strategy_workspace::CompileArgs),
 }
 
 impl Commands {
@@ -232,11 +252,16 @@ impl Commands {
             | Self::Stop { json, .. }
             | Self::Report { json, .. } => *json,
             Self::Strategy { command } => match command {
-                StrategyCommands::Describe { json, .. }
+                StrategyCommands::Describe(args) => args.json,
+                StrategyCommands::Compile(args)
+                | StrategyCommands::Test(args)
+                | StrategyCommands::Build { args, .. } => args.source.json,
+                StrategyCommands::Discover { json, .. }
+                | StrategyCommands::VerifyRelease { json, .. }
+                | StrategyCommands::Publish { json, .. }
                 | StrategyCommands::Ls { json, .. }
                 | StrategyCommands::Show { json, .. }
-                | StrategyCommands::Validate { json, .. }
-                | StrategyCommands::Compile { json, .. } => *json,
+                | StrategyCommands::Validate { json, .. } => *json,
             },
             Self::RunWorker { .. } | Self::Console { .. } => false,
         }
@@ -594,52 +619,64 @@ fn registry_path() -> PathBuf {
 
 fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     match command {
-        StrategyCommands::Describe {
-            strategy,
-            parameters,
-            ..
-        } => {
-            let result = compiler::describe(&strategy, &parameters)?;
-            println!(
-                "{}",
-                serde_json::to_string(&result).map_err(CliError::ResultJson)?
-            );
-            Ok(())
+        StrategyCommands::Describe(args) => {
+            let value = strategy_workspace::describe(&args)?;
+            print_strategy_value(value, args.json)
         }
-        StrategyCommands::Ls {
+        StrategyCommands::Discover {
+            directory,
+            workspace,
+            json,
+        } => print_strategy_value(
+            strategy_workspace::discover(directory.as_deref(), workspace.as_deref())?,
+            json,
+        ),
+        StrategyCommands::Test(args) => {
+            print_strategy_value(strategy_workspace::test(&args)?, args.source.json)
+        }
+        StrategyCommands::Build {
+            args,
+            runtime,
+            strategy_key,
+        } => print_strategy_value(
+            strategy_workspace::build(&args, runtime.as_deref(), strategy_key.as_deref())?,
+            args.source.json,
+        ),
+        StrategyCommands::VerifyRelease {
+            release,
             trusted_keys,
             require_signature,
             json,
         } => {
             let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            let root = PathBuf::from("deploy");
+            print_strategy_value(strategy_workspace::verify_release(&release, trust)?, json)
+        }
+        StrategyCommands::Publish {
+            release,
+            directory,
+            trusted_keys,
+            require_signature,
+            json,
+        } => {
+            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
+            print_strategy_value(
+                strategy_workspace::publish(&release, &directory, trust)?,
+                json,
+            )
+        }
+        StrategyCommands::Ls {
+            directory,
+            workspace,
+            trusted_keys,
+            require_signature,
+            json,
+        } => {
+            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
             let mut catalog = Vec::new();
-            if root.is_dir() {
-                for deployment in fs::read_dir(&root)
-                    .map_err(|source| CliError::Read {
-                        path: root.clone(),
-                        source,
-                    })?
-                    .flatten()
-                {
-                    let compiled_strategies = deployment.path().join("compiled_strategies");
-                    if !compiled_strategies.is_dir() {
-                        continue;
-                    }
-                    for entry in fs::read_dir(&compiled_strategies)
-                        .map_err(|source| CliError::Read {
-                            path: compiled_strategies.clone(),
-                            source,
-                        })?
-                        .flatten()
-                    {
-                        let source = entry.path();
-                        if source.extension().and_then(|value| value.to_str()) != Some("titan") {
-                            continue;
-                        }
-                        catalog.push(v13_manifest_json(&source, trust.clone())?);
-                    }
-                }
+            for source in
+                strategy_workspace::compiled_paths(directory.as_deref(), workspace.as_deref())?
+            {
+                catalog.push(v13_manifest_json(&source, trust.clone())?);
             }
             catalog.sort_by_key(|value| {
                 value["strategy_type"]
@@ -720,27 +757,9 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             }
             Ok(())
         }
-        StrategyCommands::Compile {
-            strategy,
-            parameters,
-            target,
-            cpu_baseline,
-            strategy_format,
-            output,
-            signing_key,
-            key_id,
-            json,
-        } => compile_v13_strategy(CompileV13Request {
-            strategy: &strategy,
-            parameters: &parameters,
-            target: target.as_deref(),
-            cpu_baseline: &cpu_baseline,
-            strategy_format: &strategy_format,
-            output: output.as_deref(),
-            signing_key: signing_key.as_deref(),
-            key_id: key_id.as_deref(),
-            json,
-        }),
+        StrategyCommands::Compile(args) => {
+            print_strategy_value(strategy_workspace::compile(&args)?, args.source.json)
+        }
     }
 }
 
@@ -758,6 +777,8 @@ fn v13_manifest_json(
         "source_version": manifest.source_version,
         "abi_version": 13,
         "compiled_strategy_digest": hex_digest(&manifest.compiled_strategy_digest),
+        "parameters_digest": hex_digest(&manifest.parameters_digest),
+        "source_digest": manifest.source_digest.as_ref().map(hex_digest),
         "native_library_sha256": hex_digest(&manifest.native_library_sha256),
         "target_triple": manifest.target_triple,
         "cpu_baseline": manifest.cpu_baseline,
@@ -873,26 +894,69 @@ struct CompileV13Request<'a> {
     output: Option<&'a Path>,
     signing_key: Option<&'a Path>,
     key_id: Option<&'a str>,
-    json: bool,
+    workspace: Option<&'a strategy_workspace::Workspace>,
+    update_lock: bool,
+    require_tests: bool,
 }
 
-fn compile_v13_strategy(request: CompileV13Request<'_>) -> Result<(), CliError> {
-    let json = request.json;
-    let value = compiler::compile(&request)?;
+fn print_native_test_summary(value: &serde_json::Value) {
+    if value["mode"] == "not_declared" {
+        println!("native tests: not declared");
+    } else if let (Some(passed), Some(declared)) =
+        (value["passed"].as_u64(), value["declared"].as_u64())
+    {
+        println!("native tests: {passed}/{declared} passed");
+    }
+}
+
+fn print_strategy_value(mut value: serde_json::Value, json: bool) -> Result<(), CliError> {
     if json {
         println!("{value}");
-    } else {
+    } else if let Some(paths) = value["paths"].as_array() {
         println!(
             "{}\t{}\t{}",
             value["strategy_type"].as_str().unwrap_or("-"),
             value["source_version"].as_str().unwrap_or("-"),
             value["compiled_strategy_digest"].as_str().unwrap_or("-")
         );
-        if let Some(paths) = value["paths"].as_array() {
-            for path in paths.iter().filter_map(serde_json::Value::as_str) {
-                println!("{path}");
-            }
+        for path in paths.iter().filter_map(serde_json::Value::as_str) {
+            println!("{path}");
         }
+        print_native_test_summary(&value["tests"]);
+    } else if let Some(sources) = value["sources"].as_array() {
+        println!("NAME\tSOURCE");
+        for source in sources {
+            println!(
+                "{}\t{}",
+                source["name"].as_str().unwrap_or("-"),
+                source["source"].as_str().unwrap_or("-")
+            );
+        }
+    } else if value["release"].is_string() || value["published"].is_string() {
+        println!("release: {}", value["release_id"].as_str().unwrap_or("-"));
+        println!(
+            "{}",
+            value["release"]
+                .as_str()
+                .or(value["published"].as_str())
+                .unwrap()
+        );
+        print_native_test_summary(&value["tests"]);
+    } else if value["tests"]["passed"].is_number() {
+        println!(
+            "{} {}",
+            value["strategy_type"].as_str().unwrap_or("-"),
+            value["source_version"].as_str().unwrap_or("-")
+        );
+        print_native_test_summary(&value["tests"]);
+    } else {
+        if let Some(metadata) = value["metadata"].as_object_mut() {
+            metadata.remove("initial_state");
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(CliError::ResultJson)?
+        );
     }
     Ok(())
 }
@@ -2500,18 +2564,18 @@ mod cli_v13_tests {
         .expect("documented V13 compile command must parse");
         let Commands::Strategy {
             command:
-                StrategyCommands::Compile {
-                    strategy,
+                StrategyCommands::Compile(strategy_workspace::CompileArgs {
+                    source,
                     strategy_format,
                     output,
                     ..
-                },
+                }),
         } = cli.command
         else {
             panic!("unexpected command");
         };
-        assert_eq!(strategy, PathBuf::from("strategy.py"));
-        assert_eq!(strategy_format, "bundle");
+        assert_eq!(source.strategy, Some(PathBuf::from("strategy.py")));
+        assert_eq!(strategy_format.as_deref(), Some("bundle"));
         assert_eq!(output, Some(PathBuf::from("pair.titan")));
     }
 

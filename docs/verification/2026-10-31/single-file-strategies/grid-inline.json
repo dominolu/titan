@@ -1,0 +1,1 @@
+{"source_version":"1.2.1","strategy_type":"grid","tests":{"cases":[{"name":"missing_account_fails_closed","passed":true,"steps":1}],"declared":1,"mode":"native_callbacks","passed":1},"valid":true}
