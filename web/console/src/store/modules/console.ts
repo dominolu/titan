@@ -37,15 +37,7 @@ export const useConsoleStore = defineStore("titan-console", {
   }),
   getters: {
     writable: state => state.role === "operator",
-    parameterPresets: state =>
-      state.resources.filter(item => item.kind === "parameter_preset"),
-    parameterVersions: state =>
-      state.resources.filter(item => item.kind === "parameter_version"),
-    strategyVersions: state =>
-      state.resources.filter(item => item.kind === "strategy_version"),
     datasets: state => state.resources.filter(item => item.kind === "dataset"),
-    backtests: state =>
-      state.resources.filter(item => item.kind === "backtest"),
     runs: state => state.resources.filter(item => item.kind === "run"),
     accounts: state => state.resources.filter(item => item.kind === "account")
   },

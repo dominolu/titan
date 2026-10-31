@@ -238,9 +238,6 @@ impl OkxClient {
                     )
                 })
                 .collect::<Vec<_>>();
-            if bodies.is_empty() {
-                continue;
-            }
             let resp: CancelResponse = self
                 .post(
                     "/api/v5/trade/cancel-batch-orders",
@@ -254,12 +251,6 @@ impl OkxClient {
                 });
             }
             // 批量响应逐单校验业务结果；51401（订单不存在，多为已被撤/终态）视为已撤。
-            if resp.code != "0" {
-                return Err(OkxError::OrderError {
-                    code: resp.code,
-                    msg: resp.msg,
-                });
-            }
             for result in &resp.data {
                 if result.s_code != "0" && result.s_code != "51401" {
                     return Err(OkxError::OrderError {

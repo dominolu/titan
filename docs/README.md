@@ -4,6 +4,7 @@
 
 ## 项目状态
 
+- [项目精简重构清单：重复保护、冗余实现与闲置入口](refactor_simplification_checklist.md)
 - [Titan 系统重构与验证清单](system_refactor_checklist.md)
 - [Titan 项目重构剩余任务清单](refactor_remaining_tasks.md)
 - [Strategy ABI V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)

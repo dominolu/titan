@@ -29,6 +29,18 @@ class TestInlineScenes(unittest.TestCase):
             with self.subTest(checks=checks), self.assertRaises((ValueError, AssertionError)):
                 _assert({"nested": {"values": [1, 2]}}, checks)
 
+    def test_host_depth_generator_subscriptions_are_normalized_before_validation(self):
+        depth = EventSubscription(EventKind.DEPTH, "on_depth", 1, EventQos.RELIABLE_ORDERED)
+        bbo = EventSubscription(EventKind.BBO, "on_tick", 1, EventQos.LATEST)
+        spec = StrategySpec("depth_test", "1.0.0", 1,
+                            subscriptions=(s for s in (depth, bbo)),
+                            capabilities=Capability.MARKET_DATA | Capability.HOST_DEPTH_100)
+        self.assertEqual(spec.subscriptions, (depth, bbo))
+        for subscriptions in ((), (s for s in (bbo,))):
+            with self.subTest(subscriptions=subscriptions), self.assertRaisesRegex(ValueError, "reliable ordered"):
+                StrategySpec("depth_test", "1.0.0", 1, subscriptions=subscriptions,
+                             capabilities=Capability.MARKET_DATA | Capability.HOST_DEPTH_100)
+
     def test_host_depth_projection_still_requires_reliable_ordering(self):
         with self.assertRaisesRegex(ValueError, "reliable ordered"):
             StrategySpec("depth_test", "1.0.0", 1,

@@ -9,6 +9,14 @@ import type {
   StrategyOperationRequest,
   StrategySummary
 } from "@/generated/management";
+
+const queryIdentity = (item: Resource) => {
+  const body = item.body as Record<string, unknown>;
+  return body.mode === "observe"
+    ? { worker_session_id: body.worker_session_id }
+    : { run_generation: body.run_generation };
+};
+
 export const consoleApi = {
   strategies: (offset = 0) =>
     http.get<StrategySummary[]>("/api/v2/strategies", {
@@ -36,9 +44,7 @@ export const consoleApi = {
       `/api/v2/resources/${encodeURIComponent(item.id)}/log`,
       {
         params: {
-          ...((item.body as any).mode === "observe"
-            ? { worker_session_id: (item.body as any).worker_session_id }
-            : { run_generation: (item.body as any).run_generation }),
+          ...queryIdentity(item),
           offset
         }
       }
@@ -48,9 +54,7 @@ export const consoleApi = {
       `/api/v2/resources/${encodeURIComponent(item.id)}/history`,
       {
         params: {
-          ...((item.body as any).mode === "observe"
-            ? { worker_session_id: (item.body as any).worker_session_id }
-            : { run_generation: (item.body as any).run_generation }),
+          ...queryIdentity(item),
           kind,
           offset,
           limit: 20
@@ -71,9 +75,7 @@ export const consoleApi = {
       upper_row: string;
     }>(`/api/v2/resources/${encodeURIComponent(item.id)}/facts`, {
       params: {
-        ...((item.body as any).mode === "observe"
-          ? { worker_session_id: (item.body as any).worker_session_id }
-          : { run_generation: (item.body as any).run_generation }),
+        ...queryIdentity(item),
         kind,
         cursor: cursor ? JSON.stringify(cursor) : undefined,
         newest_first: newestFirst,
