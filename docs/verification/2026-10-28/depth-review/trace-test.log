@@ -1,0 +1,1 @@
+[{"case": "explicit-metadata", "exit_code": 0, "passed": true}, {"case": "missing-metadata", "exit_code": 31, "passed": true}]

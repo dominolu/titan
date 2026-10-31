@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use crate::{DepthBatchInfoV1, depth_book::HostDepthBook};
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     CallbackCommandStagingV13, LoadedNativeStrategyV13, StagedCommandV13, StrategyCapabilitiesV13,
@@ -22,6 +23,9 @@ pub struct OfflineV13Adapter {
     accounts: Vec<TitanAccountView>,
     active_orders: Vec<TitanActiveOrderView>,
     stop_barrier: bool,
+    host_depth: bool,
+    failed: bool,
+    depth_books: BTreeMap<u32, HostDepthBook>,
     stopping: bool,
     stopped: bool,
 }
@@ -53,6 +57,12 @@ impl OfflineV13Adapter {
         } = config;
 
         Ok(Self {
+            failed: false,
+            host_depth: compiled_strategy
+                .manifest
+                .capabilities
+                .contains(StrategyCapabilitiesV13::HOST_DEPTH_100),
+            depth_books: BTreeMap::new(),
             stop_barrier: compiled_strategy
                 .manifest
                 .capabilities
@@ -124,9 +134,54 @@ impl OfflineV13Adapter {
         now_ns: i64,
         depth: &[TitanDepthView],
     ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+        if self.host_depth {
+            return Err(V13LoadError::Contract(
+                "HOST_DEPTH_100 replay requires on_depth_batch with explicit source metadata",
+            ));
+        }
         self.invoke(V13EventKind::Depth, now_ns, |context| {
             context.depth_ptr = depth.as_ptr();
             context.depth_len = depth.len() as u64;
+        })
+    }
+
+    /// Replay raw depth with explicit snapshot/epoch/gap evidence. Legacy depth
+    /// slices cannot prove these facts and are rejected for host-book strategies.
+    pub fn on_depth_batch(
+        &mut self,
+        now_ns: i64,
+        mut info: DepthBatchInfoV1,
+        depth: &[TitanDepthView],
+    ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+        if !self.host_depth
+            || info.version != 1
+            || depth.iter().any(|item| item.asset_no != info.asset_no)
+        {
+            return Err(V13LoadError::Contract("invalid host depth replay metadata"));
+        }
+        let book = self.depth_books.entry(info.asset_no).or_default();
+        let mut projected = Vec::with_capacity(200);
+        if info.valid == 0 {
+            if info.stream_epoch == 0 {
+                info.stream_epoch = book.epoch();
+            }
+            if !book.invalidate_at(info.stream_epoch, info.publication_sequence) {
+                return Ok(Vec::new());
+            }
+        } else {
+            let snapshot = info.reset != 0;
+            if !book
+                .apply(&mut info, snapshot, depth, &mut projected)
+                .map_err(V13LoadError::Contract)?
+            {
+                return Ok(Vec::new());
+            }
+        }
+        self.invoke(V13EventKind::Depth, now_ns, |context| {
+            context.depth_ptr = projected.as_ptr();
+            context.depth_len = projected.len() as u64;
+            context.event_payload_ptr = (&info as *const DepthBatchInfoV1).cast();
+            context.event_payload_len = std::mem::size_of::<DepthBatchInfoV1>() as u64;
         })
     }
 
@@ -217,6 +272,9 @@ impl OfflineV13Adapter {
         now_ns: i64,
         configure: impl FnOnce(&mut StrategyRuntimeContextV13),
     ) -> Result<Vec<StagedCommandV13>, V13LoadError> {
+        if self.failed {
+            return Err(V13LoadError::Contract("depth_execution_failed"));
+        }
         let mut context = crate::v13::callback_context_v13(
             now_ns,
             event.schema_version(),
@@ -235,6 +293,24 @@ impl OfflineV13Adapter {
             true,
             &self.active_orders,
         )?;
+        if self.host_depth {
+            let ready = !self.markets.is_empty()
+                && self.markets.iter().all(|m| {
+                    self.depth_books
+                        .get(&m.asset_no)
+                        .is_some_and(|book| book.ready)
+                });
+            if let Err(reason) = crate::depth_execution::validate_depth_commands(
+                ready,
+                &commands,
+                &self.positions,
+                &self.active_orders,
+            ) {
+                self.staging.clear_committed();
+                self.failed = true;
+                return Err(V13LoadError::Contract(reason));
+            }
+        }
         self.staging.clear_committed();
         if self.stopping
             && self.stop_barrier

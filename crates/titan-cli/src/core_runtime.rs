@@ -294,6 +294,7 @@ impl ConfigurationAdapter {
             ));
         }
         validate_account_source_capacity(&config.event_engine, &config.accounts)?;
+        validate_strategy_run_capacity(&config.event_engine, &config.strategies)?;
         if !config.accounts.is_empty() && account_secret_root.is_none() {
             return Err(ConfigurationError::Invalid(
                 "account definitions require account_service.secret_root".into(),
@@ -1036,6 +1037,27 @@ fn validate_runtime_definitions(
     Ok(())
 }
 
+fn validate_strategy_run_capacity(
+    event_engine: &EventEngineConfig,
+    strategies: &[StrategyDefinition],
+) -> Result<(), ConfigurationError> {
+    // The PRIMARY lane derives its snapshot staging capacity from async_lane_capacity;
+    // the engine rejects lanes above the per-barrier staging budget at registration time.
+    let per_barrier = event_engine.snapshot_barriers.per_barrier_staging_capacity;
+    for definition in strategies {
+        if !definition.enabled {
+            continue;
+        }
+        if definition.runtime.async_lane_capacity > per_barrier {
+            return Err(ConfigurationError::Invalid(format!(
+                "strategy {} async_lane_capacity {} exceeds event_engine.snapshot_barriers.per_barrier_staging_capacity {}",
+                definition.strategy_key, definition.runtime.async_lane_capacity, per_barrier
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_account_source_capacity(
     event_engine: &EventEngineConfig,
     accounts: &[AccountDefinition],
@@ -1474,6 +1496,31 @@ mod tests {
         );
         let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb_v13");
         ConfigurationAdapter::adapt(config, &deployment).unwrap();
+    }
+
+    #[test]
+    fn strategy_async_lane_capacity_must_fit_snapshot_staging() {
+        // The PRIMARY lane derives its snapshot staging capacity from
+        // async_lane_capacity, so the engine only accepts lanes at or below the
+        // per-barrier staging budget (8192 by default).
+        let inline = r#"
+schema_version = 1
+[[strategies]]
+strategy_key = "lane"
+strategy_id = 1
+package = { loader_type = "native-v13", uri = "file://unused.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+markets = []
+accounts = []
+risk_scope = "test"
+runtime = { async_lane_capacity = 8192, critical_reserve = 1024, reliable_pending_capacity = 256, worker_policy = "spin_sleep", timer_capacity = 16, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+recovery = "fresh"
+enabled = true
+definition_version = 1
+"#;
+        let mut config: ApplicationConfig = toml::from_str(inline).unwrap();
+        validate_strategy_run_capacity(&config.event_engine, &config.strategies).unwrap();
+        config.strategies[0].runtime.async_lane_capacity = 16_384;
+        assert!(validate_strategy_run_capacity(&config.event_engine, &config.strategies).is_err());
     }
 
     #[test]

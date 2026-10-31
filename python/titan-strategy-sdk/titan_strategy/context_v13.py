@@ -278,7 +278,7 @@ def _borrowed_array_type(dtype: np.dtype) -> types.Array:
     return types.Array(from_dtype(dtype), 1, "C", readonly=True, aligned=True)
 
 
-def _borrow_array_intrinsic(method_name: str, dtype: np.dtype, *, recovery_payload=False):
+def _borrow_array_intrinsic(method_name: str, dtype: np.dtype, *, recovery_payload=False, payload_event=12):
     array_type = _borrowed_array_type(dtype)
     pointer_field = "event_payload_ptr" if recovery_payload else f"{method_name}_ptr"
     length_field = "event_payload_len" if recovery_payload else f"{method_name}_len"
@@ -296,7 +296,7 @@ def _borrow_array_intrinsic(method_name: str, dtype: np.dtype, *, recovery_paylo
             if recovery_payload:
                 size = ir.Constant(ir.IntType(64), dtype.itemsize)
                 valid = builder.and_(
-                    builder.icmp_unsigned("==", _load_integer(builder, raw, "event_kind", ir.IntType(32)), ir.Constant(ir.IntType(32), 12)),
+                    builder.icmp_unsigned("==", _load_integer(builder, raw, "event_kind", ir.IntType(32)), ir.Constant(ir.IntType(32), payload_event)),
                     builder.icmp_unsigned("==", builder.urem(length, size), ir.Constant(ir.IntType(64), 0)),
                 )
                 valid = builder.and_(valid, builder.or_(
@@ -344,6 +344,17 @@ _BORROW = {
 }
 _BORROW["recovery_orders"] = _borrow_array_intrinsic("recovery_orders", abi_v13.active_order_dtype,
                                                    recovery_payload=True)
+
+
+# HOST_DEPTH_100 payload version 1; not part of the frozen item/context ABI.
+_DEPTH_BATCH_DTYPE = np.dtype([
+    ("version", "<u4"), ("asset_no", "<u4"), ("stream_epoch", "<u8"),
+    ("first_update_sequence", "<u8"), ("last_update_sequence", "<u8"),
+    ("publication_sequence", "<u8"), ("valid", "u1"), ("reset", "u1"),
+    ("reserved", "u1", (6,)),
+], align=True)
+_BORROW["depth_batch"] = _borrow_array_intrinsic("depth_batch", _DEPTH_BATCH_DTYPE,
+                                              recovery_payload=True, payload_event=3)
 
 
 def _register_borrow_method(name: str) -> None:

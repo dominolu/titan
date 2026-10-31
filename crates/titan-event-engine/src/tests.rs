@@ -2902,3 +2902,92 @@ fn latency_histogram_reports_required_percentiles_without_allocation_on_record()
     assert!(summary.p99_ns <= summary.p999_ns);
     assert!(summary.p999_ns <= summary.max_ns);
 }
+
+#[test]
+fn default_market_pool_accepts_1000_by_2_snapshot_without_increasing_byte_budget() {
+    let config = ArenaConfig::default();
+    assert_eq!(
+        config.market_batch.slots * config.market_batch.block_bytes,
+        128 * 1024 * 1024
+    );
+    let mut small = config.clone();
+    small.market_batch.slots = 2;
+    small.market_batch.low_watermark = 1;
+    small.small_event.slots = 2;
+    small.small_event.low_watermark = 1;
+    small.snapshot.slots = 2;
+    small.snapshot.low_watermark = 1;
+    let arena = EventArena::new(&small, Arc::new(EngineMetrics::default()));
+    assert!(arena.reserve(PoolKind::MarketBatch, 48_052).is_ok());
+    assert!(arena.reserve(PoolKind::MarketBatch, 65_536).is_ok());
+    assert!(arena.reserve(PoolKind::MarketBatch, 65_537).is_ok());
+}
+
+#[test]
+fn oversized_market_payload_shares_storage_and_releases_budget_on_last_drop_or_abort() {
+    let mut config = test_config().arena;
+    config.market_overflow_bytes = 200_000;
+    let arena = EventArena::new(&config, Arc::new(EngineMetrics::default()));
+    let mut reservation = arena.reserve(PoolKind::MarketBatch, 100_000).unwrap();
+    reservation.payload_mut().fill(37);
+    let event = reservation.commit();
+    let clone = event.clone();
+    assert_eq!(event.payload().as_ptr(), clone.payload().as_ptr());
+    assert!(clone.payload().iter().all(|byte| *byte == 37));
+    assert_eq!(arena.snapshot().market_overflow_bytes, 100_000);
+    let reserved = arena.reserve(PoolKind::MarketBatch, 100_000).unwrap();
+    assert!(matches!(
+        arena.reserve(PoolKind::MarketBatch, 129),
+        Err(PublishError::MarketPayloadBudgetExhausted)
+    ));
+    // Budget pressure must not prevent normal pooled messages.
+    drop(arena.reserve(PoolKind::MarketBatch, 128).unwrap());
+    drop(reserved);
+    assert_eq!(arena.snapshot().market_overflow_bytes, 100_000);
+    drop(event);
+    assert_eq!(arena.snapshot().market_overflow_bytes, 100_000);
+    drop(clone);
+    assert_eq!(arena.snapshot().market_overflow_bytes, 0);
+    assert_eq!(arena.outstanding_blocks(), 0);
+    assert_eq!(
+        arena.snapshot().pools[PoolKind::MarketBatch.index()].free,
+        config.market_batch.slots
+    );
+    assert!(matches!(
+        arena.reserve(PoolKind::SmallEvent, 129),
+        Err(PublishError::PayloadTooLarge { .. })
+    ));
+}
+
+#[test]
+fn concurrent_oversized_market_reservations_preserve_budget_and_payloads() {
+    let mut config = test_config().arena;
+    config.market_overflow_bytes = 4 * 100_000;
+    let arena = EventArena::new(&config, Arc::new(EngineMetrics::default()));
+    let threads: Vec<_> = (0..8u8)
+        .map(|value| {
+            let arena = arena.clone();
+            thread::spawn(move || {
+                for _ in 0..1000 {
+                    match arena.reserve(PoolKind::MarketBatch, 100_000) {
+                        Ok(mut reservation) => {
+                            reservation.payload_mut().fill(value);
+                            let event = reservation.commit();
+                            let clone = event.clone();
+                            drop(event);
+                            assert!(clone.payload().iter().all(|byte| *byte == value));
+                            assert!(arena.snapshot().market_overflow_bytes <= 400_000);
+                        }
+                        Err(PublishError::MarketPayloadBudgetExhausted) => (),
+                        Err(error) => panic!("unexpected reservation failure: {error}"),
+                    }
+                }
+            })
+        })
+        .collect();
+    for worker in threads {
+        worker.join().unwrap();
+    }
+    assert_eq!(arena.snapshot().market_overflow_bytes, 0);
+    assert_eq!(arena.outstanding_blocks(), 0);
+}

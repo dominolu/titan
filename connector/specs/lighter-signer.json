@@ -1,0 +1,995 @@
+{
+  "revision": "aefa96848a105d82a6bbb55d3d05663293a71713",
+  "header_sha256": "fcbe90e05378e51f6cb2370db6836badc3e65f7dd87b5363ce8cf131a9fbc743",
+  "operations": [
+    {
+      "name": "SignChangePubKey",
+      "parameters": [
+        [
+          "char*",
+          "cPubKey"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCreateOrder",
+      "parameters": [
+        [
+          "long long int",
+          "cMarketIndex"
+        ],
+        [
+          "long long int",
+          "cClientOrderIndex"
+        ],
+        [
+          "long long int",
+          "cBaseAmount"
+        ],
+        [
+          "int",
+          "cPrice"
+        ],
+        [
+          "int",
+          "cIsAsk"
+        ],
+        [
+          "int",
+          "cOrderType"
+        ],
+        [
+          "int",
+          "cTimeInForce"
+        ],
+        [
+          "int",
+          "cReduceOnly"
+        ],
+        [
+          "int",
+          "cTriggerPrice"
+        ],
+        [
+          "long long int",
+          "cOrderExpiry"
+        ],
+        [
+          "long long int",
+          "cIntegratorAccountIndex"
+        ],
+        [
+          "int",
+          "cIntegratorTakerFee"
+        ],
+        [
+          "int",
+          "cIntegratorMakerFee"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeBehaviorMode"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeEqualityMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCreateGroupedOrders",
+      "parameters": [
+        [
+          "uint8_t",
+          "cGroupingType"
+        ],
+        [
+          "CreateOrderTxReq*",
+          "cOrders"
+        ],
+        [
+          "int",
+          "cLen"
+        ],
+        [
+          "long long int",
+          "cIntegratorAccountIndex"
+        ],
+        [
+          "int",
+          "cIntegratorTakerFee"
+        ],
+        [
+          "int",
+          "cIntegratorMakerFee"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeBehaviorMode"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeEqualityMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCancelOrder",
+      "parameters": [
+        [
+          "long long int",
+          "cMarketIndex"
+        ],
+        [
+          "long long int",
+          "cOrderIndex"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignWithdraw",
+      "parameters": [
+        [
+          "int",
+          "cAssetIndex"
+        ],
+        [
+          "int",
+          "cRouteType"
+        ],
+        [
+          "long long unsigned int",
+          "cAmount"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCreateSubAccount",
+      "parameters": [
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCancelAllOrders",
+      "parameters": [
+        [
+          "int",
+          "cTimeInForce"
+        ],
+        [
+          "long long int",
+          "cTime"
+        ],
+        [
+          "long long int",
+          "cCancelAllMarketIndex"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignModifyOrder",
+      "parameters": [
+        [
+          "long long int",
+          "cMarketIndex"
+        ],
+        [
+          "long long int",
+          "cIndex"
+        ],
+        [
+          "long long int",
+          "cBaseAmount"
+        ],
+        [
+          "long long int",
+          "cPrice"
+        ],
+        [
+          "long long int",
+          "cTriggerPrice"
+        ],
+        [
+          "long long int",
+          "cIntegratorAccountIndex"
+        ],
+        [
+          "int",
+          "cIntegratorTakerFee"
+        ],
+        [
+          "int",
+          "cIntegratorMakerFee"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeBehaviorMode"
+        ],
+        [
+          "uint8_t",
+          "cSelfTradeEqualityMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "long long int",
+          "cOrderVersion"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignTransfer",
+      "parameters": [
+        [
+          "long long int",
+          "cToAccountIndex"
+        ],
+        [
+          "int16_t",
+          "cAssetIndex"
+        ],
+        [
+          "uint8_t",
+          "cFromRouteType"
+        ],
+        [
+          "uint8_t",
+          "cToRouteType"
+        ],
+        [
+          "long long int",
+          "cAmount"
+        ],
+        [
+          "long long int",
+          "cUsdcFee"
+        ],
+        [
+          "char*",
+          "cMemo"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignCreatePublicPool",
+      "parameters": [
+        [
+          "long long int",
+          "cOperatorFee"
+        ],
+        [
+          "int",
+          "cInitialTotalShares"
+        ],
+        [
+          "long long int",
+          "cMinOperatorShareRate"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUpdatePublicPool",
+      "parameters": [
+        [
+          "long long int",
+          "cPublicPoolIndex"
+        ],
+        [
+          "int",
+          "cStatus"
+        ],
+        [
+          "long long int",
+          "cOperatorFee"
+        ],
+        [
+          "int",
+          "cMinOperatorShareRate"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignMintShares",
+      "parameters": [
+        [
+          "long long int",
+          "cPublicPoolIndex"
+        ],
+        [
+          "long long int",
+          "cShareAmount"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignBurnShares",
+      "parameters": [
+        [
+          "long long int",
+          "cPublicPoolIndex"
+        ],
+        [
+          "long long int",
+          "cShareAmount"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUpdateLeverage",
+      "parameters": [
+        [
+          "long long int",
+          "cMarketIndex"
+        ],
+        [
+          "int",
+          "cInitialMarginFraction"
+        ],
+        [
+          "int",
+          "cMarginMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUpdateMargin",
+      "parameters": [
+        [
+          "long long int",
+          "cMarketIndex"
+        ],
+        [
+          "long long int",
+          "cUSDCAmount"
+        ],
+        [
+          "int",
+          "cDirection"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignStakeAssets",
+      "parameters": [
+        [
+          "long long int",
+          "cStakingPoolIndex"
+        ],
+        [
+          "long long int",
+          "cShareAmount"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUnstakeAssets",
+      "parameters": [
+        [
+          "long long int",
+          "cStakingPoolIndex"
+        ],
+        [
+          "long long int",
+          "cShareAmount"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignApproveIntegrator",
+      "parameters": [
+        [
+          "long long int",
+          "cIntegratorIndex"
+        ],
+        [
+          "uint32_t",
+          "cMaxPerpsTakerFee"
+        ],
+        [
+          "uint32_t",
+          "cMaxPerpsMakerFee"
+        ],
+        [
+          "uint32_t",
+          "cMaxSpotTakerFee"
+        ],
+        [
+          "uint32_t",
+          "cMaxSpotMakerFee"
+        ],
+        [
+          "long long int",
+          "cApprovalExpiry"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUpdateAccountConfig",
+      "parameters": [
+        [
+          "uint8_t",
+          "cAccountTradingMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignUpdateAccountAssetConfig",
+      "parameters": [
+        [
+          "int16_t",
+          "cAssetIndex"
+        ],
+        [
+          "uint8_t",
+          "cAssetMarginMode"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignBinaryOptionsOperatorCreateMarket",
+      "parameters": [
+        [
+          "BinaryOptionsOperatorCreateMarketTxReq*",
+          "cReq"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignBinaryOptionsOperatorUpdateMarket",
+      "parameters": [
+        [
+          "BinaryOptionsOperatorUpdateMarketTxReq*",
+          "cReq"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    },
+    {
+      "name": "SignBinaryOptionsOperatorSettleMarket",
+      "parameters": [
+        [
+          "BinaryOptionsOperatorSettleMarketTxReq*",
+          "cReq"
+        ],
+        [
+          "uint8_t",
+          "cSkipNonce"
+        ],
+        [
+          "long long int",
+          "cNonce"
+        ],
+        [
+          "int",
+          "cApiKeyIndex"
+        ],
+        [
+          "long long int",
+          "cAccountIndex"
+        ]
+      ]
+    }
+  ],
+  "structures": {
+    "CreateOrderTxReq": [
+      [
+        "int64_t",
+        "MarketIndex"
+      ],
+      [
+        "int64_t",
+        "ClientOrderIndex"
+      ],
+      [
+        "int64_t",
+        "BaseAmount"
+      ],
+      [
+        "uint32_t",
+        "Price"
+      ],
+      [
+        "uint8_t",
+        "IsAsk"
+      ],
+      [
+        "uint8_t",
+        "Type"
+      ],
+      [
+        "uint8_t",
+        "TimeInForce"
+      ],
+      [
+        "uint8_t",
+        "ReduceOnly"
+      ],
+      [
+        "uint32_t",
+        "TriggerPrice"
+      ],
+      [
+        "int64_t",
+        "OrderExpiry"
+      ]
+    ],
+    "BinaryOptionsOperatorCreateMarketTxReq": [
+      [
+        "int16_t",
+        "MarketSlot"
+      ],
+      [
+        "int64_t",
+        "StartTimestampMs"
+      ],
+      [
+        "int64_t",
+        "EndTimestampMs"
+      ],
+      [
+        "uint32_t",
+        "SettlementCap"
+      ],
+      [
+        "uint8_t",
+        "SettlementType"
+      ],
+      [
+        "uint32_t",
+        "DefaultPrice"
+      ],
+      [
+        "uint32_t",
+        "TakerFee"
+      ],
+      [
+        "uint32_t",
+        "MakerFee"
+      ],
+      [
+        "int64_t",
+        "MinBaseAmount"
+      ],
+      [
+        "int64_t",
+        "MinQuoteAmount"
+      ],
+      [
+        "int64_t",
+        "OrderQuoteLimit"
+      ],
+      [
+        "int64_t",
+        "OpenInterestLimit"
+      ],
+      [
+        "uint8_t",
+        "IsFrozen"
+      ],
+      [
+        "char*",
+        "Symbol"
+      ],
+      [
+        "uint8_t",
+        "SizeDecimals"
+      ],
+      [
+        "uint8_t",
+        "PriceDecimals"
+      ]
+    ],
+    "BinaryOptionsOperatorUpdateMarketTxReq": [
+      [
+        "int16_t",
+        "MarketSlot"
+      ],
+      [
+        "int64_t",
+        "MarketIndex"
+      ],
+      [
+        "int64_t",
+        "StartTimestampMs"
+      ],
+      [
+        "int64_t",
+        "EndTimestampMs"
+      ],
+      [
+        "uint32_t",
+        "TakerFee"
+      ],
+      [
+        "uint32_t",
+        "MakerFee"
+      ],
+      [
+        "int64_t",
+        "MinBaseAmount"
+      ],
+      [
+        "int64_t",
+        "MinQuoteAmount"
+      ],
+      [
+        "int64_t",
+        "OrderQuoteLimit"
+      ],
+      [
+        "int64_t",
+        "OpenInterestLimit"
+      ],
+      [
+        "uint8_t",
+        "IsFrozen"
+      ]
+    ],
+    "BinaryOptionsOperatorSettleMarketTxReq": [
+      [
+        "int16_t",
+        "MarketSlot"
+      ],
+      [
+        "int64_t",
+        "MarketIndex"
+      ],
+      [
+        "uint32_t",
+        "SettlementPrice"
+      ],
+      [
+        "uint8_t",
+        "IsRefund"
+      ]
+    ]
+  }
+}

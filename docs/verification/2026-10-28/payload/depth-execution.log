@@ -1,0 +1,7 @@
+case 0: online/replay accepted=true
+case 1: online/replay accepted=true
+case 2: online/replay accepted=false
+case 3: online/replay accepted=true
+case 4: online/replay accepted=false
+case 5: online/replay accepted=true
+PASS: unavailable/ready/invalidated/recovered admission parity; cancel + proven reduction retained; opening and excess reduction rejected

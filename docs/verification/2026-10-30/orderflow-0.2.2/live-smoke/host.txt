@@ -1,0 +1,7 @@
+host=VM-0-33-ubuntu
+os="Ubuntu 24.04.4 LTS"
+kernel=6.8.0-117-generic
+cpu=2 vcpu
+glibc=ldd (Ubuntu GLIBC 2.39-0ubuntu8.8) 2.39
+started=2026-10-30T06:00:29.277566Z DE
+stopped=2026-10-30T21:25:39+08:00

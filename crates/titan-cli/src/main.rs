@@ -413,6 +413,8 @@ struct V13TraceEvent {
     #[serde(default)]
     depth: Vec<titan_strategy_runtime::TitanDepthView>,
     #[serde(default)]
+    depth_batch: Option<titan_strategy_runtime::DepthBatchInfoV1>,
+    #[serde(default)]
     fills: Vec<titan_strategy_runtime::TitanFillView>,
     #[serde(default)]
     orders: Vec<titan_strategy_runtime::TitanOrderEventView>,
@@ -1483,7 +1485,10 @@ fn v13_backtest_engine(
         last_now_ns = last_now_ns.max(event.now_ns);
         let commands = match event.kind {
             V13TraceEventKind::Tick => adapter.on_ticks(event.now_ns, &event.ticks),
-            V13TraceEventKind::Depth => adapter.on_depth(event.now_ns, &event.depth),
+            V13TraceEventKind::Depth => match event.depth_batch {
+                Some(info) => adapter.on_depth_batch(event.now_ns, info, &event.depth),
+                None => adapter.on_depth(event.now_ns, &event.depth),
+            },
             V13TraceEventKind::Fill => adapter.on_fills(event.now_ns, &event.fills),
             V13TraceEventKind::Order => adapter.on_orders(event.now_ns, &event.orders),
             V13TraceEventKind::Cancel => adapter.on_cancels(event.now_ns, &event.cancels),

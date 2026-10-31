@@ -1,0 +1,4 @@
+=== log summary ===
+log=.titan/runs/run-18e339413ecda4a5-2fb319/worker.log size=115M lines=812409
+first: 2026-10-30T06:00:29.277566Z DE  last: }
+warn2=0 error=0

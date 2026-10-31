@@ -1,0 +1,10 @@
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-depth-review-20261028-4e911025/crates/titan-strategy-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.76s
+     Running `/tmp/titan-deplugin-target/debug/examples/v13_depth_execution_smoke verification/depth-execution.titan`
+case 0: online/replay accepted=true
+case 1: online/replay accepted=true
+case 2: online/replay accepted=false
+case 3: online/replay accepted=true
+case 4: online/replay accepted=false
+case 5: online/replay accepted=true
+PASS: unavailable/ready/invalidated/recovered admission parity; cancel + proven reduction retained; opening and excess reduction rejected

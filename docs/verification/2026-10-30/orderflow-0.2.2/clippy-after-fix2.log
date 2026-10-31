@@ -1,0 +1,7 @@
+    Checking titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-strategy-runtime)
+    Checking hftbacktest v0.9.4 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/hftbacktest)
+    Checking connector v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/connector)
+    Checking collector v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/collector)
+    Checking titan-cli v0.1.0 (/home/dominolu/dev/titan-orderflow-20261030-c67acf9c/src/crates/titan-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.22s
+CLIPPY_EXIT=0

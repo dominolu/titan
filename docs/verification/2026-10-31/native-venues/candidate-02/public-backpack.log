@@ -1,0 +1,4 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe backpack`
+backpack: [backpack] PROTOCOL: invalid ISO timestamp
+Error: public probes failed: backpack

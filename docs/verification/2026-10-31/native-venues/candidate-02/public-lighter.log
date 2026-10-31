@@ -1,0 +1,7 @@
+   Compiling titan-account-service v0.1.0 (/tmp/titan-native-venues-20261030/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/tmp/titan-native-venues-20261030/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/tmp/titan-native-venues-20261030/hftbacktest)
+   Compiling connector v0.1.0 (/tmp/titan-native-venues-20261030/connector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.39s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe lighter`
+{"asks":100,"bids":100,"funding":-9e-6,"instruments":241,"next_funding_time_ms":1793379600002,"open_interest_base":31222.4247,"symbol":"ETH","trades":3,"venue":"lighter"}

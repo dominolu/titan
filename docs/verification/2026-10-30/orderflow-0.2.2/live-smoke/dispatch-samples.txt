@@ -1,0 +1,20 @@
+=== depth dispatch sample ===
+2026-10-30T06:00:29.419312Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=281
+2026-10-30T06:00:29.419335Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=7
+2026-10-30T06:00:29.435110Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.DepthBatch" elapsed_us=36
+2026-10-30T06:00:29.277566Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=7
+2026-10-30T06:00:29.409623Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=2
+2026-10-30T06:30:05.043895Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=552
+2026-10-30T06:30:05.063444Z DEBUG titan_strategy_runtime::runtime_v13: strategy event dispatch duration event_type="titan.market.StreamInvalidated" elapsed_us=14
+--- queue/dispatch latency (depth, first 5) ---
+elapsed_us=281
+elapsed_us=7
+elapsed_us=36
+elapsed_us=49
+elapsed_us=59
+--- last lines ---
+  "status": "STOPPED",
+  "strategy_id": "orderflow_events",
+  "strategy_version": "0.2.2",
+  "wall_time_ns": 1811632061227
+}

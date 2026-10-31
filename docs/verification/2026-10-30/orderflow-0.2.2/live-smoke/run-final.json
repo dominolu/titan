@@ -1,0 +1,29 @@
+{
+  "run": {
+    "config_path": "/home/ubuntu/orderflow-smoke/runtime.toml",
+    "config_sha256": "2f96505fc30d1e23c4e3c1b1e0bbd29b2187806be59b68d709b3cab2259cdeb7",
+    "environment": "live",
+    "error": null,
+    "event_mode": "tick",
+    "exit_code": 0,
+    "fill_count": 0,
+    "finished_at_ns": 1793341841107469335,
+    "health": "HEALTHY",
+    "heartbeat_ns": 1793341841107469335,
+    "id": "run-18e339413ecda4a5-2fb319",
+    "log_path": ".titan/runs/run-18e339413ecda4a5-2fb319/worker.log",
+    "market_event_count": 0,
+    "order_count": 0,
+    "pid": null,
+    "process_start_time": null,
+    "report_path": null,
+    "report_state": "NONE",
+    "result_path": ".titan/runs/run-18e339413ecda4a5-2fb319/result.json",
+    "spec_path": ".titan/runs/run-18e339413ecda4a5-2fb319/run.json",
+    "started_at_ns": 1793340029018991924,
+    "state": "STOPPED",
+    "strategy_id": "orderflow_events",
+    "strategy_version": "0.2.2"
+  },
+  "schema_version": 1
+}

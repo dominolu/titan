@@ -79,6 +79,7 @@ fn main() {
             &definition,
             compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
+                market_service: None,
                 strategy: StrategyHandle {
                     runtime_strategy_no: RuntimeStrategyNo(77),
                     generation: 1,

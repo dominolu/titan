@@ -1,0 +1,4 @@
+=== dispatch counts ===
+ 743868 event_type="titan.market.Bbo"
+  68523 event_type="titan.market.DepthBatch"
+      4 event_type="titan.market.StreamInvalidated"

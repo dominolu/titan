@@ -1,0 +1,3 @@
+89ccc49410ced1794e56507fa469aa6d9dd0ba5cba3cd3d9319cde6d8719aea8  verification/payload-bench-new
+c043a4e9897faf71360051fab103549894eb2f800b48d95798fbbad33a7f5c0c  verification/payload-bench-baseline
+09499d4f70ffb9d70d836aac36e9cf6dc27f6433464d3f6fa7e5aee8c0eb40ed  /tmp/titan-deplugin-target/debug/examples/v13_depth_pipeline_smoke

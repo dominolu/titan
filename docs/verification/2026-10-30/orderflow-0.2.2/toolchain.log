@@ -1,0 +1,6 @@
+host: deepai
+rustc: rustc 1.94.1 (e408947bf 2026-03-25)
+cargo: cargo 1.94.1 (29ea6fb6a 2026-03-24)
+toolchain: 1.94.1-x86_64-unknown-linux-gnu (overridden by environment variable RUSTUP_TOOLCHAIN)
+python: Python 3.11.14
+date: 2026-10-30T12:21:20+08:00

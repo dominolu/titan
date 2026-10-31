@@ -41,6 +41,7 @@ use crate::{
 };
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_DEPTH_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MarketStreamRoute {
@@ -73,17 +74,48 @@ impl MarketStreamRoute {
     }
 }
 
+// Bootstrap is a separate owned-message queue while REST is in flight. Bound
+// its memory rather than rescanning all buffered levels on each incoming diff.
+const DEPTH_STAGING_BYTES: usize = 32 * 1024 * 1024;
+#[derive(Default)]
+struct PendingDepth {
+    updates: Vec<(stream::OwnedDepth, i64)>,
+    bytes: usize,
+}
+impl PendingDepth {
+    fn push(&mut self, update: stream::OwnedDepth, receive_ts: i64) -> bool {
+        let bytes = 2 * std::mem::size_of::<(stream::OwnedDepth, i64)>()
+            + update.symbol.capacity()
+            + (update.bids.capacity() + update.asks.capacity())
+                * std::mem::size_of::<(String, String)>()
+            + update
+                .bids
+                .iter()
+                .chain(&update.asks)
+                .map(|(price, quantity)| price.capacity() + quantity.capacity())
+                .sum::<usize>();
+        if bytes > DEPTH_STAGING_BYTES.saturating_sub(self.bytes) {
+            return false;
+        }
+        self.bytes += bytes;
+        self.updates.push((update, receive_ts));
+        true
+    }
+}
+
 pub struct MarketDataStream {
     client: BinanceFuturesClient,
     ev_tx: crate::connector::PublishSender,
     command_rx: Receiver<MarketDataCommand>,
     subscriptions: SharedMarketSubscriptions,
-    pending_depth_messages: HashMap<String, Vec<(stream::OwnedDepth, i64)>>,
+    pending_depth_messages: HashMap<String, PendingDepth>,
     prev_u: HashMap<String, i64>,
+    snapshot_candidates: HashMap<String, rest::Depth>,
+    pending_overflow: bool,
     stream_epochs: HashMap<String, u64>,
     canonical_symbols: HashMap<String, String>,
-    rest_tx: QueueSender<(String, rest::Depth)>,
-    rest_rx: QueueReceiver<(String, rest::Depth)>,
+    rest_tx: QueueSender<(String, Result<rest::Depth, reqwest::Error>)>,
+    rest_rx: QueueReceiver<(String, Result<rest::Depth, reqwest::Error>)>,
     route: MarketStreamRoute,
 }
 
@@ -139,7 +171,7 @@ impl MarketDataStream {
         subscriptions: SharedMarketSubscriptions,
         route: MarketStreamRoute,
     ) -> Self {
-        let (rest_tx, rest_rx) = channel::<(String, rest::Depth)>(64);
+        let (rest_tx, rest_rx) = channel::<(String, Result<rest::Depth, reqwest::Error>)>(64);
         Self {
             client,
             ev_tx,
@@ -147,6 +179,8 @@ impl MarketDataStream {
             subscriptions,
             pending_depth_messages: Default::default(),
             prev_u: Default::default(),
+            snapshot_candidates: Default::default(),
+            pending_overflow: false,
             stream_epochs: Default::default(),
             canonical_symbols: Default::default(),
             rest_tx,
@@ -155,18 +189,36 @@ impl MarketDataStream {
         }
     }
 
+    fn buffer_depth(&mut self, symbol: String, update: stream::OwnedDepth, receive_ts: i64) {
+        let pending = self.pending_depth_messages.entry(symbol).or_default();
+        if !pending.push(update, receive_ts) {
+            self.pending_overflow = true;
+        }
+    }
+
+    pub fn invalidate_depth(&self) {
+        if !self.route.includes(MarketDataKind::Depth) {
+            return;
+        }
+        let subscriptions = self.subscriptions.lock().unwrap_or_else(|p| p.into_inner());
+        for symbol in self.canonical_symbols.values().filter(|symbol| {
+            subscriptions
+                .get(*symbol)
+                .is_some_and(|kinds| kinds.contains(&MarketDataKind::Depth))
+        }) {
+            self.ev_tx.send(PublishEvent::StreamInvalidated {
+                symbol: symbol.clone(),
+                epoch: self.stream_epochs.get(symbol).copied().unwrap_or(0),
+            });
+        }
+    }
+
     fn fetch_snapshot(&self, symbol: String) {
         let client = self.client.clone();
         let rest_tx = self.rest_tx.clone();
         tokio::spawn(async move {
-            match client.get_depth(&symbol).await {
-                Ok(depth) => {
-                    let _ = rest_tx.send((symbol, depth)).await;
-                }
-                Err(error) => {
-                    error!(?error, %symbol, "Couldn't get the market depth via REST.");
-                }
-            }
+            let result = client.get_depth(&symbol).await;
+            let _ = rest_tx.send((symbol, result)).await;
         });
     }
 
@@ -400,20 +452,24 @@ impl MarketDataStream {
                             epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
                         });
                         self.prev_u.remove(&symbol);
-                        self.pending_depth_messages
-                            .entry(symbol.clone())
-                            .or_default()
-                            .push((data.into_owned(symbol.clone()), ws_recv_ts));
+                        self.buffer_depth(
+                            symbol.clone(),
+                            data.into_owned(symbol.clone()),
+                            ws_recv_ts,
+                        );
                         self.fetch_snapshot(symbol);
                     }
                     None => {
                         let symbol = symbol.to_owned();
                         let first = !self.pending_depth_messages.contains_key(&symbol);
-                        self.pending_depth_messages
-                            .entry(symbol.clone())
-                            .or_default()
-                            .push((data.into_owned(symbol.clone()), ws_recv_ts));
-                        if first {
+                        self.buffer_depth(
+                            symbol.clone(),
+                            data.into_owned(symbol.clone()),
+                            ws_recv_ts,
+                        );
+                        if let Some(snapshot) = self.snapshot_candidates.remove(&symbol) {
+                            self.process_snapshot(symbol, snapshot);
+                        } else if first {
                             self.fetch_snapshot(symbol);
                         }
                     }
@@ -519,11 +575,39 @@ impl MarketDataStream {
 
     fn process_snapshot(&mut self, symbol: String, data: rest::Depth) {
         let snapshot_sequence = data.last_update_id;
-        let epoch = {
-            let value = self.stream_epochs.entry(symbol.clone()).or_insert(0);
-            *value = value.saturating_add(1);
-            *value
-        };
+        let mut previous = snapshot_sequence;
+        let mut bridged = false;
+        if let Some(pending) = self.pending_depth_messages.get(&symbol) {
+            for (update, _) in &pending.updates {
+                if update.last_update_id < snapshot_sequence {
+                    continue;
+                }
+                let valid = if bridged {
+                    update.prev_update_id == previous
+                } else {
+                    update.first_update_id <= snapshot_sequence
+                        && update.last_update_id >= snapshot_sequence
+                };
+                if !valid {
+                    self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        symbol: symbol.clone(),
+                        epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
+                    });
+                    self.fetch_snapshot(symbol);
+                    return;
+                }
+                bridged = true;
+                previous = update.last_update_id;
+            }
+        }
+        if !bridged {
+            self.snapshot_candidates.insert(symbol, data);
+            return;
+        }
+        let epoch = NEXT_DEPTH_EPOCH
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .expect("depth epoch exhausted");
+        self.stream_epochs.insert(symbol.clone(), epoch);
         let snapshot_receive_ts = Utc::now().timestamp_nanos_opt().unwrap();
         if self.ev_tx.try_send_native_market(NativeMarketBatch::Depth {
             symbol: &symbol,
@@ -591,7 +675,7 @@ impl MarketDataStream {
         let mut previous = snapshot_sequence;
         let mut synchronized = false;
         if let Some(pending) = self.pending_depth_messages.remove(&symbol) {
-            for (update, receive_ts) in pending {
+            for (update, receive_ts) in pending.updates {
                 if update.last_update_id < snapshot_sequence {
                     continue;
                 }
@@ -603,10 +687,7 @@ impl MarketDataStream {
                 };
                 if !valid {
                     warn!(%symbol, previous, first = update.first_update_id, last = update.last_update_id, "pending depth sequence is not contiguous");
-                    self.pending_depth_messages
-                        .entry(symbol.clone())
-                        .or_default()
-                        .push((update, receive_ts));
+                    self.buffer_depth(symbol.clone(), update, receive_ts);
                     self.fetch_snapshot(symbol);
                     return;
                 }
@@ -678,9 +759,14 @@ impl MarketDataStream {
         }
 
         loop {
+            if self.pending_overflow {
+                return Err(BinanceFuturesError::ConnectionAbort(
+                    "depth bootstrap staging capacity exceeded".into(),
+                ));
+            }
             select! {
                 Some((symbol, data)) = self.rest_rx.recv() => {
-                    self.process_snapshot(symbol, data);
+                    self.process_snapshot(symbol, data?);
                 }
                 _ = ping_checker.tick() => {
                     if last_ping.elapsed() > Duration::from_secs(300) {
@@ -715,6 +801,7 @@ impl MarketDataStream {
                         {
                             self.prev_u.remove(&symbol);
                             self.pending_depth_messages.remove(&symbol);
+                            self.snapshot_candidates.remove(&symbol);
                             self.canonical_symbols.remove(&symbol.to_ascii_uppercase());
                         }
                     }
@@ -727,7 +814,8 @@ impl MarketDataStream {
                             symbol: symbol.clone(),
                         });
                         self.prev_u.remove(&symbol);
-                        self.pending_depth_messages.remove(&symbol);
+                        self.pending_depth_messages.insert(symbol.clone(), PendingDepth::default());
+                        self.snapshot_candidates.remove(&symbol);
                         self.fetch_snapshot(symbol);
                     }
                     Ok(MarketDataCommand::InitializeTrading { .. }) => {}
@@ -752,7 +840,7 @@ impl MarketDataStream {
                                     ws_recv_ts,
                                 ),
                                 Err(error) => {
-                                    error!(?error, %text, "Couldn't parse Depth stream.");
+                                    return Err(BinanceFuturesError::ConnectionAbort(format!("invalid depth frame: {error}")));
                                 }
                             }
                             continue;
@@ -835,6 +923,31 @@ impl MarketDataStream {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bootstrap_capacity_tracks_bytes_and_accepts_large_batches() {
+        let mut pending = super::PendingDepth::default();
+        let update = || super::stream::OwnedDepth {
+            transaction_time: 0,
+            event_time: 0,
+            symbol: String::from("BTCUSDT"),
+            first_update_id: 1,
+            last_update_id: 1,
+            prev_update_id: 0,
+            bids: (0..40_000)
+                .map(|_| (String::from("100"), String::from("1")))
+                .collect(),
+            asks: Vec::new(),
+        };
+        assert!(pending.push(update(), 0));
+        assert_eq!(pending.updates[0].0.bids.len(), 40_000);
+        let bytes = pending.bytes;
+        assert!(bytes > 40_000 * std::mem::size_of::<(String, String)>());
+        let mut large = update();
+        large.symbol = String::with_capacity(super::DEPTH_STAGING_BYTES);
+        assert!(!pending.push(large, 0));
+        assert_eq!(pending.bytes, bytes);
+        assert_eq!(pending.updates.len(), 1);
+    }
     use super::*;
     use std::{
         collections::HashSet,
@@ -905,6 +1018,11 @@ mod tests {
         stream
             .canonical_symbols
             .insert("BTCUSDT".to_owned(), "btcusdt".to_owned());
+        let bridge = serde_json::from_str::<EventStream<'_>>(
+            r#"{"e":"depthUpdate","E":1,"T":1,"s":"BTCUSDT","U":9,"u":10,"pu":8,"b":[],"a":[]}"#,
+        )
+        .unwrap();
+        stream.process_message(bridge, 1);
         stream.process_snapshot(
             "btcusdt".to_owned(),
             rest::Depth {
@@ -923,8 +1041,9 @@ mod tests {
             _ => panic!("expected Binance Futures snapshot"),
         };
         assert!(first.snapshot);
-        assert_eq!(first.epoch, 1);
+        assert!(first.epoch > 0);
         assert_eq!(first.last_update_sequence, 10);
+        receiver.recv().await.expect("buffered bridging delta");
 
         let delta = serde_json::from_str::<EventStream<'_>>(
             r#"{"e":"depthUpdate","E":2,"T":2,"s":"BTCUSDT","U":11,"u":11,"pu":10,"b":[["100","3"]],"a":[]}"#,
@@ -939,7 +1058,7 @@ mod tests {
             _ => panic!("expected Binance Futures delta"),
         };
         assert!(!delta.snapshot);
-        assert_eq!(delta.epoch, 1);
+        assert_eq!(delta.epoch, first.epoch);
         assert_eq!(delta.first_update_sequence, 11);
         assert_eq!(delta.last_update_sequence, 11);
 
@@ -950,7 +1069,7 @@ mod tests {
         stream.process_message(gap, 4);
         assert!(matches!(
             receiver.recv().await,
-            Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
+            Some(PublishEvent::StreamInvalidated { epoch, .. }) if epoch == first.epoch
         ));
 
         stream.process_snapshot(
@@ -963,6 +1082,16 @@ mod tests {
                 asks: vec![],
             },
         );
+        assert!(
+            stream.snapshot_candidates.contains_key("btcusdt"),
+            "unbridged snapshot must remain private"
+        );
+        assert_eq!(stream.stream_epochs["btcusdt"], first.epoch);
+        let bridge = serde_json::from_str::<EventStream<'_>>(
+            r#"{"e":"depthUpdate","E":4,"T":4,"s":"BTCUSDT","U":19,"u":21,"pu":18,"b":[],"a":[]}"#,
+        )
+        .unwrap();
+        stream.process_message(bridge, 5);
         let recovered = match receiver.recv().await.unwrap() {
             PublishEvent::FeedBatch {
                 stream: Some(stream),
@@ -971,7 +1100,7 @@ mod tests {
             _ => panic!("expected Binance Futures recovery snapshot"),
         };
         assert!(recovered.snapshot);
-        assert_eq!(recovered.epoch, 2);
+        assert!(recovered.epoch > first.epoch);
         assert_eq!(recovered.last_update_sequence, 20);
     }
 

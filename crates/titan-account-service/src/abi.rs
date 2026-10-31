@@ -87,6 +87,8 @@ pub mod event_flags {
     pub const REDUCE_ONLY: u16 = 1 << 6;
     pub const POSITION_LONG: u16 = 1 << 7;
     pub const POSITION_SHORT: u16 = 1 << 8;
+    /// FillV2's realized_pnl_units is an unavailable sentinel, not a proven zero.
+    pub const REALIZED_PNL_UNAVAILABLE: u16 = 1 << 9;
 
     pub fn position_side(flags: u16) -> u8 {
         match flags & (POSITION_LONG | POSITION_SHORT) {

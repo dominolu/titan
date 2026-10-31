@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe variational`
+{"capability":"statistics_only","listings":581,"received_at_ms":1793377993356,"reported_num_markets":581,"venue":"variational"}

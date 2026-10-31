@@ -1,0 +1,9 @@
+   Compiling connector v0.1.0 (/tmp/titan-native-venues-20261030/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.04s
+     Running unittests src/lib.rs (/tmp/titan-native-venues-target/debug/deps/connector-199b26026965c241)
+
+running 1 test
+test market_runtime::tests::shutdown_deadline_is_bounded_and_a_later_stop_reaps_the_runtime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 342 filtered out; finished in 0.10s
+

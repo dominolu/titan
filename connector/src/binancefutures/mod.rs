@@ -88,6 +88,8 @@ impl From<BinanceFuturesError> for Value {
 #[derive(Deserialize)]
 pub struct Config {
     stream_url: String,
+    #[serde(default = "default_depth_snapshot_limit")]
+    depth_snapshot_limit: u16,
     api_url: String,
     #[serde(default)]
     order_prefix: String,
@@ -98,6 +100,10 @@ pub struct Config {
     /// Exchange-side countdown cancel timeout. Zero disables the heartbeat.
     #[serde(default = "default_safety_timeout_ms")]
     safety_timeout_ms: u64,
+}
+
+fn default_depth_snapshot_limit() -> u16 {
+    1000
 }
 
 fn default_safety_timeout_ms() -> u64 {
@@ -217,7 +223,11 @@ impl BinanceFutures {
                             route,
                         );
                         debug!(?route, %base_url, "Connecting to the market data stream...");
-                        stream.connect(&base_url).await?;
+                        let result = stream.connect(&base_url).await;
+                        if result.is_err() {
+                            stream.invalidate_depth();
+                        }
+                        result?;
                         debug!("The market data stream connection is permanently closed.");
                         Ok(())
                     })
@@ -279,7 +289,8 @@ impl ConnectorBuilder for BinanceFutures {
         let order_manager = Arc::new(Mutex::new(OrderManager::new(&config.order_prefix)));
         let symbols: SharedSymbolSet = Default::default();
         let client = BinanceFuturesClient::new(&config.api_url, &config.api_key, &config.secret)
-            .with_registered_symbols(symbols.clone());
+            .with_registered_symbols(symbols.clone())
+            .with_depth_snapshot_limit(config.depth_snapshot_limit)?;
         let (symbol_tx, _) = broadcast::channel(500);
         let (market_tx, _) = broadcast::channel(500);
 

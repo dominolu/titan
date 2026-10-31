@@ -22,6 +22,7 @@ struct BlockSlot {
     refs: AtomicUsize,
     len: AtomicUsize,
     data: UnsafeCell<Box<[u8]>>,
+    overflow: UnsafeCell<Option<Vec<u8>>>,
 }
 
 // Access to data is exclusive while RESERVED and immutable while PUBLISHED. Reuse is
@@ -36,6 +37,7 @@ impl BlockSlot {
             refs: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
             data: UnsafeCell::new(vec![0_u8; block_bytes].into_boxed_slice()),
+            overflow: UnsafeCell::new(None),
         }
     }
 }
@@ -104,6 +106,8 @@ pub struct EventHandle {
 pub struct EventArena {
     pools: [EventPool; 3],
     metrics: Arc<EngineMetrics>,
+    overflow_limit: usize,
+    overflow_bytes: AtomicUsize,
 }
 
 impl EventArena {
@@ -115,6 +119,8 @@ impl EventArena {
                 EventPool::new(PoolKind::Snapshot, &config.snapshot),
             ],
             metrics,
+            overflow_limit: config.market_overflow_bytes,
+            overflow_bytes: AtomicUsize::new(0),
         })
     }
 
@@ -128,7 +134,8 @@ impl EventArena {
         length: usize,
     ) -> Result<EventReservation, PublishError> {
         let pool = self.pool(pool_kind);
-        if length > pool.block_bytes || length > u32::MAX as usize {
+        let oversized = length > pool.block_bytes;
+        if (oversized && pool_kind != PoolKind::MarketBatch) || length > u32::MAX as usize {
             return Err(PublishError::PayloadTooLarge {
                 pool: pool_kind,
                 length,
@@ -140,6 +147,22 @@ impl EventArena {
             return Err(PublishError::EventArenaExhausted(pool_kind));
         };
         let slot = pool.slot(block_id);
+        if oversized {
+            let result = self.reserve_overflow(length);
+            match result {
+                Ok(data) => {
+                    // SAFETY: popping the free queue gives exclusive ownership of this slot.
+                    unsafe { *slot.overflow.get() = Some(data) };
+                }
+                Err(error) => {
+                    pool.free
+                        .push(block_id)
+                        .expect("reserved free slot has a return");
+                    self.metrics.arena_exhausted[pool_kind.index()].fetch_add(1, Ordering::Relaxed);
+                    return Err(error);
+                }
+            }
+        }
         slot.state
             .compare_exchange(
                 SLOT_FREE,
@@ -164,6 +187,32 @@ impl EventArena {
             },
             active: true,
         })
+    }
+
+    // Only oversized market batches take this path. Normal pooled publications
+    // do not allocate or contend on the overflow budget.
+    fn reserve_overflow(&self, length: usize) -> Result<Vec<u8>, PublishError> {
+        self.overflow_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(length)
+                    .filter(|total| *total <= self.overflow_limit)
+            })
+            .map_err(|_| PublishError::MarketPayloadBudgetExhausted)?;
+        let mut data = Vec::new();
+        if data.try_reserve_exact(length).is_err() {
+            self.overflow_bytes.fetch_sub(length, Ordering::Relaxed);
+            return Err(PublishError::MarketPayloadAllocationFailed);
+        }
+        data.resize(length, 0);
+        Ok(data)
+    }
+
+    fn release_overflow(&self, pool: &EventPool, slot: &BlockSlot, length: usize) {
+        if length > pool.block_bytes {
+            // SAFETY: the last reference or the unique reservation owns this slot.
+            drop(unsafe { (*slot.overflow.get()).take() });
+            self.overflow_bytes.fetch_sub(length, Ordering::Relaxed);
+        }
     }
 
     fn retain(&self, handle: EventHandle) {
@@ -197,6 +246,7 @@ impl EventArena {
         assert!(previous > 0, "EventBlock refcount underflow");
         if previous == 1 {
             fence(Ordering::Acquire);
+            self.release_overflow(pool, slot, handle.length as usize);
             pool.return_slot(handle.block_id, slot);
         }
     }
@@ -213,6 +263,7 @@ impl EventArena {
             )
             .expect("only an active reservation can be aborted");
         slot.refs.store(0, Ordering::Relaxed);
+        self.release_overflow(pool, slot, handle.length as usize);
         pool.return_slot(handle.block_id, slot);
     }
 
@@ -231,6 +282,13 @@ impl EventArena {
         );
         let len = slot.len.load(Ordering::Relaxed);
         // SAFETY: PUBLISHED data is immutable. The caller owns a reference and prevents reuse.
+        if len > pool.block_bytes {
+            return unsafe {
+                (*slot.overflow.get())
+                    .as_ref()
+                    .expect("oversized payload storage")
+            };
+        }
         let data = unsafe { &*slot.data.get() };
         &data[..len]
     }
@@ -247,7 +305,10 @@ impl EventArena {
                 block_bytes: pool.block_bytes,
             }
         });
-        ArenaSnapshot { pools }
+        ArenaSnapshot {
+            pools,
+            market_overflow_bytes: self.overflow_bytes.load(Ordering::Relaxed),
+        }
     }
 
     pub fn outstanding_blocks(&self) -> usize {
@@ -266,8 +327,17 @@ pub struct EventReservation {
 
 impl EventReservation {
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        let slot = self.arena.pool(self.handle.pool).slot(self.handle.block_id);
+        let pool = self.arena.pool(self.handle.pool);
+        let slot = pool.slot(self.handle.block_id);
         assert_eq!(slot.state.load(Ordering::Acquire), SLOT_RESERVED);
+        if self.handle.length as usize > pool.block_bytes {
+            // SAFETY: this reservation exclusively owns the oversized storage.
+            return unsafe {
+                (*slot.overflow.get())
+                    .as_mut()
+                    .expect("oversized payload storage")
+            };
+        }
         // SAFETY: reservation is unique and payload_mut requires exclusive access to it.
         let data = unsafe { &mut *slot.data.get() };
         &mut data[..self.handle.length as usize]
@@ -338,4 +408,5 @@ pub struct PoolSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArenaSnapshot {
     pub pools: [PoolSnapshot; 3],
+    pub market_overflow_bytes: usize,
 }

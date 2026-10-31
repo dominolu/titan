@@ -1,0 +1,8 @@
+   Compiling connector v0.1.0 (/tmp/titan-native-venues-20261030/connector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.85s
+     Running `/tmp/titan-native-venues-target/debug/examples/native_venues_public_probe lighter`
+{"asks":100,"bids":100,"candles":2,"first_trade_time_ms":1793383361794,"funding":-0.000013,"funding_history":2,"instruments":241,"next_funding_time_ms":1793386800002,"open_interest_base":30800.6233,"symbol":"ETH","trades":3,"venue":"lighter"}
+{"code":200,"json_array":false,"json_object":true,"native_operation":"systemConfig","venue":"lighter"}
+{"code":200,"json_array":false,"json_object":true,"native_operation":"assetDetails","venue":"lighter"}
+{"code":null,"json_array":false,"json_object":true,"native_operation":"feeTiers","venue":"lighter"}
+{"code":null,"json_array":true,"json_object":false,"native_operation":"explorer_get_markets","venue":"lighter"}
