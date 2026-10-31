@@ -2,6 +2,26 @@
 
 Titan 是面向加密货币永续合约的 Rust 高频交易框架。策略使用 Python/Numba 编写并在编译服务器离线生成签名 ABI V13 `.titan` 策略文件；回测和实盘加载同一策略文件，运行进程不启动 Python。
 
+## 支持的交易所与数据服务
+
+Titan 当前提供以下交易所、跨所网关和统计数据接入。交易适配器统一接入行情、账户与执行服务；各家的市场范围和验收状态见下表。
+
+| 名称 | 标识 | 类型 | 支持范围 | 状态 | 文档 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| [Binance Futures](https://binance.com) | `binance-futures` | CEX | USD-M 永续；主网 / 测试网 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/binancefutures.toml) |
+| [OKX](https://okx.com) | `okx` | CEX | V5 SWAP；实盘 / 模拟盘 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/okx.toml) |
+| [Hyperliquid](https://hyperliquid.xyz) | `hyperliquid` | DEX | 永续合约；主网 / 测试网 | ![主网验证](https://img.shields.io/badge/live-verified-green) | [配置](connector/examples/hyperliquid.toml) · [验收](docs/validation/hyperliquid_2026-09-07/README.md) |
+| [Gate CrossEx](https://www.gate.com/docs/developers/crossex/en/) | `gate-crossex` | 跨所交易网关 | FUTURE / SPOT / MARGIN 与原生扩展 | ![限定范围验证](https://img.shields.io/badge/live-scoped-blue) | [指南](docs/gate_crossex_broker.md) · [验收](docs/verification/2026-10-21/gate-crossex-live/README.md) |
+| [Backpack](https://backpack.exchange) | `backpack` | CEX | 统一 USDC 永续；原生现货、RFQ、借贷和钱包等 API | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) · [API 目录](docs/exchange_api_catalog.md) |
+| [Lighter Core](https://lighter.xyz) | `lighter` | DEX | 统一 Simple / cross USDC 永续；原生 API 与官方 signer | ![非实盘验证](https://img.shields.io/badge/beta-yellow) | [指南](docs/exchange_onboarding.md) · [API 目录](docs/exchange_api_catalog.md) |
+| [Variational Omni](https://docs.variational.io/technical-documentation/api) | — | DEX 统计数据 | 公开 v1 / v2 统计 API | ![仅统计数据](https://img.shields.io/badge/data-only-blue) | [范围与配置](docs/exchange_onboarding.md) |
+
+- **标识**：行情源配置中的 `connector_type`；对应账户适配器使用 `<标识>-account`。Variational 通过独立 Rust 统计客户端调用。
+- **live verified**：已有主网验收记录，具体品种与操作以各连接器文档为准。
+- **live scoped**：Gate CrossEx 已通过 Gate BTC 被动下单、改单、撤单验收，其他底层所和真实成交链路仍需分别验证。
+- **beta**：代码与非实盘回归已完成。Lighter 公开 API 已验证；Backpack 公网验证仍受连接重置影响。两者的私有账户和实盘下撤单验收待完成，详见[最新验证记录](docs/verification/2026-10-31/native-venues-review-fixes/README.md)。
+- **data only**：Variational 当前只提供公开统计读取，官方 Trading API 尚未开放。
+
 ## 架构
 
 ```text
@@ -49,8 +69,9 @@ titan CLI controller
 
 ### 静态核心服务与直接执行
 
-- Binance Futures、OKX、Hyperliquid、Gate CrossEx connector 直接编译进主程序，由构造期静态 catalog 注入
-  `MarketService` 和 `AccountService`；运行时不加载 connector manifest、cdylib 或 JSON/C ABI。
+- Binance Futures、OKX、Hyperliquid、Gate CrossEx、Backpack、Lighter connector 直接编译进主程序，由构造期静态 catalog 注入
+  `MarketService` 和 `AccountService`；运行时不加载 connector manifest、插件 cdylib 或 JSON/C ABI 网关。
+  Lighter 原生签名使用固定版本、SHA-256 校验的官方 signer 库。
 - `TradingRuntime` 直接持有并按顺序启动/停止 EventEngine、Market、Account、Strategy 和共享 execution runtime，
   服务间不通过字符串 endpoint 或 ServiceRegistry 查找。
 - 策略下单由进程级有界 execution runtime 立即 spawn REST Future；回调不等待网络，REST completion 仅进入
@@ -173,15 +194,6 @@ def on_tick(ctx):
 - EventEngine 与静态核心服务驱动的交易所连接器
 - 带 SHA-256 manifest 的权威 ResultBundle
 - worker 状态、日志、停止和异常恢复
-
-## Broker 支持
-
-| Broker | 市场 | 状态 | 说明 |
-|---|---|---|---|
-| Binance Futures | USD-M 永续合约 | ✅ 生产可用 | 主网/测试网，已接入统一 Broker API |
-| OKX | V5 SWAP | ✅ 生产可用 | 实盘/模拟盘，已接入统一 Broker API |
-| Gate CrossEx | 跨所 FUTURE / SPOT / MARGIN + 原生扩展 | Gate BTC 被动下改撤实盘通过 | 含隔离交易所账户配置，已接入 Broker API、MarketService、AccountService；[能力与配置](docs/gate_crossex_broker.md)、[实盘范围](docs/verification/2026-10-21/gate-crossex-live/README.md) |
-| Hyperliquid | 永续合约 | ✅ 生产可用 | 主网/测试网，支持 EIP-712 签名 |
 
 ## 数据与结果
 
