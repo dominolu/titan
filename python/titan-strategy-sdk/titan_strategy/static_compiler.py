@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import importlib.util
 import inspect
@@ -77,7 +77,7 @@ def _validate_source(source_file: Path) -> None:
     tree = _module_ast(source_file)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level:
-            raise StrategyCompileError("relative imports are forbidden; strategy.py is the only source")
+            raise StrategyCompileError("relative imports are forbidden; the strategy is a single source file")
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             if any(name.split(".", 1)[0] not in {"numpy", "numba", "titan_strategy"} for name in names):
@@ -175,7 +175,7 @@ def _load_strategy_definition_in_worker(
         spec.loader.exec_module(module)
         build = getattr(module, "build", None)
         if not callable(build):
-            raise StrategyCompileError("strategy.py must define build(parameters)")
+            raise StrategyCompileError("strategy source must define build(parameters)")
         declared_spec = getattr(module, "SPEC", None)
         normalized = (
             declared_spec.validate_parameters(dict(parameters))
@@ -190,7 +190,9 @@ def _load_strategy_definition_in_worker(
     declared_dtype = getattr(module, "state_dtype", None)
     if declared_dtype is None or np.dtype(declared_dtype) != definition.state.dtype:
         raise StrategyCompileError("state_dtype must be a module-level constant used by initial state")
-    return definition
+    if isinstance(declared_spec, StrategySpec) and definition.spec != declared_spec:
+        raise StrategyCompileError("build(parameters) must use the module-level SPEC")
+    return replace(definition, tests=tuple(getattr(module, "TESTS", definition.tests)))
 
 
 def load_strategy_definition(source_file: Path, parameters: dict[str, object]) -> StrategyDefinition:

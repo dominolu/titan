@@ -295,6 +295,50 @@ fn inspect_symbols(
     Ok(())
 }
 
+fn run_bridge(
+    python: &Path,
+    sdk: &Path,
+    work: &Path,
+    input: &Path,
+    action: &str,
+    seconds: u64,
+    stop: &AtomicBool,
+) -> Result<(), CliError> {
+    let mut command = Command::new(python);
+    command.env_clear();
+    for name in [
+        "PATH",
+        "PYTHONHOME",
+        "LANG",
+        "LC_ALL",
+        "TMPDIR",
+        "LD_LIBRARY_PATH",
+        "SYSTEMROOT",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .env("PYTHONPATH", sdk)
+        .env("PYTHONHASHSEED", "0")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("NUMBA_NUM_THREADS", "1")
+        .args(["-m", "titan_strategy.cli", action, "--request"])
+        .arg(input)
+        .arg("--work-dir")
+        .arg(work);
+    run_tool(
+        &mut command,
+        work,
+        action,
+        Duration::from_secs(seconds),
+        stop,
+    )?;
+    Ok(())
+}
+
 pub(super) fn compile(request: &CompileV13Request<'_>) -> Result<serde_json::Value, CliError> {
     let output = request
         .output
@@ -337,8 +381,11 @@ fn compile_inner(
     describe_only: bool,
 ) -> Result<serde_json::Value, CliError> {
     let source = fs::read(request.strategy).map_err(failed)?;
-    let parameters: serde_json::Value =
-        serde_json::from_slice(&fs::read(request.parameters).map_err(failed)?).map_err(failed)?;
+    let parameters: serde_json::Value = match serde_json::from_str(request.parameters) {
+        Ok(value) => value,
+        Err(_) => serde_json::from_slice(&fs::read(request.parameters).map_err(failed)?)
+            .map_err(failed)?,
+    };
     if !parameters.is_object() {
         return Err(failed("parameters JSON must be an object"));
     }
@@ -355,54 +402,60 @@ fn compile_inner(
     // Both phases consume the same frozen source and parameters, including their digests.
     let snapshot = work.join("strategy.py");
     fs::write(&snapshot, &source).map_err(failed)?;
-    let sdk = std::env::var_os("TITAN_STRATEGY_SDK")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk"));
-    let sdk = fs::canonicalize(sdk).map_err(failed)?;
-    let python = std::env::var_os("TITAN_STRATEGY_PYTHON").unwrap_or_else(|| "python3".into());
+    let sdk = if let Some(workspace) = request.workspace {
+        workspace.sdk()?
+    } else {
+        fs::canonicalize(
+            std::env::var_os("TITAN_STRATEGY_SDK")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("python/titan-strategy-sdk")),
+        )
+        .map_err(failed)?
+    };
+    let python = request.workspace.map(|w| w.python()).unwrap_or_else(|| {
+        std::env::var_os("TITAN_STRATEGY_PYTHON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| "python3".into())
+    });
+    let sdk_snapshot = super::strategy_workspace::sdk_digest(&sdk)?;
+    if let Some(workspace) = request.workspace {
+        workspace.preflight_lock(&sdk_snapshot, request.update_lock)?;
+    }
     let input = serde_json::json!({"protocol_version":1,"source":snapshot,"parameters":parameters,
         "cpu_baseline":request.cpu_baseline,"runtime_abi":{"abi_version":13,"fingerprint":hex_digest(&V13_ABI_FINGERPRINT)}});
     let input_path = work.join("request.json");
     fs::write(&input_path, compiler_json_v13(&input)).map_err(failed)?;
     let mut first = None;
+    let mut first_normalized = None;
+    let mut first_cases = None;
     let phases: &[(&str, u64)] = if describe_only {
         &[("describe", 60)]
     } else {
         &[("describe", 60), ("emit-objects", 300)]
     };
     for &(action, seconds) in phases {
-        let mut command = Command::new(&python);
-        command.env_clear();
-        for name in [
-            "PATH",
-            "PYTHONHOME",
-            "LANG",
-            "LC_ALL",
-            "TMPDIR",
-            "LD_LIBRARY_PATH",
-            "SYSTEMROOT",
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
+        run_bridge(&python, &sdk, &work, &input_path, action, seconds, stop)?;
+        let normalized: serde_json::Value = serde_json::from_slice(
+            &fs::read(work.join("normalized-parameters.json")).map_err(failed)?,
+        )
+        .map_err(failed)?;
+        let cases: serde_json::Value = serde_json::from_slice(
+            &fs::read(work.join(format!("{action}-tests.json"))).map_err(failed)?,
+        )
+        .map_err(failed)?;
+        if first_normalized
+            .as_ref()
+            .is_some_and(|expected| expected != &normalized)
+            || first_cases
+                .as_ref()
+                .is_some_and(|expected| expected != &cases)
+        {
+            return Err(failed(
+                "normalized parameters or TESTS changed between compiler phases",
+            ));
         }
-        command
-            .env("PYTHONPATH", &sdk)
-            .env("PYTHONHASHSEED", "0")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("OPENBLAS_NUM_THREADS", "1")
-            .env("NUMBA_NUM_THREADS", "1")
-            .args(["-m", "titan_strategy.cli", action, "--request"])
-            .arg(&input_path)
-            .arg("--work-dir")
-            .arg(&work);
-        run_tool(
-            &mut command,
-            &work,
-            action,
-            Duration::from_secs(seconds),
-            stop,
-        )?;
+        first_normalized = Some(normalized);
+        first_cases = Some(cases);
         let metadata = read_metadata(&work.join(format!("{action}.json")))?;
         if let Some(expected) = &first {
             if expected != &metadata {
@@ -415,14 +468,22 @@ fn compile_inner(
         }
     }
     let metadata = first.unwrap();
-    let normalized: serde_json::Value =
-        serde_json::from_slice(&fs::read(work.join("normalized-parameters.json")).map_err(failed)?)
-            .map_err(failed)?;
+    let normalized = first_normalized.unwrap();
+    let cases = first_cases.unwrap();
+    let metadata_json = serde_json::to_value(&metadata).map_err(failed)?;
+    let toolchain = request
+        .workspace
+        .map(|workspace| workspace.check_lock(&metadata_json, &sdk, request.update_lock))
+        .transpose()?;
+    if super::strategy_workspace::sdk_digest(&sdk)? != sdk_snapshot {
+        return Err(failed("SDK sources changed during compilation"));
+    }
     if describe_only {
         return Ok(
             serde_json::json!({"metadata":metadata,"normalized_parameters":normalized,
             "source_digest":hex_digest(&Sha256::digest(&source).into()),
-            "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&parameters)).into())}),
+            "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&normalized)).into()),
+            "tests":{"declared":cases.as_array().unwrap().len(),"mode":"not_run"},"toolchain":toolchain}),
         );
     }
     normalize_objects(&work, &metadata, stop)?;
@@ -470,15 +531,49 @@ fn compile_inner(
     link.arg(descriptor_object).args(["-Wl,-z,defs", "-lm"]);
     run_tool(&mut link, &work, "link", Duration::from_secs(30), stop)?;
     inspect_symbols(&work, &library, &metadata, stop)?;
+    let declared = cases
+        .as_array()
+        .ok_or_else(|| failed("bridge TESTS must be an array"))?
+        .len();
+    if request.require_tests && declared == 0 {
+        return Err(failed("strategy declares no inline TESTS"));
+    }
+    run_bridge(&python, &sdk, &work, &input_path, "test-native", 300, stop)?;
+    let tests: serde_json::Value =
+        serde_json::from_slice(&fs::read(work.join("native-tests.json")).map_err(failed)?)
+            .map_err(failed)?;
+    let tested_metadata = read_metadata(&work.join("test-native.json"))?;
+    let tested_parameters: serde_json::Value =
+        serde_json::from_slice(&fs::read(work.join("normalized-parameters.json")).map_err(failed)?)
+            .map_err(failed)?;
+    let tested_cases: serde_json::Value =
+        serde_json::from_slice(&fs::read(work.join("test-native-tests.json")).map_err(failed)?)
+            .map_err(failed)?;
+    if tested_metadata != metadata
+        || tested_parameters != normalized
+        || tested_cases != cases
+        || tests["declared"].as_u64() != Some(declared as u64)
+        || tests["passed"].as_u64() != Some(declared as u64)
+    {
+        return Err(failed(
+            "native test evidence differs from frozen compiler inputs",
+        ));
+    }
+    if super::strategy_workspace::sdk_digest(&sdk)? != sdk_snapshot {
+        return Err(failed("SDK sources changed during native verification"));
+    }
     let library = fs::read(&library).map_err(failed)?;
     if stop.load(Ordering::Acquire) {
         return Err(failed("compilation interrupted"));
+    }
+    if let (Some(workspace), Some(lock)) = (request.workspace, toolchain.as_ref()) {
+        workspace.save_lock(lock, request.update_lock)?;
     }
     let compiled_strategy = write_compiled_strategy_v13(StrategyCompileOutputV13 {
         metadata: &metadata,
         library: &library,
         source_digest: Sha256::digest(&source).into(),
-        parameters_digest: Sha256::digest(compiler_json_v13(&parameters)).into(),
+        parameters_digest: Sha256::digest(compiler_json_v13(&normalized)).into(),
         target_triple: target,
         cpu_baseline: request.cpu_baseline,
         bundle: request.strategy_format == "bundle",
@@ -489,28 +584,36 @@ fn compile_inner(
     Ok(
         serde_json::json!({"strategy_type":compiled_strategy.manifest.strategy_type,"source_version":compiled_strategy.manifest.source_version,
         "compiled_strategy_digest":hex_digest(&compiled_strategy.manifest.compiled_strategy_digest),"native_library_sha256":hex_digest(&compiled_strategy.manifest.native_library_sha256),
-        "paths":compiled_strategy.paths,"metadata":metadata,"normalized_parameters":normalized}),
+        "paths":compiled_strategy.paths,"metadata":metadata,"normalized_parameters":normalized,
+        "source_digest":hex_digest(&Sha256::digest(&source).into()),
+        "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&normalized)).into()),
+        "tests":tests,"toolchain":toolchain}),
     )
 }
 
-pub(super) fn describe(strategy: &Path, parameters: &Path) -> Result<serde_json::Value, CliError> {
+pub(super) fn describe(
+    strategy: &Path,
+    parameters: &str,
+    workspace: Option<&super::strategy_workspace::Workspace>,
+) -> Result<serde_json::Value, CliError> {
     let directory = tempfile::tempdir().map_err(failed)?;
     let output = directory.path().join("describe.titan");
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, stop.clone()).map_err(failed)?;
     }
-    let parameters = parameters.to_string_lossy();
     let request = CompileV13Request {
         strategy,
-        parameters: &parameters,
+        parameters,
         target: None,
         cpu_baseline: "x86-64",
         strategy_format: "bundle",
         output: Some(&output),
         signing_key: None,
         key_id: None,
-        json: true,
+        workspace,
+        update_lock: false,
+        require_tests: false,
     };
     compile_inner(
         &request,

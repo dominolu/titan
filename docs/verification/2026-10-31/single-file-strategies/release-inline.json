@@ -1,0 +1,1 @@
+{"source_version":"2.0.0","strategy_type":"event_counter","tests":{"cases":[{"name":"empty_callback","passed":true,"steps":1},{"name":"count_items","passed":true,"steps":1}],"declared":2,"mode":"native_callbacks","passed":2},"valid":true}

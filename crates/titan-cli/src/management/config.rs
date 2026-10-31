@@ -42,7 +42,9 @@ impl ConsoleConfig {
             }
             for template in node.parameter_presets.values_mut() {
                 resolve(&mut template.source);
-                resolve(&mut template.parameters);
+                if let Some(path) = &mut template.parameters {
+                    resolve(path);
+                }
                 if let Some(path) = &mut template.layout {
                     resolve(path);
                 }
@@ -163,7 +165,8 @@ pub struct StrategyParameterPreset {
     #[serde(default, alias = "research_name")]
     pub strategy_name: Option<String>,
     pub source: PathBuf,
-    pub parameters: PathBuf,
+    #[serde(default)]
+    pub parameters: Option<PathBuf>,
     pub layout: Option<PathBuf>,
 }
 
@@ -197,11 +200,13 @@ impl StrategyParameterPreset {
         super::checked_id(&id)?;
         let name = self.strategy_name.clone().unwrap_or_else(|| {
             self.strategy_id.clone().unwrap_or_else(|| {
-                source
-                    .parent()
-                    .and_then(Path::file_name)
-                    .map(|v| v.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "策略研究".into())
+                (if source.file_stem().is_some_and(|stem| stem == "strategy") {
+                    source.parent().and_then(Path::file_name)
+                } else {
+                    source.file_stem()
+                })
+                .map(|v| v.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "策略研究".into())
             })
         });
         ensure!(

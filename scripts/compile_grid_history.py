@@ -6,7 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from strategies.grid import strategy as grid
+from strategies import grid
 from titan_strategy.state import canonical_state_schema, state_schema_hash, validate_state_dtype
 
 
@@ -65,7 +65,7 @@ def main():
             parameters_path = args.output / (name + ".parameters.json")
             parameters_path.write_text(json.dumps(parameters, indent=2))
             artifact = args.output / (name + ".titan")
-            command = [str(args.binary.resolve()), "strategy", "compile", "--strategy", "strategies/grid/strategy.py",
+            command = [str(args.binary.resolve()), "strategy", "compile", "--strategy", "strategies/grid.py",
                        "--parameters", str(parameters_path), "--target", "x86_64-unknown-linux-gnu",
                        "--cpu-baseline", "x86-64-v2", "--artifact-format", "bundle", "--output", str(artifact), "--json"]
             result = subprocess.run(command, capture_output=True, text=True, timeout=360)

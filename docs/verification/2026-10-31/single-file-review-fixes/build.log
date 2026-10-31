@@ -1,0 +1,12 @@
+   Compiling titan-domain-types v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-domain-types)
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-core-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/hftbacktest-derive)
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-cli)
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-persistence)
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-market-service)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-event-engine)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-single-file-review-20261031/src/hftbacktest)
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/connector)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.32s

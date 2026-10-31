@@ -124,7 +124,7 @@ def main():
              "original_strategy_sha256": package["strategy_file_sha256"], "partial_strategy_sha256": partial["strategy_file_sha256"],
              "frozen_release_files_unchanged": len(package["files"]), "frozen_source_files": len(frozen),
              "original_source_changes": changed, "product_source_unchanged": True, "partial_parameter_differences": differences,
-             "strategy_source_sha256": digest(repo / "strategies/grid/strategy.py"), "cases": [v["scenario"] for v in cases],
+             "strategy_source_sha256": digest(repo / "strategies/grid.py"), "cases": [v["scenario"] for v in cases],
              "case_paths": {k: str(v.resolve()) for k, v in paths.items()},
              "test_source_sha256": {n: digest(repo / n) for n in ("scripts/management_fill_recovery_smoke.py", "scripts/management_fill_fault_smoke.py", "scripts/verify_fill_fault_evidence.py", "configs/sim-partial-recovery-acceptance.parameters.json")},
              "real_host_contacted": False, "real_reservations_touched": False}

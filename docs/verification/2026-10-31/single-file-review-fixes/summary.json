@@ -1,0 +1,62 @@
+{
+  "base_revision": "1a7cc72083ecd9b5634c1c5319c65a034ffc1035",
+  "binary_sha256": "c5dee89ba61514985a3b32aa5f80c5a785b2d2660d2d5d3988448a94e13b783f",
+  "bundle_sha256": "69004f2f5462420d7288b37a087405112459204016bc51d86da95ba86ff65e17",
+  "cargo_lock_sha256": "d9e7d02e9e5f3731979d623862020ed2054ab9e2aa0892d0f2561845fb3ea8b8",
+  "clippy": "passed -D warnings",
+  "doctest": {
+    "failed": 0,
+    "ignored": 1,
+    "passed": 2
+  },
+  "hft_inputs": {
+    "configs/titan/binance-readonly.toml": "f2f010dacaf3d54760ae81c901b76f1e42f75052f797262cba02c904faefd91b",
+    "strategies/orderflow_events.md": "1ed5be15e7a4ee9eb7c9a073e10cbba1a1fee88753e15118a28bec40ea604e7d",
+    "strategies/orderflow_events.py": "79e8d2e4112b1835d6bda583bb8fe8545da5b88c9721e45fa986b0eefd775079",
+    "titan.lock": "92fbf839d6a46aac7ae93913b9716cd54f66e684be966948da25233caef66fae",
+    "titan.toml": "a092a4df65353beedbfd81a849391608cbece207cc084da238deb2cf79d3dafa"
+  },
+  "input_tree_before_server_format": "2e2d6825ef76dbb7fec7935758f7ad2995e9f647",
+  "live_accounts_accessed": false,
+  "live_started": false,
+  "native_default": 9,
+  "parameter_regressions": {
+    "asset": {
+      "asset_no": 1,
+      "compiled_state_retains_parameters": true,
+      "e04_enabled": true,
+      "native_scenes_passed": 9,
+      "parameters_digest": "a0400a0c089bc22b7a30d212a4fc41c16fb01296bb0718a83c877d3d8d35c931"
+    },
+    "combined": {
+      "asset_no": 1,
+      "compiled_state_retains_parameters": true,
+      "e04_enabled": false,
+      "native_scenes_passed": 9,
+      "parameters_digest": "5104dc4057fa7973ae98717d5b8b3f9d498fec442d611e90201d64b2e5bfc6fc"
+    },
+    "disabled": {
+      "asset_no": 0,
+      "compiled_state_retains_parameters": true,
+      "e04_enabled": false,
+      "native_scenes_passed": 9,
+      "parameters_digest": "ec78a4f6dba03bdd97d96a2a99d0984023acc9729e6444fd0a7cf371d7981c7d"
+    }
+  },
+  "release": "/home/dominolu/dev/titan-single-file-review-20261031/hft_quant/build/strategies/releases/orderflow_events-7ad03e86a82319e91b653a60542b5bb50282568cccc6a5a0a95a7800b997cf55",
+  "release_id": "7ad03e86a82319e91b653a60542b5bb50282568cccc6a5a0a95a7800b997cf55",
+  "rust": {
+    "failed": 0,
+    "ignored": 26,
+    "passed": 728
+  },
+  "rustfmt": "passed",
+  "sdk_passed": 119,
+  "server": "192.168.3.88",
+  "source_check": {
+    "files": 2437,
+    "valid": true
+  },
+  "targeted_cli_passed": 6,
+  "verification_root": "/home/dominolu/dev/titan-single-file-review-20261031"
+}

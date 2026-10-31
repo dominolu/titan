@@ -43,8 +43,8 @@ def main():
     cases = [(regime, direction) for regime in days for direction in ("neutral", "long_bias", "short_bias")]
     for regime, direction in cases:
         template = f"{regime}-{direction}"
-        config += [f"[node.parameter_presets.{template}]", 'strategy_id="grid"', 'strategy_name="网格策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / (template + '.parameters.json'))}"]
-    config += ["[node.parameter_presets.foreign-grid]", 'strategy_id="other-strategy"', 'strategy_name="隔离测试策略"', f"source = {quote(args.repo / 'strategies/grid/strategy.py')}", f"parameters = {quote(args.parameters / 'sideways-neutral.parameters.json')}"]
+        config += [f"[node.parameter_presets.{template}]", 'strategy_id="grid"', 'strategy_name="网格策略"', f"source = {quote(args.repo / 'strategies/grid.py')}", f"parameters = {quote(args.parameters / (template + '.parameters.json'))}"]
+    config += ["[node.parameter_presets.foreign-grid]", 'strategy_id="other-strategy"', 'strategy_name="隔离测试策略"', f"source = {quote(args.repo / 'strategies/grid.py')}", f"parameters = {quote(args.parameters / 'sideways-neutral.parameters.json')}"]
     for regime, day in days.items():
         config += [f"[node.datasets.{regime}]", f"regime = {quote(regime)}", f"trades = {quote(args.data / ('BTCUSDT-aggTrades-' + day + '.csv'))}", f"quotes = {quote(args.data / ('BTCUSDT-bookTicker-' + day + '.csv'))}", f"funding = {quote(args.data / ('BTCUSDT-fundingRate-' + day[:7] + '.csv'))}"]
     config_path = root / "console.toml"; config_path.write_text("\n".join(config) + "\n"); config_path.chmod(0o600)

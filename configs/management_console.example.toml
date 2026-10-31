@@ -36,8 +36,8 @@ task_seconds = 1800
 [node.parameter_presets.grid]
 strategy_id = "grid"
 strategy_name = "网格策略"
-source = "../strategies/grid/strategy.py"
-parameters = "../strategies/grid/parameters.json"
+source = "../strategies/grid.py"
+# Optional `parameters` file supplies instance overrides; omitted uses source defaults.
 
 # Register immutable, locally owned CSV sources. Each dataset needs all three inputs.
 # [node.datasets.sideways]

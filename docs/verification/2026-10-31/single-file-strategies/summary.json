@@ -1,0 +1,107 @@
+{
+  "archive_sha256": "07c2983a67e578eeff7e832c5b20d71c93a663e6e402a39b596fb5c8d66d916e",
+  "base_revision": "1a7cc720",
+  "base_revision_full": "1a7cc72083ecd9b5634c1c5319c65a034ffc1035",
+  "binary_sha256": "a03715c9a100d17cf5e0a2c5038ba9400557521bdaccfd5feac5b37e0ef81323",
+  "bundle_sha256": "2a322d72f10977c25316fe9f2a9102d6c6d97c840ca15879880abf05d191660a",
+  "cargo_lock_sha256": "d9e7d02e9e5f3731979d623862020ed2054ab9e2aa0892d0f2561845fb3ea8b8",
+  "framework_workspace_example": "configs/strategy_workspace.example.toml",
+  "hft_inputs": {
+    "configs/titan/binance-readonly.toml": "f2f010dacaf3d54760ae81c901b76f1e42f75052f797262cba02c904faefd91b",
+    "strategies/orderflow_events.md": "edbe74bde8c99e207e6b80f5aae2c7e443e80cd613ae6edd8e2a16f27342e328",
+    "strategies/orderflow_events.py": "b4291110534be0e428c132dde5461fdce4e64705c248a5e20b154ff2792c6031",
+    "titan.lock": "8c877acda298140ea0e88b57a9966c8f4563f120ca40038e2a44d98c030e4773",
+    "titan.toml": "a092a4df65353beedbfd81a849391608cbece207cc084da238deb2cf79d3dafa"
+  },
+  "live_started": false,
+  "release": {
+    "release": "/home/dominolu/dev/titan-single-file-20261031-1a7cc720/hft_quant/build/strategies/releases/orderflow_events-771622fbf1ba6717bd131580d6301c13d4c43dde800b32c4259f9354d365e7ee",
+    "release_id": "771622fbf1ba6717bd131580d6301c13d4c43dde800b32c4259f9354d365e7ee",
+    "strategy_type": "orderflow_events",
+    "tests": {
+      "cases": [
+        {
+          "name": "snapshot_has_no_flow",
+          "passed": true,
+          "steps": 2
+        },
+        {
+          "name": "resync_clears_windows",
+          "passed": true,
+          "steps": 3
+        },
+        {
+          "name": "invalidation_survives_bbo",
+          "passed": true,
+          "steps": 3
+        },
+        {
+          "name": "top100_exit_is_not_removal",
+          "passed": true,
+          "steps": 2
+        },
+        {
+          "name": "sweep_counts_crossed_price_band",
+          "passed": true,
+          "steps": 2
+        },
+        {
+          "name": "independent_event_warmup",
+          "passed": true,
+          "steps": 3
+        },
+        {
+          "name": "deleted_price_refills_trigger_e04",
+          "passed": true,
+          "steps": 8
+        },
+        {
+          "name": "outside_coverage_is_not_refill",
+          "passed": true,
+          "steps": 4
+        },
+        {
+          "name": "resnapshot_drops_deletion_evidence",
+          "passed": true,
+          "steps": 3
+        }
+      ],
+      "declared": 9,
+      "mode": "native_callbacks",
+      "passed": 9
+    },
+    "valid": true
+  },
+  "release_verify": {
+    "files": 6,
+    "release_id": "771622fbf1ba6717bd131580d6301c13d4c43dde800b32c4259f9354d365e7ee",
+    "strategy_type": "orderflow_events",
+    "valid": true
+  },
+  "runtime_validate": {
+    "environment": "live",
+    "event_mode": "tick",
+    "schema_version": 1,
+    "strategy_id": "orderflow_events",
+    "valid": true
+  },
+  "rust": [
+    {
+      "binaries": 44,
+      "failed": 0,
+      "ignored": 26,
+      "log": "rust-workspace-test.log",
+      "passed": 727
+    },
+    {
+      "binaries": 11,
+      "failed": 0,
+      "ignored": 1,
+      "log": "doctest.log",
+      "passed": 2
+    }
+  ],
+  "sdk_tests": 154,
+  "source_consistent": true,
+  "source_files": 761
+}

@@ -1,0 +1,70 @@
+{
+  "compiled_strategy_digest": "180e9b293baf15301e93b4da946a2c06a58483e77a77ceebb6f08c762e2efe68",
+  "cpu_baseline": "x86-64-v2",
+  "files": {
+    "artifacts/strategy.titan": "69004f2f5462420d7288b37a087405112459204016bc51d86da95ba86ff65e17",
+    "parameters.json": "24924d1ead2f862f6262e375c23fa3b7d1cb81e078865b0a07f2bbc06560417a",
+    "runtime.toml": "e2ca94b8fd9e81d47ad104ea44759a8070c34804079fb5f5fc539fafce4a3600",
+    "source.py": "79e8d2e4112b1835d6bda583bb8fe8545da5b88c9721e45fa986b0eefd775079",
+    "titan": "c5dee89ba61514985a3b32aa5f80c5a785b2d2660d2d5d3988448a94e13b783f",
+    "verification.json": "71fb998500ade4af2959d509dff4d39acc67f0a83f63356e5ef218557208183c"
+  },
+  "parameters_digest": "7b0992327d845a34a54fbc724b8524e647e95bbdb19c304bfe3b6013889a8ca3",
+  "release_id": "7ad03e86a82319e91b653a60542b5bb50282568cccc6a5a0a95a7800b997cf55",
+  "runtime_strategy_key": "orderflow_events",
+  "schema_version": 1,
+  "source_digest": "79e8d2e4112b1835d6bda583bb8fe8545da5b88c9721e45fa986b0eefd775079",
+  "source_version": "0.2.2",
+  "strategy_type": "orderflow_events",
+  "target": "x86_64-unknown-linux-gnu",
+  "toolchain": {
+    "abi_fingerprint": [
+      120,
+      100,
+      208,
+      190,
+      142,
+      27,
+      131,
+      176,
+      104,
+      55,
+      71,
+      191,
+      79,
+      223,
+      212,
+      204,
+      225,
+      248,
+      115,
+      119,
+      203,
+      63,
+      219,
+      151,
+      197,
+      106,
+      154,
+      39,
+      12,
+      122,
+      80,
+      237
+    ],
+    "bridge": {
+      "compiler": "titan-numba-bridge/2",
+      "llvmlite": [
+        20,
+        1,
+        8
+      ],
+      "numba": "0.63.1",
+      "python": "3.11.14"
+    },
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "schema_version": 1,
+    "sdk_digest": "de80e62b45a0a278b0ac0b29c9601fa42ce6d4f7938d2186d8fc61177f64970f",
+    "titan_binary_sha256": "c5dee89ba61514985a3b32aa5f80c5a785b2d2660d2d5d3988448a94e13b783f"
+  }
+}

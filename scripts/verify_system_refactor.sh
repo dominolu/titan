@@ -28,7 +28,7 @@ PYTHONPATH=python/titan-reporting "$task_python" -m unittest discover -s python/
 bash scripts/check_single_runtime.sh > "$verification_root/single-runtime.log" 2>&1
 for strategy in v13_smoke pair_arb; do
   "$TITAN_TEST_BINARY" strategy compile \
-    --strategy "strategies/$strategy/strategy.py" --parameters "strategies/$strategy/parameters.json" \
+    --strategy "strategies/$strategy.py" \
     --artifact-format bundle --output "$verification_root/$strategy.titan" > "$verification_root/$strategy-build.log" 2>&1
 done
 "$task_cargo" +1.94.1 run -p titan-strategy-runtime --example v13_artifact_smoke -- "$verification_root/v13_smoke.titan" "$verification_root/cache" > "$verification_root/artifact-smoke.log" 2>&1
@@ -36,7 +36,7 @@ done
 "$task_cargo" +1.94.1 run -p titan-strategy-runtime --example v13_service_recovery_smoke -- "$verification_root/v13_smoke.titan" "$verification_root/service-recovery" > "$verification_root/recovery-smoke.log" 2>&1
 "$task_cargo" +1.94.1 run -p titan-strategy-runtime --example v13_common_recovery_smoke -- "$verification_root/v13_smoke.titan" > "$verification_root/common-recovery-smoke.log" 2>&1
 "$task_cargo" +1.94.1 run -p titan-strategy-runtime --example v13_order_drain_smoke -- "$verification_root/v13_smoke.titan" > "$verification_root/drain-smoke.log" 2>&1
-"$TITAN_TEST_BINARY" strategy compile --strategy python/titan-strategy-sdk/tests/fixtures/v13_timer_submit.py --parameters strategies/v13_smoke/parameters.json --artifact-format bundle --output "$verification_root/timer-submit.titan" > "$verification_root/timer-submit-build.log" 2>&1
+"$TITAN_TEST_BINARY" strategy compile --strategy python/titan-strategy-sdk/tests/fixtures/v13_timer_submit.py --set initial_counter=4 --artifact-format bundle --output "$verification_root/timer-submit.titan" > "$verification_root/timer-submit-build.log" 2>&1
 "$task_cargo" +1.94.1 run -p titan-strategy-runtime --example v13_timer_failure_smoke -- "$verification_root/timer-submit.titan" > "$verification_root/timer-failure-smoke.log" 2>&1
 TITAN_HOME="$verification_root/cli-home" TITAN_REPORT_PYTHON="$task_python" PYTHONPATH=python/titan-reporting \
   "$task_python" scripts/verify_cli_bundle.py "$repo_root/target/debug/titan" "$verification_root" > "$verification_root/cli-integration.log" 2>&1

@@ -148,6 +148,7 @@ class StrategyDefinition:
     handlers: Mapping[str, object]
     metadata: Mapping[str, object] = field(default_factory=dict)
     business_observation: BusinessObservationSpec | None = None
+    tests: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if self.business_observation is not None and not isinstance(self.business_observation, BusinessObservationSpec):
@@ -169,7 +170,7 @@ class StrategyDefinition:
     def __reduce__(self):
         return (
             StrategyDefinition,
-            (self.spec, self.state, dict(self.handlers), dict(self.metadata), self.business_observation),
+            (self.spec, self.state, dict(self.handlers), dict(self.metadata), self.business_observation, self.tests),
         )
 
 

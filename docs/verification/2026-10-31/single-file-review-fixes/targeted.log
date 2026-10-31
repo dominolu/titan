@@ -1,0 +1,24 @@
+   Compiling titan-domain-types v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-domain-types)
+   Compiling titan-core-types v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-core-types)
+   Compiling hftbacktest-derive v0.2.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/hftbacktest-derive)
+   Compiling titan-cli v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-cli)
+   Compiling titan-persistence v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-persistence)
+   Compiling titan-market-service v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-market-service)
+   Compiling titan-event-engine v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-event-engine)
+   Compiling titan-account-service v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-account-service)
+   Compiling titan-strategy-runtime v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/crates/titan-strategy-runtime)
+   Compiling hftbacktest v0.9.4 (/home/dominolu/dev/titan-single-file-review-20261031/src/hftbacktest)
+   Compiling connector v0.1.0 (/home/dominolu/dev/titan-single-file-review-20261031/src/connector)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.40s
+     Running tests/single_file_strategy.rs (/tmp/titan-single-file-target/debug/deps/single_file_strategy-1bf58824443707c5)
+
+running 6 tests
+test workspace_lock_rejects_drift_until_explicitly_updated ... ok
+test defaults_discovery_native_scenes_and_legacy_flags_work_without_sidecars ... ok
+test signed_release_requires_explicit_trust_and_test_requires_declared_scenes ... ok
+test parameter_overrides_are_typed_normalized_and_fail_before_replacing_output ... ok
+test runtime_build_defers_node_paths_without_weakening_runtime_validation ... ok
+test releases_publish_idempotently_and_reject_tampering_without_python ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.75s
+

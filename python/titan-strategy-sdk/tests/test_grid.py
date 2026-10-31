@@ -9,7 +9,7 @@ import numpy as np
 from numba.core.registry import CPUDispatcher
 
 from titan_strategy import abi_v13
-from strategies.grid import strategy as grid
+from strategies import grid
 
 
 def row(dtype, **values):
