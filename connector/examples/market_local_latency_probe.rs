@@ -215,6 +215,7 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
         &definition,
         native_strategy,
         strategy::StrategyRuntimeBuildContext {
+            market_service: None,
             strategy: handle,
             compiled_strategy_digest: id,
             markets: Arc::from([strategy::ResolvedMarketBinding {

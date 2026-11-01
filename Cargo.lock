@@ -949,6 +949,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
@@ -1075,6 +1076,7 @@ dependencies = [
  "hftbacktest",
  "hmac 0.12.1",
  "k256",
+ "libloading",
  "rand 0.9.5",
  "reqwest",
  "rmp-serde",

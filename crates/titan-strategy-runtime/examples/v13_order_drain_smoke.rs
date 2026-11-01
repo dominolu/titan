@@ -220,6 +220,7 @@ fn run(compiled_strategy: PathBuf, fail_flush: bool, queue_overload: bool, inten
             &definition,
             compiled_strategy.clone(),
             StrategyRuntimeBuildContext {
+                market_service: None,
                 strategy: handle,
                 compiled_strategy_digest: compiled_strategy.id,
                 markets: Arc::from([ResolvedMarketBinding {

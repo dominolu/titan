@@ -194,6 +194,8 @@ impl StrategyCapabilitiesV13 {
     /// Recover receives host-reconciled order results in its typed event payload.
     pub const RECOVERY_ORDER_RESULTS: Self = Self(1 << 5);
     pub const PAUSE_SAFE: Self = Self(1 << 6);
+    /// Host reconstructs a covered Top100 and supplies DepthBatchInfoV1.
+    pub const HOST_DEPTH_100: Self = Self(1 << 7);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -1663,8 +1665,18 @@ fn parse_manifest(
             "stop_barrier" => StrategyCapabilitiesV13::STOP_BARRIER.0,
             "recovery_order_results" => StrategyCapabilitiesV13::RECOVERY_ORDER_RESULTS.0,
             "pause_safe" => StrategyCapabilitiesV13::PAUSE_SAFE.0,
+            "host_depth_100" => StrategyCapabilitiesV13::HOST_DEPTH_100.0,
             _ => return Err(V13LoadError::Contract("unknown strategy capability")),
         };
+    }
+    if capabilities.contains(StrategyCapabilitiesV13::HOST_DEPTH_100)
+        && !subscriptions
+            .iter()
+            .any(|s| s.event == V13EventKind::Depth && s.qos == V13EventQos::ReliableOrdered)
+    {
+        return Err(V13LoadError::Contract(
+            "host depth requires reliable ordered depth subscription",
+        ));
     }
     if capabilities.contains(StrategyCapabilitiesV13::STOP_BARRIER)
         && value_u64(map_get(value, "callback_mask")?)? & (1 << V13EventKind::Stop.index()) == 0

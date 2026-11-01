@@ -306,6 +306,17 @@ fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStra
             subscriptions.push(subscription);
         }
     }
+    if value
+        .capabilities
+        .contains(StrategyCapabilitiesV13::HOST_DEPTH_100)
+    {
+        subscriptions.push(StrategySubscriptionSpec {
+            event_type: Arc::from(titan_market_service::STREAM_INVALIDATED_EVENT),
+            schema_version: 1,
+            routing_keys: Arc::from([]),
+            qos: titan_core_types::EventQos::ReliableOrdered,
+        });
+    }
     Ok(CompiledStrategyMetadata {
         runtime_type: Arc::from("native-v13"),
         source_version,

@@ -28,6 +28,7 @@ pub struct BinanceFuturesClient {
     api_key: String,
     secret: String,
     registered_symbols: Arc<Mutex<HashSet<String>>>,
+    depth_snapshot_limit: u16,
 }
 
 #[allow(dead_code)]
@@ -43,7 +44,19 @@ impl BinanceFuturesClient {
             api_key: api_key.to_string(),
             secret: secret.to_string(),
             registered_symbols: Default::default(),
+            depth_snapshot_limit: 1000,
         }
+    }
+
+    pub(crate) fn with_depth_snapshot_limit(
+        mut self,
+        limit: u16,
+    ) -> Result<Self, BinanceFuturesError> {
+        if !matches!(limit, 5 | 10 | 20 | 50 | 100 | 500 | 1000) {
+            return Err(BinanceFuturesError::InvalidRequest);
+        }
+        self.depth_snapshot_limit = limit;
+        Ok(self)
     }
 
     pub(crate) fn with_registered_symbols(mut self, symbols: Arc<Mutex<HashSet<String>>>) -> Self {
@@ -386,7 +399,10 @@ impl BinanceFuturesClient {
 
     pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {
         let resp: rest::Depth = self
-            .get_noauth("/fapi/v1/depth", format!("symbol={symbol}&limit=1000"))
+            .get_noauth(
+                "/fapi/v1/depth",
+                format!("symbol={symbol}&limit={}", self.depth_snapshot_limit),
+            )
             .await?;
         Ok(resp)
     }

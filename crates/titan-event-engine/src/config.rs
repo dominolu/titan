@@ -33,20 +33,23 @@ pub struct ArenaConfig {
     pub small_event: PoolConfig,
     pub market_batch: PoolConfig,
     pub snapshot: PoolConfig,
+    /// Shared byte budget for market payloads larger than a pooled block.
+    pub market_overflow_bytes: usize,
 }
 
 impl Default for ArenaConfig {
     fn default() -> Self {
         Self {
+            market_overflow_bytes: 128 * 1024 * 1024,
             small_event: PoolConfig {
                 slots: 32_768,
                 block_bytes: 256,
                 low_watermark: 4_096,
             },
             market_batch: PoolConfig {
-                slots: 8_192,
-                block_bytes: 16_384,
-                low_watermark: 1_024,
+                slots: 2_048,
+                block_bytes: 65_536,
+                low_watermark: 256,
             },
             snapshot: PoolConfig {
                 slots: 512,

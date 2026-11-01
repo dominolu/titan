@@ -505,6 +505,9 @@ pub struct Fill {
     pub side: ApiSide,
     pub fee: f64,
     pub fee_asset: String,
+    /// Only authoritative when `BrokerApi::supplies_fill_realized_pnl()` is true.
+    /// Venues without this field retain the legacy zero sentinel; account publications mark it
+    /// unavailable explicitly and it cannot establish a zero-PnL recovery proof.
     pub realized_pnl: f64,
     pub maker: bool,
     pub timestamp: i64,
@@ -596,6 +599,9 @@ pub struct AlgoOrderRequest {
 /// 之间自由切换。
 #[async_trait::async_trait]
 pub trait BrokerApi: Send + Sync {
+    fn supplies_fill_realized_pnl(&self) -> bool {
+        true
+    }
     fn supports_order_execution_evidence(&self) -> bool {
         false
     }

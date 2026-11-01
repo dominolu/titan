@@ -24,7 +24,8 @@ use titan_event_engine::{
 };
 use titan_market_service::{
     BAR_BATCH_EVENT, BBO_EVENT, ConnectorHealth, DEPTH_BATCH_EVENT, MARKET_EVENT_SCHEMA_VERSION,
-    MarketDataKind, MarketService, MarketSubscribeRequest, TRADE_BATCH_EVENT,
+    MarketDataKind, MarketService, MarketSubscribeRequest,
+    STREAM_INVALIDATED_EVENT as MARKET_STREAM_INVALIDATED_EVENT, TRADE_BATCH_EVENT,
 };
 use tracing::warn;
 
@@ -512,6 +513,7 @@ impl StrategyServiceCore {
             .collect::<LocalResult<Vec<_>>>()?;
         let activation = Arc::new(StrategyActivationGate::default());
         let context = StrategyRuntimeBuildContext {
+            market_service: Some(self.dependencies.markets.clone()),
             strategy: handle,
             compiled_strategy_digest: compiled_strategy.id,
             markets: resolved_markets.clone().into(),
@@ -549,7 +551,11 @@ impl StrategyServiceCore {
         for subscription in subscriptions.iter_mut().filter(|subscription| {
             matches!(
                 subscription.event_type.as_ref(),
-                BBO_EVENT | DEPTH_BATCH_EVENT | TRADE_BATCH_EVENT | BAR_BATCH_EVENT
+                BBO_EVENT
+                    | DEPTH_BATCH_EVENT
+                    | TRADE_BATCH_EVENT
+                    | BAR_BATCH_EVENT
+                    | titan_market_service::STREAM_INVALIDATED_EVENT
             )
         }) {
             subscription.routing_keys = market_keys.clone().into();
@@ -2111,6 +2117,12 @@ pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) ->
                 ACCOUNT_STREAM_INVALIDATED_EVENT,
                 ACCOUNT_EVENT_SCHEMA_VERSION
             )
+            // HOST_DEPTH_100 strategies have this market subscription added by the
+            // compiler, so the service boundary must accept it as well.
+            | (
+                MARKET_STREAM_INVALIDATED_EVENT,
+                MARKET_EVENT_SCHEMA_VERSION
+            )
     )
 }
 
@@ -2164,6 +2176,20 @@ fn add_host_account_subscriptions(
 #[cfg(test)]
 mod host_subscription_tests {
     use super::*;
+
+    #[test]
+    fn host_depth_invalidation_subscription_is_supported() {
+        // The compiler adds titan.market.StreamInvalidated for HOST_DEPTH_100.
+        assert!(supported_strategy_subscription(
+            titan_market_service::STREAM_INVALIDATED_EVENT,
+            MARKET_EVENT_SCHEMA_VERSION,
+        ));
+        assert!(!supported_strategy_subscription(
+            titan_market_service::STREAM_INVALIDATED_EVENT,
+            MARKET_EVENT_SCHEMA_VERSION + 1,
+        ));
+    }
+
     #[test]
     fn bbo_only_strategy_receives_all_host_account_facts() {
         let mut subscriptions = vec![PrimarySubscriptionSpec {

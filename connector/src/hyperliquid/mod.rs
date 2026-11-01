@@ -1280,7 +1280,9 @@ mod live_ws_tests {
                 AccountPublication::Position { symbol, qty, .. } => {
                     let _ = tx.send(PrivateFact::Position(symbol.clone(), *qty));
                 }
-                AccountPublication::Balance { .. } | AccountPublication::NativeFill { .. } => {}
+                AccountPublication::Balance { .. }
+                | AccountPublication::NativeFill { .. }
+                | AccountPublication::NativeFillWithoutRealizedPnl { .. } => {}
                 AccountPublication::Error(e) => {
                     let _ = tx.send(PrivateFact::Error(format!("AccountError: {e:?}")));
                 }

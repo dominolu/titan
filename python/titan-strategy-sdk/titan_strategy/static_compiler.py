@@ -62,7 +62,7 @@ _FORBIDDEN_CALLS = {
 _PUBLIC_ACCESSORS = {
     "market", "position", "balance", "account", "active_orders", "ticks", "bars", "depth",
     "fills", "order_events", "cancel_events", "position_events", "balance_events",
-    "account_state_events", "timer", "recovery_orders",
+    "account_state_events", "timer", "recovery_orders", "depth_batch",
 }
 
 
@@ -325,6 +325,8 @@ def validate_strategy_definition(
         raise StrategyCompileError("complete_stop requires STOP_BARRIER capability")
     if definition.spec.capabilities & Capability.STOP_BARRIER and "on_stop" not in handler_names:
         raise StrategyCompileError("STOP_BARRIER requires on_stop")
+    if "depth_batch" in context_calls and not definition.spec.capabilities & Capability.HOST_DEPTH_100:
+        raise StrategyCompileError("depth_batch requires HOST_DEPTH_100 capability")
     if "recovery_orders" in context_calls and not definition.spec.capabilities & Capability.RECOVERY_ORDER_RESULTS:
         raise StrategyCompileError("recovery_orders requires RECOVERY_ORDER_RESULTS capability")
     if definition.spec.capabilities & Capability.RECOVERY_ORDER_RESULTS and "on_recover" not in handler_names:

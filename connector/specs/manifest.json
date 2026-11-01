@@ -1,0 +1,3564 @@
+{
+  "backpack_html_sha256": "21917c309057ed67e658b5715091ceba3e3cd030d0dbb444c81c4cbadc67e056",
+  "lighter_sdk_revision": "d30dc2296d27f1584faeb22a590486aded1f03b1",
+  "lighter_sdk_sha256": "069cecab365493c18136e1b15f50bae9f11bf2b288f272b1df8afb037f9f9d83",
+  "documents": [
+    {
+      "url": "https://docs.lighter.xyz/api/system/status.md",
+      "sha256": "94bf31389523a37fdd766c68b699e39f82e79284d14efb3dafdab37998ed3be6",
+      "block_index": 0,
+      "catalog_key": "lighter-system_status.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/system/info.md",
+      "sha256": "f96b2ac6d0bb4c490de001646e1dacd8e0b8783ec629a96718a7a68073a63388",
+      "block_index": 0,
+      "catalog_key": "lighter-system_info.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/system/layer1basicinfo.md",
+      "sha256": "c33c8e186d178082fa1e0d5ceb56bdcb8633a2b65df381e6d4d29d37c940d654",
+      "block_index": 0,
+      "catalog_key": "lighter-system_layer1basicinfo.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/system/systemconfig.md",
+      "sha256": "87f2b3d3ffd826d09850bdec58530c883d2b21c0f24adf8b98c4f018dc621bed",
+      "block_index": 0,
+      "catalog_key": "lighter-system_systemconfig.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/account.md",
+      "sha256": "545fd52ed45f4e03abeed25f44d8a4960546b8e36162d844b8e4b211e946982b",
+      "block_index": 0,
+      "catalog_key": "lighter-account_account.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/accountlimits.md",
+      "sha256": "1b72149e36b31f65842a89e79e659dda5f1ce01aa0ef8210c8c65754afb9c810",
+      "block_index": 0,
+      "catalog_key": "lighter-account_accountlimits.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/accountmetadata.md",
+      "sha256": "395f465892b310ef8d2ff88f05ace42a755b08b37d458e1aad7baf512d84f5aa",
+      "block_index": 0,
+      "catalog_key": "lighter-account_accountmetadata.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/accountsbyl1address.md",
+      "sha256": "9b435beef88ac58b23e7a57b5e9090af05404b5ba5af3fb84af309061f6f3fa5",
+      "block_index": 0,
+      "catalog_key": "lighter-account_accountsbyl1address.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/changeaccounttier.md",
+      "sha256": "ff35cc64ba1e29deafa60c5a251d674015db4952aa8d1210d1fb2ac602a04078",
+      "block_index": 0,
+      "catalog_key": "lighter-account_changeaccounttier.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/l1metadata.md",
+      "sha256": "68d6b82c0cdf9ab88a5b0ee2046409dfecc09aaa2b345a8d1ab4f94ff5490397",
+      "block_index": 0,
+      "catalog_key": "lighter-account_l1metadata.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/liquidations.md",
+      "sha256": "5244bc2453d934526b54103657c09e5239b5adebf1366d7735c3f4cb319a78be",
+      "block_index": 0,
+      "catalog_key": "lighter-account_liquidations.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/pnl.md",
+      "sha256": "66c2df172dedf0179329072e07fa3045899f8ac2e5c96c832864498c6926afcf",
+      "block_index": 0,
+      "catalog_key": "lighter-account_pnl.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/positionfunding.md",
+      "sha256": "7d14d181a21cbba8d523e6fc969e2e0df69d662317efbd6c2d3e1749aea9a17e",
+      "block_index": 0,
+      "catalog_key": "lighter-account_positionfunding.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/publicpoolsmetadata.md",
+      "sha256": "63b419803707cf98677a3676f86c14566e77e88799eb8e5ba71b84585f3ab0e3",
+      "block_index": 0,
+      "catalog_key": "lighter-account_publicpoolsmetadata.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/account/pnlleaderboard.md",
+      "sha256": "f8c2606cfd091251c6aaf994101c97a45d53087291da44abef678abc900cdde7",
+      "block_index": 0,
+      "catalog_key": "lighter-account_pnlleaderboard.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/accountactiveorders.md",
+      "sha256": "4c79e6563cc7094b94a6a3a5611155b47d4b401a6232605cc43fef44f60552ad",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_accountactiveorders.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/accountinactiveorders.md",
+      "sha256": "0df8991b6c4916ca942fd51782f37be3e10d7617d344c3b14fda89fca52725bf",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_accountinactiveorders.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/assetdetails.md",
+      "sha256": "4e331de46b4ed5b369b5d62cf709015212a277a20f518a300672cf0bd142ac58",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_assetdetails.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/export.md",
+      "sha256": "d6103ce53fa8908c810fd01f2002b8d9db0344ea9a6c88d1d3231942eca1b257",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_export.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/orderbookdetails.md",
+      "sha256": "4e8c76d12aad2eb067904b67903555962fa3b98a19bef665020c9207f9efacd3",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_orderbookdetails.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/orderbookorders.md",
+      "sha256": "7f36ccebbc7796b55488c77ef3b1032d09cb156ad3c6817e8e2721219591f3ad",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_orderbookorders.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/orderbooks.md",
+      "sha256": "d39b1f52eed59d2e2e6332b43dbeb56cd78a0c4370d090ae567c21463543d12c",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_orderbooks.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/recenttrades.md",
+      "sha256": "dbf3cb0d20eb991276ccf5a4ca98e01d0210db6dcf997d6bb77d325ac9bf11d2",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_recenttrades.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/trades.md",
+      "sha256": "270ac5631792ed92c378ed601a8960e979f635987035ffd440ec42ef255cf1de",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_trades.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/accountorders.md",
+      "sha256": "4cf661077634a8461224e566a71a13d0e29b1ade0441bd1f9165e13359cc4efa",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_accountorders.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/orders/export_historicaltrades.md",
+      "sha256": "27740164babc97a15c857b82cefe1c64c926a28d170075aff3778dba6bc9783d",
+      "block_index": 0,
+      "catalog_key": "lighter-orders_export_historicaltrades.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/binary-options/events.md",
+      "sha256": "2ec92df8c2f340e99f6a831fd43f7434a3286f9618cf1e6e4e8eb96119f7444a",
+      "block_index": 0,
+      "catalog_key": "lighter-binary-options_events.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/binary-options/feetiers.md",
+      "sha256": "d304e87da77fc270175184b0b98c129f4b7ff6e96e2923666b2efcc92a560284",
+      "block_index": 0,
+      "catalog_key": "lighter-binary-options_feetiers.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/binary-options/portfolio_bopnl.md",
+      "sha256": "e035c5cbee956938f5bdaef8df8784e926936d3e187f33182c50d8ec3f66ae98",
+      "block_index": 0,
+      "catalog_key": "lighter-binary-options_portfolio_bopnl.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/binary-options/updowncandles.md",
+      "sha256": "cb57c9cc36556d8acd008b728e2e4dc3f8622e32967b45a87eadc5da71a754a6",
+      "block_index": 0,
+      "catalog_key": "lighter-binary-options_updowncandles.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/deposit_history.md",
+      "sha256": "f96b03f1505d1e1802f7436161a209f6ac36f50647ab012066bd49e51c621b27",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_deposit_history.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/sendtx.md",
+      "sha256": "d44c0a570973a1a15cb3432e0ef50b24f95860784146f0b16656cf13f4367656",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_sendtx.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/sendtxbatch.md",
+      "sha256": "215a4050eb7211a940b66070a50ce93e16bec26e8ffecc52d00f31e29bd31469",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_sendtxbatch.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/transfer_history.md",
+      "sha256": "3f4dab74d6d403fe5421a27ce1df5b58a250b39d6746787c1eb325f6ea8c63da",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_transfer_history.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/tx.md",
+      "sha256": "dad93e102a94b2deaa93ee45beedc569cc6b0224f5767b6ae5ad25b598e5e3c0",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_tx.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/txfroml1txhash.md",
+      "sha256": "e12fb9783544654ec89da89ec00bbde4517d873d1d0854c27593cb107640925a",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_txfroml1txhash.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/transactions/withdraw_history.md",
+      "sha256": "f0fa04380a17042ceee4c1a469a17edeff1e7763cc1e3e26950cd82846c40935",
+      "block_index": 0,
+      "catalog_key": "lighter-transactions_withdraw_history.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/apikeys.md",
+      "sha256": "efebb618dd1626f2e83c4a88792bc60d820787278ce66ec13495393f6c734983",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_apikeys.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/nextnonce.md",
+      "sha256": "fd8b8160efb10dd672a2bbbb2f5ddbbfc43bf5a0e8955dbe0b2e3c7338d5d95c",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_nextnonce.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/tokens.md",
+      "sha256": "5de3e0f5858bbab7bab83d1d953b7b9775909f4fc9f0e1e3db7918bfdfdba774",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_tokens.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/tokens_create.md",
+      "sha256": "1974ac03cb075a7037129c40a37604696523f1ffe539f95de1af96b3b48d790e",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_tokens_create.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/tokens_revoke.md",
+      "sha256": "c3ee96f60a02f89029bbb64c5c85c093bd49318db2ad3ee7f6e4faa39eda137e",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_tokens_revoke.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/getmakeronlyapikeys.md",
+      "sha256": "1f9a30d4c04602685793d26550bd92431b3cbee39a1e49cc631ca6b6b6170254",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_getmakeronlyapikeys.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/api-keys/setmakeronlyapikeys.md",
+      "sha256": "327b41483f0801b5508b57abb58ff033a01a9dff9810292a30b77b1337b401c7",
+      "block_index": 0,
+      "catalog_key": "lighter-api-keys_setmakeronlyapikeys.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/candlesticks/candles.md",
+      "sha256": "4c842872bdef7c73b8bb368278c030927fcf5a8f605c12f35366d2d63cff3a69",
+      "block_index": 0,
+      "catalog_key": "lighter-candlesticks_candles.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/candlesticks/markpricecandles.md",
+      "sha256": "fd5a7a80382dcea59d4f89ed9a5b343df11f001ae2b87ae1d31fcccfbbf76de7",
+      "block_index": 0,
+      "catalog_key": "lighter-candlesticks_markpricecandles.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/candlesticks/marketpricecharts.md",
+      "sha256": "c2d485978eaf6c6774335cc7fc42ec63639822e712a72c7173854f95715465db",
+      "block_index": 0,
+      "catalog_key": "lighter-candlesticks_marketpricecharts.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/funding/funding-rates.md",
+      "sha256": "87375af40cdc856b2502b97fc043d92cc385d2dc53e1fb066b67bd4c5f745386",
+      "block_index": 0,
+      "catalog_key": "lighter-funding_funding-rates.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/funding/fundings.md",
+      "sha256": "d086f90d9da272ced6dc2710e7719dc215786f114b25a4759ca1afa098b70341",
+      "block_index": 0,
+      "catalog_key": "lighter-funding_fundings.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/fastbridge_info.md",
+      "sha256": "e0e90f4d3f6d07570734531b9e1697e82d0fc58c4f625111517a997a89cc6106",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_fastbridge_info.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/fastwithdraw.md",
+      "sha256": "eab881748736d75f1b7c8712ced67e6d7befcb4f8a1aa31fc7236b6aebd46fc9",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_fastwithdraw.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/fastwithdraw_info.md",
+      "sha256": "fb4c99114c559b52d5bab992e77b57fb3c0f90a3d8ee99c55bc3bba7d4bbd71c",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_fastwithdraw_info.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/createintentaddress.md",
+      "sha256": "7052dcafada2f5c4ff67e8685d8c1eeb5118a8167653f3196095757be91582e8",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_createintentaddress.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/deposit_networks.md",
+      "sha256": "62f2785d595e2e11995d8a498324eb4c498449041dc74ea3341fa9f627a15897",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_deposit_networks.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/bridge/deposit_latest.md",
+      "sha256": "1f5236769c1594eeca934e166882d04669f31e8488cc70123c9fc404d9af955c",
+      "block_index": 0,
+      "catalog_key": "lighter-bridge_deposit_latest.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/exchangestats.md",
+      "sha256": "51e1e10f77cb04a3cb7673f2f9bbefdf1ee52935f585db7bdcb3ec3e4c83d95f",
+      "block_index": 0,
+      "catalog_key": "lighter-info_exchangestats.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/transferfeeinfo.md",
+      "sha256": "0cbc6a5bbc4ccfe16ce9e35fa18c7df0b72450984437432e216605cb1826cc3d",
+      "block_index": 0,
+      "catalog_key": "lighter-info_transferfeeinfo.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/withdrawaldelay.md",
+      "sha256": "a9795d9e081e8e34d043631af287be33a6b2fb6c390d701eabad48ba666fc8c4",
+      "block_index": 0,
+      "catalog_key": "lighter-info_withdrawaldelay.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/exchangemetrics.md",
+      "sha256": "22fe79978cc07ded34f7753acfb2f6fa2b82c87cad0cb62e95604985357cd7dd",
+      "block_index": 0,
+      "catalog_key": "lighter-info_exchangemetrics.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/executestats.md",
+      "sha256": "d54aad6252b90c1cefb66a699078fff7e29eaf6a9e91b566287f205c54824001",
+      "block_index": 0,
+      "catalog_key": "lighter-info_executestats.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/tokenlist.md",
+      "sha256": "d3b4d35b9fb00583b796dde3b2e532b28a162415bd1e9b819d2097845f72829f",
+      "block_index": 0,
+      "catalog_key": "lighter-info_tokenlist.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/partnerstats.md",
+      "sha256": "4c8d8c6a45a1a08890286d553ccdc4abb884ebe8ecf16206bb92870b41656e94",
+      "block_index": 0,
+      "catalog_key": "lighter-info_partnerstats.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/syntheticspotinfo.md",
+      "sha256": "a6c6108a4d46d899db571bf8d880e65493ceb5d9bfac92ad242cde46b7d35d7b",
+      "block_index": 0,
+      "catalog_key": "lighter-info_syntheticspotinfo.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/info/priceoracleinfo.md",
+      "sha256": "496fd26e69ad72d85fea259323e2830f46e6df1ca34d2b4da60658e2009e5476",
+      "block_index": 0,
+      "catalog_key": "lighter-info_priceoracleinfo.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_points.md",
+      "sha256": "2d71a9a9615f3f88322415966603c0d0617f9c75dc704465763c2750cfda478d",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_points.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_create.md",
+      "sha256": "a478e7fe898e6c562ba78287ff35f7b7c13294cde0b9d9bbfc5652e4fcd75700",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_create.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_get.md",
+      "sha256": "6abdba66e2ee648877293325eb6363ccbaba663fa9681f41cafe2e63f1094485",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_get.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_kickback_update.md",
+      "sha256": "b7141fd1994dfd844b46ecc395a3001e05b9c55c6921175abacbe8292e112258",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_kickback_update.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_update.md",
+      "sha256": "2925f3b2034921f210f0e8e4d8997f15ef3db96c151b2b495b6a15227e71bca5",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_update.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_use.md",
+      "sha256": "b5b04e49228046ca20335a44694075ed56dbd1f2f47c5358eea2dba077cee590",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_use.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/userreferrals.md",
+      "sha256": "078a6091c57292bbdeab41c02e4650723e705ecd81f69f2648fc417c34da476c",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_userreferrals.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/referral/referral_stats.md",
+      "sha256": "9c7f2058a3d42c03f1f057b8b8df63084a72a1eb05bc293be201cb421edcb3a3",
+      "block_index": 0,
+      "catalog_key": "lighter-referral_referral_stats.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/fee-credits/leaseoptions.md",
+      "sha256": "ffa3b199dc257e9908b5392f73aa7f0afc6c977eed383a9ec7ba75f0fa000df2",
+      "block_index": 0,
+      "catalog_key": "lighter-fee-credits_leaseoptions.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/fee-credits/leases.md",
+      "sha256": "31783dd873f41f13edcf6cda540956dcd69cbe4d1428947ff14c67ab2d923356",
+      "block_index": 0,
+      "catalog_key": "lighter-fee-credits_leases.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/fee-credits/litlease.md",
+      "sha256": "fb1b350c96b171d4840540d84c3563b10066a6c6ed735d663fcb6c0ba9a3765c",
+      "block_index": 0,
+      "catalog_key": "lighter-fee-credits_litlease.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/rfq/rfq_respond.md",
+      "sha256": "767d5aa73eeb3c86c9c254665593a1c08172112675317693955b7bb6e3986fde",
+      "block_index": 0,
+      "catalog_key": "lighter-rfq_rfq_respond.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/rfq/rfq_list.md",
+      "sha256": "db4022704aeb97d908581b0ec9853e1048e5e5eeb7750a8595e976e9ac55aaae",
+      "block_index": 0,
+      "catalog_key": "lighter-rfq_rfq_list.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/rfq/rfq_get.md",
+      "sha256": "3eb5a3fe85e6cd9751171cc3a447df7cd0d7f98daebf160fc762082a8adb3ecb",
+      "block_index": 0,
+      "catalog_key": "lighter-rfq_rfq_get.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/rfq/rfq_create.md",
+      "sha256": "3aa0724681ba62528fc9a518ae9355f470d401f8808e5068428d2b9b86533be0",
+      "block_index": 0,
+      "catalog_key": "lighter-rfq_rfq_create.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/rfq/rfq_update.md",
+      "sha256": "e3a840e698d99d2aefdc5ec1b86075fdd2b6576f6d5de7320510ef5f22a54fae",
+      "block_index": 0,
+      "catalog_key": "lighter-rfq_rfq_update.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/points/livepoints_total.md",
+      "sha256": "bda7269e685ec3badb8ca2ac91384c7cc449941e16157b3676b67bc118605b23",
+      "block_index": 0,
+      "catalog_key": "lighter-points_livepoints_total.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/points/leaderboard.md",
+      "sha256": "9400d8b80a16be166c7b859a8e53b7d3f3277a5fb23a942a9831de6baaa54df8",
+      "block_index": 0,
+      "catalog_key": "lighter-points_leaderboard.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/announcements/announcement.md",
+      "sha256": "6938a680a86c759ee0795ecafc09db7053a547067ee53e6481617b082d713cb2",
+      "block_index": 0,
+      "catalog_key": "lighter-announcements_announcement.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/notifications/notification_ack.md",
+      "sha256": "8115f954ff1b5ad3b5ca05fbfb7c50762e4ad4c2b4e95505bd84d8d1cc74657d",
+      "block_index": 0,
+      "catalog_key": "lighter-notifications_notification_ack.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/account/get-account-assets.md",
+      "sha256": "893be92488abaa2d92f240365739ad9f37c429d60ecef41eebbe96e2418c54fc",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_account_get-account-assets.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/account/get-account-by-address.md",
+      "sha256": "6fce667a0e15e52d8c38b66b60475310aabe8637a8f9166d79adbb3ee90c8384",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_account_get-account-by-address.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/account/get-account-by-address-1.md",
+      "sha256": "c6c5a416c6cee33ae38268aeb0d4416ce9b56f8981613afbc8fc7e563dd31685",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_account_get-account-by-address-1.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/batches/get-recent-batches.md",
+      "sha256": "349d9908ce79ae1fee8b29bf752c3b1406cef77e23e3db903102afe28ebccc51",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_batches_get-recent-batches.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/batches/get-batch-by-id.md",
+      "sha256": "24a1e2194c3da3a8f78e2a1103a9fb282a726871a5540afbfc11849650bc9fac",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_batches_get-batch-by-id.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/blocks/get-recent-blocks.md",
+      "sha256": "0974248be9ca183f19ac4933c8dfa757ed078b6fdf441232f70f4f92c3983095",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_blocks_get-recent-blocks.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/blocks/get-block-by-id.md",
+      "sha256": "381447de4a1f7f1291a49d92b019f3cac3a4601ebc63f86439c32a13581e9fbc",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_blocks_get-block-by-id.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/logs/get-log-by-hash.md",
+      "sha256": "7167f4b9d656daca10cabcb3fc4fd4474df0e4f34437d86eb05ca6d2df4bfc85",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_logs_get-log-by-hash.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/markets/list-all-markets.md",
+      "sha256": "1b1c1bbc47251da3adc9801dcfcd8398867dc33d07a5a1ec2c538ec5b3b24e79",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_markets_list-all-markets.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/markets/get-market-latest-logs-to-query-perpetual-markets-use-the-symbol-alone-for-spot-markets-use-symbol-q.md",
+      "sha256": "28a4d4e6cce9a197a170734b3f797f9fac5a5e121915c8689519fa91525ff835",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_markets_get-market-latest-logs-to-query-perpetual-markets-use-the-symbol-alone-for-spot-markets-use-symbol-q.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/search/search-for-blocks-batches-transactions-or-accounts.md",
+      "sha256": "40800225beab131e2baeaf3f40aafca4d890c0b763acf8dec40245458dc117a7",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_search_search-for-blocks-batches-transactions-or-accounts.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/stats/get-tx-stats.md",
+      "sha256": "72397bfccf746cb8ff988f03b6668052f13eb44336d9b0657616c6ad9ffd1b45",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_stats_get-tx-stats.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/explorer-api/stats/list-total-values.md",
+      "sha256": "327aea7e3da2f4cef5deb9c2e9a5a95eed22ecfcce7ecbcd32e95d0ee3b70c9a",
+      "block_index": 0,
+      "catalog_key": "lighter-explorer-api_stats_list-total-values.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 0,
+      "catalog_key": "lighter-models.md#0"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 1,
+      "catalog_key": "lighter-models.md#1"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 2,
+      "catalog_key": "lighter-models.md#2"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 3,
+      "catalog_key": "lighter-models.md#3"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 4,
+      "catalog_key": "lighter-models.md#4"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 5,
+      "catalog_key": "lighter-models.md#5"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 6,
+      "catalog_key": "lighter-models.md#6"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 7,
+      "catalog_key": "lighter-models.md#7"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 8,
+      "catalog_key": "lighter-models.md#8"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 9,
+      "catalog_key": "lighter-models.md#9"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 10,
+      "catalog_key": "lighter-models.md#10"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 11,
+      "catalog_key": "lighter-models.md#11"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 12,
+      "catalog_key": "lighter-models.md#12"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 13,
+      "catalog_key": "lighter-models.md#13"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 14,
+      "catalog_key": "lighter-models.md#14"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 15,
+      "catalog_key": "lighter-models.md#15"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 16,
+      "catalog_key": "lighter-models.md#16"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 17,
+      "catalog_key": "lighter-models.md#17"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 18,
+      "catalog_key": "lighter-models.md#18"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 19,
+      "catalog_key": "lighter-models.md#19"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 20,
+      "catalog_key": "lighter-models.md#20"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 21,
+      "catalog_key": "lighter-models.md#21"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 22,
+      "catalog_key": "lighter-models.md#22"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 23,
+      "catalog_key": "lighter-models.md#23"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 24,
+      "catalog_key": "lighter-models.md#24"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 25,
+      "catalog_key": "lighter-models.md#25"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 26,
+      "catalog_key": "lighter-models.md#26"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 27,
+      "catalog_key": "lighter-models.md#27"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 28,
+      "catalog_key": "lighter-models.md#28"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 29,
+      "catalog_key": "lighter-models.md#29"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 30,
+      "catalog_key": "lighter-models.md#30"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 31,
+      "catalog_key": "lighter-models.md#31"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 32,
+      "catalog_key": "lighter-models.md#32"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 33,
+      "catalog_key": "lighter-models.md#33"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 34,
+      "catalog_key": "lighter-models.md#34"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 35,
+      "catalog_key": "lighter-models.md#35"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 36,
+      "catalog_key": "lighter-models.md#36"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 37,
+      "catalog_key": "lighter-models.md#37"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 38,
+      "catalog_key": "lighter-models.md#38"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 39,
+      "catalog_key": "lighter-models.md#39"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 40,
+      "catalog_key": "lighter-models.md#40"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 41,
+      "catalog_key": "lighter-models.md#41"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 42,
+      "catalog_key": "lighter-models.md#42"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 43,
+      "catalog_key": "lighter-models.md#43"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 44,
+      "catalog_key": "lighter-models.md#44"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 45,
+      "catalog_key": "lighter-models.md#45"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 46,
+      "catalog_key": "lighter-models.md#46"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 47,
+      "catalog_key": "lighter-models.md#47"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 48,
+      "catalog_key": "lighter-models.md#48"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 49,
+      "catalog_key": "lighter-models.md#49"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 50,
+      "catalog_key": "lighter-models.md#50"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 51,
+      "catalog_key": "lighter-models.md#51"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 52,
+      "catalog_key": "lighter-models.md#52"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 53,
+      "catalog_key": "lighter-models.md#53"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 54,
+      "catalog_key": "lighter-models.md#54"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 55,
+      "catalog_key": "lighter-models.md#55"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 56,
+      "catalog_key": "lighter-models.md#56"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 57,
+      "catalog_key": "lighter-models.md#57"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 58,
+      "catalog_key": "lighter-models.md#58"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 59,
+      "catalog_key": "lighter-models.md#59"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 60,
+      "catalog_key": "lighter-models.md#60"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 61,
+      "catalog_key": "lighter-models.md#61"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 62,
+      "catalog_key": "lighter-models.md#62"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 63,
+      "catalog_key": "lighter-models.md#63"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 64,
+      "catalog_key": "lighter-models.md#64"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 65,
+      "catalog_key": "lighter-models.md#65"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 66,
+      "catalog_key": "lighter-models.md#66"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 67,
+      "catalog_key": "lighter-models.md#67"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 68,
+      "catalog_key": "lighter-models.md#68"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 69,
+      "catalog_key": "lighter-models.md#69"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 70,
+      "catalog_key": "lighter-models.md#70"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 71,
+      "catalog_key": "lighter-models.md#71"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 72,
+      "catalog_key": "lighter-models.md#72"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 73,
+      "catalog_key": "lighter-models.md#73"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 74,
+      "catalog_key": "lighter-models.md#74"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 75,
+      "catalog_key": "lighter-models.md#75"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 76,
+      "catalog_key": "lighter-models.md#76"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 77,
+      "catalog_key": "lighter-models.md#77"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 78,
+      "catalog_key": "lighter-models.md#78"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 79,
+      "catalog_key": "lighter-models.md#79"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 80,
+      "catalog_key": "lighter-models.md#80"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 81,
+      "catalog_key": "lighter-models.md#81"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 82,
+      "catalog_key": "lighter-models.md#82"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 83,
+      "catalog_key": "lighter-models.md#83"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 84,
+      "catalog_key": "lighter-models.md#84"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 85,
+      "catalog_key": "lighter-models.md#85"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 86,
+      "catalog_key": "lighter-models.md#86"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 87,
+      "catalog_key": "lighter-models.md#87"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 88,
+      "catalog_key": "lighter-models.md#88"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 89,
+      "catalog_key": "lighter-models.md#89"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 90,
+      "catalog_key": "lighter-models.md#90"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 91,
+      "catalog_key": "lighter-models.md#91"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 92,
+      "catalog_key": "lighter-models.md#92"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 93,
+      "catalog_key": "lighter-models.md#93"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 94,
+      "catalog_key": "lighter-models.md#94"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 95,
+      "catalog_key": "lighter-models.md#95"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 96,
+      "catalog_key": "lighter-models.md#96"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 97,
+      "catalog_key": "lighter-models.md#97"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 98,
+      "catalog_key": "lighter-models.md#98"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 99,
+      "catalog_key": "lighter-models.md#99"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 100,
+      "catalog_key": "lighter-models.md#100"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 101,
+      "catalog_key": "lighter-models.md#101"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 102,
+      "catalog_key": "lighter-models.md#102"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 103,
+      "catalog_key": "lighter-models.md#103"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 104,
+      "catalog_key": "lighter-models.md#104"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 105,
+      "catalog_key": "lighter-models.md#105"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 106,
+      "catalog_key": "lighter-models.md#106"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 107,
+      "catalog_key": "lighter-models.md#107"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 108,
+      "catalog_key": "lighter-models.md#108"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 109,
+      "catalog_key": "lighter-models.md#109"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 110,
+      "catalog_key": "lighter-models.md#110"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 111,
+      "catalog_key": "lighter-models.md#111"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 112,
+      "catalog_key": "lighter-models.md#112"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 113,
+      "catalog_key": "lighter-models.md#113"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 114,
+      "catalog_key": "lighter-models.md#114"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 115,
+      "catalog_key": "lighter-models.md#115"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 116,
+      "catalog_key": "lighter-models.md#116"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 117,
+      "catalog_key": "lighter-models.md#117"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 118,
+      "catalog_key": "lighter-models.md#118"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 119,
+      "catalog_key": "lighter-models.md#119"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 120,
+      "catalog_key": "lighter-models.md#120"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 121,
+      "catalog_key": "lighter-models.md#121"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 122,
+      "catalog_key": "lighter-models.md#122"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 123,
+      "catalog_key": "lighter-models.md#123"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 124,
+      "catalog_key": "lighter-models.md#124"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 125,
+      "catalog_key": "lighter-models.md#125"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 126,
+      "catalog_key": "lighter-models.md#126"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 127,
+      "catalog_key": "lighter-models.md#127"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 128,
+      "catalog_key": "lighter-models.md#128"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 129,
+      "catalog_key": "lighter-models.md#129"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 130,
+      "catalog_key": "lighter-models.md#130"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 131,
+      "catalog_key": "lighter-models.md#131"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 132,
+      "catalog_key": "lighter-models.md#132"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 133,
+      "catalog_key": "lighter-models.md#133"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 134,
+      "catalog_key": "lighter-models.md#134"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 135,
+      "catalog_key": "lighter-models.md#135"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 136,
+      "catalog_key": "lighter-models.md#136"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 137,
+      "catalog_key": "lighter-models.md#137"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 138,
+      "catalog_key": "lighter-models.md#138"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 139,
+      "catalog_key": "lighter-models.md#139"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 140,
+      "catalog_key": "lighter-models.md#140"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 141,
+      "catalog_key": "lighter-models.md#141"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 142,
+      "catalog_key": "lighter-models.md#142"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 143,
+      "catalog_key": "lighter-models.md#143"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 144,
+      "catalog_key": "lighter-models.md#144"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 145,
+      "catalog_key": "lighter-models.md#145"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 146,
+      "catalog_key": "lighter-models.md#146"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 147,
+      "catalog_key": "lighter-models.md#147"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 148,
+      "catalog_key": "lighter-models.md#148"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 149,
+      "catalog_key": "lighter-models.md#149"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 150,
+      "catalog_key": "lighter-models.md#150"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 151,
+      "catalog_key": "lighter-models.md#151"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 152,
+      "catalog_key": "lighter-models.md#152"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 153,
+      "catalog_key": "lighter-models.md#153"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 154,
+      "catalog_key": "lighter-models.md#154"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 155,
+      "catalog_key": "lighter-models.md#155"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 156,
+      "catalog_key": "lighter-models.md#156"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 157,
+      "catalog_key": "lighter-models.md#157"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 158,
+      "catalog_key": "lighter-models.md#158"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 159,
+      "catalog_key": "lighter-models.md#159"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 160,
+      "catalog_key": "lighter-models.md#160"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 161,
+      "catalog_key": "lighter-models.md#161"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 162,
+      "catalog_key": "lighter-models.md#162"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 163,
+      "catalog_key": "lighter-models.md#163"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 164,
+      "catalog_key": "lighter-models.md#164"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 165,
+      "catalog_key": "lighter-models.md#165"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 166,
+      "catalog_key": "lighter-models.md#166"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 167,
+      "catalog_key": "lighter-models.md#167"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 168,
+      "catalog_key": "lighter-models.md#168"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 169,
+      "catalog_key": "lighter-models.md#169"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 170,
+      "catalog_key": "lighter-models.md#170"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 171,
+      "catalog_key": "lighter-models.md#171"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 172,
+      "catalog_key": "lighter-models.md#172"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 173,
+      "catalog_key": "lighter-models.md#173"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 174,
+      "catalog_key": "lighter-models.md#174"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 175,
+      "catalog_key": "lighter-models.md#175"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 176,
+      "catalog_key": "lighter-models.md#176"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 177,
+      "catalog_key": "lighter-models.md#177"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 178,
+      "catalog_key": "lighter-models.md#178"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 179,
+      "catalog_key": "lighter-models.md#179"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 180,
+      "catalog_key": "lighter-models.md#180"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 181,
+      "catalog_key": "lighter-models.md#181"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 182,
+      "catalog_key": "lighter-models.md#182"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 183,
+      "catalog_key": "lighter-models.md#183"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 184,
+      "catalog_key": "lighter-models.md#184"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 185,
+      "catalog_key": "lighter-models.md#185"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 186,
+      "catalog_key": "lighter-models.md#186"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 187,
+      "catalog_key": "lighter-models.md#187"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 188,
+      "catalog_key": "lighter-models.md#188"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 189,
+      "catalog_key": "lighter-models.md#189"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 190,
+      "catalog_key": "lighter-models.md#190"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 191,
+      "catalog_key": "lighter-models.md#191"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 192,
+      "catalog_key": "lighter-models.md#192"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 193,
+      "catalog_key": "lighter-models.md#193"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 194,
+      "catalog_key": "lighter-models.md#194"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 195,
+      "catalog_key": "lighter-models.md#195"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 196,
+      "catalog_key": "lighter-models.md#196"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 197,
+      "catalog_key": "lighter-models.md#197"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 198,
+      "catalog_key": "lighter-models.md#198"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 199,
+      "catalog_key": "lighter-models.md#199"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 200,
+      "catalog_key": "lighter-models.md#200"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 201,
+      "catalog_key": "lighter-models.md#201"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 202,
+      "catalog_key": "lighter-models.md#202"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 203,
+      "catalog_key": "lighter-models.md#203"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 204,
+      "catalog_key": "lighter-models.md#204"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 205,
+      "catalog_key": "lighter-models.md#205"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 206,
+      "catalog_key": "lighter-models.md#206"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 207,
+      "catalog_key": "lighter-models.md#207"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 208,
+      "catalog_key": "lighter-models.md#208"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 209,
+      "catalog_key": "lighter-models.md#209"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 210,
+      "catalog_key": "lighter-models.md#210"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 211,
+      "catalog_key": "lighter-models.md#211"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 212,
+      "catalog_key": "lighter-models.md#212"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 213,
+      "catalog_key": "lighter-models.md#213"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 214,
+      "catalog_key": "lighter-models.md#214"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 215,
+      "catalog_key": "lighter-models.md#215"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 216,
+      "catalog_key": "lighter-models.md#216"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 217,
+      "catalog_key": "lighter-models.md#217"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 218,
+      "catalog_key": "lighter-models.md#218"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 219,
+      "catalog_key": "lighter-models.md#219"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 220,
+      "catalog_key": "lighter-models.md#220"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 221,
+      "catalog_key": "lighter-models.md#221"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 222,
+      "catalog_key": "lighter-models.md#222"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 223,
+      "catalog_key": "lighter-models.md#223"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 224,
+      "catalog_key": "lighter-models.md#224"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 225,
+      "catalog_key": "lighter-models.md#225"
+    },
+    {
+      "url": "https://docs.lighter.xyz/api/models.md",
+      "sha256": "195111cf897b2907073968cc533259f8e2779667e6c6c2a6af58a40215f1d19c",
+      "block_index": 226,
+      "catalog_key": "lighter-models.md#226"
+    }
+  ],
+  "operations": [
+    {
+      "venue": "backpack",
+      "operation": "get_account",
+      "method": "GET",
+      "path": "/api/v1/account",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_account",
+      "instruction": "accountQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "update_account_settings",
+      "method": "PATCH",
+      "path": "/api/v1/account",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/update_account_settings",
+      "instruction": "accountUpdate"
+    },
+    {
+      "venue": "backpack",
+      "operation": "convert_dust",
+      "method": "POST",
+      "path": "/api/v1/account/convertDust",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/convert_dust",
+      "instruction": "convertDust"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_max_borrow_quantity",
+      "method": "GET",
+      "path": "/api/v1/account/limits/borrow",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_max_borrow_quantity",
+      "instruction": "maxBorrowQuantity"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_max_order_quantity",
+      "method": "GET",
+      "path": "/api/v1/account/limits/order",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_max_order_quantity",
+      "instruction": "maxOrderQuantity"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_max_withdrawal_quantity",
+      "method": "GET",
+      "path": "/api/v1/account/limits/withdrawal",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_max_withdrawal_quantity",
+      "instruction": "maxWithdrawalQuantity"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_assets",
+      "method": "GET",
+      "path": "/api/v1/assets",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_assets",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_collateral_parameters",
+      "method": "GET",
+      "path": "/api/v1/collateral",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_collateral_parameters",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_positions",
+      "method": "GET",
+      "path": "/api/v1/borrowLend/positions",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_positions",
+      "instruction": "borrowLendPositionQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_estimated_liquidation_price",
+      "method": "GET",
+      "path": "/api/v1/borrowLend/position/liquidationPrice",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_estimated_liquidation_price",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "execute_borrow_lend",
+      "method": "POST",
+      "path": "/api/v1/borrowLend",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/execute_borrow_lend",
+      "instruction": "borrowLendExecute"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_markets",
+      "method": "GET",
+      "path": "/api/v1/borrowLend/markets",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_markets",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_markets_history",
+      "method": "GET",
+      "path": "/api/v1/borrowLend/markets/history",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_markets_history",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_apy_rates",
+      "method": "GET",
+      "path": "/api/v1/borrowLend/apy",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_apy_rates",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_balances",
+      "method": "GET",
+      "path": "/api/v1/capital",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_balances",
+      "instruction": "balanceQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_collateral",
+      "method": "GET",
+      "path": "/api/v1/capital/collateral",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_collateral",
+      "instruction": "collateralQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_deposits",
+      "method": "GET",
+      "path": "/wapi/v1/capital/deposits",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_deposits",
+      "instruction": "depositQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_deposit_address",
+      "method": "GET",
+      "path": "/wapi/v1/capital/deposit/address",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_deposit_address",
+      "instruction": "depositAddressQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_markets",
+      "method": "GET",
+      "path": "/api/v1/markets",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_markets",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_market",
+      "method": "GET",
+      "path": "/api/v1/market",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_market",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_depth",
+      "method": "GET",
+      "path": "/api/v1/depth",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_depth",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_mark_prices",
+      "method": "GET",
+      "path": "/api/v1/markPrices",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_mark_prices",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_open_interest",
+      "method": "GET",
+      "path": "/api/v1/openInterest",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_open_interest",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_market_sessions",
+      "method": "GET",
+      "path": "/api/v1/stockSessions",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_market_sessions",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_market_holidays",
+      "method": "GET",
+      "path": "/api/v1/stockHolidays",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_market_holidays",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_securities",
+      "method": "GET",
+      "path": "/api/v1/securities",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_securities",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_order",
+      "method": "GET",
+      "path": "/api/v1/order",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_order",
+      "instruction": "orderQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "execute_order",
+      "method": "POST",
+      "path": "/api/v1/order",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/execute_order",
+      "instruction": "orderExecute"
+    },
+    {
+      "venue": "backpack",
+      "operation": "cancel_order",
+      "method": "DELETE",
+      "path": "/api/v1/order",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/cancel_order",
+      "instruction": "orderCancel"
+    },
+    {
+      "venue": "backpack",
+      "operation": "execute_order_batch",
+      "method": "POST",
+      "path": "/api/v1/orders",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/execute_order_batch",
+      "instruction": "orderExecute"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_open_orders",
+      "method": "GET",
+      "path": "/api/v1/orders",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_open_orders",
+      "instruction": "orderQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "cancel_open_orders",
+      "method": "DELETE",
+      "path": "/api/v1/orders",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/cancel_open_orders",
+      "instruction": "orderCancelAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_positions",
+      "method": "GET",
+      "path": "/api/v1/position",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_positions",
+      "instruction": "positionQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "submit_quote",
+      "method": "POST",
+      "path": "/api/v1/rfq/quote",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/submit_quote",
+      "instruction": "quoteSubmit"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_open_rfqs",
+      "method": "GET",
+      "path": "/api/v1/rfqs",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_open_rfqs",
+      "instruction": "rfqQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "submit_rfq",
+      "method": "POST",
+      "path": "/api/v1/rfq",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/submit_rfq",
+      "instruction": "rfqSubmit"
+    },
+    {
+      "venue": "backpack",
+      "operation": "accept_quote",
+      "method": "POST",
+      "path": "/api/v1/rfq/accept",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/accept_quote",
+      "instruction": "quoteAccept"
+    },
+    {
+      "venue": "backpack",
+      "operation": "cancel_rfq",
+      "method": "POST",
+      "path": "/api/v1/rfq/cancel",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/cancel_rfq",
+      "instruction": "rfqCancel"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_status",
+      "method": "GET",
+      "path": "/api/v1/status",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_status",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "ping",
+      "method": "GET",
+      "path": "/api/v1/ping",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/ping",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_time",
+      "method": "GET",
+      "path": "/api/v1/time",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_time",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_recent_trades",
+      "method": "GET",
+      "path": "/api/v1/trades",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_recent_trades",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_vaults",
+      "method": "GET",
+      "path": "/api/v1/vaults",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_vaults",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "vault_mint",
+      "method": "POST",
+      "path": "/api/v1/vault/mint",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/vault_mint",
+      "instruction": "vaultMint"
+    },
+    {
+      "venue": "backpack",
+      "operation": "vault_redeem",
+      "method": "POST",
+      "path": "/api/v1/vault/redeem",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/vault_redeem",
+      "instruction": "vaultRedeemRequest"
+    },
+    {
+      "venue": "backpack",
+      "operation": "vault_redeem_cancel",
+      "method": "DELETE",
+      "path": "/api/v1/vault/redeem",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/vault_redeem_cancel",
+      "instruction": "vaultRedeemCancel"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_vault_pending_redeems",
+      "method": "GET",
+      "path": "/api/v1/vault/redeems/pending",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_vault_pending_redeems",
+      "instruction": "vaultPendingRedeemsQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_vault_nav",
+      "method": "GET",
+      "path": "/api/v1/vault/nav",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_vault_nav",
+      "instruction": "vaultNavQuery"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_vault_history",
+      "method": "GET",
+      "path": "/api/v1/vaults/history",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_vault_history",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_wallets",
+      "method": "GET",
+      "path": "/api/v1/wallets",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_wallets",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_withdrawals",
+      "method": "GET",
+      "path": "/wapi/v1/capital/withdrawals",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_withdrawals",
+      "instruction": "withdrawalQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "request_withdrawal",
+      "method": "POST",
+      "path": "/wapi/v1/capital/withdrawals",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/request_withdrawal",
+      "instruction": "withdraw"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_withdrawal_delay",
+      "method": "GET",
+      "path": "/wapi/v1/capital/withdrawals/delay",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_withdrawal_delay",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "create_withdrawal_delay",
+      "method": "POST",
+      "path": "/wapi/v1/capital/withdrawals/delay",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/create_withdrawal_delay",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "update_withdrawal_delay",
+      "method": "PATCH",
+      "path": "/wapi/v1/capital/withdrawals/delay",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/update_withdrawal_delay",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/borrowLend",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_history",
+      "instruction": "borrowHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_interest_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/interest",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_interest_history",
+      "instruction": "interestHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_borrow_lend_position_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/borrowLend/positions",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_borrow_lend_position_history",
+      "instruction": "borrowPositionHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_dust_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/dust",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_dust_history",
+      "instruction": "dustHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_fills",
+      "method": "GET",
+      "path": "/wapi/v1/history/fills",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_fills",
+      "instruction": "fillHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_funding_payments",
+      "method": "GET",
+      "path": "/wapi/v1/history/funding",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_funding_payments",
+      "instruction": "fundingHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_order_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/orders",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_order_history",
+      "instruction": "orderHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_rfq_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/rfq",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_rfq_history",
+      "instruction": "rfqHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_quote_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/quote",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_quote_history",
+      "instruction": "quoteHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_rfq_fill_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/rfq/fill",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_rfq_fill_history",
+      "instruction": "rfqFillHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_quote_fill_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/quote/fill",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_quote_fill_history",
+      "instruction": "quoteFillHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_settlement_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/settlement",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_settlement_history",
+      "instruction": "settlementHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_position_history",
+      "method": "GET",
+      "path": "/wapi/v1/history/position",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_position_history",
+      "instruction": "positionHistoryQueryAll"
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_klines",
+      "method": "GET",
+      "path": "/api/v1/klines",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_klines",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_ticker",
+      "method": "GET",
+      "path": "/api/v1/ticker",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_ticker",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_tickers",
+      "method": "GET",
+      "path": "/api/v1/tickers",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_tickers",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_funding_interval_rates",
+      "method": "GET",
+      "path": "/api/v1/fundingRates",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_funding_interval_rates",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_historical_trades",
+      "method": "GET",
+      "path": "/api/v1/trades/history",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_historical_trades",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_stock_indicative_quote",
+      "method": "GET",
+      "path": "/api/v1/stockIndicativeQuote",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_stock_indicative_quote",
+      "instruction": null
+    },
+    {
+      "venue": "backpack",
+      "operation": "get_stock_corporate_action_schedule",
+      "method": "GET",
+      "path": "/api/v1/stocks/corporateActions",
+      "family": "exchange",
+      "source": "https://docs.backpack.exchange/#operation/get_stock_corporate_action_schedule",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "status",
+      "method": "GET",
+      "path": "/",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/system/status.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "account",
+      "method": "GET",
+      "path": "/api/v1/account",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/account.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountActiveOrders",
+      "method": "GET",
+      "path": "/api/v1/accountActiveOrders",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/accountactiveorders.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountInactiveOrders",
+      "method": "GET",
+      "path": "/api/v1/accountInactiveOrders",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/accountinactiveorders.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountLimits",
+      "method": "GET",
+      "path": "/api/v1/accountLimits",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/accountlimits.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountMetadata",
+      "method": "GET",
+      "path": "/api/v1/accountMetadata",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/accountmetadata.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountOrders",
+      "method": "GET",
+      "path": "/api/v1/accountOrders",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/accountorders.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountTxs",
+      "method": "GET",
+      "path": "/api/v1/accountTxs",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "accountsByL1Address",
+      "method": "GET",
+      "path": "/api/v1/accountsByL1Address",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/accountsbyl1address.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "announcement",
+      "method": "GET",
+      "path": "/api/v1/announcement",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/announcements/announcement.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "apikeys",
+      "method": "GET",
+      "path": "/api/v1/apikeys",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/apikeys.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "assetDetails",
+      "method": "GET",
+      "path": "/api/v1/assetDetails",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/assetdetails.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "block",
+      "method": "GET",
+      "path": "/api/v1/block",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "blockTxs",
+      "method": "GET",
+      "path": "/api/v1/blockTxs",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "blocks",
+      "method": "GET",
+      "path": "/api/v1/blocks",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "candles",
+      "method": "GET",
+      "path": "/api/v1/candles",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/candlesticks/candles.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "changeAccountTier",
+      "method": "POST",
+      "path": "/api/v1/changeAccountTier",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/changeaccounttier.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "createIntentAddress",
+      "method": "POST",
+      "path": "/api/v1/createIntentAddress",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/createintentaddress.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "currentHeight",
+      "method": "GET",
+      "path": "/api/v1/currentHeight",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "deposit_history",
+      "method": "GET",
+      "path": "/api/v1/deposit/history",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/deposit_history.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "deposit_latest",
+      "method": "GET",
+      "path": "/api/v1/deposit/latest",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/deposit_latest.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "deposit_networks",
+      "method": "GET",
+      "path": "/api/v1/deposit/networks",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/deposit_networks.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "events",
+      "method": "GET",
+      "path": "/api/v1/events",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/binary-options/events.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "exchangeMetrics",
+      "method": "GET",
+      "path": "/api/v1/exchangeMetrics",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/exchangemetrics.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "exchangeStats",
+      "method": "GET",
+      "path": "/api/v1/exchangeStats",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/exchangestats.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "executeStats",
+      "method": "GET",
+      "path": "/api/v1/executeStats",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/executestats.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "export",
+      "method": "GET",
+      "path": "/api/v1/export",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/export.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "export_historicalTrades",
+      "method": "GET",
+      "path": "/api/v1/export/historicalTrades",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/export_historicaltrades.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "fastbridge_info",
+      "method": "GET",
+      "path": "/api/v1/fastbridge/info",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/fastbridge_info.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "fastwithdraw",
+      "method": "POST",
+      "path": "/api/v1/fastwithdraw",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/fastwithdraw.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "fastwithdraw_info",
+      "method": "GET",
+      "path": "/api/v1/fastwithdraw/info",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/bridge/fastwithdraw_info.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "feeTiers",
+      "method": "GET",
+      "path": "/api/v1/feeTiers",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/binary-options/feetiers.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "funding-rates",
+      "method": "GET",
+      "path": "/api/v1/funding-rates",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/funding/funding-rates.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "fundings",
+      "method": "GET",
+      "path": "/api/v1/fundings",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/funding/fundings.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "getMakerOnlyApiKeys",
+      "method": "GET",
+      "path": "/api/v1/getMakerOnlyApiKeys",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/getmakeronlyapikeys.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "l1Metadata",
+      "method": "GET",
+      "path": "/api/v1/l1Metadata",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/l1metadata.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "layer1BasicInfo",
+      "method": "GET",
+      "path": "/api/v1/layer1BasicInfo",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/system/layer1basicinfo.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "leaderboard",
+      "method": "GET",
+      "path": "/api/v1/leaderboard",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/points/leaderboard.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "leaseOptions",
+      "method": "GET",
+      "path": "/api/v1/leaseOptions",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/fee-credits/leaseoptions.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "leases",
+      "method": "GET",
+      "path": "/api/v1/leases",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/fee-credits/leases.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "liquidations",
+      "method": "GET",
+      "path": "/api/v1/liquidations",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/liquidations.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "litLease",
+      "method": "POST",
+      "path": "/api/v1/litLease",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/fee-credits/litlease.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "livePoints_total",
+      "method": "GET",
+      "path": "/api/v1/livePoints/total",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/points/livepoints_total.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "markPriceCandles",
+      "method": "GET",
+      "path": "/api/v1/markPriceCandles",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/candlesticks/markpricecandles.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "marketPriceCharts",
+      "method": "GET",
+      "path": "/api/v1/marketPriceCharts",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/candlesticks/marketpricecharts.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "nextNonce",
+      "method": "GET",
+      "path": "/api/v1/nextNonce",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/nextnonce.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "notification_ack",
+      "method": "POST",
+      "path": "/api/v1/notification/ack",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/notifications/notification_ack.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "orderBookDetails",
+      "method": "GET",
+      "path": "/api/v1/orderBookDetails",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/orderbookdetails.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "orderBookOrders",
+      "method": "GET",
+      "path": "/api/v1/orderBookOrders",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/orderbookorders.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "orderBooks",
+      "method": "GET",
+      "path": "/api/v1/orderBooks",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/orderbooks.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "partnerStats",
+      "method": "GET",
+      "path": "/api/v1/partnerStats",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/partnerstats.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "pnl",
+      "method": "GET",
+      "path": "/api/v1/pnl",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/pnl.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "pnlLeaderboard",
+      "method": "GET",
+      "path": "/api/v1/pnlLeaderboard",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/pnlleaderboard.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "portfolio_boPnl",
+      "method": "GET",
+      "path": "/api/v1/portfolio/boPnl",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/binary-options/portfolio_bopnl.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "positionFunding",
+      "method": "GET",
+      "path": "/api/v1/positionFunding",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/positionfunding.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "priceOracleInfo",
+      "method": "GET",
+      "path": "/api/v1/priceOracleInfo",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/priceoracleinfo.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "publicPoolsMetadata",
+      "method": "GET",
+      "path": "/api/v1/publicPoolsMetadata",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/account/publicpoolsmetadata.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "recentTrades",
+      "method": "GET",
+      "path": "/api/v1/recentTrades",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/recenttrades.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_create",
+      "method": "POST",
+      "path": "/api/v1/referral/create",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_create.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_get",
+      "method": "GET",
+      "path": "/api/v1/referral/get",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_get.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_kickback_update",
+      "method": "POST",
+      "path": "/api/v1/referral/kickback/update",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_kickback_update.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_points",
+      "method": "GET",
+      "path": "/api/v1/referral/points",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_points.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_stats",
+      "method": "GET",
+      "path": "/api/v1/referral/stats",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_stats.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_update",
+      "method": "POST",
+      "path": "/api/v1/referral/update",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_update.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_use",
+      "method": "POST",
+      "path": "/api/v1/referral/use",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/referral_use.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "referral_userReferrals",
+      "method": "GET",
+      "path": "/api/v1/referral/userReferrals",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/referral/userreferrals.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "rfq_create",
+      "method": "POST",
+      "path": "/api/v1/rfq/create",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/rfq/rfq_create.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "rfq_get",
+      "method": "GET",
+      "path": "/api/v1/rfq/get",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/rfq/rfq_get.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "rfq_list",
+      "method": "GET",
+      "path": "/api/v1/rfq/list",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/rfq/rfq_list.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "rfq_respond",
+      "method": "POST",
+      "path": "/api/v1/rfq/respond",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/rfq/rfq_respond.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "rfq_update",
+      "method": "POST",
+      "path": "/api/v1/rfq/update",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/rfq/rfq_update.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "sendTx",
+      "method": "POST",
+      "path": "/api/v1/sendTx",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/sendtx.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "sendTxBatch",
+      "method": "POST",
+      "path": "/api/v1/sendTxBatch",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/sendtxbatch.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "setAccountMetadata",
+      "method": "POST",
+      "path": "/api/v1/setAccountMetadata",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "setMakerOnlyApiKeys",
+      "method": "POST",
+      "path": "/api/v1/setMakerOnlyApiKeys",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/setmakeronlyapikeys.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "syntheticSpotInfo",
+      "method": "GET",
+      "path": "/api/v1/syntheticSpotInfo",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/syntheticspotinfo.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "systemConfig",
+      "method": "GET",
+      "path": "/api/v1/systemConfig",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/system/systemconfig.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "tokenlist",
+      "method": "GET",
+      "path": "/api/v1/tokenlist",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/tokenlist.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "tokens",
+      "method": "GET",
+      "path": "/api/v1/tokens",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/tokens.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "tokens_create",
+      "method": "POST",
+      "path": "/api/v1/tokens/create",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/tokens_create.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "tokens_revoke",
+      "method": "POST",
+      "path": "/api/v1/tokens/revoke",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/api-keys/tokens_revoke.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "trades",
+      "method": "GET",
+      "path": "/api/v1/trades",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/orders/trades.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "transfer_history",
+      "method": "GET",
+      "path": "/api/v1/transfer/history",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/transfer_history.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "transferFeeInfo",
+      "method": "GET",
+      "path": "/api/v1/transferFeeInfo",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/transferfeeinfo.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "tx",
+      "method": "GET",
+      "path": "/api/v1/tx",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/tx.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "txFromL1TxHash",
+      "method": "GET",
+      "path": "/api/v1/txFromL1TxHash",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/txfroml1txhash.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "txs",
+      "method": "GET",
+      "path": "/api/v1/txs",
+      "family": "exchange",
+      "source": "https://github.com/elliottech/lighter-python/blob/d30dc2296d27f1584faeb22a590486aded1f03b1/openapi.json",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "upDownCandles",
+      "method": "GET",
+      "path": "/api/v1/upDownCandles",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/binary-options/updowncandles.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "withdraw_history",
+      "method": "GET",
+      "path": "/api/v1/withdraw/history",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/transactions/withdraw_history.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "withdrawalDelay",
+      "method": "GET",
+      "path": "/api/v1/withdrawalDelay",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/info/withdrawaldelay.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "info",
+      "method": "GET",
+      "path": "/info",
+      "family": "exchange",
+      "source": "https://docs.lighter.xyz/api/system/info.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_accounts_param_assets",
+      "method": "GET",
+      "path": "/accounts/{param}/assets",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/account/get-account-assets.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_accounts_param_logs",
+      "method": "GET",
+      "path": "/accounts/{param}/logs",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/account/get-account-by-address.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_accounts_param_positions",
+      "method": "GET",
+      "path": "/accounts/{param}/positions",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/account/get-account-by-address-1.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_batches",
+      "method": "GET",
+      "path": "/batches",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/batches/get-recent-batches.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_batches_batch_id_",
+      "method": "GET",
+      "path": "/batches/{batchId}",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/batches/get-batch-by-id.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_blocks",
+      "method": "GET",
+      "path": "/blocks",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/blocks/get-recent-blocks.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_blocks_block_id_",
+      "method": "GET",
+      "path": "/blocks/{blockId}",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/blocks/get-block-by-id.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_logs_hash_",
+      "method": "GET",
+      "path": "/logs/{hash}",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/logs/get-log-by-hash.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_markets",
+      "method": "GET",
+      "path": "/markets",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/markets/list-all-markets.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_markets_symbol_logs",
+      "method": "GET",
+      "path": "/markets/{symbol}/logs",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/markets/get-market-latest-logs-to-query-perpetual-markets-use-the-symbol-alone-for-spot-markets-use-symbol-q.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_search",
+      "method": "GET",
+      "path": "/search",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/search/search-for-blocks-batches-transactions-or-accounts.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_stats_tx",
+      "method": "GET",
+      "path": "/stats/tx",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/stats/get-tx-stats.md",
+      "instruction": null
+    },
+    {
+      "venue": "lighter",
+      "operation": "explorer_get_total",
+      "method": "GET",
+      "path": "/total",
+      "family": "explorer",
+      "source": "https://docs.lighter.xyz/api/explorer-api/stats/list-total-values.md",
+      "instruction": null
+    }
+  ]
+}

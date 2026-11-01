@@ -407,7 +407,7 @@ impl account::AccountConnector for AccountRuntime {
         asset: account::AssetId,
         client: account::Id128,
     ) -> account::OrderExecutionEvidenceFuture {
-        if !self.api.supports_order_execution_evidence() {
+        if !self.api.supports_order_execution_evidence() || !self.api.supplies_fill_realized_pnl() {
             return Box::pin(async { Ok(None) });
         }
         let api = self.api.clone();
@@ -1811,7 +1811,12 @@ impl AccountEventEncoder {
             AccountPublication::NativeFill {
                 position_side,
                 fill,
+            }
+            | AccountPublication::NativeFillWithoutRealizedPnl {
+                position_side,
+                fill,
             } => {
+                let pnl_available = matches!(event, AccountPublication::NativeFill { .. });
                 let binding = self
                     .context
                     .instruments
@@ -1854,11 +1859,17 @@ impl AccountEventEncoder {
                     .ok_or_else(|| rejected("native execution timestamp overflow"))?;
                 let price_ticks = to_observation_units(fill.price, binding.price_tick)?;
                 let fee_amount_units = to_observation_units(fill.fee, currency.amount_unit)?;
-                let realized_pnl_units =
-                    to_observation_units(fill.realized_pnl, currency.amount_unit)?;
-                let fingerprint =
+                let realized_pnl_units = if pnl_available {
+                    to_observation_units(fill.realized_pnl, currency.amount_unit)?
+                } else {
+                    0
+                };
+                let fingerprint = if pnl_available {
                     serde_json::to_vec(&(fill, account_position_side(*position_side)?))
-                        .map_err(|e| rejected(e.to_string()))?;
+                } else {
+                    serde_json::to_vec(&(fill, account_position_side(*position_side)?, false))
+                }
+                .map_err(|e| rejected(e.to_string()))?;
                 let cumulative = self
                     .projection
                     .lock()
@@ -1879,6 +1890,11 @@ impl AccountEventEncoder {
                     header: self.header(
                         account::event_kind::FILL,
                         account::event_flags::UPSERT
+                            | if pnl_available {
+                                0
+                            } else {
+                                account::event_flags::REALIZED_PNL_UNAVAILABLE
+                            }
                             | account::event_flags::position_flags(account_position_side(
                                 *position_side,
                             )?),
@@ -2533,8 +2549,31 @@ fn build_gate_crossex(config: &str) -> Result<Box<dyn Connector>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(feature = "backpack")]
+fn build_backpack(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::backpack::Backpack::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
+#[cfg(feature = "lighter")]
+fn build_lighter(config: &str) -> Result<Box<dyn Connector>, String> {
+    crate::lighter::Lighter::build_from(config)
+        .map(|v| Box::new(v) as Box<dyn Connector>)
+        .map_err(|e| e.to_string())
+}
+
 pub fn venue_account_factories() -> Vec<Arc<dyn account::AccountConnectorFactory>> {
     let values: Vec<Arc<dyn account::AccountConnectorFactory>> = vec![
+        #[cfg(feature = "backpack")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "backpack-account",
+            build_backpack,
+        )),
+        #[cfg(feature = "lighter")]
+        Arc::new(VenueAccountConnectorFactory::new(
+            "lighter-account",
+            build_lighter,
+        )),
         #[cfg(feature = "gatecrossex")]
         Arc::new(VenueAccountConnectorFactory::new(
             "gate-crossex-account",
@@ -3547,9 +3586,26 @@ mod tests {
         assert!(publish(conflict).is_err());
         native.trade_id = "2072784922594049".into();
         native.timestamp = 2;
-        publish(native).unwrap();
+        publish(native.clone()).unwrap();
+        let mut unknown = native.clone();
+        unknown.trade_id = "native-pnl-unavailable".into();
+        unknown.timestamp = 3;
+        unknown.realized_pnl = 0.0;
+        encoder
+            .publish(&AccountPublication::NativeFillWithoutRealizedPnl {
+                position_side: ApiPositionSide::Net,
+                fill: unknown,
+            })
+            .unwrap();
         let events = sink.events.lock().unwrap();
-        assert_eq!(events.len(), 3); // one order, exactly two native executions
+        assert_eq!(events.len(), 4); // one order, two known-PnL executions and one unavailable
+        let unknown = account::FillV2::decode(&events[3].1).unwrap();
+        assert_ne!(
+            unknown.header.flags & account::event_flags::REALIZED_PNL_UNAVAILABLE,
+            0
+        );
+        assert_eq!(unknown.realized_pnl_units, 0);
+        assert_eq!(unknown.fee_amount_units, 3);
         let order = account::OrderChangedV1::decode(&events[0].1).unwrap();
         assert_ne!(order.header.flags & account::event_flags::REDUCE_ONLY, 0);
         let first = account::FillV2::decode(&events[1].1).unwrap();

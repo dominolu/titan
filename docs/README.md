@@ -17,6 +17,8 @@
 - [P14 完整 A/N/E 非实盘：候选 04 负例与候选 05 通过](verification/2026-10-28/data-persistence/m4-ane/README.md)
 - [P14 候选 05 故障补验：部分成交、bootstrap、重连及异常态 Stop](verification/2026-10-28/data-persistence/m4-faults/README.md)
 - [P14 故障后安全恢复：候选 07 补查、新代次恢复与原期限 Stop](verification/2026-10-28/data-persistence/m4-safe-recovery/README.md)
+- [Lighter、Backpack、Variational 接入与能力边界](exchange_onboarding.md)：[全量 API 验证和剩余条件](verification/2026-10-31/native-venues-all-api/README.md)。
+- [三家交易所全部已公开原生 API 目录](exchange_api_catalog.md)
 
 ## 架构与发布
 
@@ -48,3 +50,5 @@
 ## ABI
 
 仓库策略系统仅支持 Strategy ABI V13；旧 ABI 的运行时 loader、SDK 和迁移文档均已移除。
+
+- [深度快照、可信 Top100 与重同步契约](depth_pipeline.md)：ABI V13 可选能力、容量、策略预热及离线输入；[2026-10-28 验收](verification/2026-10-28/depth/README.md)。
