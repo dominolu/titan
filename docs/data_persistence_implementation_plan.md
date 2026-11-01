@@ -119,7 +119,7 @@ M2 已交付独立 `titan-persistence` crate 的事实/查询/对象端口、SQL
 
 ### 5.3 性能与容量
 
-P01 定义测量方法，P09 记录本地配置、恢复提交、执行资源和既有并发查询回归，P13 冻结本轮候选预算及完整争用矩阵；这些测量不能作为其他硬件或生产环境的 SLA。M2 的[性能记录](verification/2026-10-27/data-persistence/m2/performance.json)记录 FULL 提交 P50/P95/P99/最大值、原生完整审计峰值内存及输出大小；采集、队列、chunk、查询和 reader 上限均显式列出。P13 已用本轮真实驱动、原生模拟及争用矩阵完成预算验收，载荷分布、WAL 峰值、故障范围、默认容量和新运行准入见[M3 证据](verification/2026-10-28/data-persistence/m3/README.md)；更改预算或运行环境后重新验收。
+P01 定义测量方法，P09 记录本地配置、恢复提交、执行资源和既有并发查询回归，P13 冻结本轮候选预算及完整争用矩阵；这些测量不能作为其他硬件或生产环境的 SLA。M2 的[性能记录（原始证据私有保存）](repository_privacy.md)记录 FULL 提交 P50/P95/P99/最大值、原生完整审计峰值内存及输出大小；采集、队列、chunk、查询和 reader 上限均显式列出。P13 已用本轮真实驱动、原生模拟及争用矩阵完成预算验收，载荷分布、WAL 峰值、故障范围、默认容量和新运行准入见[M3 证据](verification/2026-10-28/data-persistence/m3/README.md)；更改预算或运行环境后重新验收。
 
 分别测空闲盘、历史批量写入、慢查询、对象归档及备份争用场景。恢复提交预算须覆盖 handler 和停止期限的实际调用链；超限必须保持故障关闭，不能通过关闭同步提交或延长原恢复/停止预算通过验收。
 
@@ -163,24 +163,24 @@ M1 恢复工具的可执行语法已列入[运行手册](recovery_storage_operat
 | --- | --- | --- |
 | M0 设计和实施计划 | 已更新至 v0.9 | [设计](data_persistence_design.md)、本文及[工程记忆](memory/engineering.md) |
 | P01 恢复契约及配置 | 已完成 | 领域端口、schema v1、driver/目录冲突与数值边界；[M1 记录](verification/2026-10-27/data-persistence/m1/README.md) |
-| P02 SQLite 恢复 | 已完成 | 24 项存储测试及原生故障探针；[Rust 日志](verification/2026-10-27/data-persistence/m1/rust-tests.log) |
-| P03 宿主/管理贯通 | 已完成 | 27 项模拟流程、10 项浏览器检查、派单前已提交意图；[流程结果](verification/2026-10-27/data-persistence/m1/loopback/results.json) |
-| P04 迁移/灾备工具 | 已完成 | 9 项维护检查、旧签名策略原字节恢复；[维护结果](verification/2026-10-27/data-persistence/m1/maintenance/results.json)、[运行手册](recovery_storage_operations.md) |
+| P02 SQLite 恢复 | 已完成 | 24 项存储测试及原生故障探针；[Rust 日志（原始证据私有保存）](repository_privacy.md) |
+| P03 宿主/管理贯通 | 已完成 | 27 项模拟流程、10 项浏览器检查、派单前已提交意图；[流程结果（原始证据私有保存）](repository_privacy.md) |
+| P04 迁移/灾备工具 | 已完成 | 9 项维护检查、旧签名策略原字节恢复；[维护结果（原始证据私有保存）](repository_privacy.md)、[运行手册](recovery_storage_operations.md) |
 | M1 阶段门槛 | 已通过（非实盘） | 同一源码完整重验、源码/构建摘要及[实际范围](verification/2026-10-27/data-persistence/m1/README.md) |
-| P05 事实归档及完整性 | 已完成 | 同事务事实/去重/水位、来源与缺口、关键审计门；[20 项契约及全工作区日志](verification/2026-10-27/data-persistence/m2/rust-tests.log)、[模拟来源隔离](verification/2026-10-27/data-persistence/m2/loopback/archive-history.json) |
-| P06 回测采集与数据源 | 已完成 | 18 组/5,468 笔模拟成交，42,743 条 SQLite/Parquet 事实一致，同一原生文件的二进制/Parquet 输入回放一致；[本地闭环](verification/2026-10-27/data-persistence/m2/local-persistence/results.json) |
-| P07 对象和结果提交 | 已完成 | 原字节 v1 物化、登记重试、坏摘要/缺 manifest 拒绝及数据准备清单；[本地闭环](verification/2026-10-27/data-persistence/m2/local-persistence/results.json)、[维护手册](local_persistence_operations.md) |
-| P08 查询及独立业务观测 | 已完成 | 授权、固定上界/方向游标、公开帧、最新权益查询；[32 项回环流程](verification/2026-10-27/data-persistence/m2/loopback/results.json)、[历史浏览器](verification/2026-10-27/data-persistence/m2/historical/browser/browser.json)、[只读浏览器](verification/2026-10-27/data-persistence/m2/readonly/browser.json) |
-| P09 / M2 阶段门槛 | 已通过（非实盘） | 34 个步骤、636 项 Rust、SDK/报告和全部页面通过；[最终验收](verification/2026-10-27/data-persistence/m2/README.md)、[资源/延迟](verification/2026-10-27/data-persistence/m2/performance.json)、[冻结产物](verification/2026-10-27/data-persistence/m2/artifact-sha256.json) |
-| P10 PostgreSQL 投影 | 已完成 | 原字节、同事务游标、并发/确认丢失与断点补传、裁剪后查询；[真实契约](verification/2026-10-28/data-persistence/m3/external/results.json) |
-| P11 S3 兼容对象 | 已完成 | 单文件 2.92 GB、全量 3.03 GB，不可变条件写、原字节冷读取、凭据/摘要/中断拒绝；[外部故障](verification/2026-10-28/data-persistence/m3/external-faults/results.json) |
+| P05 事实归档及完整性 | 已完成 | 同事务事实/去重/水位、来源与缺口、关键审计门；[20 项契约及全工作区日志（原始证据私有保存）](repository_privacy.md)、[模拟来源隔离（原始证据私有保存）](repository_privacy.md) |
+| P06 回测采集与数据源 | 已完成 | 18 组/5,468 笔模拟成交，42,743 条 SQLite/Parquet 事实一致，同一原生文件的二进制/Parquet 输入回放一致；[本地闭环（原始证据私有保存）](repository_privacy.md) |
+| P07 对象和结果提交 | 已完成 | 原字节 v1 物化、登记重试、坏摘要/缺 manifest 拒绝及数据准备清单；[本地闭环（原始证据私有保存）](repository_privacy.md)、[维护手册](local_persistence_operations.md) |
+| P08 查询及独立业务观测 | 已完成 | 授权、固定上界/方向游标、公开帧、最新权益查询；[32 项回环流程（原始证据私有保存）](repository_privacy.md)、[历史浏览器（原始证据私有保存）](repository_privacy.md)、[只读浏览器（原始证据私有保存）](repository_privacy.md) |
+| P09 / M2 阶段门槛 | 已通过（非实盘） | 34 个步骤、636 项 Rust、SDK/报告和全部页面通过；[最终验收](verification/2026-10-27/data-persistence/m2/README.md)、[资源/延迟（原始证据私有保存）](repository_privacy.md)、[冻结产物（原始证据私有保存）](repository_privacy.md) |
+| P10 PostgreSQL 投影 | 已完成 | 原字节、同事务游标、并发/确认丢失与断点补传、裁剪后查询；[真实契约（原始证据私有保存）](repository_privacy.md) |
+| P11 S3 兼容对象 | 已完成 | 单文件 2.92 GB、全量 3.03 GB，不可变条件写、原字节冷读取、凭据/摘要/中断拒绝；[外部故障（原始证据私有保存）](repository_privacy.md) |
 | P12 双向切换及回切 | 已完成 | 18 组 PG 裁剪/SQLite 回填、目录/S3 往返、旧游标/修订与身份拒绝；[最终验收](verification/2026-10-28/data-persistence/m3/README.md) |
-| P13 / M3 阶段门槛 | 已通过（非实盘） | 37 步、644 项 Rust、2 doctest、SDK/报告、原生/全部页面；551 文件与最终清单及本地一致；[预算](verification/2026-10-28/data-persistence/m3/recovery-contention.json)、[冻结产物](verification/2026-10-28/data-persistence/m3/artifact-sha256.json) |
-| P14 / M4 首轮 | 已完成（零成交范围的受控实盘） | 指定账户 22.02 s、13 项流程/7 个管理操作通过；6 笔最小委托全部撤销，18 条订单事实、零成交；SQLite 固定记录/pin、代次 1→2 和原期限保持，最终零目标风险/占用/进程；[验收记录](verification/2026-10-28/data-persistence/m4/README.md)、[审计](verification/2026-10-28/data-persistence/m4/audit-summary.json)、[独立复核](verification/2026-10-28/data-persistence/m4/postflight-independent.json) |
-| P14 真实成交补验 | 未通过；按用户要求停止复验并保留占用 | 独立买入成交及费用进入周期 SQLite 点；恢复回调拒绝，退出后独立安全平仓。最终目标零挂单/持仓、零进程；两条占用及原 UNKNOWN、原期限和失败记录保留。修复候选已通过非实盘验证但未部署；[补验记录](verification/2026-10-28/data-persistence/m4-filled/README.md)、[停止及清理](verification/2026-10-28/data-persistence/m4-filled/final-cleanup.json) |
-| P14 完整 A/N/E 非实盘 | 候选 04 拒绝；修复候选 05 已通过 | 同一签名策略原字节，先持仓后成交、原 60 s SQLite 点、E 崩溃及 A/N 重启、原期限恢复、跨进程成交/费用去重、10 s 内有仓位 Stop。78.876 s 完成，Stop 连同 E 退出 3.690 s；[本轮证据](verification/2026-10-28/data-persistence/m4-ane/README.md)、[审计](verification/2026-10-28/data-persistence/m4-ane/candidate05/audit.json)。未访问实盘，两条真实占用不变 |
-| P14 候选 05 非实盘故障补验 | 已完成：3 个安全平仓正例、2 个失败关闭负例按契约通过 | 部分成交和 bootstrap 重放经过原 60 s 点与 A/N/E 跨进程恢复、原期限不变；连同行情重连，三个 Stop 退出/释放耗时 3.354 / 3.447 / 3.550 s。私有断线及缺成交异常态最终 FAILED、模拟残仓和占用保留，原 10 s 引擎期限不延长；[故障证据](verification/2026-10-28/data-persistence/m4-faults/README.md)、[矩阵审计](verification/2026-10-28/data-persistence/m4-faults/matrix-audit.json)。实盘及两条真实占用未动 |
-| P14 故障后非实盘安全恢复 | 已完成：候选 07 的 2 个恢复正例、3 个拒绝负例和 5 个故障回归通过 | REST 原生成交补查、费用去重、闭门重放和固定 BLOB 新代次恢复；原 boot ID/BOOTTIME/到期值保持，旧运行 FAILED、双门关闭。新代次有仓位 Stop 退出/释放 3.566 / 3.615 s，补查不完整或费用冲突拒绝激活。候选 06 失败证据保留；[验收](verification/2026-10-28/data-persistence/m4-safe-recovery/README.md)、[矩阵](verification/2026-10-28/data-persistence/m4-safe-recovery/matrix-summary.json)。实盘及两条真实占用未动 |
+| P13 / M3 阶段门槛 | 已通过（非实盘） | 37 步、644 项 Rust、2 doctest、SDK/报告、原生/全部页面；551 文件与最终清单及本地一致；[预算（原始证据私有保存）](repository_privacy.md)、[冻结产物（原始证据私有保存）](repository_privacy.md) |
+| P14 / M4 首轮 | 已完成（零成交范围的受控实盘） | 指定账户 22.02 s、13 项流程/7 个管理操作通过；6 笔最小委托全部撤销，18 条订单事实、零成交；SQLite 固定记录/pin、代次 1→2 和原期限保持，最终零目标风险/占用/进程；[验收记录](verification/2026-10-28/data-persistence/m4/README.md)、[审计（原始证据私有保存）](repository_privacy.md)、[独立复核（原始证据私有保存）](repository_privacy.md) |
+| P14 真实成交补验 | 未通过；按用户要求停止复验并保留占用 | 独立买入成交及费用进入周期 SQLite 点；恢复回调拒绝，退出后独立安全平仓。最终目标零挂单/持仓、零进程；两条占用及原 UNKNOWN、原期限和失败记录保留。修复候选已通过非实盘验证但未部署；[补验记录](verification/2026-10-28/data-persistence/m4-filled/README.md)、[停止及清理（原始证据私有保存）](repository_privacy.md) |
+| P14 完整 A/N/E 非实盘 | 候选 04 拒绝；修复候选 05 已通过 | 同一签名策略原字节，先持仓后成交、原 60 s SQLite 点、E 崩溃及 A/N 重启、原期限恢复、跨进程成交/费用去重、10 s 内有仓位 Stop。78.876 s 完成，Stop 连同 E 退出 3.690 s；[本轮证据](verification/2026-10-28/data-persistence/m4-ane/README.md)、[审计（原始证据私有保存）](repository_privacy.md)。未访问实盘，两条真实占用不变 |
+| P14 候选 05 非实盘故障补验 | 已完成：3 个安全平仓正例、2 个失败关闭负例按契约通过 | 部分成交和 bootstrap 重放经过原 60 s 点与 A/N/E 跨进程恢复、原期限不变；连同行情重连，三个 Stop 退出/释放耗时 3.354 / 3.447 / 3.550 s。私有断线及缺成交异常态最终 FAILED、模拟残仓和占用保留，原 10 s 引擎期限不延长；[故障证据](verification/2026-10-28/data-persistence/m4-faults/README.md)、[矩阵审计（原始证据私有保存）](repository_privacy.md)。实盘及两条真实占用未动 |
+| P14 故障后非实盘安全恢复 | 已完成：候选 07 的 2 个恢复正例、3 个拒绝负例和 5 个故障回归通过 | REST 原生成交补查、费用去重、闭门重放和固定 BLOB 新代次恢复；原 boot ID/BOOTTIME/到期值保持，旧运行 FAILED、双门关闭。新代次有仓位 Stop 退出/释放 3.566 / 3.615 s，补查不完整或费用冲突拒绝激活。候选 06 失败证据保留；[验收](verification/2026-10-28/data-persistence/m4-safe-recovery/README.md)、[矩阵（原始证据私有保存）](repository_privacy.md)。实盘及两条真实占用未动 |
 
 后续每完成一个工作包，更新本表、对应矩阵结果、代码提交及证据链接。架构边界改变时同步更新设计、[工程记忆](memory/engineering.md)和相关运行说明；历史报告不能作为本次修改的通过证明。
 

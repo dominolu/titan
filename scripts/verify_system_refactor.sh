@@ -10,7 +10,7 @@ cd "$repo_root"
 verification_root="$repo_root/verification-artifacts/final"
 mkdir -p "$verification_root"
 export CARGO_BUILD_JOBS=8
-task_cargo=/workspace/.cargo/bin/cargo
+task_cargo=${CARGO:-cargo}
 task_python="$repo_root/.venv/bin/python"
 export TITAN_STRATEGY_PYTHON="$task_python"
 export TITAN_STRATEGY_SDK="$repo_root/python/titan-strategy-sdk"

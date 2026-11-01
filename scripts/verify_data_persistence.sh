@@ -15,7 +15,7 @@ out=$(cd "$out" && pwd)
 : "${TITAN_BROWSER_EXECUTABLE:?provide an installed Chromium executable}"
 : "${TITAN_SOURCE_BASELINE:?provide the source Git baseline for this isolated snapshot}"
 test -x "$TITAN_BROWSER_EXECUTABLE"
-: "${TITAN_VERIFY_PYTHON:=/workspace/dev/titan/.venv/bin/python}"
+: "${TITAN_VERIFY_PYTHON:=python3}"
 : "${CARGO_TARGET_DIR:=/tmp/titan-deplugin-target}"
 export CARGO_TARGET_DIR CARGO_NET_OFFLINE=true
 : "${TITAN_PERSISTENCE_STAGE:=M1}"

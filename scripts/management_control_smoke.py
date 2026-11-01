@@ -110,7 +110,7 @@ def main():
     args.repo=args.repo.resolve();args.binary=args.binary.resolve();args.output.mkdir(parents=True);root=args.output.resolve();root.chmod(0o700)
     venue=Venue();venue.recovery_database=root/"live/checkpoints/synthetic-gate-1/77/runtime.db";threading.Thread(target=venue.serve_forever,daemon=True).start();threading.Thread(target=venue.prices,daemon=True).start()
     vp=venue.server_port;mp,bp,np=port(),port(),port();origin=f"http://127.0.0.1:{mp}"
-    password,token=secrets.token_hex(24),secrets.token_hex(32);env=dict(os.environ,RUST_LOG="warn,titan_strategy_runtime=debug,connector::gatecrossex::stream=debug",TITAN_CONSOLE_NODE_TOKEN=token,TITAN_STRATEGY_PYTHON="/workspace/dev/titan/.venv/bin/python",TITAN_STRATEGY_SDK=str(args.repo/"python/titan-strategy-sdk"))
+    password,token=secrets.token_hex(24),secrets.token_hex(32);env=dict(os.environ,RUST_LOG="warn,titan_strategy_runtime=debug,connector::gatecrossex::stream=debug",TITAN_CONSOLE_NODE_TOKEN=token,TITAN_STRATEGY_PYTHON=os.environ.get("TITAN_STRATEGY_PYTHON", "python3"),TITAN_STRATEGY_SDK=str(args.repo/"python/titan-strategy-sdk"))
     hashed=subprocess.check_output([str(args.binary),"console","password-hash"],input=password.encode(),env=env).decode().strip()
     key=root/"signing.key";seed=secrets.token_bytes(32);key.write_bytes(seed);key.chmod(0o600)
     der=root/"key.der";der.write_bytes(bytes.fromhex("302e020100300506032b657004220420")+seed);der.chmod(0o600)

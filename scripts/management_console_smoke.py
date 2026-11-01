@@ -28,8 +28,8 @@ def main():
     token, password = secrets.token_hex(32), secrets.token_hex(24)
     env = dict(os.environ, TITAN_CONSOLE_NODE_TOKEN=token,
                TITAN_STRATEGY_SDK=str(args.repo / "python/titan-strategy-sdk"),
-               TITAN_STRATEGY_PYTHON="/workspace/dev/titan/.venv/bin/python",
-               TITAN_REPORT_PYTHON="/workspace/dev/titan/.venv/bin/python",
+               TITAN_STRATEGY_PYTHON=os.environ.get("TITAN_STRATEGY_PYTHON", "python3"),
+               TITAN_REPORT_PYTHON=os.environ.get("TITAN_REPORT_PYTHON", "python3"),
                TITAN_REPORTING_PATH=str(args.repo / "python/titan-reporting"))
     hashed = subprocess.check_output([str(args.binary), "console", "password-hash"], input=(password + "\n").encode(), env=env).decode().strip()
     quote = lambda value: json.dumps(str(value))

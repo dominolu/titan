@@ -6,7 +6,7 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 repo=$(pwd)
 : "${CARGO_TARGET_DIR:=$repo/target}"
-: "${TITAN_VERIFY_PYTHON:=/workspace/dev/titan/.venv/bin/python}"
+: "${TITAN_VERIFY_PYTHON:=python3}"
 export CARGO_TARGET_DIR CARGO_NET_OFFLINE=true
 export TITAN_STRATEGY_PYTHON="$TITAN_VERIFY_PYTHON" TITAN_REPORT_PYTHON="$TITAN_VERIFY_PYTHON"
 export TITAN_STRATEGY_SDK="$repo/python/titan-strategy-sdk" TITAN_REPORTING_PATH="$repo/python/titan-reporting"

@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib import parse, request
 
 SYMBOL = "GATE_FUTURE_BTC_USDT"
-POLICY = {"host":"titan-live","hostname":"LIVE_NODE","account":"gate","account_id":1,"instrument":SYMBOL,"minimum_order_base":"0.0001","max_exposure_quote":"100","max_price_deviation_bps":50,"maximum_run_seconds":120,"stop_timeout_seconds":10,"handler_budget_seconds":1,"stop_action":"flatten"}
+POLICY = {"host":os.environ.get("TITAN_LIVE_HOST", "titan-live"),"hostname":os.environ.get("TITAN_LIVE_NODE_NAME", "LIVE_NODE"),"account":"gate","account_id":1,"instrument":SYMBOL,"minimum_order_base":"0.0001","max_exposure_quote":"100","max_price_deviation_bps":50,"maximum_run_seconds":120,"stop_timeout_seconds":10,"handler_budget_seconds":1,"stop_action":"flatten"}
 
 def admitted(rule, account, orders, positions, legacy_controllers, titan_processes, book):
     assert rule["symbol"] == SYMBOL and rule["business_type"] == "FUTURE" and rule["state"] == "live", "target is not a live future"

@@ -129,9 +129,9 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 
 2026-10-13 验证已在 `titan-build` 完成：格式检查及无 warning 的 cargo check 通过；全工作区、全目标、全 feature Clippy 在 `-- -D warnings` 下通过、无未处理警告。Rust workspace 429 项通过、0 失败、12 项实盘测试 ignored；doctest 2 项通过、1 项 ignored；Python SDK 27 项、reporting 4 项通过。单一运行时检查、两种 AOT 制品、原生制品/恢复/排空场景及 CLI 集成全部通过。
 
-证据：[完整脚本完成记录](verification/2026-10-13/logs/full-verification.log)、[严格 Clippy](verification/2026-10-13/logs/clippy.log)、[Rust 测试](verification/2026-10-13/logs/rust-test.log)、[SDK 测试](verification/2026-10-13/logs/sdk-test.log)、[reporting 测试](verification/2026-10-13/logs/reporting-test.log)、[CLI 集成](verification/2026-10-13/logs/cli-integration.log)。完整原始日志保存于 `docs/verification/2026-10-13/logs/`。
+证据：[完整脚本完成记录（原始证据私有保存）](repository_privacy.md)、[严格 Clippy（原始证据私有保存）](repository_privacy.md)、[Rust 测试（原始证据私有保存）](repository_privacy.md)、[SDK 测试（原始证据私有保存）](repository_privacy.md)、[reporting 测试（原始证据私有保存）](repository_privacy.md)、[CLI 集成（原始证据私有保存）](repository_privacy.md)。完整原始日志保存于 `docs/verification/2026-10-13/logs/`。
 
-275 个最终源文件及配置文件摘要见 [source-files.sha256](verification/2026-10-13/source-files.sha256)，清单自身 SHA-256 为 `3604dcec89d04b93b19290bc21ce86895a96417a6a6a43c43dcd01f0b686029e`。服务器逐文件核对全部通过，见 [source-check.log](verification/2026-10-13/logs/source-check.log)。本轮未部署、未连接真实账户。
+275 个最终源文件及配置文件摘要见 [source-files.sha256（原始证据私有保存）](repository_privacy.md)，清单自身 SHA-256 为 `3604dcec89d04b93b19290bc21ce86895a96417a6a6a43c43dcd01f0b686029e`。服务器逐文件核对全部通过，见 [source-check.log（原始证据私有保存）](repository_privacy.md)。本轮未部署、未连接真实账户。
 
 
 ## 2026-10-13 通用恢复与策略职责简化
@@ -154,9 +154,9 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 
 通用恢复交付验证：编译服务器 `titan-build` 上格式、check、全工作区/全目标/全 feature 的 Clippy `-D warnings` 全部通过；Rust workspace 440 通过、0 失败、12 实盘测试 ignored；doctest 2 通过、1 ignored；Python SDK 30、reporting 4 全部通过。AOT 制品、pair_arb 原生恢复回调、Service→Factory→Instance 恢复、通用恢复故障/启动漂移/publisher generation/epoch 隔离、订单排空/意图落盘失败和 CLI 集成全部通过。
 
-证据保存在 `docs/verification/2026-10-13/recovery/logs/`：[完整脚本](verification/2026-10-13/recovery/logs/recovery-delivery.log)、[严格 Clippy](verification/2026-10-13/recovery/logs/clippy.log)、[Rust 测试](verification/2026-10-13/recovery/logs/rust-test.log)、[通用原生恢复](verification/2026-10-13/recovery/logs/common-recovery-smoke.log)、[排空与意图持久化](verification/2026-10-13/recovery/logs/drain-smoke.log)、[SDK](verification/2026-10-13/recovery/logs/sdk-test.log)、[CLI 集成](verification/2026-10-13/recovery/logs/cli-integration.log)。
+证据保存在 `docs/verification/2026-10-13/recovery/logs/`：[完整脚本（原始证据私有保存）](repository_privacy.md)、[严格 Clippy（原始证据私有保存）](repository_privacy.md)、[Rust 测试（原始证据私有保存）](repository_privacy.md)、[通用原生恢复（原始证据私有保存）](repository_privacy.md)、[排空与意图持久化（原始证据私有保存）](repository_privacy.md)、[SDK（原始证据私有保存）](repository_privacy.md)、[CLI 集成（原始证据私有保存）](repository_privacy.md)。
 
-277 个最终源码及配置文件的 [摘要清单](verification/2026-10-13/recovery/source-files.sha256) 已逐文件与服务器验证版本核对，全部匹配。清单自身 SHA-256：`e4aee2f4965a814165504d3bb4d7effd0c524a27982f64f8e873a15eea47ab0f`；[核对日志](verification/2026-10-13/recovery/logs/recovery-source-check.log)。本轮未提交、未部署、未连接真实账户。
+277 个最终源码及配置文件的 [摘要清单（原始证据私有保存）](repository_privacy.md) 已逐文件与服务器验证版本核对，全部匹配。清单自身 SHA-256：`e4aee2f4965a814165504d3bb4d7effd0c524a27982f64f8e873a15eea47ab0f`；[核对日志（原始证据私有保存）](repository_privacy.md)。本轮未提交、未部署、未连接真实账户。
 
 ## 2026-10-13 通用双向持仓修复
 
@@ -172,7 +172,7 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 
 最终验证在 `titan-build` 完成：格式、全目标/全 feature 构建检查、严格 Clippy（`-D warnings`）通过；Rust 444 项、doctest 2 项、Python SDK 31 项、reporting 4 项通过，0 失败。12 项实盘测试及 1 项示例 doctest 保持 ignored。单一运行时检查、两种 AOT 制品、原生策略、双侧持仓的通用恢复、排空/检查点失败、CLI run/report/损坏制品/SIGTERM 全部通过。完整脚本通过后，仅新增一项下单方向测试；补跑格式检查、严格 Clippy 与完整 Rust 回归再次通过，生产代码没有新增修改。
 
-证据：[完整验证](verification/2026-10-13/positions/logs/titan-position-delivery.log)、[最后测试补跑](verification/2026-10-13/positions/logs/titan-position-last-test.log)、[Rust](verification/2026-10-13/positions/logs/rust-test.log)、[严格 Clippy](verification/2026-10-13/positions/logs/clippy.log)、[原生 SDK](verification/2026-10-13/positions/logs/sdk-test.log)、[双侧恢复](verification/2026-10-13/positions/logs/common-recovery-smoke.log)、[CLI](verification/2026-10-13/positions/logs/cli-integration.log)。280 个源码、配置及脚本文件的[摘要清单](verification/2026-10-13/positions/source-files.sha256)与编译服务器逐文件核对；清单 SHA-256 为 `993f88808e703db63d49a7b3b0db0dd5c611c4f14769fe68e2f7c75b472aefd2`。本轮未提交、未部署、未连接真实账户。
+证据：[完整验证（原始证据私有保存）](repository_privacy.md)、[最后测试补跑（原始证据私有保存）](repository_privacy.md)、[Rust（原始证据私有保存）](repository_privacy.md)、[严格 Clippy（原始证据私有保存）](repository_privacy.md)、[原生 SDK（原始证据私有保存）](repository_privacy.md)、[双侧恢复（原始证据私有保存）](repository_privacy.md)、[CLI（原始证据私有保存）](repository_privacy.md)。280 个源码、配置及脚本文件的[摘要清单（原始证据私有保存）](repository_privacy.md)与编译服务器逐文件核对；清单 SHA-256 为 `993f88808e703db63d49a7b3b0db0dd5c611c4f14769fe68e2f7c75b472aefd2`。本轮未提交、未部署、未连接真实账户。
 
 ## 2026-10-13 完整 review：初始发现（已按下节修复）
 
@@ -188,7 +188,7 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 
 修复建议：提供在同一账户投影锁下捕获三类数据的复合快照接口，把共同提交边界与各类最后更新版本分开；不要直接删除一致性校验。回归应使用真实 AccountProjection，而不是让 mock 固定返回同一个版本。
 
-证据：[版本及空仓探针日志](verification/2026-10-13/review/logs/titan-review-projection.log)、[探针源码](verification/2026-10-13/review/probes/titan_review_projection_probe.rs)。
+证据：[版本及空仓探针日志（原始证据私有保存）](repository_privacy.md)、[探针源码（原始证据私有保存）](repository_privacy.md)。
 
 ### R2 — P1：定时回调命令 flush 失败后仍保持 Running、下单入口开启
 
@@ -198,7 +198,7 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 
 修复建议：所有回调入口共享失败处理；commit/flush/队列错误都必须统一 fail_runtime 并关闭 activation，保存具体错误。补充定时 submit/cancel 的意图提交、flush 超时和暂时失败测试。普通 checkpoint submit 失败已有明确关门逻辑；对照探针实测 Failed/closed，此路径不列为缺陷。
 
-证据：[flush 失败日志](verification/2026-10-13/review/logs/titan-review-timer-flush.log)、[原生探针](verification/2026-10-13/review/probes/v13_review_timer_flush.rs)、[submit 失败正常关门对照](verification/2026-10-13/review/logs/titan-review-timer.log)。
+证据：[flush 失败日志（原始证据私有保存）](repository_privacy.md)、[原生探针（原始证据私有保存）](repository_privacy.md)、[submit 失败正常关门对照（原始证据私有保存）](repository_privacy.md)。
 
 ### R3 — P1：同步回调跨来源发布会形成来源锁死锁
 
@@ -208,7 +208,7 @@ publish_record 持有 source_sequences[source] 的普通 Mutex，直到 dispatch
 
 修复建议：在来源顺序保证与同步回调之间建立明确的重入规则；可拒绝同一引擎的嵌套 sequenced 发布，或通过有序队列派发，避免在外部回调中持有可能跨来源互锁的锁。不要简单释放锁而破坏来源顺序。回归必须覆盖同来源重入与跨来源互相发布两种情况。
 
-证据：[死锁探针日志](verification/2026-10-13/review/logs/titan-review-engine.log)。探针在独立进程中采用有界等待，未阻塞生产运行或访问账户。
+证据：[死锁探针日志（原始证据私有保存）](repository_privacy.md)。探针在独立进程中采用有界等待，未阻塞生产运行或访问账户。
 
 ### R4 — P1：下单准入只在构造 future 时校验，旧会话请求可延迟发送
 
@@ -238,7 +238,7 @@ get_positions(None) 没有匹配记录时，本项目仍生成 NET=0，且用本
 
 修复建议：读交易所持仓模式/能力，或显式保留“空仓、模式尚未知”的状态；模式与经济持仓事实分开。双向模式零仓视图由已确认模式建立，不能自动推断为 NET。补充 REST 空列表 + LONG/SHORT 缓冲更新，以及 REST/WS 时间戳边界的初始化测试。
 
-证据：[版本及空仓探针日志](verification/2026-10-13/review/logs/titan-review-projection.log)。
+证据：[版本及空仓探针日志（原始证据私有保存）](repository_privacy.md)。
 
 ### R7 — P2：Hyperliquid 成交后的持仓价格元数据不会更新，正常重启也可被拒绝
 
@@ -259,7 +259,7 @@ Hyperliquid fill 更新 quantity，但 entry_price/unrealized_pnl/liquidation_pr
 
 普通 Clippy 的接口/类型整理、共享 lifecycle 工具、关闭 future 释放 Mutex、CLI ResultBundle 路径校验及采集/回测参数提取，未发现同等置信度的新增阻断问题；这不表示其所有运行场景均已验收。同步 checkpoint+fsync 位于 PRIMARY 下单路径，是另一个已知性能取舍，需单独测量延迟/背压预算，不用未经授权地放松持久化来消除等待。
 
-原验证目录 280 个源码/配置/脚本的摘要在审查前后均匹配：[审查前核对](verification/2026-10-13/review/logs/titan-review-precheck.log)、[审查后核对](verification/2026-10-13/review/logs/titan-review-original-source-check.log)。本次只增加 review 文档及证据，原生产源码、严格 ABI 校验和实盘测试忽略状态未修改。
+原验证目录 280 个源码/配置/脚本的摘要在审查前后均匹配：[审查前核对（原始证据私有保存）](repository_privacy.md)、[审查后核对（原始证据私有保存）](repository_privacy.md)。本次只增加 review 文档及证据，原生产源码、严格 ABI 校验和实盘测试忽略状态未修改。
 
 ## 2026-10-13 Review R1–R7 修复完成
 

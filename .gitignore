@@ -39,3 +39,15 @@ backtest_reports/
 .vscode/
 .idea/
 .secrets/
+
+# Raw verification evidence belongs in private storage. Keep public summaries.
+/docs/verification/**
+!/docs/verification/**/
+!/docs/verification/**/*.md
+/docs/validation/**
+!/docs/validation/**/
+!/docs/validation/**/*.md
+*.pem
+*.key
+.env.local
+.env.*.local

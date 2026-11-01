@@ -2,6 +2,8 @@
 
 `docs/` 只保存面向使用者和集成方的公开说明。
 
+公开记录的脱敏边界、私有证据与提交检查见[仓库隐私约定](repository_privacy.md)。
+
 ## 项目状态
 
 - [项目精简重构清单：重复保护、冗余实现与闲置入口](refactor_simplification_checklist.md)

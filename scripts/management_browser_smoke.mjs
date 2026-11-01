@@ -568,7 +568,7 @@ try {
   await reader.context.close();
   assert.deepEqual(errors, []);
   execFileSync(
-    "/workspace/dev/titan/.venv/bin/python",
+    process.env.TITAN_STRATEGY_PYTHON || "python3",
     [
       fileURLToPath(new URL("./management_fault_smoke.py", import.meta.url)),
       dirname(output),

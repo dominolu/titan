@@ -7,11 +7,11 @@ case " $(hostname -I) " in
 esac
 export CARGO_BUILD_JOBS=8 CARGO_TARGET_DIR=/tmp/titan-single-file-target CARGO_NET_OFFLINE=true
 export TITAN_STRATEGY_SDK="$PWD/python/titan-strategy-sdk"
-export TITAN_STRATEGY_PYTHON=/workspace/dev/titan/.venv/bin/python
+export TITAN_STRATEGY_PYTHON="${TITAN_STRATEGY_PYTHON:-python3}"
 export PYTHONPATH="$PWD:$TITAN_STRATEGY_SDK"
 task_logs="$(dirname "$PWD")/logs"
 mkdir -p "$task_logs"
-task_cargo=(/workspace/.cargo/bin/cargo +1.94.1 --config 'source.crates-io.replace-with="titan-mirror"' --config 'source.titan-mirror.registry="sparse+https://rsproxy.cn/index/"')
+task_cargo=("${CARGO:-cargo}" +1.94.1 --config 'source.crates-io.replace-with="titan-mirror"' --config 'source.titan-mirror.registry="sparse+https://rsproxy.cn/index/"')
 run_gate() {
   local name="$1"
   shift

@@ -1,0 +1,19 @@
+name: repository-privacy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-content-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Content disclosure review only. No project compilation, lint or tests.
+      - run: python3 scripts/check_repository_privacy.py --history

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+task_root=$(git rev-parse --show-toplevel)
+exec python3 "$task_root/scripts/check_repository_privacy.py" --root "$task_root" --staged

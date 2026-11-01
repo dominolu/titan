@@ -150,7 +150,7 @@ def main():
             except subprocess.TimeoutExpired: process.kill(); process.wait()
     run = None
     started = time.monotonic()
-    evidence = {"host": "titan-live", "binary_sha256": args.expected_sha256, "account_id": 1, "account": "gate", "instrument": SYMBOL, "max_exposure_quote": "100", "max_price_deviation_bps": 50, "max_observation_seconds": 90, "mode": "observe", "venue_methods": ["GET"], "preexisting_target_orders": len(before_orders), "preexisting_target_positions": [{k: p.get(k) for k in ("symbol", "position_side", "position_qty")} for p in before_positions]}
+    evidence = {"host": os.environ.get("TITAN_LIVE_HOST", "titan-live"), "binary_sha256": args.expected_sha256, "account_id": 1, "account": "gate", "instrument": SYMBOL, "max_exposure_quote": "100", "max_price_deviation_bps": 50, "max_observation_seconds": 90, "mode": "observe", "venue_methods": ["GET"], "preexisting_target_orders": len(before_orders), "preexisting_target_positions": [{k: p.get(k) for k in ("symbol", "position_side", "position_qty")} for p in before_positions]}
     try:
         node, manager = start("node"), start("manager")
         session = wait(lambda: call("/api/v2/session", {"username": "operator", "password": password}))
