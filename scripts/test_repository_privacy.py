@@ -1,6 +1,9 @@
 """Synthetic privacy guard regressions; run on the designated build server."""
 import importlib.util
 import unittest
+import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("privacy_guard", Path(__file__).with_name("check_repository_privacy.py"))
@@ -42,6 +45,25 @@ class PrivacyGuardTests(unittest.TestCase):
     def test_no_value_echo(self):
         private = "/Users/" + "alice/private"
         self.assertNotIn(private, str(guard.inspect_text("example.md", private)))
+
+    def test_private_tooling_ref_and_explicit_outgoing_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args, data=None):
+                return subprocess.check_output(["git", *args], cwd=root, input=data, stderr=subprocess.DEVNULL)
+            git("init", "-q")
+            (root / "README.md").write_text("Public summary")
+            git("add", "README.md")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@users.noreply.github.com", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
+            private = ("/home/" + "alice/private").encode()
+            sha = git("hash-object", "-w", "--stdin", data=private).decode().strip()
+            git("update-ref", "refs/private/audit", sha)
+            command = ["python3", str(Path(guard.__file__).resolve()), "--root", str(root), "--history"]
+            normal = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(normal.returncode, 0, normal.stdout + normal.stderr)
+            outgoing = subprocess.run(command + ["--revision", sha], capture_output=True, text=True)
+            self.assertEqual(outgoing.returncode, 1)
+            self.assertTrue(json.loads(outgoing.stdout)["findings"])
 
 
 if __name__ == "__main__":

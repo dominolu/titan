@@ -1,4 +1,11 @@
 #!/bin/sh
 set -eu
 task_root=$(git rev-parse --show-toplevel)
-exec python3 "$task_root/scripts/check_repository_privacy.py" --root "$task_root" --history
+set -- --root "$task_root" --history
+while read -r task_ref task_sha task_remote_ref task_remote_sha; do
+    case "$task_sha" in
+        0000000000000000000000000000000000000000) continue ;;
+    esac
+    set -- "$@" --revision "$task_sha"
+done
+exec python3 "$task_root/scripts/check_repository_privacy.py" "$@"

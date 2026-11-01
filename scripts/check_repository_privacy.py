@@ -86,6 +86,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staged", action="store_true", help="Review only index blobs, including ignored files explicitly staged")
     parser.add_argument("--history", action="store_true", help="Also review every reachable historical blob and author email")
+    parser.add_argument("--revision", action="append", default=[], help="Review an explicit outgoing revision instead of private tooling refs")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     root = Path(git("rev-parse", "--show-toplevel", cwd=args.root).decode().strip())
@@ -103,11 +104,14 @@ def main() -> int:
         findings.extend(inspect_content(name, data))
         count += 1
     if args.history:
+        revisions = args.revision or ["HEAD", "--branches", "--tags", "--remotes"]
         objects = {}
-        for line in git("rev-list", "--objects", "--all", cwd=root).decode().splitlines():
+        for line in git("rev-list", "--objects", *revisions, cwd=root).decode().splitlines():
             if " " in line:
                 sha, name = line.split(" ", 1)
                 objects.setdefault(sha, name)
+            elif re.fullmatch(r"[0-9a-f]{40}", line):
+                objects.setdefault(line, "<git-object>")
         raw = subprocess.check_output(["git", "cat-file", "--batch"], cwd=root, input=("\n".join(objects) + "\n").encode())
         offset = 0
         for sha, name in objects.items():
@@ -118,7 +122,7 @@ def main() -> int:
             offset = end + size + 2
             if header[1] == "blob":
                 findings.extend(inspect_content(name, data))
-        for email in set(git("log", "--all", "--format=%ae%n%ce", cwd=root).decode().splitlines()):
+        for email in set(git("log", *revisions, "--format=%ae%n%ce", cwd=root).decode().splitlines()):
             if email and not (email.endswith("@users.noreply.github.com") or email == "noreply@github.com"):
                 findings.append({"file": "<git-author-metadata>", "line": 1, "kind": "personal-author-email"})
     unique = [dict(zip(("file", "line", "kind"), item)) for item in sorted({(x["file"], x["line"], x["kind"]) for x in findings})]
