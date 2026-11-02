@@ -7,7 +7,9 @@ import type {
   Snapshot,
   SubmitOperation,
   StrategyOperationRequest,
-  StrategySummary
+  StrategySummary,
+  AccountProfileInput,
+  StrategySourceInput
 } from "@/generated/management";
 
 const queryIdentity = (item: Resource) => {
@@ -18,6 +20,15 @@ const queryIdentity = (item: Resource) => {
 };
 
 export const consoleApi = {
+  accounts: () => http.get<Resource[]>("/api/v2/accounts"),
+  saveAccount: (data: AccountProfileInput, id?: string) =>
+    http.request<Resource>(
+      id ? "patch" : "post",
+      id ? `/api/v2/accounts/${encodeURIComponent(id)}` : "/api/v2/accounts",
+      { data }
+    ),
+  uploadStrategy: (data: StrategySourceInput) =>
+    http.post<Resource>("/api/v2/strategy-sources", { data, timeout: 30000 }),
   strategies: (offset = 0) =>
     http.get<StrategySummary[]>("/api/v2/strategies", {
       params: { offset, limit: 20 }
@@ -118,5 +129,7 @@ export type {
   SaveVersion,
   Snapshot,
   SubmitOperation,
-  StrategySummary
+  StrategySummary,
+  AccountProfileInput,
+  StrategySourceInput
 };

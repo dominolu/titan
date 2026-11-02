@@ -11,6 +11,7 @@ import { consoleApi, type Resource } from "@/api/console";
 import { useConsoleStore } from "@/store/modules/console";
 import { body } from "./run-view";
 import { useResourcePins } from "./use-resource-pins";
+import { useRoute } from "vue-router";
 
 const kinds = [
   "parameter_preset",
@@ -32,6 +33,7 @@ const key: InjectionKey<ReturnType<typeof createStrategy>> =
   Symbol("strategy-workspace");
 
 function createStrategy(id: string) {
+  const route = useRoute();
   const store = useConsoleStore();
   const pinResources = useResourcePins();
   const identity = store.sessionGeneration;
@@ -166,7 +168,15 @@ function createStrategy(id: string) {
   );
   const path = (tab: string, selection?: Record<string, string>) => ({
     path: "/strategies/" + encodeURIComponent(id),
-    query: { tab, ...selection }
+    query: {
+      project:
+        route.query.project === "live" ||
+        (!route.query.project && route.query.tab === "live")
+          ? "live"
+          : "backtest",
+      tab,
+      ...selection
+    }
   });
   const operationIds = computed(
     () =>

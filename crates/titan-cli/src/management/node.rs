@@ -168,6 +168,7 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
     let live = super::live::LiveNode::open(&config, &config_path)?;
     let router = Router::new()
         .route("/v1/catalog", get(catalog))
+        .route("/v1/strategy-sources", post(upload_source))
         .route("/v1/operations", post(accept))
         .route("/v1/operations/{id}", get(receipt))
         .route("/v1/operations/{id}/cancel", post(cancel))
@@ -198,6 +199,26 @@ type NodeState = Arc<(
     std::sync::Mutex<()>,
     super::live::LiveNode,
 )>;
+
+async fn upload_source(
+    State(state): State<NodeState>,
+    headers: HeaderMap,
+    Json(input): Json<StrategySourceInput>,
+) -> std::result::Result<Json<Resource>, Error> {
+    authenticate(&state.0, &headers)?;
+    let state = state.clone();
+    Ok(Json(
+        tokio::task::spawn_blocking(move || {
+            let _guard = state
+                .3
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node admission lock unavailable"))?;
+            super::catalog::register_source(&state.0, &input)
+        })
+        .await
+        .map_err(anyhow::Error::from)??,
+    ))
+}
 #[derive(serde::Deserialize)]
 struct HistoryQuery {
     cursor: Option<String>,
@@ -331,6 +352,11 @@ async fn catalog(
     let config = &state.0;
     authenticate(config, &headers)?;
     let mut out = state.2.clone();
+    let mut uploaded = config.clone();
+    uploaded.parameter_presets = super::catalog::uploaded_presets(config)?;
+    uploaded.datasets.clear();
+    uploaded.bindings.clear();
+    out.extend(catalog_items(&uploaded)?);
     for item in &mut out {
         if item.kind == "dataset" {
             let id = item.body["dataset_id"]
@@ -658,8 +684,17 @@ async fn file(
 }
 
 pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Result<()> {
+    let mut config = config;
     let dir = directory(&config, &id)?;
     let request: NodeRequest = serde_json::from_slice(&std::fs::read(dir.join("request.json"))?)?;
+    if matches!(
+        request.action,
+        Action::Describe { .. } | Action::Compile { .. }
+    ) {
+        config
+            .parameter_presets
+            .extend(super::catalog::uploaded_presets(&config)?);
+    }
     let reg = registry(&config)?;
     ensure!(
         reg.running(&id, &token, std::process::id())?,
