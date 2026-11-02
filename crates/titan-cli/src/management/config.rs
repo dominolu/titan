@@ -126,6 +126,9 @@ impl User {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
+    /// Permit inert Python source uploads on this build node. Execution still uses Operations.
+    #[serde(default)]
+    pub allow_strategy_uploads: bool,
     #[serde(default, alias = "artifact_sources")]
     pub strategy_sources: BTreeMap<String, RemoteNode>,
     #[serde(default)]

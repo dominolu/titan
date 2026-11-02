@@ -1,4 +1,4 @@
-//! Strategy-scoped public API. All writes use the existing admission and receipt path.
+//! Strategy-scoped public API. Execution writes use the existing admission and receipt path.
 use super::{
     app::App,
     contract::*,
@@ -376,6 +376,18 @@ pub(super) fn routes() -> Router<Arc<App>> {
             get(http::session).post(http::login).delete(http::logout),
         )
         .route("/api/v2/snapshot", get(http::snapshot))
+        .route(
+            "/api/v2/accounts",
+            get(super::catalog::accounts).post(super::catalog::create_account),
+        )
+        .route(
+            "/api/v2/accounts/{id}",
+            axum::routing::patch(super::catalog::update_account),
+        )
+        .route(
+            "/api/v2/strategy-sources",
+            post(super::catalog::upload_strategy),
+        )
         .route("/api/v2/strategies", get(http::strategy))
         .route("/api/v2/strategies/{strategy_id}", get(detail))
         .route(
