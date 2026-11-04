@@ -63,7 +63,7 @@ const knownRisk = (risk: any) => !view.value.stale && risk.complete === true;
   <section class="page-title">
     <div>
       <p class="eyebrow">WORKSPACE / ACCOUNT RISK</p>
-      <h1>账户风险</h1>
+      <h1>风险与账户事实</h1>
       <p>账户事实与原币种指标，保留来源、时间和完整性</p>
     </div>
     <div class="toolbar">

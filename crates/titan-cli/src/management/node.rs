@@ -168,6 +168,7 @@ pub async fn serve_node(config: NodeConfig, config_path: PathBuf) -> Result<()> 
     let live = super::live::LiveNode::open(&config, &config_path)?;
     let router = Router::new()
         .route("/v1/catalog", get(catalog))
+        .route("/v1/strategy-sources", post(upload_source))
         .route("/v1/operations", post(accept))
         .route("/v1/operations/{id}", get(receipt))
         .route("/v1/operations/{id}/cancel", post(cancel))
@@ -198,8 +199,31 @@ type NodeState = Arc<(
     std::sync::Mutex<()>,
     super::live::LiveNode,
 )>;
+
+async fn upload_source(
+    State(state): State<NodeState>,
+    headers: HeaderMap,
+    Json(input): Json<StrategySourceInput>,
+) -> std::result::Result<Json<Resource>, Error> {
+    authenticate(&state.0, &headers)?;
+    let state = state.clone();
+    Ok(Json(
+        tokio::task::spawn_blocking(move || {
+            let _guard = state
+                .3
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node admission lock unavailable"))?;
+            super::catalog::register_source(&state.0, &input)
+        })
+        .await
+        .map_err(anyhow::Error::from)??,
+    ))
+}
 #[derive(serde::Deserialize)]
 struct HistoryQuery {
+    run_generation: Option<String>,
+    from_ns: Option<String>,
+    to_ns: Option<String>,
     cursor: Option<String>,
     newest_first: Option<bool>,
     kind: Option<String>,
@@ -224,9 +248,15 @@ async fn facts(
     };
     if query.cursor.as_ref().is_some_and(|c| c.len() > 4096)
         || query.kind.as_ref().is_some_and(|k| k.len() > 64)
+        || query
+            .run_generation
+            .as_ref()
+            .is_some_and(|value| value.len() > 64)
     {
         return Err(fault(400, "INVALID_HISTORY_QUERY", "query budget exceeded").into());
     }
+    let (from_ns, to_ns) =
+        super::http::history_time_range(query.from_ns.as_deref(), query.to_ns.as_deref())?;
     let result=tokio::task::spawn_blocking(move||->Result<Value>{
         use titan_persistence::{HistoryQuery,HistoryFilter,HistoryRequest,FactEnvironment,RoutedHistoryQuery};
         let (path,account,run,environment)=if let Some(claim)=claim {
@@ -244,13 +274,13 @@ async fn facts(
             ensure!(directory.join("history/manifest.json").is_file(),"backtest storage publication is incomplete");
             (directory.join("history/history.db"),"simulation".into(),id.clone(),FactEnvironment::Backtest)
         };
-        let request=HistoryRequest{filter:HistoryFilter{environment,account:account.clone(),strategy_id:None,run_id:Some(run.clone()),kind:query.kind.filter(|v|!v.is_empty())},cursor:query.cursor.filter(|v|!v.is_empty()).map(|v|serde_json::from_str(&v)).transpose()?,limit:query.limit.unwrap_or(20).clamp(1,200),newest_first:query.newest_first.unwrap_or(false)};
+        let request=HistoryRequest{filter:HistoryFilter{environment,account:account.clone(),strategy_id:None,run_id:Some(run.clone()),kind:query.kind.filter(|v|!v.is_empty()),from_ns,to_ns,run_generation:query.run_generation.filter(|value|!value.is_empty())},cursor:query.cursor.filter(|v|!v.is_empty()).map(|v|serde_json::from_str(&v)).transpose()?,limit:query.limit.unwrap_or(20).clamp(1,200),newest_first:query.newest_first.unwrap_or(false)};
         let page=RoutedHistoryQuery::new(config.work_root.join("storage"),path).page(&request).map_err(|error|{
             if error.to_string().contains("cursor_scope_changed"){fault(409,"STALE_HISTORY_CURSOR","history cursor no longer matches the selected scope")}else{tracing::warn!(reason=%error,"history query unavailable");fault(503,"HISTORY_UNAVAILABLE","history recording is unavailable")}
         })?;
         let mut value=serde_json::to_value(page)?;
         if let Some(items)=value["items"].as_array_mut(){for item in items{if item["fact"]["kind"]!="business_observation"{item["fact"]["payload"]=precise(item["fact"]["payload"].take());}}}
-        value["source"]=json!({"kind":"fact_archive","account":account,"run_id":run,"persisted":true,"attribution":"account unless the record contains proven strategy identity"});Ok(value)
+        value["source"]=json!({"kind":"fact_archive","account":account,"run_id":run,"persisted":true,"time_basis":"received_at_ns","from_ns":from_ns.map(|value|value.to_string()),"to_ns":to_ns.map(|value|value.to_string()),"run_generation":request.filter.run_generation,"generation_scope":if request.filter.run_generation.is_some(){"selected_proven_generation"}else{"all_recorded_generations"},"attribution":"account unless the record contains proven strategy identity"});Ok(value)
     }).await.context("history query task failed")??;
     Ok(Json(result))
 }
@@ -277,6 +307,26 @@ async fn history(
     Query(query): Query<HistoryQuery>,
 ) -> std::result::Result<Json<Value>, Error> {
     authenticate(&state.0, &headers)?;
+    if query
+        .from_ns
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        || query
+            .to_ns
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        || query
+            .run_generation
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    {
+        return Err(fault(
+            400,
+            "INVALID_HISTORY_QUERY",
+            "time ranges require the facts endpoint",
+        )
+        .into());
+    }
     let kind = query.kind.filter(|k| !k.is_empty());
     if !kind.as_deref().is_none_or(|k| {
         matches!(
@@ -331,6 +381,11 @@ async fn catalog(
     let config = &state.0;
     authenticate(config, &headers)?;
     let mut out = state.2.clone();
+    let mut uploaded = config.clone();
+    uploaded.parameter_presets = super::catalog::uploaded_presets(config)?;
+    uploaded.datasets.clear();
+    uploaded.bindings.clear();
+    out.extend(catalog_items(&uploaded)?);
     for item in &mut out {
         if item.kind == "dataset" {
             let id = item.body["dataset_id"]
@@ -658,8 +713,17 @@ async fn file(
 }
 
 pub(crate) async fn worker(config: NodeConfig, id: String, token: String) -> Result<()> {
+    let mut config = config;
     let dir = directory(&config, &id)?;
     let request: NodeRequest = serde_json::from_slice(&std::fs::read(dir.join("request.json"))?)?;
+    if matches!(
+        request.action,
+        Action::Describe { .. } | Action::Compile { .. }
+    ) {
+        config
+            .parameter_presets
+            .extend(super::catalog::uploaded_presets(&config)?);
+    }
     let reg = registry(&config)?;
     ensure!(
         reg.running(&id, &token, std::process::id())?,
