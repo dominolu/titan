@@ -7,7 +7,7 @@
 以下命令只能在 `titan-build` 的隔离验证目录执行。先核对版本、目录和未提交修改。Rust 产物和 Web 资源必须配套发布：生成的 TS 文件包含该 Rust 可执行文件的 SHA-256，页面登录时校验协议和程序身份。
 
 ```sh
-cargo build --locked -p titan-cli --bin titan
+cargo build --locked -p titan-cli --bins
 cargo rustc --locked -p hftbacktest --example v13_grid_history -- -C opt-level=2
 target/debug/titan console export-types --output web/console/src/generated
 cd web/console
@@ -18,7 +18,7 @@ pnpm build
 
 使用 `CARGO_TARGET_DIR` 时相应替换产物路径。构建服务器如需镜像，将注册表覆盖写入隔离目录的 Cargo 配置，保留仓库已有配置；不能在本地安装依赖或构建。PureAdmin 上游身份见 [UPSTREAM](../web/console/UPSTREAM.md)，保留 MIT 许可。
 
-发布包包含原样的 `titan`、历史回放程序、`web/console/dist`、Python SDK/报告组件和对应依赖清单。记录文件摘要、工具链、Cargo.lock 和 pnpm-lock.yaml 身份；打包后再次修改或 strip `titan` 会使页面身份校验失败，应重新导出契约并构建页面。
+发布包包含原样的 `titan`、`titan_cli`、历史回放程序、`web/console/dist`、Python SDK/报告组件和对应依赖清单。记录文件摘要、工具链、Cargo.lock 和 pnpm-lock.yaml 身份；打包后再次修改或 strip `titan` 会使页面身份校验失败，应重新导出契约并构建页面。
 
 ## 配置与启动
 
@@ -27,8 +27,8 @@ pnpm build
 通过 `titan console password-hash` 从标准输入读取密码，生成 Argon2 哈希；不把明文密码放入参数、仓库或审计记录。节点令牌使用不少于 32 字符的随机值，通过配置中的环境变量引用提供。页面会话使用 HttpOnly Cookie，写请求同时校验 Origin 与 CSRF。用户必须显式配置节点、账户、环境和角色；空账户列表不允许访问任何真实账户。
 
 ```sh
-titan console node --config /private/console.toml
-titan console manager --config /private/console.toml
+titan serve node --config /private/console.toml
+titan serve manager --config /private/console.toml
 ```
 
 N 只绑定 loopback。跨主机访问经已认证的 SSH 隧道或 TLS 代理。开发页面只允许 loopback HTTP；生产配置使用 HTTPS origin 和 `secure_cookie=true`。管理端可以只含 `[manager]`，节点只含 `[node]`，密钥和实盘配置保留在所属节点。
@@ -41,7 +41,7 @@ N 只绑定 loopback。跨主机访问经已认证的 SSH 隧道或 TLS 代理�
 
 允许源码上传的构建节点须显式设置 `node.allow_strategy_uploads=true`，默认关闭。仅有该节点 `backtest` 权限的 operator 可以登记单个 UTF-8 `.py` 文件，最多 256 KiB；不接收目录、压缩包或客户端指定路径。源码按摘要在节点私有工作目录中不可变保存，重复上传幂等，变更源码新增预设版本；重启后恢复目录并校验源文件摘要。上传只存储源码，主动校验与编译才经过既有 Operation/worker 流程执行 Python。节点管理员应只向有权在该构建环境执行策略源码的人员授予 operator 和上传能力。源文件不会通过公共资源/SSE 正文返回。
 
-CLI 经同一管理 API 提交固定请求：
+CLI 的命名连接、账户与策略查询、参数冻结、Operation 跟踪、部署/运行控制及持续观测见[管理 CLI 手册与覆盖表](managed_cli.md)。低层兼容入口仍可经同一管理 API 提交固定请求：
 
 ```sh
 titan console request --url https://console.example --username operator \

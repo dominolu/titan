@@ -1,8 +1,8 @@
 # Titan CLI（Strategy ABI V13）
 
-`titan` 是 V13 回测与实盘的统一入口。策略参数、订阅和 callback 只来自已编译 `.titan` manifest；运行时不导入策略 Python，也不接受 `strategy.json` 或 `module:function`。
+日常账户、策略运行与研究操作使用 `titan_cli`，提供 `strategy/account/research/config` 二级命令、交互 help、离线数据库配置和显式本机后台自动启动，见[客户端手册](managed_cli.md)。后台服务使用 `titan serve`。下文保留 `titan` 的 V13 本机工具和兼容入口；策略参数、订阅和 callback 只来自已编译 `.titan` manifest，运行时不导入策略 Python，也不接受 `strategy.json` 或 `module:function`。
 
-单文件源码发现、默认参数、内嵌测试、工具链锁及不可变发布参见[单文件策略工作区](single_file_strategies.md)。
+单文件源码发现、默认参数、内嵌测试、工具链锁及不可变发布参见[单文件策略工作区](single_file_strategies.md)。经管理器访问的账户、策略、Operation、生命周期与持续观测入口见[管理 CLI](managed_cli.md)。
 
 ## 编译与检查 artifact
 

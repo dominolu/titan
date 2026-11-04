@@ -160,6 +160,13 @@ pub struct SubmitOperation {
     pub action: Action,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceExpectation {
+    pub revision: String,
+    pub digest: String,
+}
+
 /// Public v2 request. The optional strategy hint is checked against the fixed
 /// action reference before using the existing authorization/admission path.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -169,6 +176,9 @@ pub struct StrategyOperationRequest {
     pub node_id: String,
     #[ts(type = "Action & { strategy_id?: string }")]
     pub action: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub expected_resources: Option<std::collections::BTreeMap<String, ResourceExpectation>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -329,6 +339,7 @@ pub fn export_types(directory: &std::path::Path) -> anyhow::Result<()> {
         OperationState::decl(&config),
         Action::decl(&config),
         SubmitOperation::decl(&config),
+        ResourceExpectation::decl(&config),
         StrategyOperationRequest::decl(&config),
         Operation::decl(&config),
         Resource::decl(&config),

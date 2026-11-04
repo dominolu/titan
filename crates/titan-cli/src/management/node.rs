@@ -221,6 +221,9 @@ async fn upload_source(
 }
 #[derive(serde::Deserialize)]
 struct HistoryQuery {
+    run_generation: Option<String>,
+    from_ns: Option<String>,
+    to_ns: Option<String>,
     cursor: Option<String>,
     newest_first: Option<bool>,
     kind: Option<String>,
@@ -245,9 +248,15 @@ async fn facts(
     };
     if query.cursor.as_ref().is_some_and(|c| c.len() > 4096)
         || query.kind.as_ref().is_some_and(|k| k.len() > 64)
+        || query
+            .run_generation
+            .as_ref()
+            .is_some_and(|value| value.len() > 64)
     {
         return Err(fault(400, "INVALID_HISTORY_QUERY", "query budget exceeded").into());
     }
+    let (from_ns, to_ns) =
+        super::http::history_time_range(query.from_ns.as_deref(), query.to_ns.as_deref())?;
     let result=tokio::task::spawn_blocking(move||->Result<Value>{
         use titan_persistence::{HistoryQuery,HistoryFilter,HistoryRequest,FactEnvironment,RoutedHistoryQuery};
         let (path,account,run,environment)=if let Some(claim)=claim {
@@ -265,13 +274,13 @@ async fn facts(
             ensure!(directory.join("history/manifest.json").is_file(),"backtest storage publication is incomplete");
             (directory.join("history/history.db"),"simulation".into(),id.clone(),FactEnvironment::Backtest)
         };
-        let request=HistoryRequest{filter:HistoryFilter{environment,account:account.clone(),strategy_id:None,run_id:Some(run.clone()),kind:query.kind.filter(|v|!v.is_empty())},cursor:query.cursor.filter(|v|!v.is_empty()).map(|v|serde_json::from_str(&v)).transpose()?,limit:query.limit.unwrap_or(20).clamp(1,200),newest_first:query.newest_first.unwrap_or(false)};
+        let request=HistoryRequest{filter:HistoryFilter{environment,account:account.clone(),strategy_id:None,run_id:Some(run.clone()),kind:query.kind.filter(|v|!v.is_empty()),from_ns,to_ns,run_generation:query.run_generation.filter(|value|!value.is_empty())},cursor:query.cursor.filter(|v|!v.is_empty()).map(|v|serde_json::from_str(&v)).transpose()?,limit:query.limit.unwrap_or(20).clamp(1,200),newest_first:query.newest_first.unwrap_or(false)};
         let page=RoutedHistoryQuery::new(config.work_root.join("storage"),path).page(&request).map_err(|error|{
             if error.to_string().contains("cursor_scope_changed"){fault(409,"STALE_HISTORY_CURSOR","history cursor no longer matches the selected scope")}else{tracing::warn!(reason=%error,"history query unavailable");fault(503,"HISTORY_UNAVAILABLE","history recording is unavailable")}
         })?;
         let mut value=serde_json::to_value(page)?;
         if let Some(items)=value["items"].as_array_mut(){for item in items{if item["fact"]["kind"]!="business_observation"{item["fact"]["payload"]=precise(item["fact"]["payload"].take());}}}
-        value["source"]=json!({"kind":"fact_archive","account":account,"run_id":run,"persisted":true,"attribution":"account unless the record contains proven strategy identity"});Ok(value)
+        value["source"]=json!({"kind":"fact_archive","account":account,"run_id":run,"persisted":true,"time_basis":"received_at_ns","from_ns":from_ns.map(|value|value.to_string()),"to_ns":to_ns.map(|value|value.to_string()),"run_generation":request.filter.run_generation,"generation_scope":if request.filter.run_generation.is_some(){"selected_proven_generation"}else{"all_recorded_generations"},"attribution":"account unless the record contains proven strategy identity"});Ok(value)
     }).await.context("history query task failed")??;
     Ok(Json(result))
 }
@@ -298,6 +307,26 @@ async fn history(
     Query(query): Query<HistoryQuery>,
 ) -> std::result::Result<Json<Value>, Error> {
     authenticate(&state.0, &headers)?;
+    if query
+        .from_ns
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        || query
+            .to_ns
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        || query
+            .run_generation
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    {
+        return Err(fault(
+            400,
+            "INVALID_HISTORY_QUERY",
+            "time ranges require the facts endpoint",
+        )
+        .into());
+    }
     let kind = query.kind.filter(|k| !k.is_empty());
     if !kind.as_deref().is_none_or(|k| {
         matches!(

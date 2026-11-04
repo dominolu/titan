@@ -13,6 +13,32 @@ use std::{
     time::Duration,
 };
 
+fn check_resource_expectations(
+    resources: &[Resource],
+    expected: &std::collections::BTreeMap<String, ResourceExpectation>,
+) -> Result<()> {
+    for (id, expectation) in expected {
+        let resource = resources
+            .iter()
+            .find(|resource| resource.id == *id)
+            .ok_or_else(|| {
+                fault(
+                    400,
+                    "INVALID_RESOURCE_EXPECTATION",
+                    "expected resource is not included in this operation",
+                )
+            })?;
+        if resource.revision != expectation.revision || resource.digest != expectation.digest {
+            return Err(fault(
+                409,
+                "RESOURCE_CHANGED",
+                "resource snapshot differs from the fixed request",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct App {
     pub config: ManagerConfig,
     pub store: Store,
@@ -96,6 +122,13 @@ impl App {
         if !valid {
             return Err(fault(401, "INVALID_CREDENTIALS", "invalid credentials"));
         }
+        // Successful short-lived CLI connections must not consume the failed
+        // authentication budget. Reserve attempts before verification so parallel
+        // failures remain bounded; reset only after a password is verified.
+        self.attempts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("login limiter unavailable"))?
+            .remove(&key);
         let user = user.expect("validated user");
         let token = nonce();
         let csrf = super::digest(format!("csrf:{token}").as_bytes());
@@ -205,6 +238,28 @@ impl App {
         }
     }
     pub fn submit(&self, identity: &Identity, input: SubmitOperation) -> Result<Operation> {
+        self.submit_checked(identity, input, &std::collections::BTreeMap::new())
+    }
+    pub fn submit_checked(
+        &self,
+        identity: &Identity,
+        input: SubmitOperation,
+        expected_resources: &std::collections::BTreeMap<String, ResourceExpectation>,
+    ) -> Result<Operation> {
+        ensure!(
+            expected_resources.len() <= 16,
+            "resource expectation budget exceeded"
+        );
+        for (id, expected) in expected_resources {
+            super::checked_id(id)?;
+            ensure!(
+                !expected.revision.is_empty()
+                    && expected.revision.len() <= 64
+                    && expected.digest.len() == 64
+                    && expected.digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "invalid resource expectation"
+            );
+        }
         ensure!(
             !input.idempotency_key.is_empty() && input.idempotency_key.len() <= 128,
             "invalid idempotency key"
@@ -216,9 +271,12 @@ impl App {
             None,
             true,
         )?;
-        let payload = digest(&titan_strategy_runtime::compiler_json_v13(
-            &serde_json::to_value(&input)?,
-        ));
+        let payload_input = if expected_resources.is_empty() {
+            serde_json::to_value(&input)?
+        } else {
+            json!({"request":input,"expected_resources":expected_resources})
+        };
+        let payload = digest(&titan_strategy_runtime::compiler_json_v13(&payload_input));
         if let Some((old, hash)) = self
             .store
             .by_key(&identity.username, &input.idempotency_key)?
@@ -231,6 +289,10 @@ impl App {
                 ));
             }
             self.operation(identity, &old.id, true)?;
+            check_resource_expectations(
+                &self.store.request(&old.id)?.resources,
+                expected_resources,
+            )?;
             return Ok(old);
         }
         let node = self
@@ -306,6 +368,7 @@ impl App {
             }
             resources.push(resource);
         }
+        check_resource_expectations(&resources, expected_resources)?;
         if matches!(input.action, Action::Compile { .. }) {
             ensure!(
                 resources[0].kind == "parameter_version" && resources[0].frozen,
@@ -329,13 +392,18 @@ impl App {
         } else {
             None
         };
-        self.store.accept(
+        let accepted = self.store.accept(
             &identity.username,
             &input,
             resources,
             &payload,
             occupancy.as_deref(),
-        )
+        )?;
+        check_resource_expectations(
+            &self.store.request(&accepted.id)?.resources,
+            expected_resources,
+        )?;
+        Ok(accepted)
     }
     pub fn save_version(
         &self,
@@ -653,4 +721,159 @@ async fn node_json_allow_error<T: serde::de::DeserializeOwned>(
         bytes.extend_from_slice(&chunk);
     }
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[cfg(test)]
+mod admission_expectation_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn checked_admission_freezes_the_exact_expected_resource_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("manager.db")).unwrap();
+        let app = App {
+            config: ManagerConfig {
+                listen: "127.0.0.1:0".into(),
+                public_origin: "http://127.0.0.1:3200".into(),
+                database: temp.path().join("manager.db"),
+                web_root: temp.path().into(),
+                secure_cookie: false,
+                session_seconds: 3600,
+                users: vec![],
+                nodes: BTreeMap::from([(
+                    "build".into(),
+                    super::super::config::RemoteNode {
+                        endpoint: "http://127.0.0.1:1".into(),
+                        token_env: "UNUSED_TEST_NODE_REFERENCE".into(),
+                        environments: vec!["backtest".into()],
+                        live_control: false,
+                    },
+                )]),
+            },
+            store,
+            client: reqwest::Client::new(),
+            attempts: Mutex::new(HashMap::new()),
+        };
+        let actor = Identity {
+            username: "operator".into(),
+            role: Role::Operator,
+            nodes: vec!["build".into()],
+            accounts: vec![],
+            environments: vec!["backtest".into()],
+        };
+        let save = |id: &str, kind: &str, body, revision: Option<&str>| {
+            app.store
+                .save_resource(
+                    Resource {
+                        id: id.into(),
+                        kind: kind.into(),
+                        node_id: "build".into(),
+                        revision: String::new(),
+                        frozen: kind == "strategy_version",
+                        digest: String::new(),
+                        body,
+                    },
+                    revision,
+                )
+                .unwrap()
+        };
+        save(
+            "version-a",
+            "strategy_version",
+            json!({"environment":"backtest"}),
+            None,
+        );
+        let first = save(
+            "build-dataset-sample",
+            "dataset",
+            json!({"environment":"backtest","input_sha256":"a"}),
+            None,
+        );
+        let request = |key: &str| SubmitOperation {
+            idempotency_key: key.into(),
+            node_id: "build".into(),
+            action: Action::Backtest {
+                strategy_version_id: "version-a".into(),
+                dataset_id: "sample".into(),
+                stress: false,
+            },
+        };
+        let expected = |resource: &Resource| {
+            BTreeMap::from([(
+                resource.id.clone(),
+                ResourceExpectation {
+                    revision: resource.revision.clone(),
+                    digest: resource.digest.clone(),
+                },
+            )])
+        };
+        let second = save(
+            &first.id,
+            "dataset",
+            json!({"environment":"backtest","input_sha256":"b"}),
+            Some(&first.revision),
+        );
+        let error = app
+            .submit_checked(&actor, request("drifted"), &expected(&first))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<super::super::Fault>().unwrap().code,
+            "RESOURCE_CHANGED"
+        );
+        assert!(
+            app.store
+                .by_key(&actor.username, "drifted")
+                .unwrap()
+                .is_none()
+        );
+        let accepted = app
+            .submit_checked(&actor, request("fixed"), &expected(&second))
+            .unwrap();
+        let third = save(
+            &second.id,
+            "dataset",
+            json!({"environment":"backtest","input_sha256":"c"}),
+            Some(&second.revision),
+        );
+        let frozen = app.store.request(&accepted.id).unwrap().resources;
+        let dataset = frozen
+            .iter()
+            .find(|resource| resource.id == second.id)
+            .unwrap();
+        assert_eq!(dataset.digest, second.digest);
+        assert_eq!(dataset.body["input_sha256"], "b");
+        assert_eq!(
+            app.submit_checked(&actor, request("fixed"), &expected(&second))
+                .unwrap()
+                .id,
+            accepted.id
+        );
+        assert!(
+            app.submit_checked(&actor, request("fixed"), &expected(&third))
+                .is_err()
+        );
+        assert!(app.submit(&actor, request("legacy")).is_ok());
+        let mut outside = expected(&third);
+        outside.insert(
+            "unrelated".into(),
+            ResourceExpectation {
+                revision: "1".into(),
+                digest: "a".repeat(64),
+            },
+        );
+        let error = app
+            .submit_checked(&actor, request("outside"), &outside)
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<super::super::Fault>().unwrap().code,
+            "INVALID_RESOURCE_EXPECTATION"
+        );
+        assert!(
+            app.store
+                .by_key(&actor.username, "outside")
+                .unwrap()
+                .is_none()
+        );
+    }
 }

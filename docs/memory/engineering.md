@@ -1,5 +1,9 @@
 # Titan 可复用工程经验
 
+日常管理使用 `titan_cli` 的 strategy/account/research/config 与交互 help；`titan serve` 承担后台角色，原 console/本机工具保留兼容。本机自动启动只认显式配置、服务身份与既有管理库，禁止远端失败降级或丢库重建。journal 区分未知、终态和已核对的准入拒绝；数据阶段用 expected_resources 绑定最终冻结快照。数据库向导只存引用，PostgreSQL 仅历史且校验固定 target，候选不冒充生效。[本轮非实盘验收](../verification/2026-11-03/cli-simplification/README.md)。
+
+管理 CLI 统一使用 v2 Cookie/CSRF 客户端；每进程认证时成功登录须清除失败计数，不能让合法批量命令消耗失败密码额度。Operation 遇 unknown 保留原键与回执，只读找回，不自动重发；事实导出钉住来源、运行代次、过滤和上界，服务端授权与筛选先于分页。本轮非实盘门禁与限制见[管理 CLI 验收](../verification/2026-11-02/managed-cli/README.md)。
+
 账户管理与策略源码入口：账户档案属于管理目录，不能替代账户事实或自动授予连接、交易权限。构建节点的源码上传默认关闭，显式启用后仍只存储不可变源码；执行由已有校验/编译 Operation 完成。实盘与回测入口共享策略及版本身份，不复制两套目录。新增入口复用会话、CSRF、节点/环境/角色校验及审计，账户编辑使用乐观版本校验；[验证记录](../verification/2026-11-02/management-directory/README.md)包含本轮范围与限制。
 
 模拟预览使用独立只读视图，只匹配明确标记为示例的策略。合成曲线、收益、订单和状态不得写成真实引擎结果或账户事实，也不接入操作提交入口；真实记录保留独立切换。边界与本轮验证见[模拟展示记录](../verification/2026-11-02/management-simulation/README.md)。
