@@ -280,7 +280,7 @@ feed_mode = "snapshot"
 book record  --config recorder.toml
 book verify  --root /data/market --date 2026-11-08 [--market BTCUSDT]  # book + trade/aux 完整性
 book repair  --segment /data/.../segment-....tnmd
-book quality --root /data/market --date 2026-11-08
+book quality --root /data/market --date 2026-11-08 --config /workspace/recorder.toml
 book replay  --root /data/market --market BTCUSDT --from ... --to ...   # 调试/基准
 ```
 

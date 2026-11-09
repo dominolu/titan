@@ -16,6 +16,9 @@ pub struct DepthMessage {
     pub exch_ts_ns: i64,
     pub local_ts_ns: i64,
     pub first_prev_seq: Option<u64>,
+    /// First native update sequence covered by this message, when the venue
+    /// exposes a range such as Binance's [U, u].
+    pub first_seq: Option<u64>,
     pub last_seq: u64,
     pub changes: Vec<Change>,
 }
@@ -360,8 +363,20 @@ impl RestShadowValidator {
         let mut bids: BTreeMap<_, _> = snapshot.0.iter().map(|l| (l.tick, l.qty)).collect();
         let mut asks: BTreeMap<_, _> = snapshot.1.iter().map(|l| (l.tick, l.qty)).collect();
         let mut cursor = snapshot_seq;
+        let mut started = false;
         for delta in self.deltas.iter().filter(|d| d.last_seq > snapshot_seq) {
-            if delta.first_prev_seq != Some(cursor) {
+            if !started {
+                // Binance's REST lastUpdateId may fall inside a diff event's
+                // [U, u] range. That event contains the state transition from
+                // snapshot_seq + 1 through u, so apply it as the bridge.
+                let next_seq = snapshot_seq.saturating_add(1);
+                let covered = delta.first_seq.is_some_and(|first| first <= next_seq)
+                    && delta.last_seq >= next_seq;
+                if !covered {
+                    return Ok(stale());
+                }
+                started = true;
+            } else if delta.first_prev_seq != Some(cursor) {
                 return Ok(stale());
             }
             for change in &delta.changes {
@@ -378,7 +393,7 @@ impl RestShadowValidator {
             }
             cursor = delta.last_seq;
         }
-        if cursor != current_seq {
+        if cursor != current_seq || (snapshot_seq < current_seq && !started) {
             return Ok(stale());
         }
         let projected_bids = top_levels(&bids, Side::Bid, depth);
@@ -1172,6 +1187,7 @@ mod tests {
                 exch_ts_ns: 10_000_000,
                 local_ts_ns: 10_000_100,
                 first_prev_seq: Some(10),
+                first_seq: Some(11),
                 last_seq: 11,
                 changes: vec![
                     Change {
@@ -1194,6 +1210,7 @@ mod tests {
                 exch_ts_ns: 110_000_000,
                 local_ts_ns: 110_000_100,
                 first_prev_seq: Some(11),
+                first_seq: Some(12),
                 last_seq: 12,
                 changes: vec![
                     Change {
@@ -1216,6 +1233,7 @@ mod tests {
                 exch_ts_ns: 210_000_000,
                 local_ts_ns: 210_000_100,
                 first_prev_seq: Some(12),
+                first_seq: Some(13),
                 last_seq: 13,
                 changes: vec![],
             })
@@ -1251,6 +1269,7 @@ mod tests {
             exch_ts_ns: 1,
             local_ts_ns: 1,
             first_prev_seq: Some(3),
+            first_seq: Some(4),
             last_seq: 5,
             changes: vec![],
         };
@@ -1271,6 +1290,7 @@ mod tests {
             exch_ts_ns: 1,
             local_ts_ns: 2,
             first_prev_seq: None,
+            first_seq: None,
             last_seq: 8,
             changes: vec![],
         });
@@ -1292,6 +1312,7 @@ mod tests {
                 exch_ts_ns: 210_000_000,
                 local_ts_ns: 210_001_000,
                 first_prev_seq: Some(10),
+                first_seq: Some(11),
                 last_seq: 11,
                 changes: vec![],
             })
@@ -1301,6 +1322,7 @@ mod tests {
                 exch_ts_ns: 150_000_000,
                 local_ts_ns: 211_001_000,
                 first_prev_seq: Some(11),
+                first_seq: Some(12),
                 last_seq: 12,
                 changes: vec![],
             })
@@ -1323,6 +1345,7 @@ mod tests {
             exch_ts_ns: 1,
             local_ts_ns: 1,
             first_prev_seq: Some(4),
+            first_seq: Some(5),
             last_seq: 5,
             changes: vec![
                 Change {
@@ -1386,6 +1409,7 @@ depth_available = 1000
                     exch_ts_ns: 1,
                     local_ts_ns: 2,
                     first_prev_seq: Some(10),
+                    first_seq: Some(11),
                     last_seq: 11,
                     changes: vec![Change {
                         side: Side::Bid,
@@ -1402,6 +1426,7 @@ depth_available = 1000
                     exch_ts_ns: 3,
                     local_ts_ns: 4,
                     first_prev_seq: Some(11),
+                    first_seq: Some(12),
                     last_seq: 12,
                     changes: vec![Change {
                         side: Side::Ask,
@@ -1460,6 +1485,63 @@ depth_available = 1000
             .unwrap();
         assert_eq!(mismatch.status, RestShadowStatus::Mismatch);
         assert_eq!(mismatch.differing_levels, 1);
+    }
+
+    #[test]
+    fn rest_shadow_accepts_snapshot_inside_first_delta_sequence_range() {
+        let mut shadow = RestShadowValidator::new(8, 2).unwrap();
+        shadow
+            .push(
+                2,
+                DepthMessage {
+                    exch_ts_ns: 1,
+                    local_ts_ns: 2,
+                    first_prev_seq: Some(10),
+                    first_seq: Some(11),
+                    last_seq: 13,
+                    changes: vec![Change {
+                        side: Side::Bid,
+                        tick: 100,
+                        qty: 2,
+                    }],
+                },
+            )
+            .unwrap();
+        shadow
+            .push(
+                2,
+                DepthMessage {
+                    exch_ts_ns: 3,
+                    local_ts_ns: 4,
+                    first_prev_seq: Some(13),
+                    first_seq: Some(14),
+                    last_seq: 14,
+                    changes: vec![Change {
+                        side: Side::Ask,
+                        tick: 101,
+                        qty: 3,
+                    }],
+                },
+            )
+            .unwrap();
+
+        let report = shadow
+            .compare(
+                2,
+                12,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 2 }],
+                    &[Level { tick: 101, qty: 3 }],
+                ),
+                1,
+            )
+            .unwrap();
+
+        assert_eq!(report.status, RestShadowStatus::Match);
     }
 
     #[test]

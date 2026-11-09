@@ -508,6 +508,7 @@ async fn run_market_records_normalized_diff_slots_and_replays_them() {
             exch_ts_ns: 20_000_000,
             local_ts_ns: 20_001_000,
             first_prev_seq: Some(10),
+            first_seq: Some(11),
             last_seq: 11,
             changes: vec![Change {
                 side: collector::book::Side::Bid,
@@ -519,6 +520,7 @@ async fn run_market_records_normalized_diff_slots_and_replays_them() {
             exch_ts_ns: 110_000_000,
             local_ts_ns: 110_001_000,
             first_prev_seq: Some(11),
+            first_seq: Some(12),
             last_seq: 12,
             changes: vec![],
         }),
@@ -597,6 +599,7 @@ async fn run_market_starts_a_new_epoch_with_gap_before_resynced_data() {
             exch_ts_ns: 20_000_000,
             local_ts_ns: 20_001_000,
             first_prev_seq: Some(10),
+            first_seq: Some(11),
             last_seq: 11,
             changes: vec![Change {
                 side: collector::book::Side::Bid,
@@ -608,6 +611,7 @@ async fn run_market_starts_a_new_epoch_with_gap_before_resynced_data() {
             exch_ts_ns: 110_000_000,
             local_ts_ns: 110_001_000,
             first_prev_seq: Some(11),
+            first_seq: Some(12),
             last_seq: 12,
             changes: vec![],
         }),
@@ -632,6 +636,7 @@ async fn run_market_starts_a_new_epoch_with_gap_before_resynced_data() {
             exch_ts_ns: 220_000_000,
             local_ts_ns: 220_001_000,
             first_prev_seq: Some(100),
+            first_seq: Some(101),
             last_seq: 101,
             changes: vec![Change {
                 side: collector::book::Side::Bid,
@@ -643,6 +648,7 @@ async fn run_market_starts_a_new_epoch_with_gap_before_resynced_data() {
             exch_ts_ns: 310_000_000,
             local_ts_ns: 310_001_000,
             first_prev_seq: Some(101),
+            first_seq: Some(102),
             last_seq: 102,
             changes: vec![],
         }),

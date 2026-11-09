@@ -169,6 +169,7 @@ impl OkxFeed {
                     exch_ts_ns: ts,
                     local_ts_ns,
                     first_prev_seq: Some(previous),
+                    first_seq: previous.checked_add(1),
                     last_seq: seq,
                     changes,
                 }));
@@ -475,6 +476,7 @@ impl BybitFeed {
                 exch_ts_ns,
                 local_ts_ns,
                 first_prev_seq: Some(previous),
+                first_seq: previous.checked_add(1),
                 last_seq: update,
                 changes,
             }));
@@ -1152,6 +1154,7 @@ impl BinanceFeed {
                 exch_ts_ns,
                 local_ts_ns,
                 first_prev_seq: Some(predecessor),
+                first_seq: Some(first),
                 last_seq: last,
                 changes,
             }));
@@ -1516,6 +1519,9 @@ enum Command {
         root: PathBuf,
         #[arg(long)]
         date: String,
+        /// Recorder config whose REST validation sample threshold applies to this report.
+        #[arg(long)]
+        config: PathBuf,
     },
     /// Read blocks from matching segments, optionally bounded by exchange time.
     Replay {
@@ -1687,16 +1693,22 @@ async fn run(args: Args) -> Result<(), (u8, String)> {
                 Ok(())
             }
         }
-        Command::Quality { root, date } => {
+        Command::Quality { root, date, config } => {
             chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .map_err(|_| (2, "date must use YYYY-MM-DD".into()))?;
+            let text = fs::read_to_string(config).map_err(io_error)?;
+            let rest_validation_min_samples = RecorderConfig::parse(&text)
+                .map_err(|error| (2, error.to_string()))?
+                .recorder
+                .rest_validation_min_samples;
             let reports = inspect(&root, Some(&date), None)?;
             let events =
                 collector::file::inspect_market_events(&root, Some(&date)).map_err(io_error)?;
             let blocks = reports.iter().map(|r| r.blocks).sum();
             let readable = reports.iter().map(|r| r.readable).sum();
             let corrupt = reports.iter().map(|r| r.corrupt).sum();
-            let markets = build_quality_markets(&reports, &events, &date);
+            let markets =
+                build_quality_markets(&reports, &events, &date, rest_validation_min_samples);
             let status = if markets.iter().any(|market| market.status == "FAIL") {
                 "FAIL"
             } else if markets
@@ -1836,6 +1848,7 @@ fn build_quality_markets(
     segments: &[SegmentSummary],
     events: &collector::file::EventIntegrityReport,
     date: &str,
+    rest_validation_min_samples: u32,
 ) -> Vec<MarketQualitySummary> {
     let mut grouped: std::collections::BTreeMap<&str, Vec<&SegmentSummary>> =
         std::collections::BTreeMap::new();
@@ -1968,7 +1981,7 @@ fn build_quality_markets(
                 warnings.push("event_summary_mismatch".into());
             }
             if venue.contains("binance") || venue.contains("bybit") {
-                if event.rest_samples_compared < 5 {
+                if event.rest_samples_compared < u64::from(rest_validation_min_samples) {
                     warnings.push("rest_shadow_sample_count_below_minimum".into());
                 }
             } else {
