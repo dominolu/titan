@@ -2417,6 +2417,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "crc",
  "flate2",
  "futures-util",
  "hftbacktest",
@@ -2428,9 +2429,11 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite 0.28.0",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "zip",
+ "zstd",
 ]
 
 [[package]]

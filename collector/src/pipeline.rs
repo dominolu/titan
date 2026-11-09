@@ -1,5 +1,5 @@
-use crate::file::Writer;
 use chrono::{DateTime, Utc};
+use collector::file::Writer;
 use tokio::sync::mpsc;
 
 type Record = (DateTime<Utc>, String, String);

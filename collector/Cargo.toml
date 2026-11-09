@@ -19,8 +19,11 @@ reqwest = { version = "0.12.24", features = ["json"] }
 sha2 = "0.10.9"
 hmac = "0.12.1"
 thiserror = "2.0.17"
+crc = "3.4.0"
 flate2 = "1.1.5"
 clap = { version = "4.5.53", features = ["derive"] }
+toml = "0.9"
+zstd = "0.13"
 hftbacktest = { path = "../hftbacktest", default-features = false, features = ["backtest"] }
 zip = "6.0.0"
 
