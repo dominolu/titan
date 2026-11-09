@@ -725,6 +725,7 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 ### 15.1 产出
 
 - 每市场每天一个 `quality.json`，由汇总任务读取段头、块索引、gap 控制块和对账日志生成。
+- 生成质量报告时必须传入对应的录制配置，`rest_validation_min_samples` 按配置生效。
 - 数据集导出时把各市场状态汇总进 `dataset.json`；不回写 `.tnmd` 段文件。
 - 状态只有三档：`PASS` / `PASS_WITH_WARNINGS` / `FAIL`。
 
