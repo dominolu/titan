@@ -517,12 +517,28 @@ async fn run_market_records_normalized_diff_slots_and_replays_them() {
             }],
         }),
         FeedMessage::Depth(DepthMessage {
-            exch_ts_ns: 110_000_000,
-            local_ts_ns: 110_001_000,
+            exch_ts_ns: 150_000_000,
+            local_ts_ns: 150_001_000,
             first_prev_seq: Some(11),
             first_seq: Some(12),
             last_seq: 12,
-            changes: vec![],
+            changes: vec![Change {
+                side: collector::book::Side::Bid,
+                tick: 99,
+                qty: 2,
+            }],
+        }),
+        FeedMessage::Depth(DepthMessage {
+            exch_ts_ns: 250_000_000,
+            local_ts_ns: 250_001_000,
+            first_prev_seq: Some(12),
+            first_seq: Some(13),
+            last_seq: 13,
+            changes: vec![Change {
+                side: collector::book::Side::Ask,
+                tick: 102,
+                qty: 3,
+            }],
         }),
     ]);
     let settings = collector::book::RecorderSettings {
@@ -557,11 +573,50 @@ async fn run_market_records_normalized_diff_slots_and_replays_them() {
         .unwrap();
     let reader = SegmentReader::open(&segment).unwrap();
     assert_eq!(reader.header.encoding_flags, 1);
+    // All changed slots inside one 1 s block must be packed into one block.
     assert_eq!(reader.block_count(), 1);
-    let payload = decode_data_payload(&reader.read_block(0).unwrap()).unwrap();
+    let block = reader.read_block(0).unwrap();
+    assert_eq!(block.header.n_slots, 3);
+    let payload = decode_data_payload(&block).unwrap();
     assert_eq!(payload.bids, vec![Level { tick: 100, qty: 2 }]);
-    assert_eq!(payload.records.len(), 1);
-    assert_eq!(payload.records[0].changes[0].qty, 4);
+    assert_eq!(payload.asks, vec![Level { tick: 101, qty: 3 }]);
+    assert_eq!(payload.records.len(), 3);
+    assert_eq!(
+        payload.records[0].changes,
+        vec![Change {
+            side: collector::book::Side::Bid,
+            tick: 100,
+            qty: 4,
+        }]
+    );
+    assert_eq!(
+        payload.records[1].changes,
+        vec![Change {
+            side: collector::book::Side::Bid,
+            tick: 99,
+            qty: 2,
+        }]
+    );
+    assert_eq!(
+        payload.records[2].changes,
+        vec![Change {
+            side: collector::book::Side::Ask,
+            tick: 102,
+            qty: 3,
+        }]
+    );
+    let mut ladder = Ladder::from_snapshot(&payload.bids, &payload.asks).unwrap();
+    for record in &payload.records {
+        ladder.apply(&record.changes).unwrap();
+    }
+    assert_eq!(
+        ladder.top_n(collector::book::Side::Bid, 10),
+        vec![Level { tick: 100, qty: 4 }, Level { tick: 99, qty: 2 },]
+    );
+    assert_eq!(
+        ladder.top_n(collector::book::Side::Ask, 10),
+        vec![Level { tick: 101, qty: 3 }, Level { tick: 102, qty: 3 },]
+    );
     let event_report = collector::file::inspect_market_events(&dir, None).unwrap();
     assert_eq!(event_report.files, 1);
     assert_eq!(event_report.records, 1);
