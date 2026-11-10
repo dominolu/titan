@@ -26,7 +26,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 type BinanceSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 enum MarketFeed {
-    Binance(BinanceFeed),
+    Binance(Box<BinanceFeed>),
     Bybit(BybitFeed),
     Okx(OkxFeed),
     Hyperliquid(HyperliquidFeed),
@@ -860,10 +860,12 @@ impl Feed for HyperliquidFeed {
 
 struct BinanceFeed {
     socket: Option<BinanceSocket>,
+    market_socket: Option<BinanceSocket>,
     client: reqwest::Client,
     market: MarketConfig,
     settings: RecorderSettings,
     previous_seq: u64,
+    awaiting_snapshot_bridge: bool,
     last_exch_ns: i64,
     pending: VecDeque<FeedMessage>,
     cancel: watch::Receiver<bool>,
@@ -885,10 +887,12 @@ impl BinanceFeed {
         let validation_interval_ms = settings.validation_interval_ms.max(1);
         let mut feed = Self {
             socket: None,
+            market_socket: None,
             client,
             market,
             settings,
             previous_seq: 0,
+            awaiting_snapshot_bridge: true,
             last_exch_ns: now_ns(),
             pending: VecDeque::new(),
             cancel,
@@ -933,7 +937,7 @@ impl BinanceFeed {
         }
     }
 
-    fn websocket_url(&self) -> anyhow::Result<String> {
+    fn websocket_urls(&self) -> anyhow::Result<(String, Option<String>)> {
         if !self
             .market
             .symbol
@@ -944,17 +948,47 @@ impl BinanceFeed {
         }
         let (_, endpoint, derivative) = self.urls()?;
         let symbol = self.market.symbol.to_ascii_lowercase();
+        if derivative && self.is_usdm() {
+            let public = format!(
+                "{}{}?streams={symbol}@depth@100ms",
+                endpoint.trim_end_matches("/stream"),
+                "/public/stream"
+            );
+            let market = format!(
+                "{}{}?streams={symbol}@aggTrade/{symbol}@markPrice@1s/{symbol}@forceOrder",
+                endpoint.trim_end_matches("/stream"),
+                "/market/stream"
+            );
+            return Ok((public, Some(market)));
+        }
         let mut streams = vec![format!("{symbol}@depth@100ms"), format!("{symbol}@trade")];
         if derivative {
             streams.push(format!("{symbol}@markPrice@1s"));
             streams.push("!forceOrder@arr".to_owned());
         }
-        Ok(format!("{endpoint}?streams={}", streams.join("/")))
+        Ok((format!("{endpoint}?streams={}", streams.join("/")), None))
+    }
+
+    fn is_usdm(&self) -> bool {
+        matches!(
+            self.market.venue.to_ascii_lowercase().as_str(),
+            "binancefuturesum" | "binance_futures"
+        )
+    }
+
+    async fn connect_market_socket(&self) -> anyhow::Result<Option<BinanceSocket>> {
+        let (_, market_url) = self.websocket_urls()?;
+        match market_url {
+            Some(url) => Ok(Some(connect_async(url).await?.0)),
+            None => Ok(None),
+        }
     }
 
     async fn open_initial(&mut self) -> anyhow::Result<()> {
-        let socket = connect_async(self.websocket_url()?).await?.0;
+        let (public_url, _) = self.websocket_urls()?;
+        let socket = connect_async(public_url).await?.0;
         self.socket = Some(socket);
+        self.market_socket = self.connect_market_socket().await?;
         let (snapshot, seq) = self.fetch_snapshot().await?;
         self.previous_seq = seq;
         self.last_exch_ns = snapshot.exch_ts_ns;
@@ -1017,8 +1051,12 @@ impl BinanceFeed {
                 return;
             }
             match async {
-                let socket = connect_async(self.websocket_url()?).await?.0;
+                let (public_url, _) = self.websocket_urls()?;
+                let socket = connect_async(public_url).await?.0;
                 self.socket = Some(socket);
+                if self.market_socket.is_none() {
+                    self.market_socket = self.connect_market_socket().await?;
+                }
                 self.fetch_snapshot().await
             }
             .await
@@ -1027,6 +1065,7 @@ impl BinanceFeed {
                     let end_local = now_ns();
                     let end_exch = snapshot.exch_ts_ns.max(old_exch);
                     self.previous_seq = seq;
+                    self.awaiting_snapshot_bridge = true;
                     self.last_exch_ns = end_exch;
                     self.pending.push_back(FeedMessage::Gap(GapMessage {
                         start_local_ns: start_local,
@@ -1120,13 +1159,16 @@ impl BinanceFeed {
             if last <= self.previous_seq {
                 return None;
             }
-            let bridge = self
-                .previous_seq
-                .checked_add(1)
-                .is_some_and(|next| first <= next && next <= last);
             let prev = event.get("pu").and_then(Value::as_u64);
             let (_, _, derivative) = self.urls().ok()?;
-            if !bridge || (derivative && prev != Some(self.previous_seq)) {
+            if !binance_depth_update_is_valid(
+                self.previous_seq,
+                first,
+                last,
+                prev,
+                derivative,
+                self.awaiting_snapshot_bridge,
+            ) {
                 self.resynchronize(GapReason::SequenceBreak).await;
                 return self.pending.pop_front();
             }
@@ -1149,6 +1191,7 @@ impl BinanceFeed {
             changes.extend(bids);
             changes.extend(asks);
             self.previous_seq = last;
+            self.awaiting_snapshot_bridge = false;
             self.last_exch_ns = exch_ts_ns;
             return Some(FeedMessage::Depth(DepthMessage {
                 exch_ts_ns,
@@ -1254,6 +1297,7 @@ impl Feed for BinanceFeed {
             if *self.cancel.borrow() {
                 return None;
             }
+            let reconnect_market = self.is_usdm() && self.market_socket.is_none();
             let Some(socket) = self.socket.as_mut() else {
                 self.resynchronize(GapReason::Disconnect).await;
                 return self.pending.pop_front();
@@ -1274,6 +1318,33 @@ impl Feed for BinanceFeed {
                         last_seq: None,
                     });
                     return Some(FeedMessage::RestSnapshot(snapshot));
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if reconnect_market => {
+                    self.market_socket = self.connect_market_socket().await.ok().flatten();
+                }
+                message = async {
+                    self.market_socket
+                        .as_mut()
+                        .expect("market socket guarded by select")
+                        .next()
+                        .await
+                }, if self.market_socket.is_some() => {
+                    match message {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
+                        }
+                        Some(Ok(Message::Ping(payload))) => {
+                            if let Some(socket) = self.market_socket.as_mut()
+                                && socket.send(Message::Pong(payload)).await.is_err()
+                            {
+                                self.market_socket = None;
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                            self.market_socket = None;
+                        }
+                        Some(Ok(_)) => {}
+                    }
                 }
                 message = socket.next() => {
                     match message {
@@ -1304,6 +1375,26 @@ fn now_ns() -> i64 {
 
 fn ms_to_ns(milliseconds: i64) -> Option<i64> {
     milliseconds.checked_mul(1_000_000)
+}
+
+fn binance_depth_update_is_valid(
+    previous_seq: u64,
+    first_seq: u64,
+    last_seq: u64,
+    event_prev_seq: Option<u64>,
+    derivative: bool,
+    awaiting_snapshot_bridge: bool,
+) -> bool {
+    let bridge = previous_seq
+        .checked_add(1)
+        .is_some_and(|next| first_seq <= next && next <= last_seq);
+    if derivative && !awaiting_snapshot_bridge {
+        // For USDⓈ-M continuation, `pu` is authoritative; `U` may begin
+        // beyond `previous_seq + 1` while `pu` still links the event.
+        event_prev_seq == Some(previous_seq)
+    } else {
+        bridge
+    }
 }
 
 fn parse_changes(
@@ -1383,6 +1474,42 @@ mod binance_adapter_tests {
             qty_decimals: 3,
             depth_available: 2,
         }
+    }
+
+    #[test]
+    fn futures_snapshot_bridge_allows_the_rest_sequence_inside_a_depth_range() {
+        assert!(binance_depth_update_is_valid(
+            105,
+            101,
+            109,
+            Some(100),
+            true,
+            true,
+        ));
+        assert!(!binance_depth_update_is_valid(
+            105,
+            107,
+            109,
+            Some(100),
+            true,
+            false,
+        ));
+        assert!(binance_depth_update_is_valid(
+            105,
+            108,
+            112,
+            Some(105),
+            true,
+            false,
+        ));
+        assert!(!binance_depth_update_is_valid(
+            105,
+            107,
+            109,
+            Some(100),
+            true,
+            true,
+        ));
     }
 
     #[test]
@@ -2046,7 +2173,7 @@ fn build_quality_markets(
                 } else if sequence_failures > 0 {
                     "failed"
                 } else {
-                    "native_chain"
+                    "monotonic_only"
                 },
                 trade_count: event.trade_count,
                 trade_truncated_tail: event.trade_truncated_tail,
@@ -2268,7 +2395,12 @@ fn sequence_failures_in_segment(segment: &SegmentSummary) -> usize {
                 failures += 1;
                 continue;
             };
-            if predecessor != sequence || last < predecessor {
+            // Slot records omit empty/no-change windows, so the next stored
+            // predecessor may advance past the prior stored sequence. Gaps
+            // between native updates are checked by the feed adapter before
+            // records reach this scanner; the persisted sparse chain can only
+            // prove monotonicity.
+            if predecessor < sequence || last < predecessor {
                 failures += 1;
             }
             sequence = last;
@@ -2310,11 +2442,13 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
             let venue_key = market.venue.to_ascii_lowercase();
             let feed = match venue_key.as_str() {
                 "binance" | "binancespot" | "binance_spot" | "binancefuturesum"
-                | "binance_futures" | "binancefuturescm" | "binance_coinm" => MarketFeed::Binance(
-                    BinanceFeed::connect(market.clone(), settings.clone(), cancel)
-                        .await
-                        .map_err(|_| "could not initialize market feed".to_owned())?,
-                ),
+                | "binance_futures" | "binancefuturescm" | "binance_coinm" => {
+                    MarketFeed::Binance(Box::new(
+                        BinanceFeed::connect(market.clone(), settings.clone(), cancel)
+                            .await
+                            .map_err(|_| "could not initialize market feed".to_owned())?,
+                    ))
+                }
                 key if key.starts_with("bybit") => MarketFeed::Bybit(
                     BybitFeed::connect(market.clone(), settings.validation_interval_ms, cancel)
                         .await

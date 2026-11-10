@@ -710,7 +710,7 @@ pub async fn run_market<F: Feed>(
                         venue,
                         instrument,
                         &meta.symbol,
-                        snapshot.local_ts_ns,
+                        snapshot.exch_ts_ns,
                         &status_event,
                     )?;
                 }
@@ -784,7 +784,7 @@ fn write_closed_slot(
             venue,
             instrument,
             &meta.symbol,
-            slot.local_ts_ns,
+            slot.exch_ts_ns,
             &event,
         )?;
     }
@@ -960,7 +960,7 @@ impl MarketRecorder {
         if self.slot_first_prev.is_none() {
             self.slot_first_prev = prev_seq;
         }
-        self.apply_changes(&message.changes)?;
+        self.apply_changes(&message.changes);
         self.slot_exch_ts = clamped.max(slot.saturating_mul(grid_ns));
         self.slot_local_ts = message.local_ts_ns;
         self.slot_last_seq = message.last_seq;
@@ -1083,31 +1083,18 @@ impl MarketRecorder {
         }))
     }
 
-    fn apply_changes(&mut self, changes: &[Change]) -> Result<(), BookError> {
-        let mut staged: BTreeMap<(bool, i64), Option<u64>> = BTreeMap::new();
+    fn apply_changes(&mut self, changes: &[Change]) {
         for change in changes {
-            let key = (change.side == Side::Ask, change.tick);
-            let current = staged
-                .get(&key)
-                .copied()
-                .unwrap_or_else(|| match change.side {
-                    Side::Bid => self.bids.get(&change.tick).copied(),
-                    Side::Ask => self.asks.get(&change.tick).copied(),
-                });
-            if change.qty == 0 && current.is_none() {
-                return Err(BookError::InvalidField("delete missing level"));
-            }
-            staged.insert(key, (change.qty != 0).then_some(change.qty));
-        }
-        for ((ask, tick), qty) in staged {
-            let book = if ask { &mut self.asks } else { &mut self.bids };
-            if let Some(qty) = qty {
-                book.insert(tick, qty);
+            let book = match change.side {
+                Side::Bid => &mut self.bids,
+                Side::Ask => &mut self.asks,
+            };
+            if change.qty == 0 {
+                book.remove(&change.tick);
             } else {
-                book.remove(&tick);
+                book.insert(change.tick, change.qty);
             }
         }
-        Ok(())
     }
 }
 
@@ -1277,6 +1264,38 @@ mod tests {
     }
 
     #[test]
+    fn unknown_delete_outside_partial_exchange_snapshot_is_ignored() {
+        let mut recorder = MarketRecorder::new(meta()).unwrap();
+        recorder
+            .install_snapshot(
+                &[Level { tick: 100, qty: 1 }],
+                &[Level { tick: 101, qty: 1 }],
+                Some(10),
+            )
+            .unwrap();
+
+        let closed = recorder
+            .apply(DepthMessage {
+                exch_ts_ns: 10_000_000,
+                local_ts_ns: 10_001_000,
+                first_prev_seq: Some(10),
+                first_seq: Some(11),
+                last_seq: 11,
+                changes: vec![Change {
+                    side: Side::Bid,
+                    tick: 99,
+                    qty: 0,
+                }],
+            })
+            .unwrap();
+
+        assert!(closed.is_empty());
+        assert_eq!(recorder.window().0, vec![Level { tick: 100, qty: 1 }]);
+        assert_eq!(recorder.window().1, vec![Level { tick: 101, qty: 1 }]);
+        assert_eq!(recorder.last_seq, Some(11));
+    }
+
+    #[test]
     fn missing_predecessor_sequence_fails_closed() {
         let mut recorder = MarketRecorder::new(meta()).unwrap();
         recorder
@@ -1333,7 +1352,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_delta_does_not_partially_mutate_the_book() {
+    fn sequence_gap_does_not_partially_mutate_the_book() {
         let mut r = MarketRecorder::new(meta()).unwrap();
         r.install_snapshot(
             &[Level { tick: 100, qty: 1 }],
@@ -1344,7 +1363,7 @@ mod tests {
         let msg = DepthMessage {
             exch_ts_ns: 1,
             local_ts_ns: 1,
-            first_prev_seq: Some(4),
+            first_prev_seq: Some(3),
             first_seq: Some(5),
             last_seq: 5,
             changes: vec![
