@@ -568,9 +568,12 @@ pub fn build_data_block(
     Ok(block)
 }
 
-/// Runs one normalized market feed to EOF and writes each changed closed slot
-/// as a self-contained data block. Feed adapters must yield a snapshot before
-/// diff messages and must end the feed when a reconnect requires resynchronizing.
+/// Runs one normalized market feed to EOF and packs the net diff of every
+/// changed closed slot into `block_duration_ms` (default 60 s) self-contained
+/// blocks: the first slot of a block contributes the full window snapshot and
+/// the following slots only their net window diff. Feed adapters must yield a
+/// snapshot before diff messages and must end the feed when a reconnect
+/// requires resynchronizing.
 pub async fn run_market<F: Feed>(
     mut meta: MarketMeta,
     root: &std::path::Path,
@@ -598,6 +601,7 @@ pub async fn run_market<F: Feed>(
         settings.fsync_interval_blocks,
     )?;
     let mut recorder = MarketRecorder::new(meta.clone())?;
+    let mut aggregator = SlotAggregator::new(&meta)?;
     let mut event_writer = MarketEventWriter::new();
     let mut rest_shadow = (settings.rest_validation_log_messages > 0)
         .then(|| {
@@ -636,7 +640,8 @@ pub async fn run_market<F: Feed>(
                         root,
                         venue,
                         instrument,
-                        &slot,
+                        slot,
+                        &mut aggregator,
                         &mut last_times,
                     )?;
                 }
@@ -645,6 +650,9 @@ pub async fn run_market<F: Feed>(
         };
         let closed = match message {
             FeedMessage::Gap(gap) => {
+                if let Some(block) = aggregator.flush(&meta)? {
+                    append_block(&mut writer, block, &mut last_times)?;
+                }
                 writer.append_gap(
                     gap.start_local_ns,
                     gap.start_exch_ns,
@@ -744,7 +752,8 @@ pub async fn run_market<F: Feed>(
                 root,
                 venue,
                 instrument,
-                &slot,
+                slot,
+                &mut aggregator,
                 &mut last_times,
             )?;
         }
@@ -757,13 +766,246 @@ pub async fn run_market<F: Feed>(
             root,
             venue,
             instrument,
-            &slot,
+            slot,
+            &mut aggregator,
             &mut last_times,
         )?;
+    }
+    if let Some(block) = aggregator.flush(&meta)? {
+        append_block(&mut writer, block, &mut last_times)?;
     }
     writer.finish(last_times.0, last_times.1)?;
     event_writer.finish()?;
     Ok(())
+}
+
+/// Maximum tick span inside one block, measured from the block-start snapshot
+/// through every recorded change. Mirrors the design's default
+/// `rebase_threshold_ticks` (30000): the slot that would exceed it seals the
+/// pending block first, so the next block starts with a fresh snapshot and a
+/// fresh base tick.
+const REBASE_THRESHOLD_TICKS: i64 = 30_000;
+
+fn grid_ns(meta: &MarketMeta) -> Result<i64, BookError> {
+    i64::from(meta.grid_ms)
+        .checked_mul(1_000_000)
+        .ok_or(BookError::InvalidField("grid duration"))
+}
+
+fn tick_bounds(
+    snapshot_bids: &[Level],
+    snapshot_asks: &[Level],
+    changes: &[Change],
+) -> Result<(i64, i64), BookError> {
+    let mut bounds: Option<(i64, i64)> = None;
+    let mut include = |tick: i64| {
+        bounds = Some(match bounds {
+            Some((min, max)) => (min.min(tick), max.max(tick)),
+            None => (tick, tick),
+        });
+    };
+    for level in snapshot_bids.iter().chain(snapshot_asks) {
+        include(level.tick);
+    }
+    for change in changes {
+        include(change.tick);
+    }
+    bounds.ok_or(BookError::InvalidField("empty slot window"))
+}
+
+/// One run of closed grid slots that is being packed into a self-contained
+/// block. The block-start window snapshot is captured from the first slot; the
+/// later slots only contribute their net window diff, so a block stores one
+/// snapshot per `block_duration_ms` instead of one per 100 ms grid slot.
+struct PendingBlock {
+    start_slot: i64,
+    start_local_ns: i64,
+    start_exch_ns: i64,
+    snapshot_bids: Vec<Level>,
+    snapshot_asks: Vec<Level>,
+    seq_base: u64,
+    records: Vec<ClosedSlot>,
+    min_tick: i64,
+    max_tick: i64,
+    last_slot: i64,
+    end_local_ns: i64,
+}
+
+impl PendingBlock {
+    fn open(meta: &MarketMeta, mut slot: ClosedSlot) -> Result<Self, BookError> {
+        let grid_ns = grid_ns(meta)?;
+        let start_exch_ns = slot
+            .slot
+            .checked_mul(grid_ns)
+            .ok_or(BookError::InvalidField("slot timestamp"))?;
+        let seq_base = if meta.feed_mode == FeedMode::Snapshot {
+            0
+        } else {
+            slot.seq_first_prev
+                .ok_or(BookError::InvalidField("missing slot predecessor"))?
+        };
+        let (min_tick, max_tick) =
+            tick_bounds(&slot.snapshot_bids, &slot.snapshot_asks, &slot.changes)?;
+        let snapshot_bids = std::mem::take(&mut slot.snapshot_bids);
+        let snapshot_asks = std::mem::take(&mut slot.snapshot_asks);
+        let start_local_ns = slot.local_ts_ns;
+        let last_slot = slot.slot;
+        Ok(Self {
+            start_slot: slot.slot,
+            start_local_ns,
+            start_exch_ns,
+            snapshot_bids,
+            snapshot_asks,
+            seq_base,
+            records: vec![slot],
+            min_tick,
+            max_tick,
+            last_slot,
+            end_local_ns: start_local_ns,
+        })
+    }
+
+    fn coverage(&self) -> i64 {
+        self.last_slot - self.start_slot + 1
+    }
+
+    fn span_with(&self, changes: &[Change]) -> i64 {
+        let mut min_tick = self.min_tick;
+        let mut max_tick = self.max_tick;
+        for change in changes {
+            min_tick = min_tick.min(change.tick);
+            max_tick = max_tick.max(change.tick);
+        }
+        max_tick - min_tick
+    }
+
+    fn add(&mut self, mut slot: ClosedSlot) -> Result<(), BookError> {
+        if slot.slot <= self.last_slot {
+            return Err(BookError::InvalidField("slot order"));
+        }
+        let (min_tick, max_tick) =
+            tick_bounds(&slot.snapshot_bids, &slot.snapshot_asks, &slot.changes)?;
+        self.min_tick = self.min_tick.min(min_tick);
+        self.max_tick = self.max_tick.max(max_tick);
+        // Later slots are net diff records relative to the previous window, so
+        // their per-slot snapshot copies are not needed once bounds are counted.
+        slot.snapshot_bids = Vec::new();
+        slot.snapshot_asks = Vec::new();
+        self.last_slot = slot.slot;
+        self.end_local_ns = slot.local_ts_ns;
+        self.records.push(slot);
+        Ok(())
+    }
+
+    fn into_block(self, meta: &MarketMeta, n_slots: i64) -> Result<BlockInput, BookError> {
+        let n_slots =
+            u16::try_from(n_slots).map_err(|_| BookError::InvalidField("block slot count"))?;
+        let base_tick = i64::try_from((i128::from(self.min_tick) + i128::from(self.max_tick)) / 2)
+            .map_err(|_| BookError::InvalidField("base tick"))?;
+        let seq_last_processed = self
+            .records
+            .last()
+            .map(|slot| slot.seq_last)
+            .unwrap_or(self.seq_base);
+        build_data_block(
+            meta,
+            self.start_local_ns,
+            self.end_local_ns,
+            self.start_exch_ns,
+            base_tick,
+            self.seq_base,
+            seq_last_processed,
+            n_slots,
+            self.snapshot_bids,
+            self.snapshot_asks,
+            &self.records,
+        )
+    }
+}
+
+/// Packs closed slots into self-contained blocks whose window is bounded by
+/// `block_duration_ms`. A block is sealed when the next slot falls outside its
+/// grid window, when a tick would exceed the rebase threshold, at a gap, or at
+/// the end of the feed.
+struct SlotAggregator {
+    slots_per_block: i64,
+    pending: Option<PendingBlock>,
+}
+
+impl SlotAggregator {
+    fn new(meta: &MarketMeta) -> Result<Self, BookError> {
+        if meta.grid_ms == 0 || !meta.block_duration_ms.is_multiple_of(meta.grid_ms) {
+            return Err(BookError::InvalidField("block aggregation window"));
+        }
+        Ok(Self {
+            slots_per_block: i64::from(meta.block_duration_ms / meta.grid_ms),
+            pending: None,
+        })
+    }
+
+    /// Accepts the next closed slot and returns a sealed block when one must be
+    /// appended before the slot can be buffered.
+    fn push(
+        &mut self,
+        meta: &MarketMeta,
+        slot: ClosedSlot,
+    ) -> Result<Option<BlockInput>, BookError> {
+        let mut sealed = None;
+        let seal = match self.pending.as_ref() {
+            Some(pending) => {
+                if slot.slot < pending.last_slot {
+                    return Err(BookError::InvalidField("slot order"));
+                }
+                let crossed = slot.slot - pending.start_slot >= self.slots_per_block;
+                let rebase = pending.span_with(&slot.changes) > REBASE_THRESHOLD_TICKS;
+                if crossed {
+                    Some((true, 0))
+                } else if rebase {
+                    Some((false, pending.coverage()))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        if let Some((crossed, coverage)) = seal {
+            let pending = self
+                .pending
+                .take()
+                .ok_or(BookError::InvalidField("pending block state"))?;
+            let n_slots = if crossed {
+                self.slots_per_block
+            } else {
+                coverage
+            };
+            sealed = Some(pending.into_block(meta, n_slots)?);
+        }
+        let pending = match self.pending.take() {
+            Some(mut pending) => {
+                pending.add(slot)?;
+                pending
+            }
+            None => PendingBlock::open(meta, slot)?,
+        };
+        if pending.coverage() >= self.slots_per_block && sealed.is_none() {
+            let n_slots = pending.coverage();
+            sealed = Some(pending.into_block(meta, n_slots)?);
+        } else {
+            // A block sealed at the start of this push may already fill the
+            // window (only when block_duration_ms == grid_ms); keep this slot
+            // buffered so the next push or the final flush seals it.
+            self.pending = Some(pending);
+        }
+        Ok(sealed)
+    }
+
+    fn flush(&mut self, meta: &MarketMeta) -> Result<Option<BlockInput>, BookError> {
+        let Some(pending) = self.pending.take() else {
+            return Ok(None);
+        };
+        let n_slots = pending.coverage();
+        Ok(Some(pending.into_block(meta, n_slots)?))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -774,7 +1016,8 @@ fn write_closed_slot(
     root: &std::path::Path,
     venue: &str,
     instrument: &str,
-    slot: &ClosedSlot,
+    slot: ClosedSlot,
+    aggregator: &mut SlotAggregator,
     last_times: &mut (i64, i64),
 ) -> Result<(), BookError> {
     if slot.late_events > 0 {
@@ -788,63 +1031,23 @@ fn write_closed_slot(
             &event,
         )?;
     }
-    if slot.changes.is_empty() {
-        return Ok(());
+    if let Some(block) = aggregator.push(meta, slot)? {
+        append_block(writer, block, last_times)?;
     }
-    let block = single_slot_block(meta, slot)?;
+    Ok(())
+}
+
+fn append_block(
+    writer: &mut BookWriter,
+    block: BlockInput,
+    last_times: &mut (i64, i64),
+) -> Result<(), BookError> {
     writer.append(&block)?;
     *last_times = (
         block.header.block_end_local_ns,
         block.header.block_end_exch_ns,
     );
     Ok(())
-}
-
-fn single_slot_block(meta: &MarketMeta, slot: &ClosedSlot) -> Result<BlockInput, BookError> {
-    let grid_ns = i64::from(meta.grid_ms)
-        .checked_mul(1_000_000)
-        .ok_or(BookError::InvalidField("grid duration"))?;
-    let start_exch_ns = slot
-        .slot
-        .checked_mul(grid_ns)
-        .ok_or(BookError::InvalidField("slot timestamp"))?;
-    let min_tick = slot
-        .snapshot_bids
-        .iter()
-        .chain(&slot.snapshot_asks)
-        .map(|level| level.tick)
-        .chain(slot.changes.iter().map(|change| change.tick))
-        .min()
-        .ok_or(BookError::InvalidField("empty slot window"))?;
-    let max_tick = slot
-        .snapshot_bids
-        .iter()
-        .chain(&slot.snapshot_asks)
-        .map(|level| level.tick)
-        .chain(slot.changes.iter().map(|change| change.tick))
-        .max()
-        .ok_or(BookError::InvalidField("empty slot window"))?;
-    let base_tick = i64::try_from((i128::from(min_tick) + i128::from(max_tick)) / 2)
-        .map_err(|_| BookError::InvalidField("base tick"))?;
-    let seq_base = if meta.feed_mode == FeedMode::Snapshot {
-        0
-    } else {
-        slot.seq_first_prev
-            .ok_or(BookError::InvalidField("missing slot predecessor"))?
-    };
-    build_data_block(
-        meta,
-        slot.local_ts_ns,
-        slot.local_ts_ns,
-        start_exch_ns,
-        base_tick,
-        seq_base,
-        slot.seq_last,
-        1,
-        slot.snapshot_bids.clone(),
-        slot.snapshot_asks.clone(),
-        std::slice::from_ref(slot),
-    )
 }
 
 /// Applies normalized deltas in feed order and produces one net window diff
@@ -1141,6 +1344,7 @@ fn diff_side(previous: &[Level], current: &[Level], side: Side) -> Vec<Change> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book::Ladder;
 
     fn meta() -> MarketMeta {
         MarketMeta {
@@ -1642,5 +1846,266 @@ depth_available = 1000
         )
         .unwrap();
         assert_ne!(block.header.block_flags & (1 << 4), 0);
+    }
+
+    fn slot_window(
+        slot: i64,
+        seq: u64,
+        changes: Vec<Change>,
+        bids: Vec<Level>,
+        asks: Vec<Level>,
+    ) -> ClosedSlot {
+        ClosedSlot {
+            slot,
+            exch_ts_ns: slot * 100_000_000 + 1_000_000,
+            local_ts_ns: slot * 100_000_000 + 2_000_000,
+            seq_first_prev: Some(seq),
+            seq_last: seq + 1,
+            n_msgs: 1,
+            n_msgs_saturated: false,
+            late_events: 0,
+            changes,
+            snapshot_bids: bids,
+            snapshot_asks: asks,
+        }
+    }
+
+    fn change(side: Side, tick: i64, qty: u64) -> Change {
+        Change { side, tick, qty }
+    }
+
+    fn decode(block: &BlockInput) -> DataPayload {
+        let encoded = super::super::encode_block(block).unwrap();
+        let decoded = super::super::decode_block(&encoded).unwrap();
+        super::super::decode_data_payload(&decoded).unwrap()
+    }
+
+    #[test]
+    fn aggregator_packs_several_slots_into_one_block() {
+        let market = meta();
+        let mut aggregator = SlotAggregator::new(&market).unwrap();
+        let bids = vec![Level { tick: 100, qty: 1 }];
+        let asks = vec![Level { tick: 101, qty: 1 }];
+        assert!(
+            aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1000,
+                        10,
+                        vec![change(Side::Bid, 99, 2)],
+                        bids.clone(),
+                        asks.clone(),
+                    ),
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1001,
+                        11,
+                        vec![change(Side::Bid, 98, 3)],
+                        bids.clone(),
+                        asks.clone(),
+                    ),
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1003,
+                        12,
+                        vec![change(Side::Ask, 102, 5)],
+                        bids.clone(),
+                        asks.clone(),
+                    ),
+                )
+                .unwrap()
+                .is_none()
+        );
+        let block = aggregator.flush(&market).unwrap().unwrap();
+        assert_eq!(block.header.n_slots, 4);
+        assert_eq!(block.header.block_start_exch_ns, 1000 * 100_000_000);
+        let payload = decode(&block);
+        assert_eq!(payload.bids, bids);
+        assert_eq!(payload.asks, asks);
+        let changes = payload
+            .records
+            .iter()
+            .map(|record| record.changes.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            changes,
+            vec![
+                vec![change(Side::Bid, 99, 2)],
+                vec![change(Side::Bid, 98, 3)],
+                vec![change(Side::Ask, 102, 5)],
+            ]
+        );
+        assert_eq!(payload.records[0].seq_first_prev_delta, 0);
+        assert_eq!(payload.records[0].seq_last_delta, 1);
+        assert_eq!(payload.records[2].seq_first_prev_delta, 2);
+        assert_eq!(block.header.seq_last_processed_delta, 3);
+        let mut ladder = Ladder::from_snapshot(&payload.bids, &payload.asks).unwrap();
+        for record in &payload.records {
+            ladder.apply(&record.changes).unwrap();
+        }
+        assert_eq!(
+            ladder.top_n(Side::Bid, 10),
+            vec![
+                Level { tick: 100, qty: 1 },
+                Level { tick: 99, qty: 2 },
+                Level { tick: 98, qty: 3 },
+            ]
+        );
+        assert_eq!(
+            ladder.top_n(Side::Ask, 10),
+            vec![Level { tick: 101, qty: 1 }, Level { tick: 102, qty: 5 }]
+        );
+    }
+
+    #[test]
+    fn aggregator_seals_after_a_full_window() {
+        let market = meta();
+        let mut aggregator = SlotAggregator::new(&market).unwrap();
+        let bids = vec![Level { tick: 100, qty: 1 }];
+        let asks = vec![Level { tick: 101, qty: 1 }];
+        for offset in 0..10i64 {
+            let sealed = aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1000 + offset,
+                        10 + offset as u64,
+                        vec![change(Side::Bid, 99, 2 + offset as u64)],
+                        bids.clone(),
+                        asks.clone(),
+                    ),
+                )
+                .unwrap();
+            if offset < 9 {
+                assert!(sealed.is_none());
+            } else {
+                let block = sealed.unwrap();
+                assert_eq!(block.header.n_slots, 10);
+                let payload = decode(&block);
+                assert_eq!(payload.records.len(), 10);
+            }
+        }
+        assert!(aggregator.flush(&market).unwrap().is_none());
+    }
+
+    #[test]
+    fn aggregator_seals_before_a_slot_outside_the_window() {
+        let market = meta();
+        let mut aggregator = SlotAggregator::new(&market).unwrap();
+        let bids = vec![Level { tick: 100, qty: 1 }];
+        let asks = vec![Level { tick: 101, qty: 1 }];
+        assert!(
+            aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1000,
+                        10,
+                        vec![change(Side::Bid, 99, 2)],
+                        bids.clone(),
+                        asks.clone(),
+                    ),
+                )
+                .unwrap()
+                .is_none()
+        );
+        let block = aggregator
+            .push(
+                &market,
+                slot_window(
+                    1601,
+                    11,
+                    vec![change(Side::Bid, 99, 3)],
+                    bids.clone(),
+                    asks.clone(),
+                ),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(block.header.n_slots, 10);
+        assert_eq!(block.header.block_start_exch_ns, 1000 * 100_000_000);
+        assert_eq!(decode(&block).records.len(), 1);
+        let tail = aggregator.flush(&market).unwrap().unwrap();
+        assert_eq!(tail.header.n_slots, 1);
+        assert_eq!(tail.header.block_start_exch_ns, 1601 * 100_000_000);
+    }
+
+    #[test]
+    fn aggregator_seals_when_a_tick_exceeds_the_rebase_window() {
+        let market = meta();
+        let mut aggregator = SlotAggregator::new(&market).unwrap();
+        assert!(
+            aggregator
+                .push(
+                    &market,
+                    slot_window(
+                        1000,
+                        10,
+                        vec![change(Side::Bid, 99, 2)],
+                        vec![Level { tick: 100, qty: 1 }],
+                        vec![Level { tick: 101, qty: 1 }],
+                    ),
+                )
+                .unwrap()
+                .is_none()
+        );
+        let block = aggregator
+            .push(
+                &market,
+                slot_window(
+                    1001,
+                    11,
+                    vec![change(Side::Bid, 40_000, 2)],
+                    vec![Level { tick: 100, qty: 1 }, Level { tick: 99, qty: 2 }],
+                    vec![Level { tick: 101, qty: 1 }],
+                ),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(block.header.n_slots, 1);
+        assert_eq!(decode(&block).records.len(), 1);
+        let tail = aggregator.flush(&market).unwrap().unwrap();
+        assert_eq!(tail.header.n_slots, 1);
+        let payload = decode(&tail);
+        assert!(
+            payload.records[0]
+                .changes
+                .iter()
+                .any(|change| change.tick == 40_000)
+        );
+    }
+
+    #[test]
+    fn aggregator_keeps_late_only_slots_in_the_block() {
+        let market = meta();
+        let mut aggregator = SlotAggregator::new(&market).unwrap();
+        let mut slot = slot_window(
+            1000,
+            10,
+            vec![],
+            vec![Level { tick: 100, qty: 1 }],
+            vec![Level { tick: 101, qty: 1 }],
+        );
+        slot.late_events = 1;
+        assert!(aggregator.push(&market, slot).unwrap().is_none());
+        let block = aggregator.flush(&market).unwrap().unwrap();
+        let payload = decode(&block);
+        assert_eq!(payload.records.len(), 1);
+        assert!(payload.records[0].changes.is_empty());
     }
 }
