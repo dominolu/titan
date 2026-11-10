@@ -113,7 +113,10 @@
 | Hyperliquid `l2Book` | `snapshot` | 20 | 整包快照、无原生序号、更新间隔通常大于 100 ms；100 ms 网格多数为空槽，不得声明 100 档 |
 
 - 订阅档数取“≥ `depth_levels` 的最小受支持档位”；实际记录档数仍为 `depth_levels`。
+- REST 初始快照是有限档盘口；后续 diff 对快照中不存在的价位发送零数量删除时，录制端按幂等删除忽略。槽末净差分仍只写已知窗口的变化，回放遇到文件内删除缺档仍判为数据错误。
 - Binance/OKX 的强制定时推送与 UTC 墙钟网格不保证同相；一个槽可能落入 0 或 2 个批次，由净差分吸收，不影响正确性，只影响每槽变化数分布。
+- 净差分格式省略无盘口变化的槽，因此落盘槽序号只能证明单调性；每条原生更新之间的连续性由行情适配器在线校验，断链时必须切分 gap 段并重新取快照。
+- Binance diff 首次接入以 `U <= snapshot_seq + 1 <= u` 桥接 REST 快照；USDⓈ-M 首条桥接后按 `pu == previous_u` 校验后续更新，不能对每条更新重复套用首次 `[U,u]` 桥接条件。
 - `feed_mode=snapshot` 的市场不做序号连续性校验，质量标记中必须写明。
 
 ---
@@ -202,7 +205,7 @@
 
 | 交易所 | openInterest | 资金费 | 爆仓明细 |
 | --- | --- | --- | --- |
-| Binance USD-M | REST `/fapi/v1/openInterest` 轮询 | `@markPrice@1s`（`r`、`T`；当前 collector 中该流被注释，需启用） | `!forceOrder@arr`，按 `o.s` 路由到品种 |
+| Binance USD-M | REST `/fapi/v1/openInterest` 轮询 | `@markPrice@1s`（`r`、`T`，走 `/market` WebSocket 路由） | `<symbol>@forceOrder`（走 `/market` WebSocket 路由） |
 | Binance COIN-M | REST `/dapi/v1/openInterest` 轮询 | `@markPrice@1s` | `!forceOrder@arr` |
 | Bybit | `tickers.{symbol}`（若含 OI）或 REST `/v5/market/open-interest` 轮询 | `tickers.{symbol}`（`fundingRate`、`nextFundingTime`） | `allLiquidation.{symbol}`（订阅名待核对） |
 | OKX | WS `open-interest` 或 REST `/api/v5/public/open-interest` | WS `funding-rate` | WS `liquidation-orders` |
@@ -435,10 +438,10 @@ padding              到 block_len
 
 - 列顺序按“4 字节列在前、2 字节列在后”排列，保证 4 字节列在 8 字节对齐的 section 内按 4 字节对齐；section 末尾补齐到 8 字节。
 - `slot = exch_delta_ms / grid_ms`，由时间差推导；同一块内记录按 `slot` 严格递增，每个槽最多一条记录。
-- **离线连续性**：diff feed 下，回放校验 `record[i].seq_first_prev_delta == record[i-1].seq_last_delta`（i≥1）；首条记录的 `seq_first_prev_delta` 允许 ≥0（块首空槽里可能有消息但无净变化），只校验其不超过 `seq_last_processed_delta`；对严格“每条消息序号 +1”的交易所，还可用 `n_msgs` 验证槽内消息数（`n_msgs=0xFFFF` 的饱和记录跳过该验证）。**槽内多条消息之间的链只能在录制端在线校验**；段头 `flags.bit2` 只表示在线校验是否通过，槽内链的离线可证边界写入数据集质量标记，不宣称完全离线可证。
+- **离线连续性**：净差分会省略无变化槽，因此相邻落盘记录的 `seq_first_prev_delta` 可以大于上一条记录的 `seq_last_delta`；回放按单调性校验记录序号，并验证块尾 `seq_last_processed_delta` 不早于块内最后记录。每条原生更新之间的连续性由录制端在线校验，断链时写入 gap 并重新取快照。对严格“每条消息序号 +1”的交易所，可用 `n_msgs` 辅助验证槽内消息数（`n_msgs=0xFFFF` 的饱和记录跳过该验证）。段头 `flags.bit2` 表示在线校验是否通过，质量标记说明离线可证边界，不宣称完全离线可证。
 - snapshot feed 无原生序号：`seq_last_delta = 0`、`seq_first_prev_delta = 0xFFFFFFFF`；回放跳过序号校验。
 - 若某条记录的 `seq_last_delta`/`seq_first_prev_delta` 或块尾 `seq_last_processed_delta` 将超过 `u32` 或等于哨兵 `0xFFFFFFFF`，录制端必须结束当前块；下一块重新取 `seq_base`，不得截断或回绕。
-- 无显式前驱字段的场所（例如 Bybit 的 `u`）用上一已处理消息的结束序号作为 `seq_first_prev`，此时连续性检查退化为单调性检查，不等同于原生链证明；质量标记需区分 `native_chain` / `monotonic_only`。
+- 无显式前驱字段的场所（例如 Bybit 的 `u`）用上一已处理消息的结束序号作为 `seq_first_prev`，此时录制端在线连续性检查也退化为单调性检查，不等同于原生链证明。由于落盘格式省略无变化槽，质量报告的稀疏记录序号检查标记为 `monotonic_only`；原生链检查结果由段头 `flags.bit2` 表示。
 - 槽内无净变化则不写记录；回放按网格推进时状态自动延续。
 - 迟到事件的归槽规则见 10.4，不再使用“早于块起点钳制到槽 0”的旧规则。迟到事件的 `local_lag_us` 基于钳制时间，原始时间差只计入 `late_events` 指标，不进入回放时钟。
 
