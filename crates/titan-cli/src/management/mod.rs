@@ -1,5 +1,6 @@
 //! Management adapters. Trading facts and lifecycle policy remain in the existing engines.
 mod app;
+mod catalog;
 mod config;
 pub mod contract;
 mod control;
