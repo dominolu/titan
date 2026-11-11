@@ -16,4 +16,18 @@ jobs:
         with:
           fetch-depth: 0
       # Content disclosure review only. No project compilation, lint or tests.
-      - run: python3 scripts/check_repository_privacy.py --history
+      - name: Review repository content
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # GitHub synthesizes a merge commit for pull_request checkouts whose
+            # author identity comes from the account profile rather than from the
+            # commits under review. Review the commits the PR introduces; push
+            # and manual runs keep scanning the full history.
+            python3 scripts/check_repository_privacy.py --history \
+              --revision "${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          else
+            python3 scripts/check_repository_privacy.py --history
+          fi
