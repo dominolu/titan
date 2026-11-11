@@ -35,6 +35,9 @@ impl FactSelection {
                 strategy_id: self.strategy_id,
                 run_id: self.run_id,
                 kind: self.kind,
+                from_ns: None,
+                to_ns: None,
+                run_generation: None,
             },
         ))
     }

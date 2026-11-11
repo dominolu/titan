@@ -1295,3 +1295,72 @@ fn historical_request_hash_accepts_only_the_same_canonical_retry() {
             .is_err()
     );
 }
+
+#[test]
+fn successful_cli_logins_reset_failures_without_bypassing_the_login_limit() {
+    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    let tmp = tempfile::tempdir().unwrap();
+    let synthetic_password = super::nonce();
+    let password = synthetic_password.as_str();
+    let hash = Argon2::default()
+        .hash_password(
+            password.as_bytes(),
+            &SaltString::generate(&mut rand::rngs::OsRng),
+        )
+        .unwrap()
+        .to_string();
+    let app = super::app::App::open(super::config::ManagerConfig {
+        listen: "127.0.0.1:0".into(),
+        public_origin: "http://127.0.0.1:3200".into(),
+        database: tmp.path().join("db"),
+        web_root: tmp.path().into(),
+        secure_cookie: false,
+        session_seconds: 3600,
+        nodes: Default::default(),
+        users: vec![super::config::User {
+            username: "cli-reader".into(),
+            password_hash: hash,
+            role: Role::Reader,
+            nodes: vec![],
+            accounts: vec![],
+            environments: vec!["backtest".into()],
+        }],
+    })
+    .unwrap();
+    // Each CLI process opens an independent authenticated connection. More than
+    // ten valid logins in the same window must remain usable.
+    for _ in 0..11 {
+        let (_, token) = app.login("cli-reader", password).unwrap();
+        assert_eq!(app.authenticate(&token).unwrap().0.username, "cli-reader");
+        app.store.session_remove(&token).unwrap();
+    }
+    let rejected = app.login("cli-reader", "wrong-password").unwrap_err();
+    let fault = rejected.downcast_ref::<super::Fault>().unwrap();
+    assert_eq!((fault.status, fault.code), (401, "INVALID_CREDENTIALS"));
+    let (_, token) = app.login("cli-reader", password).unwrap();
+    app.store.session_remove(&token).unwrap();
+    // The preceding success resets its failure. Ten subsequent failures retain
+    // the existing budget, and even valid credentials cannot bypass a lockout.
+    for _ in 0..10 {
+        let rejected = app.login("cli-reader", "wrong-password").unwrap_err();
+        let fault = rejected.downcast_ref::<super::Fault>().unwrap();
+        assert_eq!((fault.status, fault.code), (401, "INVALID_CREDENTIALS"));
+    }
+    for supplied_password in ["wrong-password", password] {
+        let rejected = app.login("cli-reader", supplied_password).unwrap_err();
+        let fault = rejected.downcast_ref::<super::Fault>().unwrap();
+        assert_eq!((fault.status, fault.code), (429, "RATE_LIMITED"));
+    }
+    // Unknown identities keep their separate bounded bucket as before.
+    for _ in 0..10 {
+        let rejected = app.login("absent-reader", "wrong-password").unwrap_err();
+        assert_eq!(rejected.downcast_ref::<super::Fault>().unwrap().status, 401);
+    }
+    let rejected = app
+        .login("another-absent-reader", "wrong-password")
+        .unwrap_err();
+    assert_eq!(
+        rejected.downcast_ref::<super::Fault>().unwrap().code,
+        "RATE_LIMITED"
+    );
+}

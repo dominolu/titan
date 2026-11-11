@@ -1,4 +1,4 @@
-//! Strategy-scoped public API. All writes use the existing admission and receipt path.
+//! Strategy-scoped public API. Execution writes use the existing admission and receipt path.
 use super::{
     app::App,
     contract::*,
@@ -19,6 +19,9 @@ use std::sync::Arc;
 
 #[derive(Default, Deserialize)]
 pub(super) struct Page {
+    node_id: Option<String>,
+    account: Option<String>,
+    environment: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
 }
@@ -99,15 +102,24 @@ pub(super) async fn detail(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path(strategy): Path<String>,
+    Query(page): Query<Page>,
 ) -> ApiResult<Json<StrategySummary>> {
     let actor = identity(&app, &headers, false)?;
-    let value =
-        tokio::task::spawn_blocking(move || app.store.list_strategies(&actor, 0, usize::MAX))
-            .await
-            .context("strategy query failed")??
-            .into_iter()
-            .find(|v| v.id == strategy)
-            .ok_or_else(|| fault(404, "NOT_FOUND", "strategy not found"))?;
+    let value = tokio::task::spawn_blocking(move || {
+        app.store.list_strategies_filtered(
+            &actor,
+            0,
+            usize::MAX,
+            page.node_id.as_deref(),
+            page.account.as_deref(),
+            page.environment.as_deref(),
+        )
+    })
+    .await
+    .context("strategy query failed")??
+    .into_iter()
+    .find(|v| v.id == strategy)
+    .ok_or_else(|| fault(404, "NOT_FOUND", "strategy not found"))?;
     Ok(Json(value))
 }
 async fn list(
@@ -120,13 +132,16 @@ async fn list(
     let actor = identity(&app, &headers, false)?;
     super::checked_id(&strategy)?;
     let values = tokio::task::spawn_blocking(move || {
-        app.store.list_resources_scoped(
+        app.store.list_resources_filtered(
             &actor,
             Some(kind),
             page.offset.unwrap_or(0).min(1_000_000),
             page.limit.unwrap_or(20).clamp(1, 200),
             Some(&strategy),
             None,
+            page.node_id.as_deref(),
+            page.account.as_deref(),
+            page.environment.as_deref(),
         )
     })
     .await
@@ -161,9 +176,27 @@ async fn version(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
     Path((strategy, id)): Path<(String, String)>,
+    Query(page): Query<Page>,
 ) -> ApiResult<Json<Resource>> {
     let actor = identity(&app, &headers, false)?;
-    let value = scoped(&app, &actor, &strategy, "strategy_version", &id)?;
+    super::checked_id(&strategy)?;
+    super::checked_id(&id)?;
+    let value = app
+        .store
+        .list_resources_filtered(
+            &actor,
+            Some("strategy_version"),
+            0,
+            1,
+            Some(&strategy),
+            Some(&id),
+            page.node_id.as_deref(),
+            page.account.as_deref(),
+            page.environment.as_deref(),
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| fault(404, "NOT_FOUND", "strategy record not found"))?;
     Ok(Json(public_resource(value)))
 }
 async fn observation_schema(
@@ -358,13 +391,14 @@ async fn submit(
         scoped(&app, &actor, requested, reference.0, &reference.1)?;
     }
 
-    let operation = app.submit(
+    let operation = app.submit_checked(
         &actor,
         SubmitOperation {
             idempotency_key: input.idempotency_key,
             node_id: input.node_id,
             action,
         },
+        &input.expected_resources.unwrap_or_default(),
     )?;
     Ok((StatusCode::ACCEPTED, Json(operation)).into_response())
 }
@@ -376,6 +410,18 @@ pub(super) fn routes() -> Router<Arc<App>> {
             get(http::session).post(http::login).delete(http::logout),
         )
         .route("/api/v2/snapshot", get(http::snapshot))
+        .route(
+            "/api/v2/accounts",
+            get(super::catalog::accounts).post(super::catalog::create_account),
+        )
+        .route(
+            "/api/v2/accounts/{id}",
+            axum::routing::patch(super::catalog::update_account),
+        )
+        .route(
+            "/api/v2/strategy-sources",
+            post(super::catalog::upload_strategy),
+        )
         .route("/api/v2/strategies", get(http::strategy))
         .route("/api/v2/strategies/{strategy_id}", get(detail))
         .route(

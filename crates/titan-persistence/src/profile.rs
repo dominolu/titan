@@ -154,7 +154,76 @@ pub(crate) fn postgres_error(error: postgres::Error) -> crate::Error {
         error.code().map_or("transport", |c| c.code())
     ))
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PostgresConfigurationCheck {
+    pub schema_state: String,
+    pub can_initialize: bool,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
 impl PostgresConfig {
+    /// Inspect a candidate without installing tables or changing persistent state.
+    /// Diagnostics intentionally contain no DSN, server name or credential value.
+    pub async fn check_connection(&self) -> Result<PostgresConfigurationCheck> {
+        self.check_connection_expected(None).await
+    }
+    pub async fn check_connection_expected(
+        &self,
+        expected_target: Option<&str>,
+    ) -> Result<PostgresConfigurationCheck> {
+        StorageProfile {
+            schema_version: 1,
+            postgres: Some(self.clone()),
+            s3: None,
+            budget: StorageBudget::default(),
+        }
+        .validate()?;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut client = self.connect().await?;
+            let tx = client.build_transaction().read_only(true).start().await.map_err(postgres_error)?;
+            let privileges = tx.query_one(
+                "SELECT has_database_privilege(current_database(),'CONNECT'), COALESCE(has_schema_privilege(current_schema(),'USAGE'),false), COALESCE(has_schema_privilege(current_schema(),'CREATE'),false), to_regclass('titan_persistence_meta') IS NOT NULL, to_regclass('titan_projection_sources') IS NOT NULL, to_regclass('titan_fact_records') IS NOT NULL",
+                &[],
+            ).await.map_err(postgres_error)?;
+            if !privileges.get::<_, bool>(0) || !privileges.get::<_, bool>(1) {
+                return Err(failure("postgres_permissions_insufficient"));
+            }
+            let can_initialize = privileges.get::<_, bool>(2);
+            let tables = [privileges.get::<_, bool>(3), privileges.get::<_, bool>(4), privileges.get::<_, bool>(5)];
+            if tables.iter().all(|exists| !exists) {
+                if expected_target.is_some() { return Err(failure("postgres_target_identity_changed")); }
+                tx.rollback().await.map_err(postgres_error)?;
+                return Ok(PostgresConfigurationCheck { schema_state: "uninitialized".into(), can_initialize, can_read: false, can_write: false });
+            }
+            if !tables.iter().all(|exists| *exists) {
+                return Err(failure("postgres_schema_incomplete"));
+            }
+            let access = tx.query_one(
+                "SELECT bool_and(has_table_privilege(name,'SELECT')), bool_and(has_table_privilege(name,'INSERT') AND has_table_privilege(name,'UPDATE') AND has_table_privilege(name,'DELETE')) FROM unnest(ARRAY['titan_persistence_meta','titan_projection_sources','titan_fact_records']) AS names(name)",
+                &[],
+            ).await.map_err(postgres_error)?;
+            let can_read = access.get::<_, bool>(0);
+            let can_write = access.get::<_, bool>(1);
+            if !can_read {
+                return Err(failure("postgres_permissions_insufficient"));
+            }
+            let row = tx.query_opt("SELECT schema_version,store_id FROM titan_persistence_meta WHERE id=1", &[]).await.map_err(postgres_error)?
+                .ok_or_else(|| failure("postgres_schema_incomplete"))?;
+            if row.try_get::<_, i32>(0).map_err(postgres_error)? != 1 {
+                return Err(failure("postgres_schema_unsupported"));
+            }
+            let target_id = row.try_get::<_, String>(1).map_err(postgres_error)?;
+            if target_id.is_empty() || expected_target.is_some_and(|expected| expected != target_id) {
+                return Err(failure("postgres_target_identity_changed"));
+            }
+            tx.prepare("SELECT source_id,committed_row,observed_upper,metadata,metadata_sha256,updated_at FROM titan_projection_sources LIMIT 0").await.map_err(postgres_error)?;
+            tx.prepare("SELECT source_id,row_id,recording,stream,epoch,sequence,environment,account,strategy,run,kind,payload,sha256,replay FROM titan_fact_records LIMIT 0").await.map_err(postgres_error)?;
+            tx.rollback().await.map_err(postgres_error)?;
+            Ok(PostgresConfigurationCheck { schema_state: "initialized".into(), can_initialize, can_read, can_write })
+        }).await.map_err(|_| failure("postgres_configuration_check_timeout"))?
+    }
+
     pub(crate) async fn connect(&self) -> Result<tokio_postgres::Client> {
         let mut config: tokio_postgres::Config = secret(&self.dsn_env)?
             .parse()
@@ -180,10 +249,7 @@ impl PostgresConfig {
             config.ssl_mode(postgres::config::SslMode::Require);
             let mut tls = native_tls::TlsConnector::builder();
             if let Some(path) = &self.root_certificate {
-                tls.add_root_certificate(
-                    native_tls::Certificate::from_pem(&std::fs::read(path)?)
-                        .map_err(|_| failure("postgres_certificate_invalid"))?,
-                );
+                tls.add_root_certificate(read_postgres_certificate(path)?);
             }
             let (client, connection) = config
                 .connect(postgres_native_tls::MakeTlsConnector::new(
@@ -200,6 +266,33 @@ impl PostgresConfig {
         client.batch_execute(&format!("SET statement_timeout={};SET lock_timeout={};SET idle_in_transaction_session_timeout={};SET application_name='titan-persistence';",self.statement_timeout_ms,self.statement_timeout_ms.min(200),self.statement_timeout_ms+1000)).await.map_err(postgres_error)?;
         Ok(client)
     }
+}
+fn read_postgres_certificate(path: &Path) -> Result<native_tls::Certificate> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| failure("postgres_certificate_unavailable"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| failure("postgres_certificate_unavailable"))?;
+    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+        return Err(failure("postgres_certificate_invalid"));
+    }
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| failure("postgres_certificate_unavailable"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(failure("postgres_certificate_invalid"));
+    }
+    native_tls::Certificate::from_pem(&bytes).map_err(|_| failure("postgres_certificate_invalid"))
 }
 pub fn check_storage_budget(path: &Path, budget: &StorageBudget) -> Result<()> {
     let parent = path
@@ -258,4 +351,181 @@ pub(crate) fn check_stream_space(path: &Path, min: u64, written: u64, chunk: usi
         check_free_space(path, min.saturating_add(chunk))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod configuration_check_tests {
+    use super::*;
+
+    #[test]
+    fn certificate_reader_is_bounded_and_does_not_report_private_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let oversized = temp.path().join("private-oversized-marker.pem");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        assert_eq!(
+            read_postgres_certificate(&oversized)
+                .err()
+                .expect("expected rejection")
+                .to_string(),
+            "postgres_certificate_invalid"
+        );
+        let missing = temp.path().join("private-missing-marker.pem");
+        let error = read_postgres_certificate(&missing)
+            .err()
+            .expect("expected rejection")
+            .to_string();
+        assert_eq!(error, "postgres_certificate_unavailable");
+        assert!(!error.contains("private-missing-marker"));
+        let malformed = temp.path().join("private-malformed-marker.pem");
+        std::fs::write(&malformed, b"invalid certificate").unwrap();
+        assert_eq!(
+            read_postgres_certificate(&malformed)
+                .err()
+                .expect("expected rejection")
+                .to_string(),
+            "postgres_certificate_invalid"
+        );
+        assert!(read_postgres_certificate(temp.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn certificate_reader_rejects_fifo_without_opening_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let temp = tempfile::tempdir().unwrap();
+        let fifo = temp.path().join("certificate.fifo");
+        let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            read_postgres_certificate(&fifo)
+                .err()
+                .expect("expected rejection")
+                .to_string(),
+            "postgres_certificate_invalid"
+        );
+    }
+
+    #[test]
+    fn certificate_reader_accepts_small_public_root_certificate() {
+        // Public COMODO ECC Certification Authority root; contains no private key.
+        let pem = b"-----BEGIN CERTIFICATE-----\nMIICiTCCAg+gAwIBAgIQH0evqmIAcFBUTAGem2OZKjAKBggqhkjOPQQDAzCBhTEL\nMAkGA1UEBhMCR0IxGzAZBgNVBAgTEkdyZWF0ZXIgTWFuY2hlc3RlcjEQMA4GA1UE\nBxMHU2FsZm9yZDEaMBgGA1UEChMRQ09NT0RPIENBIExpbWl0ZWQxKzApBgNVBAMT\nIkNPTU9ETyBFQ0MgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMDgwMzA2MDAw\nMDAwWhcNMzgwMTE4MjM1OTU5WjCBhTELMAkGA1UEBhMCR0IxGzAZBgNVBAgTEkdy\nZWF0ZXIgTWFuY2hlc3RlcjEQMA4GA1UEBxMHU2FsZm9yZDEaMBgGA1UEChMRQ09N\nT0RPIENBIExpbWl0ZWQxKzApBgNVBAMTIkNPTU9ETyBFQ0MgQ2VydGlmaWNhdGlv\nbiBBdXRob3JpdHkwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQDR3svdcmCFYX7deSR\nFtSrYpn1PlILBs5BAH+X4QokPB0BBO490o0JlwzgdeT6+3eKKvUDYEs2ixYjFq0J\ncfRK9ChQtP6IHG4/bC8vCVlbpVsLM5niwz2J+Wos77LTBumjQjBAMB0GA1UdDgQW\nBBR1cacZSBm8nZ3qQUfflMRId5nTeTAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/\nBAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjEA7wNbeqy3eApyt4jf/7VGFAkK+qDm\nfQjGGoe9GKhzvSbKYAydzpmfz1wPMOG+FDHqAjAU9JM8SaczepBGR7NjfRObTrdv\nGDeAU/7dIOA1mjbRxwG55tzd8/8dLDoWV9mSOdY=\n-----END CERTIFICATE-----\n";
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("public-root.pem");
+        std::fs::write(&path, pem).unwrap();
+        assert!(read_postgres_certificate(&path).is_ok());
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly provisioned empty loopback PostgreSQL database"]
+    fn real_postgres_configuration_check_pins_target_identity() {
+        let reference = "TITAN_TEST_POSTGRES_DSN";
+        let dsn =
+            std::env::var(reference).expect("explicit isolated PostgreSQL reference required");
+        let parsed: postgres::Config = dsn
+            .parse()
+            .expect("isolated PostgreSQL reference must be valid");
+        assert!(!parsed.get_hosts().is_empty());
+        assert!(parsed.get_hosts().iter().all(
+            |host| matches!(host, postgres::config::Host::Tcp(host) if is_loopback_host(host))
+        ));
+        let config = PostgresConfig {
+            dsn_env: reference.into(),
+            allow_insecure_loopback: true,
+            root_certificate: None,
+            statement_timeout_ms: 2000,
+            connect_timeout_ms: 2000,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let empty = runtime.block_on(config.check_connection()).unwrap();
+        assert_eq!(
+            empty.schema_state, "uninitialized",
+            "use a fresh isolated database for this test"
+        );
+        assert!(empty.can_initialize);
+        assert!(!empty.can_read && !empty.can_write);
+        let error = runtime
+            .block_on(config.check_connection_expected(Some("missing-fixed-target")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "postgres_target_identity_changed");
+        assert!(!error.contains(&dsn));
+        let projection = crate::PostgresProjection::open(config.clone()).unwrap();
+        let initialized = runtime
+            .block_on(config.check_connection_expected(Some(&projection.target_id)))
+            .unwrap();
+        assert_eq!(initialized.schema_state, "initialized");
+        assert!(initialized.can_read && initialized.can_write);
+        let error = runtime
+            .block_on(config.check_connection_expected(Some("different-fixed-target")))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "postgres_target_identity_changed");
+        assert!(!error.contains("different-fixed-target") && !error.contains(&dsn));
+        // An optional separately provisioned SELECT-only role verifies privilege reporting.
+        if let Some(readonly_dsn) = std::env::var_os("TITAN_TEST_POSTGRES_READONLY_DSN") {
+            let parsed: postgres::Config = readonly_dsn
+                .to_str()
+                .expect("read-only reference must be UTF-8")
+                .parse()
+                .expect("read-only reference must be valid");
+            assert!(!parsed.get_hosts().is_empty() && parsed.get_hosts().iter().all(|host| matches!(host, postgres::config::Host::Tcp(host) if is_loopback_host(host))));
+            let readonly = PostgresConfig {
+                dsn_env: "TITAN_TEST_POSTGRES_READONLY_DSN".into(),
+                ..config
+            };
+            let checked = runtime
+                .block_on(readonly.check_connection_expected(Some(&projection.target_id)))
+                .unwrap();
+            assert!(checked.can_read && !checked.can_write && !checked.can_initialize);
+        }
+    }
+
+    #[test]
+    fn postgres_check_rejects_literal_credentials_before_connecting() {
+        let config = PostgresConfig {
+            dsn_env: "postgresql://literal-marker/history".into(),
+            allow_insecure_loopback: false,
+            root_certificate: None,
+            statement_timeout_ms: 2000,
+            connect_timeout_ms: 2000,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(config.check_connection())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "secret_environment_reference_invalid");
+        assert!(!error.contains("literal-marker"));
+    }
+
+    #[test]
+    fn postgres_check_requires_bounded_budgets_before_connecting() {
+        let config = PostgresConfig {
+            dsn_env: "TITAN_TEST_HISTORY_REFERENCE".into(),
+            allow_insecure_loopback: false,
+            root_certificate: None,
+            statement_timeout_ms: 120_000,
+            connect_timeout_ms: 2000,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(
+            runtime
+                .block_on(config.check_connection())
+                .unwrap_err()
+                .to_string(),
+            "postgres_budget_invalid"
+        );
+    }
 }

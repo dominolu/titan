@@ -32,15 +32,31 @@ const RUN_SPEC_VERSION: u32 = 1;
 #[command(
     name = "titan",
     version,
-    about = "Titan controller and Rust strategy worker"
+    about = "Titan background service and compatible runtime tools; use titan_cli for daily management"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServeRole {
+    Manager,
+    Node,
+}
+
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the background management service or an execution node. Use titan_cli for daily operations.
+    #[command(
+        after_help = "Examples:\n  titan serve --config /private/server.toml\n  titan serve node --config /private/node.toml\n\nThe manager does not start strategies automatically."
+    )]
+    Serve {
+        #[arg(value_enum, default_value = "manager")]
+        role: ServeRole,
+        #[arg(long, value_name = "SERVER.toml")]
+        config: PathBuf,
+    },
     /// Query local facts and maintain immutable result publications without executing strategies.
     Storage {
         #[command(subcommand)]
@@ -55,6 +71,8 @@ enum Commands {
     },
     /// Serve or access the management application and authenticated execution node.
     Console {
+        #[command(flatten)]
+        options: titan_cli::management::ClientOptions,
         #[command(subcommand)]
         command: titan_cli::management::ConsoleCommand,
     },
@@ -263,7 +281,7 @@ impl Commands {
                 | StrategyCommands::Show { json, .. }
                 | StrategyCommands::Validate { json, .. } => *json,
             },
-            Self::RunWorker { .. } | Self::Console { .. } => false,
+            Self::RunWorker { .. } | Self::Console { .. } | Self::Serve { .. } => false,
         }
     }
 }
@@ -2394,12 +2412,25 @@ fn main() -> ExitCode {
         .with_writer(move || diagnostics.clone())
         .with_ansi(false)
         .try_init();
-    let json_argument = arguments.iter().any(|argument| argument == "--json");
+    let json_argument = arguments
+        .iter()
+        .any(|argument| argument == "--json" || argument == "--ndjson");
+    let console_argument = arguments
+        .get(1)
+        .is_some_and(|argument| argument == "console");
     let cli = match Cli::try_parse_from(arguments) {
         Ok(cli) => cli,
         Err(error) => {
             let exit_code = error.exit_code();
-            if json_argument && exit_code != 0 {
+            if json_argument && exit_code != 0 && console_argument {
+                titan_cli::management::render_client_error(
+                    &anyhow::anyhow!(titan_cli::management::ClientUsageError::new(
+                        "INVALID_INPUT",
+                        "invalid command syntax; use --help to inspect supported arguments"
+                    )),
+                    true,
+                );
+            } else if json_argument && exit_code != 0 {
                 eprintln!(
                     "{}",
                     serde_json::json!({
@@ -2418,12 +2449,40 @@ fn main() -> ExitCode {
     };
     let json_requested = cli.command.json_requested();
     let result = match cli.command {
+        Commands::Serve { role, config } => {
+            let command = match role {
+                ServeRole::Manager => titan_cli::management::ConsoleCommand::Manager { config },
+                ServeRole::Node => titan_cli::management::ConsoleCommand::Node {
+                    config: Some(config),
+                    command: None,
+                },
+            };
+            return match titan_cli::management::run(command, Default::default()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    titan_cli::management::render_client_error(&error, false);
+                    ExitCode::from(
+                        titan_cli::management::client_exit_code(&error).clamp(0, 255) as u8,
+                    )
+                }
+            };
+        }
         Commands::Storage { command } => storage_cli::run(command)
             .map_err(|error| CliError::Engine(format!("storage maintenance: {error:#}"))),
         Commands::Recovery { database, command } => recovery_cli::run(database, command)
             .map_err(|error| CliError::Engine(format!("recovery maintenance: {error:#}"))),
-        Commands::Console { command } => titan_cli::management::run(command)
-            .map_err(|error| CliError::Engine(format!("{error:#}"))),
+        Commands::Console { command, options } => {
+            let json = options.json || options.ndjson;
+            return match titan_cli::management::run(command, options) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    titan_cli::management::render_client_error(&error, json);
+                    ExitCode::from(
+                        titan_cli::management::client_exit_code(&error).clamp(0, 255) as u8,
+                    )
+                }
+            };
+        }
         Commands::CoreRun { config, json } => run_configured_core(&config, json),
         Commands::Run {
             strategy,

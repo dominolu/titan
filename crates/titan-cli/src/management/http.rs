@@ -133,11 +133,15 @@ pub(super) struct ListQuery {
     from_ns: Option<String>,
     to_ns: Option<String>,
     run_id: Option<String>,
-    #[serde(alias = "run_generation", alias = "worker_session_id")]
+    #[serde(alias = "worker_session_id")]
     generation: Option<String>,
+    run_generation: Option<String>,
     #[serde(alias = "research_id")]
     strategy_id: Option<String>,
     resource_id: Option<String>,
+    node_id: Option<String>,
+    account: Option<String>,
+    environment: Option<String>,
 }
 #[derive(Deserialize)]
 pub(super) struct StreamQuery {
@@ -248,6 +252,10 @@ pub(super) async fn login(
         [
             (header::SET_COOKIE, cookie),
             (header::CACHE_CONTROL, "no-store".into()),
+            (
+                header::HeaderName::from_static("x-titan-manager-identity"),
+                super::manager_identity(&app.config),
+            ),
         ],
         Json(session),
     )
@@ -260,7 +268,13 @@ pub(super) async fn session(
     let raw = token(&headers)?;
     let (identity, _, expires) = app.authenticate(raw)?;
     Ok((
-        [(header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+            (
+                header::HeaderName::from_static("x-titan-manager-identity"),
+                super::manager_identity(&app.config),
+            ),
+        ],
         Json(Session {
             identity,
             csrf_token: digest(format!("csrf:{raw}").as_bytes()),
@@ -340,10 +354,13 @@ pub(super) async fn strategy(
 ) -> ApiResult<Json<Vec<StrategySummary>>> {
     let actor = identity(&app, &headers, false)?;
     let result = tokio::task::spawn_blocking(move || {
-        app.store.list_strategies(
+        app.store.list_strategies_filtered(
             &actor,
             query.offset.unwrap_or(0).min(1_000_000),
             query.limit.unwrap_or(20).clamp(1, 200),
+            query.node_id.as_deref(),
+            query.account.as_deref(),
+            query.environment.as_deref(),
         )
     })
     .await
@@ -371,18 +388,16 @@ pub(super) async fn resources(
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
     let kind = kind.map(|value| super::legacy::kind(value).to_owned());
     let result = tokio::task::spawn_blocking(move || {
-        if query.strategy_id.is_none() && query.resource_id.is_none() {
-            return app
-                .store
-                .list_resources(&actor, kind.as_deref(), offset, limit);
-        }
-        app.store.list_resources_scoped(
+        app.store.list_resources_filtered(
             &actor,
             kind.as_deref(),
             offset,
             limit,
             query.strategy_id.as_deref(),
             query.resource_id.as_deref(),
+            query.node_id.as_deref(),
+            query.account.as_deref(),
+            query.environment.as_deref(),
         )
     })
     .await
@@ -448,6 +463,31 @@ pub(super) async fn resource_log(
 ) -> ApiResult<Json<serde_json::Value>> {
     runtime_query(app, headers, id, query, "log").await
 }
+pub(super) fn history_time_range(
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<(Option<i64>, Option<i64>)> {
+    let parse = |value: Option<&str>| -> Result<Option<i64>> {
+        value
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value.parse::<i64>().map_err(|_| {
+                    fault(
+                        400,
+                        "INVALID_HISTORY_QUERY",
+                        "time bounds must be signed 64-bit nanoseconds",
+                    )
+                })
+            })
+            .transpose()
+    };
+    let from = parse(from)?;
+    let to = parse(to)?;
+    if matches!((from, to), (Some(from), Some(to)) if from > to) {
+        return Err(fault(400, "INVALID_HISTORY_QUERY", "from_ns exceeds to_ns"));
+    }
+    Ok((from, to))
+}
 pub(super) async fn runtime_query(
     app: Arc<App>,
     headers: HeaderMap,
@@ -455,6 +495,24 @@ pub(super) async fn runtime_query(
     query: ListQuery,
     endpoint: &str,
 ) -> ApiResult<Json<serde_json::Value>> {
+    if query
+        .run_generation
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.len() > 64)
+    {
+        return Err(fault(400, "INVALID_HISTORY_QUERY", "invalid run_generation").into());
+    }
+    if (query.from_ns.is_some() || query.to_ns.is_some() || query.run_generation.is_some())
+        && endpoint != "facts"
+    {
+        return Err(fault(
+            400,
+            "INVALID_HISTORY_QUERY",
+            "time ranges require the facts endpoint",
+        )
+        .into());
+    }
+    let (from_ns, to_ns) = history_time_range(query.from_ns.as_deref(), query.to_ns.as_deref())?;
     let actor = identity(&app, &headers, false)?;
     let resource = app.resource(&actor, &id, false)?;
     if !(matches!(resource.kind.as_str(), "run" | "account")
@@ -500,6 +558,15 @@ pub(super) async fn runtime_query(
                 query.newest_first.unwrap_or(false).to_string(),
             ),
             ("kind", query.kind.unwrap_or_default()),
+            ("run_generation", query.run_generation.unwrap_or_default()),
+            (
+                "from_ns",
+                from_ns.map(|value| value.to_string()).unwrap_or_default(),
+            ),
+            (
+                "to_ns",
+                to_ns.map(|value| value.to_string()).unwrap_or_default(),
+            ),
             (
                 "offset",
                 query.offset.unwrap_or(0).min(8_388_608).to_string(),
