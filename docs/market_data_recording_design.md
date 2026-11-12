@@ -829,7 +829,8 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
   逐文件记录相对路径、字节数与 sha256；写入使用临时文件，回读校验通过后才原子重命名。
   `daily_archive_prune = true` 时，仅在归档校验通过后删除已归档的数据文件（`quality/` 保留）。
   也可用 `book archive --root <root> --date <YYYY-MM-DD> [--prune] [--overwrite]` 手动补归档。
-  zip 只是传输/冷存封装：内部 `.tnmd`/`.gz` 保持原样，解压即可恢复原目录结构。
+  zip 只是传输/冷存封装：内部 `.tnmd`/`.gz` 保持原样，**不再对包内文件做二次压缩**
+  （zip 条目 Stored），体积≈源数据；解压即可恢复原目录结构。
 - 删除只按容量预算与显式策略执行；不得按“运行失败/不完整”静默删除，数据质量标记随文件保留。
 - 目标量级：0.5 GB/天 × 365 天 ≈ 183 GB，加快照与冗余约 250–300 GB；实际按第 16.1 节 p95×2 预算复核。14 天仅适合短期验证，不适合研究型回测。
 

@@ -135,8 +135,11 @@ fn write_archive(
     let mut source_bytes = 0u64;
     let file = File::create(temp_path)?;
     let mut zip = ZipWriter::new(file);
+    // Data files are already compressed (.tnmd blocks / .gz streams); the
+    // archive only packages them, so entries are stored without a second
+    // compression pass.
     let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
+        .compression_method(CompressionMethod::Stored)
         .unix_permissions(0o644);
     for path in files {
         let relative = path
@@ -399,6 +402,12 @@ mod tests {
         let file = File::open(&report.archive_path).unwrap();
         let mut zip = ZipArchive::new(file).unwrap();
         assert_eq!(zip.len(), 5);
+        for index in 0..zip.len() {
+            assert_eq!(
+                zip.by_index(index).unwrap().compression(),
+                zip::CompressionMethod::Stored
+            );
+        }
         let mut manifest = String::new();
         zip.by_name(MANIFEST_NAME)
             .unwrap()
