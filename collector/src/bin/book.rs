@@ -10,7 +10,8 @@ use clap::{Parser, Subcommand};
 use collector::book::{
     BlockKind, Change, DepthMessage, Feed, FeedMessage, GapMessage, GapReason, InstrumentType,
     Ladder, Level, MarketConfig, RecorderConfig, RecorderSettings, SegmentReader, Side,
-    SnapshotMessage, decimal_steps, decode_data_payload, recover_segment, run_market,
+    SnapshotMessage, archive_daily, decimal_steps, decode_data_payload, next_daily_archive,
+    recover_segment, run_market,
 };
 use collector::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
 use futures_util::{SinkExt, StreamExt};
@@ -1666,6 +1667,23 @@ enum Command {
         #[arg(long)]
         diagnostic: bool,
     },
+    /// Package one UTC date of recorded data into a single zip with manifest.
+    Archive {
+        #[arg(long)]
+        root: PathBuf,
+        /// UTC date, YYYY-MM-DD.
+        #[arg(long)]
+        date: String,
+        /// Archive directory (default: <root>/archives).
+        #[arg(long)]
+        archive_dir: Option<PathBuf>,
+        /// Delete archived data files after verification (quality reports kept).
+        #[arg(long)]
+        prune: bool,
+        /// Replace an existing archive for the same date.
+        #[arg(long)]
+        overwrite: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -1878,6 +1896,18 @@ async fn run(args: Args) -> Result<(), (u8, String)> {
             } else {
                 Ok(())
             }
+        }
+        Command::Archive {
+            root,
+            date,
+            archive_dir,
+            prune,
+            overwrite,
+        } => {
+            let report = archive_daily(&root, &date, archive_dir.as_deref(), prune, overwrite)
+                .map_err(|error| (4, error.to_string()))?;
+            println!("{}", serde_json::to_string(&report).map_err(json_error)?);
+            Ok(())
         }
         Command::Replay {
             root,
@@ -2426,6 +2456,17 @@ fn sequence_failures_in_segment(segment: &SegmentSummary) -> usize {
 async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = tokio::task::JoinSet::new();
+    let mut markets_remaining = config.markets.len();
+    if config.recorder.daily_archive {
+        let root = config.recorder.root.clone();
+        let prune = config.recorder.daily_archive_prune;
+        let grace = config.recorder.daily_archive_grace_secs;
+        let cancel = shutdown_rx.clone();
+        tasks.spawn(async move {
+            daily_archive_loop(root, grace, prune, cancel).await;
+            Ok::<(), String>(())
+        });
+    }
     for market in config.markets.clone() {
         let settings = config.recorder.clone();
         let meta = config.market_meta(&market);
@@ -2488,7 +2529,15 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                 return Ok(());
             }
             result = tasks.join_next() => match result {
-                Some(Ok(Ok(()))) => continue,
+                Some(Ok(Ok(()))) => {
+                    markets_remaining = markets_remaining.saturating_sub(1);
+                    if markets_remaining == 0 {
+                        let _ = shutdown_tx.send(true);
+                        while tasks.join_next().await.is_some() {}
+                        return Ok(());
+                    }
+                    continue;
+                }
                 Some(Ok(Err(message))) => {
                     let _ = shutdown_tx.send(true);
                     while tasks.join_next().await.is_some() {}
@@ -2502,6 +2551,61 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                 None => return Ok(()),
             }
         }
+    }
+}
+
+async fn daily_archive_loop(
+    root: PathBuf,
+    grace_secs: u64,
+    prune: bool,
+    mut cancel: watch::Receiver<bool>,
+) {
+    // Best-effort catch-up if the process starts after the previous midnight.
+    if let Some(date) = Utc::now().date_naive().pred_opt() {
+        archive_previous_date(&root, &date.to_string(), prune, true).await;
+    }
+    loop {
+        let (wake, date) = next_daily_archive(Utc::now(), grace_secs);
+        let wait = (wake - Utc::now())
+            .to_std()
+            .unwrap_or(std::time::Duration::from_secs(1));
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() {
+                    return;
+                }
+            }
+        }
+        archive_previous_date(&root, &date.to_string(), prune, false).await;
+    }
+}
+
+async fn archive_previous_date(root: &Path, date: &str, prune: bool, quiet: bool) {
+    let root = root.to_path_buf();
+    let archive_date = date.to_owned();
+    let label = archive_date.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        archive_daily(&root, &archive_date, None, prune, false)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => eprintln!(
+            "daily archive {}: files={} bytes={} sha256={} path={}",
+            report.date,
+            report.file_count,
+            report.archive_bytes,
+            report.archive_sha256,
+            report.archive_path.display()
+        ),
+        Ok(Err(collector::book::ArchiveError::Empty(_)))
+        | Ok(Err(collector::book::ArchiveError::Exists(_))) => {
+            if !quiet {
+                eprintln!("daily archive {label}: no data or archive already exists");
+            }
+        }
+        Ok(Err(error)) => eprintln!("daily archive {label} failed: {error}"),
+        Err(_) => eprintln!("daily archive {label} task failed"),
     }
 }
 
