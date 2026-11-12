@@ -554,6 +554,9 @@ async fn run_market_records_normalized_diff_slots_and_replays_them() {
         validation_interval_ms: 60_000,
         rest_validation_log_messages: 2_048,
         rest_validation_min_samples: 5,
+        daily_archive: false,
+        daily_archive_prune: false,
+        daily_archive_grace_secs: 120,
     };
     run_market(
         meta,
@@ -721,6 +724,9 @@ async fn run_market_starts_a_new_epoch_with_gap_before_resynced_data() {
         validation_interval_ms: 60_000,
         rest_validation_log_messages: 2_048,
         rest_validation_min_samples: 5,
+        daily_archive: false,
+        daily_archive_prune: false,
+        daily_archive_grace_secs: 120,
     };
     run_market(
         meta,

@@ -1,9 +1,12 @@
 //! Version 1 market depth recording format.
 
+mod archive;
 mod format;
 mod recorder;
 mod replay;
 mod segment;
+
+pub use archive::{ArchiveError, ArchiveReport, archive_daily, next_daily_archive};
 
 pub use format::{
     BlockHeader, BlockInput, BlockKind, Change, DataPayload, FeedMode, GapReason, Level,

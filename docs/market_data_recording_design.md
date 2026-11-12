@@ -90,6 +90,9 @@
 | `retention_hot_days` | 30 | 7–365 | 热数据保留 |
 | `retention_cold_days` | 365 | 30–3650 | 冷数据保留 |
 | `legacy_npz_bridge` | `false` | `false` / `true` | 是否额外导出 hftbacktest Event NPZ |
+| `daily_archive` | `false` | `false` / `true` | 录制进程在 UTC 日切后自动把前一天数据打包为单个 zip |
+| `daily_archive_prune` | `false` | `false` / `true` | 归档校验通过后删除已归档的数据文件（quality 报告保留） |
+| `daily_archive_grace_secs` | 120 | 10–3600 | UTC 00:00 后等待多久再归档，留给最后一小时段/事件文件封口 |
 
 ### 4.2 参数约束与交互
 
@@ -821,6 +824,12 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 - 热数据：默认 30 天，可调 7–365 天；本地 SSD/NVMe。
 - 冷数据：默认 365 天，可调 30–3650 天；按天合并段文件（同格式），或转 Parquet/对象存储。
 - 合并不得改变语义：段头、块头、索引、`dataset.json` 的 `sha256` 和参数必须保留；合并前后做逐块 CRC/抽样回放校验。
+- **每日归档（可选）**：`daily_archive = true` 时，录制进程在 UTC 日切后（默认 00:00:00 + 120 s 宽限）
+  把前一天所有市场的数据打包为 `<root>/archives/<YYYY-MM-DD>.zip`。zip 内含 `manifest.json`，
+  逐文件记录相对路径、字节数与 sha256；写入使用临时文件，回读校验通过后才原子重命名。
+  `daily_archive_prune = true` 时，仅在归档校验通过后删除已归档的数据文件（`quality/` 保留）。
+  也可用 `book archive --root <root> --date <YYYY-MM-DD> [--prune] [--overwrite]` 手动补归档。
+  zip 只是传输/冷存封装：内部 `.tnmd`/`.gz` 保持原样，解压即可恢复原目录结构。
 - 删除只按容量预算与显式策略执行；不得按“运行失败/不完整”静默删除，数据质量标记随文件保留。
 - 目标量级：0.5 GB/天 × 365 天 ≈ 183 GB，加快照与冗余约 250–300 GB；实际按第 16.1 节 p95×2 预算复核。14 天仅适合短期验证，不适合研究型回测。
 

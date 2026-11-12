@@ -88,6 +88,15 @@ pub struct RecorderSettings {
     pub rest_validation_log_messages: u32,
     #[serde(default = "default_rest_min_samples")]
     pub rest_validation_min_samples: u32,
+    /// Package the previous UTC date into a single zip after the day rolls over.
+    #[serde(default)]
+    pub daily_archive: bool,
+    /// Delete archived data files after a verified daily archive.
+    #[serde(default)]
+    pub daily_archive_prune: bool,
+    /// Grace period after UTC midnight before archiving (10-3600 seconds).
+    #[serde(default = "default_archive_grace_secs")]
+    pub daily_archive_grace_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -187,6 +196,7 @@ impl RecorderConfig {
             || (r.rest_validation_log_messages != 0
                 && !(256..=65_536).contains(&r.rest_validation_log_messages))
             || r.rest_validation_min_samples > 1_000
+            || (r.daily_archive && !(10..=3_600).contains(&r.daily_archive_grace_secs))
             || self.markets.is_empty()
         {
             return Err(BookError::InvalidField("recorder config values"));
@@ -255,6 +265,9 @@ fn default_rest_log_capacity() -> u32 {
 }
 fn default_rest_min_samples() -> u32 {
     5
+}
+fn default_archive_grace_secs() -> u64 {
+    120
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
