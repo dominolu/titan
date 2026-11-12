@@ -414,6 +414,51 @@ fn book_writer_rotates_and_seals_compressed_segments() {
 }
 
 #[test]
+fn book_writer_rotates_on_utc_segment_boundaries() {
+    let dir = test_dir();
+    let meta = MarketMeta {
+        market_id: 7,
+        venue_id: 2,
+        symbol: "ETHUSDT".into(),
+        feed_mode: FeedMode::Diff,
+        tick_units: 1,
+        price_decimals: 2,
+        qty_step_units: 1,
+        qty_decimals: 3,
+        grid_ms: 100,
+        block_duration_ms: 60_000,
+        depth_requested: 20,
+        depth_available: 20,
+        session_epoch: 3,
+    };
+    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 60_000, 3).unwrap();
+    for (start, end) in [
+        (30_000_000_000i64, 31_000_000_000i64),
+        (59_000_000_000, 59_500_000_000),
+        (60_000_000_000, 61_000_000_000),
+    ] {
+        let block = BlockInput {
+            header: BlockHeader::data(7, start, end, 1).unwrap(),
+            payload: vec![1, 2, 3],
+        };
+        writer.append(&block).unwrap();
+    }
+    writer.finish(61_000_000_000, 61_000_000_000).unwrap();
+    let mut segments = fs::read_dir(
+        dir.join("book/venue=venue/instrument=ETHUSDT/symbol=ETHUSDT/date=1970-01-01"),
+    )
+    .unwrap()
+    .map(|entry| entry.unwrap().path())
+    .filter(|path| path.extension().is_some_and(|ext| ext == "tnmd"))
+    .collect::<Vec<_>>();
+    segments.sort();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(SegmentReader::open(&segments[0]).unwrap().block_count(), 2);
+    assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn book_writer_places_gap_at_the_head_of_a_new_epoch() {
     let dir = test_dir();
     let meta = MarketMeta {

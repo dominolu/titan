@@ -130,8 +130,21 @@ impl BookWriter {
         let rotate = self.current.is_some()
             && (self.segment_epoch != Some(self.meta.session_epoch)
                 || self.segment_start_exch_ns.is_some_and(|start| {
-                    block.header.block_start_exch_ns
-                        >= start.saturating_add(self.segment_duration_ns)
+                    // Align normal rotation to UTC boundaries: the next
+                    // boundary is the next multiple of the segment duration
+                    // since the epoch, not `start + duration`. Gap/epoch
+                    // segments may still start mid-hour.
+                    let duration = self.segment_duration_ns.max(1);
+                    let boundary = if start >= 0 {
+                        start
+                            .checked_div(duration)
+                            .unwrap_or(0)
+                            .saturating_add(1)
+                            .saturating_mul(duration)
+                    } else {
+                        start.saturating_add(duration)
+                    };
+                    block.header.block_start_exch_ns >= boundary
                 }));
         if rotate {
             self.finish(self.last_end_local_ns, self.last_end_exch_ns)?;
