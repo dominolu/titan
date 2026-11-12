@@ -258,6 +258,7 @@ fn walk(directory: &Path, date_component: &str, files: &mut Vec<PathBuf>) -> std
             && path
                 .components()
                 .any(|component| component.as_os_str().to_string_lossy() == date_component)
+            && !entry.file_name().to_string_lossy().contains(".tmp")
         {
             files.push(path);
         }
@@ -374,6 +375,16 @@ mod tests {
         );
         write_file(
             root,
+            "book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11/segment-2.tnmd.tmp",
+            b"open",
+        );
+        write_file(
+            root,
+            "book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11/segment-2.tnmd.tmp.idx",
+            b"open-idx",
+        );
+        write_file(
+            root,
             "trade/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11/trades-01.ndjson.gz",
             b"trades",
         );
@@ -416,6 +427,7 @@ mod tests {
         assert!(manifest.contains("2026-11-11"));
         assert!(manifest.contains("book/venue=binance_spot"));
         assert!(!manifest.contains("segment-old"));
+        assert!(!manifest.contains(".tmp"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -439,11 +451,12 @@ mod tests {
         let report = archive_daily(&root, "2026-11-11", None, true, false).unwrap();
         assert_eq!(report.file_count, 4);
         assert_eq!(report.pruned_files, 3);
-        assert!(
-            !root
-                .join("book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11")
-                .exists()
-        );
+        assert!(!root
+            .join("book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11/segment-1.tnmd")
+            .exists());
+        assert!(root
+            .join("book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-11/segment-2.tnmd.tmp")
+            .exists());
         assert!(root.join("quality/date=2026-11-11/quality.json").exists());
         assert!(root
             .join("book/venue=binance_spot/instrument=spot/symbol=BTCUSDT/date=2026-11-10/segment-old.tnmd")
