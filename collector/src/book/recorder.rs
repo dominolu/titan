@@ -97,6 +97,9 @@ pub struct RecorderSettings {
     /// Grace period after UTC midnight before archiving (10-3600 seconds).
     #[serde(default = "default_archive_grace_secs")]
     pub daily_archive_grace_secs: u64,
+    /// Pack a whole date into one `<date>.zip` instead of one zip per market.
+    #[serde(default)]
+    pub daily_archive_group_json: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

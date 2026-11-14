@@ -1683,6 +1683,9 @@ enum Command {
         /// Replace an existing archive for the same date.
         #[arg(long)]
         overwrite: bool,
+        /// Pack the whole date into one <date>.zip instead of one zip per market.
+        #[arg(long)]
+        group_json: bool,
     },
 }
 
@@ -1903,10 +1906,20 @@ async fn run(args: Args) -> Result<(), (u8, String)> {
             archive_dir,
             prune,
             overwrite,
+            group_json,
         } => {
-            let report = archive_daily(&root, &date, archive_dir.as_deref(), prune, overwrite)
-                .map_err(|error| (4, error.to_string()))?;
-            println!("{}", serde_json::to_string(&report).map_err(json_error)?);
+            let reports = archive_daily(
+                &root,
+                &date,
+                archive_dir.as_deref(),
+                prune,
+                overwrite,
+                group_json,
+            )
+            .map_err(|error| (4, error.to_string()))?;
+            for report in &reports {
+                println!("{}", serde_json::to_string(report).map_err(json_error)?);
+            }
             Ok(())
         }
         Command::Replay {
@@ -2461,9 +2474,10 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
         let root = config.recorder.root.clone();
         let prune = config.recorder.daily_archive_prune;
         let grace = config.recorder.daily_archive_grace_secs;
+        let group_json = config.recorder.daily_archive_group_json;
         let cancel = shutdown_rx.clone();
         tasks.spawn(async move {
-            daily_archive_loop(root, grace, prune, cancel).await;
+            daily_archive_loop(root, grace, prune, group_json, cancel).await;
             Ok::<(), String>(())
         });
     }
@@ -2558,11 +2572,12 @@ async fn daily_archive_loop(
     root: PathBuf,
     grace_secs: u64,
     prune: bool,
+    group_json: bool,
     mut cancel: watch::Receiver<bool>,
 ) {
     // Best-effort catch-up if the process starts after the previous midnight.
     if let Some(date) = Utc::now().date_naive().pred_opt() {
-        archive_previous_date(&root, &date.to_string(), prune, true).await;
+        archive_previous_date(&root, &date.to_string(), prune, group_json, true).await;
     }
     loop {
         let (wake, date) = next_daily_archive(Utc::now(), grace_secs);
@@ -2577,31 +2592,53 @@ async fn daily_archive_loop(
                 }
             }
         }
-        archive_previous_date(&root, &date.to_string(), prune, false).await;
+        archive_previous_date(&root, &date.to_string(), prune, group_json, false).await;
     }
 }
 
-async fn archive_previous_date(root: &Path, date: &str, prune: bool, quiet: bool) {
+async fn archive_previous_date(
+    root: &Path,
+    date: &str,
+    prune: bool,
+    group_json: bool,
+    quiet: bool,
+) {
     let root = root.to_path_buf();
     let archive_date = date.to_owned();
     let label = archive_date.clone();
     let result = tokio::task::spawn_blocking(move || {
-        archive_daily(&root, &archive_date, None, prune, false)
+        archive_daily(&root, &archive_date, None, prune, false, group_json)
     })
     .await;
     match result {
-        Ok(Ok(report)) => eprintln!(
-            "daily archive {}: files={} bytes={} sha256={} path={}",
-            report.date,
-            report.file_count,
-            report.archive_bytes,
-            report.archive_sha256,
-            report.archive_path.display()
-        ),
-        Ok(Err(collector::book::ArchiveError::Empty(_)))
-        | Ok(Err(collector::book::ArchiveError::Exists(_))) => {
+        Ok(Ok(reports)) if reports.is_empty() => {
             if !quiet {
-                eprintln!("daily archive {label}: no data or archive already exists");
+                eprintln!("daily archive {label}: nothing to archive");
+            }
+        }
+        Ok(Ok(reports)) => {
+            if !quiet {
+                for report in &reports {
+                    eprintln!(
+                        "daily archive {} {}: files={} bytes={} sha256={} path={}",
+                        report.date,
+                        report.label,
+                        report.file_count,
+                        report.archive_bytes,
+                        report.archive_sha256,
+                        report.archive_path.display()
+                    );
+                }
+            }
+        }
+        Ok(Err(collector::book::ArchiveError::Empty(_))) => {
+            if !quiet {
+                eprintln!("daily archive {label}: no data for that date");
+            }
+        }
+        Ok(Err(collector::book::ArchiveError::Exists(_))) => {
+            if !quiet {
+                eprintln!("daily archive {label}: archive already exists, skipped");
             }
         }
         Ok(Err(error)) => eprintln!("daily archive {label} failed: {error}"),

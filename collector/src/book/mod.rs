@@ -6,7 +6,10 @@ mod recorder;
 mod replay;
 mod segment;
 
-pub use archive::{ArchiveError, ArchiveReport, archive_daily, next_daily_archive};
+pub use archive::{
+    ArchiveError, ArchiveManifest, ArchiveReport, ManifestFile, archive_daily,
+    next_daily_archive,
+};
 
 pub use format::{
     BlockHeader, BlockInput, BlockKind, Change, DataPayload, FeedMode, GapReason, Level,
