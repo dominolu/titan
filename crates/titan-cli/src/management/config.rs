@@ -37,9 +37,6 @@ impl ConsoleConfig {
             if let Some(path) = &mut node.history_program {
                 resolve(path);
             }
-            if let Some(path) = &mut node.signing_key {
-                resolve(path);
-            }
             for template in node.parameter_presets.values_mut() {
                 resolve(&mut template.source);
                 if let Some(path) = &mut template.parameters {
@@ -140,8 +137,6 @@ pub struct NodeConfig {
     pub titan_program: PathBuf,
     pub environments: Vec<String>,
     pub history_program: Option<PathBuf>,
-    pub signing_key: Option<PathBuf>,
-    pub signing_key_id: Option<String>,
     #[serde(default, alias = "templates")]
     pub parameter_presets: BTreeMap<String, StrategyParameterPreset>,
     #[serde(default)]

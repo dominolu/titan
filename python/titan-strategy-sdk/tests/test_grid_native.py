@@ -1,4 +1,4 @@
-"""Execute the Rust-built shared library through the actual V13 ABI."""
+"""Execute the Rust-built shared library through the actual ABI."""
 
 import ctypes
 import json
@@ -10,10 +10,36 @@ import unittest
 
 import numpy as np
 
-from titan_strategy import abi_v13
+from titan_strategy import abi
 from titan_strategy.state import canonical_state_schema, state_schema_hash, validate_state_dtype
 from strategies import grid
 from test_grid import Context, row
+
+
+_OBJECT_CACHE = {}
+
+
+def _objects():
+    if not _OBJECT_CACHE:
+        from titan_strategy import testing
+        _OBJECT_CACHE["value"] = testing._build_object_table(testing.objects(
+            symbols=[dict(
+                local_asset_no=0, asset_id=1, quote_currency_no=0, margin_currency_no=0, flags=1,
+                price_tick={"coefficient": 1, "scale": 0},
+                quantity_lot={"coefficient": 1, "scale": 0},
+                contract_multiplier={"coefficient": 1, "scale": 0},
+                base_delta_per_lot={"coefficient": 1, "scale": 0},
+                min_quantity={"coefficient": 1, "scale": 0},
+                min_notional_quote={"coefficient": 5, "scale": 0},
+                min_qty_lots=1, min_notional_tick_lots=5,
+            )],
+            accounts=[dict(local_account_no=0, account_id=1, quote_currency_no=0,
+                           margin_currency_no=0, currency_start=0, currency_count=1, flags=1)],
+            currencies=[dict(local_account_no=0, currency_no=0, flags=1,
+                             amount_unit={"coefficient": 1, "scale": 6})],
+            status={"lifecycle": 3},
+        ))
+    return _OBJECT_CACHE["value"]
 
 
 class TestGridNative(unittest.TestCase):
@@ -39,9 +65,9 @@ class TestGridNative(unittest.TestCase):
         cls.schema_hash = state_schema_hash(canonical_state_schema(layout, schema_version=grid.SPEC.state_schema_version))
 
     def invoke(self, name, ctx, *, expected=0, context_overrides=None):
-        native = np.zeros(1, dtype=abi_v13.runtime_context_dtype)
+        native = np.zeros(1, dtype=abi.runtime_context_dtype)
         n = native[0]
-        n["struct_size"], n["abi_version"] = native.dtype.itemsize, 13
+        n["struct_size"], n["abi_version"] = native.dtype.itemsize, abi.ABI_VERSION
         n["now_ns"] = ctx.now
         n["event_kind"] = {"on_start": 0, "on_tick": 1, "on_fill": 4, "on_order": 5,
                            "on_cancel": 6, "on_position": 7, "on_timer": 10,
@@ -51,10 +77,10 @@ class TestGridNative(unittest.TestCase):
         n["state_schema_hash"] = list(self.schema_hash)
         buffers = {}
         for field, value, dtype in (
-            ("markets", ctx.market_row, abi_v13.market_dtype),
-            ("positions", ctx.position_row, abi_v13.position_dtype),
-            ("balances", ctx.balance_row, abi_v13.balance_dtype),
-            ("accounts", ctx.account_row, abi_v13.account_dtype),
+            ("markets", ctx.market_row, abi.market_dtype),
+            ("positions", ctx.position_row, abi.position_dtype),
+            ("balances", ctx.balance_row, abi.balance_dtype),
+            ("accounts", ctx.account_row, abi.account_dtype),
         ):
             buffers[field] = np.array([value], dtype=dtype)
         buffers.update(active_orders=ctx.active, ticks=ctx.tick_rows, fills=ctx.fill_rows,
@@ -62,12 +88,17 @@ class TestGridNative(unittest.TestCase):
         for field, values in buffers.items():
             n[field + "_ptr"], n[field + "_len"] = values.ctypes.data, len(values)
         recovery = ctx.recovery_orders()
+        objects, objects_buffers, _ = _objects()
+        # Payload buffers must outlive the callback.
+        self.keepalive = [*objects_buffers.values(), objects]
+        n["objects_ptr"], n["objects_len"] = objects.ctypes.data, objects.nbytes
+        n["object_schema_minor"] = 1
         n["event_payload_ptr"], n["event_payload_len"] = recovery.ctypes.data, recovery.nbytes
 
         @ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64))
         def submit(_, request, result):
-            values = ctypes.string_at(request, abi_v13.submit_order_request_dtype.itemsize)
-            order = np.frombuffer(values, dtype=abi_v13.submit_order_request_dtype)[0]
+            values = ctypes.string_at(request, abi.submit_order_request_dtype.itemsize)
+            order = np.frombuffer(values, dtype=abi.submit_order_request_dtype)[0]
             result[0] = ctx.submit_order(int(order["account_no"]), int(order["asset_no"]),
                                          int(order["side"]), int(order["order_type"]),
                                          int(order["qty_lots"]), int(order["price_ticks"]),
@@ -76,8 +107,8 @@ class TestGridNative(unittest.TestCase):
 
         @ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64))
         def cancel(_, request, result):
-            values = ctypes.string_at(request, abi_v13.cancel_order_request_dtype.itemsize)
-            order = np.frombuffer(values, dtype=abi_v13.cancel_order_request_dtype)[0]
+            values = ctypes.string_at(request, abi.cancel_order_request_dtype.itemsize)
+            order = np.frombuffer(values, dtype=abi.cancel_order_request_dtype)[0]
             result[0] = ctx.cancel_order(int(order["account_no"]), int(order["asset_no"]), int(order["order_id"]))
             return 0
 
@@ -94,14 +125,14 @@ class TestGridNative(unittest.TestCase):
     def test_native_callbacks_quote_fill_cancel_stop_and_recover(self):
         ctx = Context()
         self.invoke("on_start", ctx)
-        ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi_v13.tick_dtype)
+        ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi.tick_dtype)
         self.invoke("on_tick", ctx)
         self.assertEqual([int(o["price_ticks"]) for o in ctx.submits], [95, 105])
         ctx.active[0]["status"], ctx.active[0]["cumulative_filled_lots"] = grid.FILLED, 2
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 2, 2
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
                                      cumulative_filled_lots=2, fill_price_ticks=95,
-                                     account_sequence=2, final_fill=1)], dtype=abi_v13.fill_dtype)
+                                     account_sequence=2, final_fill=1)], dtype=abi.fill_dtype)
         self.invoke("on_fill", ctx)
         self.assertEqual(ctx.cancels, [2])
         self.assertEqual(ctx.state["grid"]["anchor_ticks"], 95)
@@ -109,8 +140,8 @@ class TestGridNative(unittest.TestCase):
         self.invoke("on_fill", ctx)
         self.assertEqual(ctx.state["grid"]["fill_count"], 1)
         ctx.active = ctx.active[:0]
-        ctx.order_rows = np.array([row(abi_v13.order_event_dtype, order_id=2, status=grid.CANCELED,
-                                      price_ticks=105, qty_lots=2)], dtype=abi_v13.order_event_dtype)
+        ctx.order_rows = np.array([row(abi.order_event_dtype, order_id=2, status=grid.CANCELED,
+                                      price_ticks=105, qty_lots=2)], dtype=abi.order_event_dtype)
         self.invoke("on_order", ctx)
         self.assertEqual(self.invoke("on_stop", ctx), 0)
         ctx.now += 500_000_000
@@ -119,7 +150,7 @@ class TestGridNative(unittest.TestCase):
         exit_id = int(ctx.submits[-1]["order_id"])
         ctx.active[0]["status"], ctx.active[0]["cumulative_filled_lots"] = grid.FILLED, 2
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 0, 3
-        ctx.fill_rows[0] = row(abi_v13.fill_dtype, order_id=exit_id, side=2, fill_qty_lots=2,
+        ctx.fill_rows[0] = row(abi.fill_dtype, order_id=exit_id, side=2, fill_qty_lots=2,
                                cumulative_filled_lots=2, fill_price_ticks=98, account_sequence=3, final_fill=1)
         self.assertEqual(self.invoke("on_fill", ctx) & 1, 1)
         self.assertEqual(ctx.state["grid"]["status"], grid.STOPPED)
@@ -129,39 +160,11 @@ class TestGridNative(unittest.TestCase):
         self.invoke("on_recover", ctx)
         self.assertEqual(len(ctx.submits), before)
 
-    def test_cli_trace_drains_and_rejects_incomplete_stop(self):
-        root = Path(self.temporary.name)
-        trace = json.loads((self.root / "fixtures/grid_v13_trace.json").read_text())
-        for complete in (True, False):
-            directory = root / ("complete" if complete else "incomplete")
-            directory.mkdir()
-            data = dict(trace)
-            if not complete:
-                data["events"] = trace["events"][:2]
-            (directory / "trace.json").write_text(json.dumps(data))
-            config = directory / "backtest.toml"
-            config.write_text('schema_version = 1\n[backtest]\ndata = "trace.json"\ncommand_capacity = 64\nallow_unsigned_strategy = true\n')
-            environment = dict(os.environ, TITAN_HOME=str(directory / "home"))
-            result = subprocess.run([self.binary, "run", self.manifest_path, "-e", "backtest",
-                                     "-m", "tick", "-c", str(config), "--json"],
-                                    env=environment, capture_output=True, text=True, timeout=30)
-            if complete:
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                reports = list((directory / "home").rglob("result.json"))
-                self.assertEqual(len(reports), 1)
-                report = json.loads(reports[0].read_text())
-                self.assertEqual(report["status"], "COMPLETED")
-                self.assertEqual(report["submit_count"], 3)
-                self.assertEqual(report["cancel_count"], 1)
-            else:
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                logs = "\n".join(path.read_text() for path in (directory / "home").rglob("*.log"))
-                self.assertIn("trace ended before strategy stop completed", logs + result.stderr)
 
     def test_native_recovery_uses_reconciled_terminal_results(self):
         ctx = Context()
         self.invoke("on_start", ctx)
-        ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi_v13.tick_dtype)
+        ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi.tick_dtype)
         self.invoke("on_tick", ctx)
         ctx.recovery_rows = ctx.active.copy()
         ctx.recovery_rows["status"] = grid.CANCELED
@@ -175,18 +178,18 @@ class TestGridNative(unittest.TestCase):
     def test_native_fill_cancels_before_position_and_zero_margin_allows_reduction(self):
         ctx = Context()
         self.invoke("on_start", ctx)
-        ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi_v13.tick_dtype)
+        ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi.tick_dtype)
         self.invoke("on_tick", ctx)
         ctx.active[0]["status"], ctx.active[0]["cumulative_filled_lots"] = grid.FILLED, 2
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
                                      cumulative_filled_lots=2, fill_price_ticks=95,
-                                     account_sequence=2, final_fill=1)], dtype=abi_v13.fill_dtype)
+                                     account_sequence=2, final_fill=1)], dtype=abi.fill_dtype)
         self.invoke("on_fill", ctx)
         self.assertEqual(ctx.cancels, [2])
         self.assertEqual(len(ctx.submits), 2)
         ctx.active = ctx.active[:0]
-        ctx.order_rows = np.array([row(abi_v13.order_event_dtype, order_id=2, status=grid.CANCELED,
-                                      price_ticks=105, qty_lots=2)], dtype=abi_v13.order_event_dtype)
+        ctx.order_rows = np.array([row(abi.order_event_dtype, order_id=2, status=grid.CANCELED,
+                                      price_ticks=105, qty_lots=2)], dtype=abi.order_event_dtype)
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 2, 2
         self.invoke("on_order", ctx)
         ctx.balance_row["available_units"] = 0
@@ -202,7 +205,7 @@ class TestGridNative(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 ctx = Context()
                 self.invoke("on_start", ctx)
-                ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi_v13.tick_dtype)
+                ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi.tick_dtype)
                 self.invoke("on_tick", ctx)
                 self.invoke("on_recover", ctx, expected=-1, context_overrides=invalid)
                 self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
@@ -212,17 +215,17 @@ class TestGridNative(unittest.TestCase):
     def test_native_protective_exit_retries_beyond_opening_limit_then_confirms_flat(self):
         ctx = Context()
         self.invoke("on_start", ctx)
-        ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi_v13.tick_dtype)
+        ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now)], dtype=abi.tick_dtype)
         self.invoke("on_tick", ctx)
         ctx.active[0]["status"], ctx.active[0]["cumulative_filled_lots"] = grid.FILLED, 2
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 2, 2
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=1, side=1, fill_qty_lots=2,
                                      cumulative_filled_lots=2, fill_price_ticks=95,
-                                     account_sequence=2, final_fill=1)], dtype=abi_v13.fill_dtype)
+                                     account_sequence=2, final_fill=1)], dtype=abi.fill_dtype)
         self.invoke("on_fill", ctx)
         ctx.active = ctx.active[:0]
-        ctx.order_rows = np.array([row(abi_v13.order_event_dtype, order_id=2, status=grid.CANCELED,
-                                      price_ticks=105, qty_lots=2)], dtype=abi_v13.order_event_dtype)
+        ctx.order_rows = np.array([row(abi.order_event_dtype, order_id=2, status=grid.CANCELED,
+                                      price_ticks=105, qty_lots=2)], dtype=abi.order_event_dtype)
         self.invoke("on_order", ctx)
         self.invoke("on_stop", ctx)
         for _ in range(6):
@@ -232,7 +235,7 @@ class TestGridNative(unittest.TestCase):
             order = ctx.submits[-1]
             self.assertTrue(order["reduce_only"])
             ctx.active = ctx.active[:0]
-            ctx.order_rows[0] = row(abi_v13.order_event_dtype, order_id=order["order_id"], status=grid.EXPIRED,
+            ctx.order_rows[0] = row(abi.order_event_dtype, order_id=order["order_id"], status=grid.EXPIRED,
                                     price_ticks=order["price_ticks"], qty_lots=order["qty_lots"])
             self.assertEqual(self.invoke("on_order", ctx) & 1, 0)
             self.assertEqual(ctx.state["grid"]["status"], grid.STOPPING)
@@ -242,7 +245,7 @@ class TestGridNative(unittest.TestCase):
         exit_id = int(ctx.submits[-1]["order_id"])
         ctx.active[0]["status"], ctx.active[0]["cumulative_filled_lots"] = grid.FILLED, 2
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 0, 3
-        ctx.fill_rows[0] = row(abi_v13.fill_dtype, order_id=exit_id, side=2, fill_qty_lots=2,
+        ctx.fill_rows[0] = row(abi.fill_dtype, order_id=exit_id, side=2, fill_qty_lots=2,
                                cumulative_filled_lots=2, fill_price_ticks=98, account_sequence=3, final_fill=1)
         self.assertEqual(self.invoke("on_fill", ctx) & 1, 1)
         self.assertEqual(ctx.state["grid"]["status"], grid.STOPPED)

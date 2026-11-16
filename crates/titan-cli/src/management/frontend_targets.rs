@@ -72,13 +72,6 @@ async fn maybe_get(client: &Client, path: &str) -> Result<Option<Value>> {
     }
 }
 
-pub(super) async fn resource(client: &Client, id: &str) -> Result<Value> {
-    super::managed_strategy::checked_id(id)?;
-    let value = client.get(&format!("/api/v2/resources/{id}"), &[]).await?;
-    scope(client, &value)?;
-    Ok(value)
-}
-
 async fn exact_resource(client: &Client, target: &str) -> Result<Option<Value>> {
     if super::checked_id(target).is_err() {
         return Ok(None);

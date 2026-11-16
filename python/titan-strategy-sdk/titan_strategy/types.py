@@ -36,6 +36,20 @@ class Side(IntEnum):
     SELL = 2
 
 
+class CommandPurpose(IntEnum):
+    """Declared intent of a submit, carried in the request's first reserved byte.
+
+    Without a multi-binding execution envelope these declarations grant no admission
+    relaxation; the host still verifies that the byte is a known value.
+    """
+
+    UNSPECIFIED = 0
+    MAKER_QUOTE = 1
+    KNOWN_FILL_HEDGE = 2
+    RESCUE_EXIT = 3
+    OWNED_EXIT = 4
+
+
 class PositionSide(IntEnum):
     NET = 0
     LONG = 1
@@ -76,6 +90,7 @@ class CallbackCode(IntEnum):
 
 __all__ = [
     "CallbackCode",
+    "CommandPurpose",
     "EventKind",
     "EventQos",
     "OrderStatus",

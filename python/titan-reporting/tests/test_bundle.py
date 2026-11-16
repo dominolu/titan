@@ -75,6 +75,32 @@ class BundleTest(unittest.TestCase):
             self.assertIn("No canonical return observations", page)
             self.assertIn("No performance statistics were inferred", page)
 
+    def test_bundle_from_another_abi_is_refused_when_the_host_identity_is_known(self):
+        import os
+        from unittest import mock
+
+        host, other = "11" * 32, "22" * 32
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = json.dumps({"returns": []}).encode()
+            (root / "result.json").write_bytes(content)
+            files = [{"path": "result.json", "bytes": len(content),
+                      "sha256": hashlib.sha256(content).hexdigest()}]
+            manifest = {"schema_version": 1, "run_id": "run-abi", "abi_fingerprint": other,
+                        "files": files}
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            with mock.patch.dict(os.environ, {"TITAN_ABI_FINGERPRINT": host}):
+                with self.assertRaisesRegex(BundleError, "bundle_abi_mismatch"):
+                    load_bundle(root)
+            manifest["abi_fingerprint"] = host
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            with mock.patch.dict(os.environ, {"TITAN_ABI_FINGERPRINT": host}):
+                self.assertEqual(load_bundle(root).result, {"returns": []})
+            # Without a configured identity the package stays runtime-agnostic.
+            with mock.patch.dict(os.environ, {"TITAN_ABI_FINGERPRINT": ""}):
+                self.assertEqual(load_bundle(root).result, {"returns": []})
+
+
 
 if __name__ == "__main__":
     unittest.main()

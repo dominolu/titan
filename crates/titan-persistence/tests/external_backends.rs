@@ -321,7 +321,7 @@ fn real_driver_contract_and_bidirectional_cutover() {
     let original = fs::read(&frozen_path).unwrap();
     fs::write(frozen_dir.join("result.json"), b"{}").unwrap();
     let manifest=serde_json::to_vec(&json!({"schema_version":1,"run_id":"snapshot-contract","files":[{"path":"result.json","sha256":sha256(b"{}"),"bytes":2},{"path":"history.db","sha256":sha256(&original),"bytes":original.len()}]})).unwrap();
-    let frozen_ref = commit_result_bundle(&frozen_dir, &root, &manifest).unwrap();
+    let frozen_ref = commit_result_bundle(&frozen_dir, &root, &manifest, None).unwrap();
     let source_path = history_query_path(&frozen_path);
     assert_ne!(source_path, frozen_path);
     let cut = control

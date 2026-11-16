@@ -431,6 +431,9 @@ impl MarketService for MarketServiceCore {
     fn resolve(&self, source_key: &str) -> LocalResult<MarketSourceHandle> {
         self.registry.resolve(source_key)
     }
+    fn definition(&self, source: MarketSourceHandle) -> LocalResult<MarketSourceDefinition> {
+        Ok(self.registry.get(source)?.definition.clone())
+    }
     fn subscribe(
         &self,
         source: MarketSourceHandle,

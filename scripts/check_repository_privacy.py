@@ -24,6 +24,10 @@ IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 WALLET = re.compile(r"(?<![A-Za-z0-9])0x[0-9a-fA-F]{40}(?![A-Za-z0-9])")
 CREDENTIAL = re.compile(r'''(?i)["']?\b(api[_-]?key|api[_-]?secret|private[_-]?key|client[_-]?secret|password|access[_-]?token)["']?\s*[:=]\s*["']([A-Za-z0-9_+/=-]{24,})["']''')
 DOCUMENTATION_NETWORKS = tuple(ipaddress.ip_network(x) for x in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"))
+# Local-link and private ranges carry no remote host identity. `169.254.0.0/16` is required by
+# `build_env.sh`'s proxy bypass (some venues resolve to link-local addresses on offline hosts), and
+# a bypass list is a routing rule, not an address of a real server.
+LOCAL_NETWORKS = tuple(ipaddress.ip_network(x) for x in ("169.254.0.0/16",))
 PUBLIC_ADDRESSES = {
     "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
     "0x4a62316623ad457f02cdc5d997ded67a383ec569",
@@ -45,7 +49,9 @@ def inspect_text(path: str, text: str) -> list[dict]:
                     address = ipaddress.ip_address(match.group())
                 except ValueError:
                     continue
-                if not (address.is_loopback or address.is_unspecified or any(address in net for net in DOCUMENTATION_NETWORKS)):
+                if not (address.is_loopback or address.is_unspecified
+                        or any(address in net for net in DOCUMENTATION_NETWORKS)
+                        or any(address in net for net in LOCAL_NETWORKS)):
                     kinds.add("infrastructure-address")
         for match in WALLET.finditer(line):
             address = match.group().lower()

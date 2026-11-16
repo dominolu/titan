@@ -236,13 +236,13 @@ fn ticker_from(t: &m::Ticker, funding: Option<&m::FundingRate>) -> Ticker {
     }
 }
 
-fn instrument_from(i: &m::Instrument) -> InstrumentInfo {
+fn instrument_from(i: &m::Instrument) -> Result<InstrumentInfo, ApiError> {
     // SWAP 合约：ctValCcy 为标的币，settleCcy 为结算币（保证金币）。
     let tick = f(&i.tick_sz);
     let lot = f(&i.lot_sz);
     let price_precision = decimals(tick);
     let qty_precision = decimals(lot);
-    InstrumentInfo {
+    Ok(InstrumentInfo {
         symbol: i.inst_id.clone(),
         base_asset: i.ct_val_ccy.clone(),
         quote_asset: i.settle_ccy.clone(),
@@ -250,11 +250,34 @@ fn instrument_from(i: &m::Instrument) -> InstrumentInfo {
         lot_size: lot,
         min_qty: f(&i.min_sz),
         contract_size: f(&i.ct_val),
+        tick_size_exact: exact_decimal_value("okx", &i.tick_sz, "tick_sz")?,
+        lot_size_exact: exact_decimal_value("okx", &i.lot_sz, "lot_sz")?,
+        min_qty_exact: exact_decimal_value("okx", &i.min_sz, "min_sz")?,
+        contract_size_exact: exact_decimal_value("okx", &i.ct_val, "ct_val")?,
+        min_notional_quote: None,
+        // OKX quantity (`sz`) is measured in contracts; `ctVal` is the base value of one contract.
+        quantity_dimension: crate::api::QuantityDimension::Contract,
+        synthetic: false,
         margin_asset: i.settle_ccy.clone(),
         price_precision,
         qty_precision,
         tradable: i.state == "live",
+    })
+}
+
+fn exact_decimal_value(
+    exchange: &'static str,
+    value: &str,
+    field: &'static str,
+) -> Result<Option<titan_domain_types::DecimalUnit>, ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
     }
+    value
+        .parse::<titan_domain_types::DecimalUnit>()
+        .map(Some)
+        .map_err(|cause| ApiError::new(exchange, "PROTOCOL", format!("invalid {field}: {cause}")))
 }
 
 fn decimals(step: f64) -> u32 {
@@ -823,7 +846,10 @@ impl BrokerApi for OkxClient {
 
     async fn get_instruments(&self) -> Result<Vec<InstrumentInfo>, ApiError> {
         let instruments = self.get_all_instruments().await?;
-        Ok(instruments.iter().map(instrument_from).collect())
+        instruments
+            .iter()
+            .map(instrument_from)
+            .collect::<Result<Vec<_>, ApiError>>()
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ApiError> {
@@ -1801,12 +1827,22 @@ mod tests {
             }]
         }"#;
         let resp: m::InstrumentsResponse = serde_json::from_str(json).unwrap();
-        let inst = instrument_from(&resp.data[0]);
+        let inst = instrument_from(&resp.data[0]).unwrap();
         assert_eq!(inst.symbol, "BTC-USDT-SWAP");
         assert_eq!(inst.base_asset, "BTC");
         assert_eq!(inst.quote_asset, "USDT");
         assert_eq!(inst.tick_size, 0.1);
         assert_eq!(inst.lot_size, 0.001);
+        // OKX sizes are contract counts; ctVal is the base value of one contract.
+        assert_eq!(
+            inst.quantity_dimension,
+            crate::api::QuantityDimension::Contract
+        );
+        assert_eq!(inst.tick_size_exact, Some("0.1".parse().unwrap()));
+        assert_eq!(inst.lot_size_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.min_qty_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.contract_size_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.base_delta_per_lot(), Some("0.000001".parse().unwrap()));
         assert!(inst.tradable);
         assert_eq!(inst.price_precision, 1);
         assert_eq!(inst.qty_precision, 3);

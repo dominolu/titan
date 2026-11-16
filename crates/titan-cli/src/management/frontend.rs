@@ -3,7 +3,6 @@ use super::{
     client::{Client, ClientOptions},
     contract::Action,
     frontend_config,
-    frontend_research::{self, ExecutionOptions, ResearchCommand},
     frontend_targets::{self as targets, invalid, text},
     managed_observe,
 };
@@ -15,8 +14,8 @@ use serde_json::json;
 #[command(
     name = "titan_cli",
     version,
-    about = "Inspect accounts, control fixed strategy deployments, and run research",
-    after_help = "Examples:\n  titan_cli check\n  titan_cli strategy ls\n  titan_cli strategy start grid\n  titan_cli account balance account-alias\n  titan_cli research build grid\n\nNames must identify one authorized target. Use an exact ID or profile alias when ambiguous.\nCommands wait by default; --detach returns acceptance. JSON/NDJSON use versioned envelopes.\nNo arguments enter the interactive shell only in a terminal."
+    about = "Inspect accounts and control fixed strategy deployments",
+    after_help = "Examples:\n  titan_cli check\n  titan_cli strategy ls\n  titan_cli strategy start grid\n  titan_cli account balance account-alias\n\nNames must identify one authorized target. Use an exact ID or profile alias when ambiguous.\nCommands wait by default; --detach returns acceptance. JSON/NDJSON use versioned envelopes.\nNo arguments enter the interactive shell only in a terminal."
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -52,14 +51,6 @@ pub enum Command {
     Account {
         #[command(subcommand)]
         command: Option<AccountCommand>,
-    },
-    /// Build, backtest and report using the existing operation pipeline.
-    #[command(
-        after_help = "Examples: research build grid; research backtest VERSION_ID --dataset DATASET_ID; research report BACKTEST_ID\nInputs must select unique fixed resources. Private journals retain every stage; --journal ID reconciles without resubmitting unknown writes."
-    )]
-    Research {
-        #[command(subcommand)]
-        command: Option<ResearchCommand>,
     },
     /// Configure or inspect local database settings without starting a service.
     Config {
@@ -101,7 +92,7 @@ pub enum StrategyCommand {
         )]
         target: Option<String>,
         #[command(flatten)]
-        execution: ExecutionOptions,
+        execution: StrategyExecution,
     },
     /// Pause a unique run, fixing its current generation before submission.
     #[command(
@@ -114,7 +105,7 @@ pub enum StrategyCommand {
         )]
         target: Option<String>,
         #[command(flatten)]
-        execution: ExecutionOptions,
+        execution: StrategyExecution,
     },
     /// Resume a unique run at its fixed current generation.
     #[command(
@@ -127,7 +118,7 @@ pub enum StrategyCommand {
         )]
         target: Option<String>,
         #[command(flatten)]
-        execution: ExecutionOptions,
+        execution: StrategyExecution,
     },
     /// Stop a unique run through its existing engine stop policy.
     Stop {
@@ -137,7 +128,7 @@ pub enum StrategyCommand {
         )]
         target: Option<String>,
         #[command(flatten)]
-        execution: ExecutionOptions,
+        execution: StrategyExecution,
     },
     /// Read one fixed run's bounded log; --follow observes without controlling it.
     Logs {
@@ -229,9 +220,7 @@ pub fn print_group_help(group: &str) -> Result<()> {
 
 fn missing_target(options: &ClientOptions, group: &str) -> Result<()> {
     if options.json || options.ndjson {
-        return Err(invalid(
-            "command requires a target or a recorded journal identity; use help for syntax",
-        ));
+        return Err(invalid("command requires a target; use help for syntax"));
     }
     print_group_help(group)
 }
@@ -242,12 +231,10 @@ fn strategy_target(command: &StrategyCommand) -> Option<&str> {
         StrategyCommand::Show { target } | StrategyCommand::Logs { target, .. } => {
             target.as_deref()
         }
-        StrategyCommand::Start { target, execution }
-        | StrategyCommand::Pause { target, execution }
-        | StrategyCommand::Resume { target, execution }
-        | StrategyCommand::Stop { target, execution } => {
-            target.as_deref().or(execution.journal.as_deref())
-        }
+        StrategyCommand::Start { target, .. }
+        | StrategyCommand::Pause { target, .. }
+        | StrategyCommand::Resume { target, .. }
+        | StrategyCommand::Stop { target, .. } => target.as_deref(),
     }
 }
 fn account_target(command: &AccountCommand) -> Option<&str> {
@@ -273,7 +260,6 @@ pub async fn dispatch(options: ClientOptions, command: Command) -> Result<()> {
         Command::Config { command: None } => missing_target(&options, "config"),
         Command::Strategy { command: None } => missing_target(&options, "strategy"),
         Command::Account { command: None } => missing_target(&options, "account"),
-        Command::Research { command: None } => missing_target(&options, "research"),
         Command::Strategy {
             command: Some(command),
         } => {
@@ -292,15 +278,6 @@ pub async fn dispatch(options: ClientOptions, command: Command) -> Result<()> {
             let client = super::daemon::connect_ready(&options).await?;
             account(&client, command).await
         }
-        Command::Research {
-            command: Some(command),
-        } => {
-            if !command.has_target() {
-                return missing_target(&options, "research");
-            }
-            let client = super::daemon::connect_ready(&options).await?;
-            frontend_research::run(&client, command).await
-        }
         Command::Check => {
             let client = super::daemon::connect_ready(&options).await?;
             let session = client.get("/api/v2/session", &[]).await?;
@@ -310,24 +287,6 @@ pub async fn dispatch(options: ClientOptions, command: Command) -> Result<()> {
 }
 
 async fn strategy(client: &Client, command: StrategyCommand) -> Result<()> {
-    let replay = match &command {
-        StrategyCommand::Start { target, execution } => {
-            Some(("start", target.as_deref(), execution))
-        }
-        StrategyCommand::Pause { target, execution } => {
-            Some(("pause", target.as_deref(), execution))
-        }
-        StrategyCommand::Resume { target, execution } => {
-            Some(("resume", target.as_deref(), execution))
-        }
-        StrategyCommand::Stop { target, execution } => Some(("stop", target.as_deref(), execution)),
-        _ => None,
-    };
-    if let Some((verb, target, execution)) = replay
-        && execution.journal.is_some()
-    {
-        return frontend_research::resume_control(client, verb, target, execution).await;
-    }
     match command {
         StrategyCommand::Ls { offset, limit } => {
             let offset = offset.to_string();
@@ -397,7 +356,7 @@ async fn strategy(client: &Client, command: StrategyCommand) -> Result<()> {
                     checkpoint_id: hash,
                 }
             };
-            frontend_research::control(client, &node, action, &execution).await
+            submit_control(client, &node, action, &execution).await
         }
         StrategyCommand::Pause {
             target: Some(target),
@@ -434,11 +393,45 @@ async fn strategy(client: &Client, command: StrategyCommand) -> Result<()> {
     }
 }
 
+/// Submission and bounded-observation flags shared by the strategy control verbs.
+/// They no longer carry a journal: research pipelines were removed, so a control
+/// write is submitted once under its own idempotency key and never replayed.
+#[derive(Debug, Clone, clap::Args)]
+pub struct StrategyExecution {
+    /// Return after acceptance instead of waiting for the outcome.
+    #[arg(long)]
+    pub detach: bool,
+    /// Bounded observation time per operation; interruption never cancels the remote work.
+    #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=86400))]
+    pub timeout: u64,
+}
+
+fn control_options(execution: &StrategyExecution) -> super::managed_operation::WriteOptions {
+    super::managed_operation::WriteOptions {
+        idempotency_key: None,
+        wait: !execution.detach,
+        timeout_seconds: execution.timeout,
+    }
+}
+
+/// Submit one fixed control action and print its receipt exactly once. The remote
+/// write is never retried locally; observation is passive and interruptible.
+async fn submit_control(
+    client: &Client,
+    node: &str,
+    action: Action,
+    execution: &StrategyExecution,
+) -> Result<()> {
+    let value =
+        super::managed_operation::submit(client, node, action, control_options(execution)).await?;
+    client.print_kind("operation", &value)
+}
+
 async fn control_run(
     client: &Client,
     target: &str,
     kind: &str,
-    execution: &ExecutionOptions,
+    execution: &StrategyExecution,
 ) -> Result<()> {
     let value = targets::resolve(client, target, &["run"]).await?;
     let run_id = text(&value, "id")?.to_owned();
@@ -448,7 +441,7 @@ async fn control_run(
         "resume" => Action::Resume { run_id, generation },
         _ => Action::Stop { run_id, generation },
     };
-    frontend_research::control(client, text(&value, "node_id")?, action, execution).await
+    submit_control(client, text(&value, "node_id")?, action, execution).await
 }
 
 async fn account(client: &Client, command: AccountCommand) -> Result<()> {

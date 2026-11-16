@@ -56,7 +56,7 @@ M2 已由宿主冷路径将公开帧保存到统一事实归档，按原 schema/
 
 ## 3. SDK 声明
 
-`StrategySpec` 使用 `strategy_type`、`source_version`、`recovery_state_schema_version`。V13 原生回调的布局和指纹保持冻结，历史字段名只由兼容入口读取。编译桥接元数据协议为 2，策略文件格式为 2，宿主 IPC 协议为 2，业务观测包络协议为 2；这些版本各自独立。
+`StrategySpec` 使用 `strategy_type`、`source_version`、`recovery_state_schema_version`。当前生产的原生回调为 ABI V14：V13 前缀（392B）与 V14 对象尾部（合计 440B）在一个 major 内冻结，payload 只允许在同一 major 内末尾追加并由 `OBJECT_SCHEMA_HASH` 双向校验；历史 V13 字段名只由兼容入口与负例测试读取。编译桥接元数据协议为 2，策略文件格式为 2，宿主 IPC 协议为 2，业务观测包络协议为 2；这些版本各自独立。
 
 ```python
 from titan_strategy.observation import BusinessObservationSpec, ObservationField, Equals
@@ -139,4 +139,4 @@ flowchart LR
 
 报告继续使用冻结的 ResultBundle v1 文件契约，其中历史 `strategy_id`/`strategy_version` 表示源码类型和源码版本，由当前策略元数据显式适配；不据此推导管理器业务身份。
 
-旧策略没有观测声明时显示未声明，继续提供有证据的通用信息，不把原始恢复状态自动解释为新业务协议。旧 URL 保留到策略页面的兼容入口。旧 V13 原生 ABI 和旧签名文件的读取支持由独立兼容测试验证。
+旧策略没有观测声明时显示未声明，继续提供有证据的通用信息，不把原始恢复状态自动解释为新业务协议。旧 URL 保留到策略页面的兼容入口。V14 之后旧 ABI 的策略文件不再加载：宿主返回带原因码的错误并要求重新编译（`loader_type_migrated` 用于 `native-v13` 配置）。

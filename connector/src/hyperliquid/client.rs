@@ -83,16 +83,24 @@ impl HyperliquidClient {
         &self,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, HyperliquidError> {
-        let resp = self
+        let response = self
             .client
             .post(&self.info_url)
             .header("Accept", "application/json")
             .json(&body)
             .send()
-            .await?
-            .json()
             .await?;
-        Ok(resp)
+        // Check the status before decoding: a 429/5xx body is not the requested document, and
+        // decoding it first would hide the rate-limit signal behind a serde error.
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(HyperliquidError::HttpStatus {
+                status: status.as_u16(),
+                body: body.chars().take(200).collect(),
+            });
+        }
+        Ok(response.json().await?)
     }
 
     pub async fn get_meta(&self) -> Result<Meta, HyperliquidError> {

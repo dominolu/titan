@@ -1,4 +1,7 @@
 //! Local storage maintenance. No account connector, strategy execution or financial calculation.
+//! Cold remote-backend commands (S3 staging cleanup, PostgreSQL prepare/prune, route
+//! resume/activate, local object eviction, Parquet inspection) were removed: the CLI
+//! only initializes and inspects local storage, reads/exports facts and reproduces bundles.
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
@@ -44,11 +47,6 @@ impl FactSelection {
 }
 #[derive(Subcommand)]
 pub enum StorageCommand {
-    /// Clean unowned interrupted S3 staging files, preserving all content objects.
-    CleanStaging {
-        #[arg(long)]
-        storage_root: PathBuf,
-    },
     /// Initialize immutable host storage configuration; secret values are read only from env refs.
     Initialize {
         #[arg(long)]
@@ -70,55 +68,12 @@ pub enum StorageCommand {
         #[arg(long)]
         follow: bool,
     },
-    PrepareHistory {
-        #[arg(long)]
-        storage_root: PathBuf,
-        #[arg(long)]
-        database: PathBuf,
-        #[arg(long)]
-        target: String,
-    },
-    PrepareObjects {
-        #[arg(long)]
-        storage_root: PathBuf,
-        #[arg(long)]
-        target: String,
-    },
-    Resume {
-        #[arg(long)]
-        storage_root: PathBuf,
-        #[arg(long)]
-        plan: String,
-    },
-    Activate {
-        #[arg(long)]
-        storage_root: PathBuf,
-        #[arg(long)]
-        plan: String,
-    },
-    PruneHistory {
-        #[arg(long)]
-        storage_root: PathBuf,
-        #[arg(long)]
-        database: PathBuf,
-        #[arg(long)]
-        through_row: i64,
-    },
-    EvictLocalObjects {
-        #[arg(long)]
-        storage_root: PathBuf,
-    },
     /// Publish/register an already frozen manifest after storage failure; never runs business code.
     PublishManifest {
         #[arg(long)]
         storage_root: PathBuf,
         #[arg(long)]
         manifest: PathBuf,
-    },
-    /// Validate an exact archive schema and every envelope; return count and ordered digest.
-    InspectParquet {
-        #[arg(long)]
-        input: PathBuf,
     },
     /// Retry catalog registration from an existing immutable publication, including datasets.
     RegisterPublication {
@@ -173,9 +128,6 @@ pub fn run(command: StorageCommand) -> Result<()> {
         r.map_err(|e| anyhow::anyhow!(e.to_string()))
     }
     let value = match command {
-        StorageCommand::CleanStaging { storage_root } => {
-            serde_json::json!({"removed_sessions":map(cleanup_s3_staging(&storage_root))?})
-        }
         StorageCommand::Initialize {
             storage_root,
             profile,
@@ -228,50 +180,6 @@ pub fn run(command: StorageCommand) -> Result<()> {
             }
             latest
         }
-        StorageCommand::PrepareHistory {
-            storage_root,
-            database,
-            target,
-        } => {
-            let target = match target.as_str() {
-                "sqlite" => HistoryBackend::Sqlite,
-                "postgres" => HistoryBackend::Postgres,
-                _ => anyhow::bail!("unsupported history backend"),
-            };
-            serde_json::to_value(map(
-                map(StorageControl::open(&storage_root))?.prepare_history(&database, target)
-            )?)?
-        }
-        StorageCommand::PrepareObjects {
-            storage_root,
-            target,
-        } => {
-            let target = match target.as_str() {
-                "filesystem" => ObjectBackend::Filesystem,
-                "s3" => ObjectBackend::S3,
-                _ => anyhow::bail!("unsupported object backend"),
-            };
-            serde_json::to_value(map(
-                map(StorageControl::open(&storage_root))?.prepare_objects(target)
-            )?)?
-        }
-        StorageCommand::Resume { storage_root, plan } => {
-            serde_json::to_value(map(map(StorageControl::open(&storage_root))?.resume(&plan))?)?
-        }
-        StorageCommand::Activate { storage_root, plan } => serde_json::to_value(map(map(
-            StorageControl::open(&storage_root),
-        )?
-        .activate(&plan))?)?,
-        StorageCommand::PruneHistory {
-            storage_root,
-            database,
-            through_row,
-        } => serde_json::to_value(map(
-            map(StorageControl::open(&storage_root))?.prune_history(&database, through_row)
-        )?)?,
-        StorageCommand::EvictLocalObjects { storage_root } => {
-            serde_json::json!({"evicted_objects":map(map(StorageControl::open(&storage_root))?.evict_local_objects())?})
-        }
         StorageCommand::PublishManifest {
             storage_root,
             manifest,
@@ -290,18 +198,6 @@ pub fn run(command: StorageCommand) -> Result<()> {
                 .publish(objects.as_ref(), &catalog)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             serde_json::json!({"registered":true,"reference":reference})
-        }
-        StorageCommand::InspectParquet { input } => {
-            use sha2::{Digest, Sha256};
-            let mut hash = Sha256::new();
-            let count = columnar::scan_facts(&input, |fact| {
-                let bytes = serde_json::to_vec(&fact)?;
-                hash.update((bytes.len() as u64).to_be_bytes());
-                hash.update(bytes);
-                Ok(())
-            })
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            serde_json::json!({"valid":true,"schema":"titan_facts_v1","records":count.to_string(),"ordered_payload_sha256":format!("{:x}",hash.finalize())})
         }
         StorageCommand::RegisterPublication {
             storage_root,
@@ -365,7 +261,15 @@ pub fn run(command: StorageCommand) -> Result<()> {
                     bundle.join("manifest.pending.json")
                 }
             }))?;
-            let reference = commit_result_bundle(&bundle, &storage_root, &bytes)
+            // Registration is the archive boundary: the bundle must carry the host's ABI identity,
+            // otherwise it would be published in a form the same host cannot render.
+            let manifest_value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let host =
+                titan_strategy_runtime::hex_identity(&titan_strategy_runtime::ABI_FINGERPRINT);
+            if manifest_value["abi_fingerprint"].as_str() != Some(host.as_str()) {
+                anyhow::bail!("bundle_abi_mismatch");
+            }
+            let reference = commit_result_bundle(&bundle, &storage_root, &bytes, Some(&host))
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             serde_json::json!({"published":true,"reference":reference})
         }

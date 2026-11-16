@@ -86,8 +86,6 @@ pub struct StrategyCoreConfig {
     pub checkpoint_root: Option<PathBuf>,
     pub recovery_storage: Option<SqliteRecoveryConfig>,
     pub recovery_store: Option<Arc<dyn StrategyRecoveryStore>>,
-    pub require_strategy_signature: bool,
-    pub trusted_strategy_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 impl Default for StrategyCoreConfig {
@@ -95,7 +93,7 @@ impl Default for StrategyCoreConfig {
         Self {
             max_strategy_runtimes: 128,
             max_strategy_cache_entries: 64,
-            allowed_loader_types: [Arc::from("native-v13")].into_iter().collect(),
+            allowed_loader_types: [Arc::from("native")].into_iter().collect(),
             allowed_strategy_roots: Arc::from([]),
             allowed_event_types: BTreeSet::new(),
             allowed_worker_policies: vec![
@@ -113,10 +111,17 @@ impl Default for StrategyCoreConfig {
             checkpoint_root: None,
             recovery_storage: None,
             recovery_store: None,
-            require_strategy_signature: true,
-            trusted_strategy_keys: BTreeMap::new(),
         }
     }
+}
+
+/// Supplies the startup metadata snapshot used to build V14 object tables.
+///
+/// Implementations may read a verified offline snapshot file or fetch the venue's public metadata.
+/// Any failure is fatal for strategies that need an object table: the host never falls back to
+/// guessed units.
+pub trait MetadataSnapshotProvider: Send + Sync {
+    fn snapshot(&self) -> Result<Arc<titan_market_service::MetadataSnapshot>, String>;
 }
 
 #[derive(Clone)]
@@ -126,6 +131,11 @@ pub struct StrategyServiceDependencies {
     pub accounts: Arc<dyn AccountService>,
     pub execution_dispatcher: Option<ExecutionDispatcher>,
     pub execution_observer: Option<Arc<dyn ExecutionObserver>>,
+    /// Startup-fetched metadata snapshot. When present the service builds per-instance object
+    /// tables from it; absent means the instance runs without an object context.
+    pub metadata_snapshot: Option<Arc<titan_market_service::MetadataSnapshot>>,
+    /// Preferred over `metadata_snapshot`; failures refuse runtime creation.
+    pub metadata_provider: Option<Arc<dyn MetadataSnapshotProvider>>,
 }
 
 pub struct StrategyEntry {
@@ -391,8 +401,6 @@ impl StrategyServiceCore {
             &definition.strategy_file.loader_type,
             StrategyLoaderContext {
                 allowed_strategy_roots: self.config.allowed_strategy_roots.clone(),
-                require_signature: self.config.require_strategy_signature,
-                ed25519_keys: self.config.trusted_strategy_keys.clone(),
             },
         )?;
         let deadline = Instant::now() + definition.runtime.startup_timeout;
@@ -519,6 +527,7 @@ impl StrategyServiceCore {
             markets: resolved_markets.clone().into(),
             accounts: resolved_accounts.clone().into(),
             execution: direct_execution.into(),
+            accounts_service: Some(self.dependencies.accounts.clone()),
             state_snapshot_sink: self
                 .checkpoints
                 .as_ref()
@@ -528,9 +537,25 @@ impl StrategyServiceCore {
             metrics: Arc::new(NoopStrategyMetrics),
             resources: resources.handle(),
             activation: activation.clone(),
+            object_table: self.build_object_table(&definition)?,
         };
         let factory = self.runtimes.get(&manifest.runtime_type)?;
         let runtime = factory.create(&definition, compiled_strategy, context)?;
+        if !resolved_accounts.is_empty() {
+            let lease = self
+                .dependencies
+                .accounts
+                .claim_execution(
+                    &resolved_accounts
+                        .iter()
+                        .map(|a| a.account)
+                        .collect::<Vec<_>>(),
+                    (handle.runtime_strategy_no.0, handle.generation),
+                    resolved_accounts.len() > 1,
+                )
+                .map_err(|_| dependency_error("account_execution_owned"))?;
+            runtime.attach_execution_lease(lease)?;
+        }
         if let Some(execution_relay) = execution_relay {
             execution_relay.attach(&runtime);
         }
@@ -717,7 +742,7 @@ impl StrategyServiceCore {
                     binding.local_account_no,
                     binding.account,
                     titan_account_service::AssetId(asset.asset_id),
-                    crate::runtime_v13::client_order_id(handle, order.order_id),
+                    crate::native_runtime::client_order_id(handle, order.order_id),
                 ));
             }
         }
@@ -786,7 +811,7 @@ impl StrategyServiceCore {
                     order.order_id,
                     binding.account,
                     titan_account_service::AssetId(asset.asset_id),
-                    crate::runtime_v13::client_order_id(handle, order.order_id),
+                    crate::native_runtime::client_order_id(handle, order.order_id),
                 ));
             }
         }
@@ -984,9 +1009,9 @@ impl StrategyServiceCore {
                     updated_ts_ns: orders.captured_at,
                     account_sequence: order_version,
                     side: order.side,
-                    order_type: account_order_type_to_v13(order.order_type)?,
-                    time_in_force: account_tif_to_v13(order.time_in_force)?,
-                    status: account_order_status_to_v13(order.status)?,
+                    order_type: account_order_type_to_public(order.order_type)?,
+                    time_in_force: account_tif_to_public(order.time_in_force)?,
+                    status: account_order_status_to_public(order.status)?,
                     reduce_only: u8::from(order.reduce_only),
                     position_side: order.position_side,
                     ..TitanActiveOrderView::default()
@@ -998,7 +1023,7 @@ impl StrategyServiceCore {
             }
             initial_order_boundaries.push((binding.local_account_no, order_version));
         }
-        runtime.seed_public_state(StrategyPublicStateSeedV13 {
+        runtime.seed_public_state(StrategyPublicStateSeed {
             positions: initial_positions.into(),
             balances: initial_balances.into(),
             accounts: initial_accounts.into(),
@@ -1310,6 +1335,109 @@ impl StrategyServiceCore {
                 })
             })
             .collect()
+    }
+
+    /// Builds the instance's frozen object table from its bound definitions and the startup
+    /// metadata snapshot. Without a snapshot the instance runs with an empty table: V14 accessors
+    /// then return zero records instead of silently using unproven units.
+    fn build_object_table(
+        &self,
+        definition: &StrategyDefinition,
+    ) -> LocalResult<Option<crate::ObjectTable>> {
+        let snapshot = match self.dependencies.metadata_provider.as_ref() {
+            Some(provider) => Some(provider.snapshot().map_err(|reason| {
+                StrategyError::new(
+                    StrategyErrorKind::UnsupportedCapability,
+                    "object_table",
+                    "metadata_snapshot_unavailable",
+                    reason,
+                )
+            })?),
+            None => self.dependencies.metadata_snapshot.clone(),
+        };
+        let Some(metadata) = snapshot.as_deref() else {
+            return Ok(None);
+        };
+        let mut market_sources: Vec<titan_market_service::MarketSourceDefinition> = Vec::new();
+        for binding in definition.markets.iter() {
+            let handle = self
+                .dependencies
+                .markets
+                .resolve(&binding.source_key)
+                .map_err(|_| dependency_error("market_not_found"))?;
+            let market = self
+                .dependencies
+                .markets
+                .definition(handle)
+                .map_err(|error| {
+                    StrategyError::new(
+                        StrategyErrorKind::DependencyUnavailable,
+                        "object_table",
+                        "market_definition_missing",
+                        error.to_string(),
+                    )
+                })?;
+            if !market_sources
+                .iter()
+                .any(|item| item.source_key == market.source_key)
+            {
+                market_sources.push(market);
+            }
+        }
+        let mut accounts: Vec<titan_account_service::AccountDefinition> = Vec::new();
+        for binding in definition.accounts.iter() {
+            let handle = self
+                .dependencies
+                .accounts
+                .resolve(&binding.account_key)
+                .map_err(|_| dependency_error("account_not_found"))?;
+            let account = self
+                .dependencies
+                .accounts
+                .definition(handle)
+                .map_err(|error| {
+                    StrategyError::new(
+                        StrategyErrorKind::DependencyUnavailable,
+                        "object_table",
+                        "account_definition_missing",
+                        error.to_string(),
+                    )
+                })?;
+            if !accounts
+                .iter()
+                .any(|item| item.account_key == account.account_key)
+            {
+                accounts.push(account);
+            }
+        }
+        let fees = fee_inputs_from_bindings(&definition.accounts);
+        let input = crate::object_table_input(&crate::ObjectTableSources {
+            market_sources: &market_sources,
+            accounts: &accounts,
+            markets: &definition.markets,
+            account_bindings: &definition.accounts,
+            multi_binding: definition.runtime.multi_binding.as_ref(),
+            metadata: Some(metadata),
+            account_modes: &[],
+            fees: &fees,
+        })
+        .map_err(|error| {
+            StrategyError::new(
+                StrategyErrorKind::UnsupportedCapability,
+                "object_table",
+                error.code(),
+                error.detail().to_owned(),
+            )
+        })?;
+        let table = crate::ObjectTable::build(input).map_err(|error| {
+            StrategyError::new(
+                StrategyErrorKind::UnsupportedCapability,
+                "object_table",
+                error.code(),
+                error.detail().to_owned(),
+            )
+        })?;
+        Ok(Some(table))
     }
 
     fn ensure_ready(&self, entry: &StrategyEntry) -> LocalResult<()> {
@@ -1842,6 +1970,23 @@ pub(crate) fn validate_definition(
     if definition.strategy_file.expected_digest == [0; 32] {
         return Err(definition_error("unpinned_compiled_strategy_digest"));
     }
+    // One instance carries exactly one execution envelope; a two-leg instance may not fall
+    // back to the single-market cap, and its shape must be internally consistent.
+    validate_execution_binding(
+        &definition.runtime,
+        &definition.markets,
+        &definition.accounts,
+        None,
+    )
+    .map_err(definition_error)?;
+    if definition.strategy_file.loader_type.as_ref() == "native-v13" {
+        return Err(StrategyError::new(
+            StrategyErrorKind::UnsupportedCapability,
+            "definition",
+            "loader_type_migrated",
+            "loader_type native-v13 was retired by ABI V14; recompile the strategy and set loader_type = \"native\"",
+        ));
+    }
     if !config
         .allowed_loader_types
         .contains(&definition.strategy_file.loader_type)
@@ -1937,7 +2082,7 @@ pub(crate) fn validate_manifest(
             "manifest digest does not match the pinned definition",
         ));
     }
-    if manifest.runtime_abi.major != STRATEGY_ABI_V13 as u16 {
+    if manifest.runtime_abi.major != STRATEGY_ABI as u16 {
         return Err(StrategyError::new(
             StrategyErrorKind::AbiMismatch,
             "inspect",
@@ -1945,8 +2090,37 @@ pub(crate) fn validate_manifest(
             "strategy file requires an incompatible runtime ABI",
         ));
     }
+    if let Some(object_manifest) = &manifest.object_manifest {
+        object_manifest.validate_artifact().map_err(|error| {
+            StrategyError::new(
+                StrategyErrorKind::AbiMismatch,
+                "inspect",
+                error.code(),
+                error.detail().to_owned(),
+            )
+        })?;
+    }
+    if manifest
+        .capabilities
+        .contains(StrategyCapabilities::OBJECT_CONTEXT)
+        && manifest.object_manifest.is_none()
+    {
+        return Err(StrategyError::new(
+            StrategyErrorKind::AbiMismatch,
+            "inspect",
+            "object_context_without_requirements",
+            "object_context capability requires declared object requirements",
+        ));
+    }
     if manifest.subscriptions.is_empty() {
         return Err(definition_error("strategy_subscriptions_empty"));
+    }
+    if manifest
+        .capabilities
+        .contains(StrategyCapabilities::REQUIRES_PERIODIC_TIMER)
+        && definition.runtime.timer_interval.is_none()
+    {
+        return Err(definition_error("periodic_timer_required"));
     }
     if manifest.state_byte_len == 0 || manifest.state_byte_len > config.max_state_capacity {
         return Err(definition_error("strategy_recovery_state_capacity"));
@@ -1984,7 +2158,18 @@ pub(crate) fn validate_manifest(
         ));
     }
     // V13 parameters are normalized and baked into the signed compiled_strategy. Deployment-time
-    // definitions cannot override them or their schema.
+    // definitions cannot override them or their schema; an optional pin lets a deployment assert
+    // the stable parameter identity even when the (non-reproducible) artifact digest differs.
+    if let Some(expected) = definition.strategy_file.parameters_digest
+        && expected != manifest.parameters_digest
+    {
+        return Err(StrategyError::new(
+            StrategyErrorKind::DigestMismatch,
+            "inspect",
+            "parameters_digest_mismatch",
+            "compiled parameters do not match the deployment pin",
+        ));
+    }
     Ok(())
 }
 
@@ -2040,6 +2225,32 @@ fn reopen_old_if_running(entry: &StrategyEntry) {
     if entry.runtime.state().lifecycle == StrategyLifecycle::Running {
         entry.activation.open();
     }
+}
+
+/// Derives the V14 `fee` domain from the operator's account bindings.
+///
+/// Fees do not come from the market metadata snapshot: venues publish instrument units publicly,
+/// but account fee tiers require credentials, so the host cannot fetch them at startup. A bound
+/// account without a `fees` declaration therefore contributes *no* record; `table.fee()` stays
+/// `None` and the artifact's `requires_fee` gate refuses the instance instead of letting the
+/// strategy price against a fabricated zero.
+///
+/// `source_config` marks the rate as an operator declaration rather than an exchange private rate,
+/// and `observed_at_ns` stays zero because a declaration has no observation time.
+fn fee_inputs_from_bindings(bindings: &[StrategyAccountBinding]) -> Vec<crate::FeeObjectInput> {
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let declared = binding.fees?;
+            Some(crate::FeeObjectInput {
+                local_account_no: binding.local_account_no,
+                maker_fee_bps: Some(declared.maker_fee_bps),
+                taker_fee_bps: Some(declared.taker_fee_bps),
+                source_config: true,
+                observed_at_ns: 0,
+            })
+        })
+        .collect()
 }
 
 fn definition_error(code: &'static str) -> StrategyError {
@@ -2234,5 +2445,187 @@ mod host_subscription_tests {
         add_host_account_subscriptions(&mut subscriptions, &bindings);
         assert_eq!(subscriptions.len(), 7);
         assert_eq!(subscriptions[0].routing_keys.as_ref(), &[42]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Arc;
+    use titan_core_types::EventQos;
+
+    fn definition(parameters_digest: Option<[u8; 32]>) -> StrategyDefinition {
+        StrategyDefinition {
+            strategy_key: Arc::from("pinned"),
+            runtime_strategy_no: RuntimeStrategyNo(1),
+            strategy_file: StrategyFileRef {
+                loader_type: Arc::from("native"),
+                uri: Arc::from("file://pinned.titan"),
+                expected_digest: [1; 32],
+                parameters_digest,
+            },
+            markets: Arc::from([]),
+            accounts: Arc::from([]),
+            risk_scope: RiskScopeRef(Arc::from("test")),
+            runtime: StrategyRuntimeSpec::default(),
+            recovery: StrategyRecoveryPolicy::Fresh,
+            enabled: true,
+            run_config_revision: 1,
+        }
+    }
+
+    fn manifest(parameters_digest: [u8; 32]) -> CompiledStrategyMetadata {
+        CompiledStrategyMetadata {
+            runtime_type: Arc::from("native"),
+            source_version: semver::Version::new(1, 0, 0),
+            runtime_abi: titan_core_types::ApiVersion::new(14, 0),
+            parameter_schema: Arc::new(json!({})),
+            parameter_schema_version: 1,
+            parameters_digest,
+            recovery_state_schema_version: 1,
+            state_byte_len: 8,
+            callbacks: StrategyCallbackMask(1),
+            capabilities: StrategyCapabilities::READ_TICK,
+            subscriptions: Arc::from([StrategySubscriptionSpec {
+                event_type: Arc::from(titan_market_service::BBO_EVENT),
+                schema_version: 1,
+                routing_keys: Arc::from([]),
+                qos: EventQos::Latest,
+            }]),
+            object_manifest: None,
+            compiled_strategy_digest: [1; 32],
+        }
+    }
+
+    #[test]
+    fn declared_account_fees_reach_the_object_table_and_undeclared_ones_stay_absent() {
+        // Two bound accounts: only the first declares rates. The second must produce *no* fee
+        // record at all, because a fabricated zero would be indistinguishable from a real rate.
+        let bindings: Vec<StrategyAccountBinding> = vec![
+            StrategyAccountBinding {
+                local_account_no: 0,
+                account_key: Arc::from("maker"),
+                tradable_assets: Arc::from([]),
+                fees: Some(StrategyAccountFees {
+                    maker_fee_bps: -3,
+                    taker_fee_bps: 5,
+                }),
+            },
+            StrategyAccountBinding {
+                local_account_no: 1,
+                account_key: Arc::from("hedge"),
+                tradable_assets: Arc::from([]),
+                fees: None,
+            },
+        ];
+        let fees = fee_inputs_from_bindings(&bindings);
+        assert_eq!(fees.len(), 1, "only the declaring account contributes");
+        let maker = &fees[0];
+        assert_eq!(maker.local_account_no, 0);
+        assert_eq!(maker.maker_fee_bps, Some(-3));
+        assert_eq!(maker.taker_fee_bps, Some(5));
+        assert!(maker.source_config);
+        assert!(!fees.iter().any(|fee| fee.local_account_no == 1));
+    }
+
+    #[test]
+    fn a_binding_without_fees_declares_no_fee_records() {
+        let bindings = vec![StrategyAccountBinding {
+            local_account_no: 0,
+            account_key: Arc::from("maker"),
+            tradable_assets: Arc::from([]),
+            fees: None,
+        }];
+        assert!(fee_inputs_from_bindings(&bindings).is_empty());
+    }
+
+    #[test]
+    fn retired_loader_type_reports_the_migration() {
+        let config = StrategyCoreConfig::default();
+        assert!(config.allowed_loader_types.contains(&Arc::from("native")));
+        let mut definition = definition(None);
+        definition.strategy_file.loader_type = Arc::from("native-v13");
+        let error = validate_definition(&config, &definition)
+            .expect_err("the retired loader type is refused");
+        assert_eq!(error.reason_code.as_ref(), "loader_type_migrated");
+    }
+
+    #[test]
+    fn object_context_capability_requires_requirements() {
+        let config = StrategyCoreConfig::default();
+        let definition = definition(None);
+        let mut metadata = manifest([7; 32]);
+        metadata.capabilities = StrategyCapabilities(
+            StrategyCapabilities::READ_TICK.0 | StrategyCapabilities::OBJECT_CONTEXT.0,
+        );
+        let error = validate_manifest(&config, &definition, &metadata)
+            .expect_err("object access needs a declared requirement set");
+        assert_eq!(
+            error.reason_code.as_ref(),
+            "object_context_without_requirements"
+        );
+
+        metadata.object_manifest = Some(crate::ObjectManifest {
+            schema_major: 1,
+            schema_minor: 1,
+            schema_hash: Some([7; 32]),
+            identity_version: 1,
+            requires_fee: false,
+            requirements: vec![crate::ObjectRequirement {
+                domain: crate::OBJECT_DOMAIN_SYMBOL,
+                major: 1,
+                min_minor: 1,
+                min_payload_len: 152,
+                min_count: 1,
+                required_fields: 0xF0F,
+            }],
+        });
+        validate_manifest(&config, &definition, &metadata)
+            .expect("the V14 root admits object requirements");
+    }
+
+    #[test]
+    fn object_manifest_is_gated() {
+        let config = StrategyCoreConfig::default();
+        let definition = definition(None);
+        let requirement = crate::ObjectRequirement {
+            domain: crate::OBJECT_DOMAIN_SYMBOL,
+            major: 1,
+            min_minor: 1,
+            min_payload_len: 152,
+            min_count: 1,
+            required_fields: 0xF0F,
+        };
+        let mut metadata = manifest([7; 32]);
+        metadata.object_manifest = Some(crate::ObjectManifest {
+            schema_major: 1,
+            schema_minor: 1,
+            schema_hash: Some([7; 32]),
+            identity_version: 1,
+            requires_fee: false,
+            requirements: vec![requirement],
+        });
+        validate_manifest(&config, &definition, &metadata).expect("valid requirements load");
+
+        let mut invalid = requirement;
+        invalid.domain = 99;
+        metadata.object_manifest.as_mut().unwrap().requirements = vec![invalid];
+        let error = validate_manifest(&config, &definition, &metadata)
+            .expect_err("unknown domains never load");
+        assert_eq!(error.reason_code.as_ref(), "object_requirement_invalid");
+    }
+
+    #[test]
+    fn deployment_parameters_pin_is_enforced_but_optional() {
+        let config = StrategyCoreConfig::default();
+        assert!(validate_manifest(&config, &definition(Some([7; 32])), &manifest([7; 32])).is_ok());
+        // Legacy deployment without a parameter pin keeps working: the compiled strategy digest
+        // and native digest already cover the bytes that exist.
+        assert!(validate_manifest(&config, &definition(None), &manifest([7; 32])).is_ok());
+        let error = validate_manifest(&config, &definition(Some([8; 32])), &manifest([7; 32]))
+            .expect_err("a mismatched parameter pin must refuse activation");
+        assert_eq!(error.kind, StrategyErrorKind::DigestMismatch);
+        assert_eq!(error.reason_code.as_ref(), "parameters_digest_mismatch");
     }
 }

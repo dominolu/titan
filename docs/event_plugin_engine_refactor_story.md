@@ -142,5 +142,5 @@ Titan 因此获得了一条更适合长期演进的实盘主链：插件可以�
 
 - [Titan 项目概览](../README.md)
 - [EventEngine 实现说明](../crates/titan-event-engine/README.md)
-- [PluginEngine 实现说明](../crates/titan-plugin-engine/README.md)
+- PluginEngine 实现说明（该 crate 已随重构移除，不再有文档）
 - [Core Runtime 交互契约](core_runtime_contract.md)

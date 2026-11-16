@@ -1,7 +1,6 @@
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::{
-    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -68,6 +67,11 @@ enum Commands {
         database: PathBuf,
         #[command(subcommand)]
         command: recovery_cli::RecoveryCommand,
+    },
+    /// Validate configured instrument units without starting a service or touching an exchange.
+    Instruments {
+        #[command(subcommand)]
+        command: InstrumentsCommands,
     },
     /// Serve or access the management application and authenticated execution node.
     Console {
@@ -201,10 +205,6 @@ enum StrategyCommands {
     /// Verify an immutable release without Python or compilation.
     VerifyRelease {
         release: PathBuf,
-        #[arg(long = "trusted-key")]
-        trusted_keys: Vec<String>,
-        #[arg(long)]
-        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
@@ -213,43 +213,27 @@ enum StrategyCommands {
         release: PathBuf,
         #[arg(long)]
         directory: PathBuf,
-        #[arg(long = "trusted-key")]
-        trusted_keys: Vec<String>,
-        #[arg(long)]
-        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
-    /// List compiled ABI V13 compiled_strategies without importing strategy Python.
+    /// List compiled compiled strategies without importing strategy Python.
     Ls {
         #[arg(long)]
         directory: Option<PathBuf>,
         #[arg(long)]
         workspace: Option<PathBuf>,
-        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
-        trusted_keys: Vec<String>,
-        #[arg(long)]
-        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Show one compiled ABI V13 compiled_strategy manifest.
+    /// Show one compiled compiled strategy manifest.
     Show {
         compiled_strategy: PathBuf,
-        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
-        trusted_keys: Vec<String>,
-        #[arg(long)]
-        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Validate one compiled ABI V13 compiled_strategy, including native digest and signature policy.
+    /// Validate one compiled compiled strategy, including native digest and target checks.
     Validate {
         compiled_strategy: PathBuf,
-        #[arg(long = "trusted-key", value_name = "KEY_ID=HEX")]
-        trusted_keys: Vec<String>,
-        #[arg(long)]
-        require_signature: bool,
         #[arg(long)]
         json: bool,
     },
@@ -257,10 +241,38 @@ enum StrategyCommands {
     Compile(strategy_workspace::CompileArgs),
 }
 
+#[derive(Subcommand)]
+enum InstrumentsCommands {
+    /// Verify tick/lot/multiplier/quote units and derived hedge ratios across all definitions.
+    Verify {
+        #[arg(short = 'c', long = "config", value_name = "RUNTIME.toml")]
+        config: PathBuf,
+        /// Authoritative metadata snapshot to compare the configuration against.
+        #[arg(long, value_name = "SNAPSHOT.json")]
+        metadata_snapshot: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Recompute or refresh the digest of an offline metadata snapshot.
+    SnapshotDigest {
+        #[arg(value_name = "SNAPSHOT.json")]
+        snapshot: PathBuf,
+        /// Rewrite the snapshot with its recomputed digest.
+        #[arg(long)]
+        update: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 impl Commands {
     fn json_requested(&self) -> bool {
         match self {
             Self::Recovery { .. } | Self::Storage { .. } => true,
+            Self::Instruments { command } => match command {
+                InstrumentsCommands::Verify { json, .. }
+                | InstrumentsCommands::SnapshotDigest { json, .. } => *json,
+            },
             Self::CoreRun { json, .. }
             | Self::Run { json, .. }
             | Self::Validate { json, .. }
@@ -383,104 +395,12 @@ struct StrategyRunSpec {
     compiled_strategy_digest: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunConfig {
-    schema_version: u32,
-    #[serde(default = "default_history_capacity")]
-    history_capacity: usize,
-    #[serde(default)]
-    backtest: Option<BacktestConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BacktestConfig {
-    data: PathBuf,
-    #[serde(default = "default_command_capacity")]
-    command_capacity: usize,
-    #[serde(default)]
-    allow_unsigned_strategy: bool,
-    #[serde(default)]
-    trusted_ed25519_keys: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct V13Trace {
-    schema_version: u32,
-    initial: V13TraceState,
-    events: Vec<V13TraceEvent>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct V13TraceState {
-    now_ns: i64,
-    #[serde(default)]
-    markets: Vec<titan_strategy_runtime::TitanMarketView>,
-    #[serde(default)]
-    positions: Vec<titan_strategy_runtime::TitanPositionView>,
-    #[serde(default)]
-    balances: Vec<titan_strategy_runtime::TitanBalanceView>,
-    #[serde(default)]
-    accounts: Vec<titan_strategy_runtime::TitanAccountView>,
-    #[serde(default)]
-    active_orders: Vec<titan_strategy_runtime::TitanActiveOrderView>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum V13TraceEventKind {
-    Tick,
-    Depth,
-    Fill,
-    Order,
-    Cancel,
-    Position,
-    Balance,
-    AccountState,
-    Timer,
-    Stop,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct V13TraceEvent {
-    kind: V13TraceEventKind,
-    now_ns: i64,
-    #[serde(default)]
-    state: Option<V13TraceState>,
-    #[serde(default)]
-    ticks: Vec<titan_strategy_runtime::TitanTickView>,
-    #[serde(default)]
-    depth: Vec<titan_strategy_runtime::TitanDepthView>,
-    #[serde(default)]
-    depth_batch: Option<titan_strategy_runtime::DepthBatchInfoV1>,
-    #[serde(default)]
-    fills: Vec<titan_strategy_runtime::TitanFillView>,
-    #[serde(default)]
-    orders: Vec<titan_strategy_runtime::TitanOrderEventView>,
-    #[serde(default)]
-    cancels: Vec<titan_strategy_runtime::TitanCancelEventView>,
-    #[serde(default)]
-    positions: Vec<titan_strategy_runtime::TitanPositionEventView>,
-    #[serde(default)]
-    balances: Vec<titan_strategy_runtime::TitanBalanceEventView>,
-    #[serde(default)]
-    account_states: Vec<titan_strategy_runtime::TitanAccountStateEventView>,
-    #[serde(default)]
-    timer: Option<titan_strategy_runtime::TitanTimerView>,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum BackendSpec {
     Backtest {
         data: PathBuf,
         command_capacity: usize,
-        allow_unsigned_strategy: bool,
-        trusted_ed25519_keys: BTreeMap<String, String>,
     },
     CoreLive {
         strategy_key: String,
@@ -517,11 +437,6 @@ enum CliError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("invalid TOML in {path}: {source}")]
-    Toml {
-        path: PathBuf,
-        source: toml::de::Error,
-    },
     #[error("unsupported RunSpec schema_version {0}; expected {RUN_SPEC_VERSION}")]
     Schema(u32),
     #[error("history_capacity must be positive")]
@@ -532,7 +447,7 @@ enum CliError {
     WorkerFailed(String),
     #[error("report generation failed: {0}")]
     ReportFailed(String),
-    #[error("ABI V13 strategy compilation failed: {0}")]
+    #[error("Strategy compilation failed: {0}")]
     StaticCompile(String),
     #[error("invalid configuration: {0}")]
     Engine(String),
@@ -554,7 +469,6 @@ impl CliError {
             Self::Schema(_) => "INVALID_SCHEMA",
             Self::HistoryCapacity => "INVALID_HISTORY_CAPACITY",
             Self::Json { .. } => "INVALID_JSON",
-            Self::Toml { .. } => "INVALID_TOML",
             Self::Engine(_) => "INVALID_CONFIGURATION",
             Self::StaticCompile(_) => "STRATEGY_COMPILE_FAILED",
             Self::WorkerFailed(_) => "WORKER_FAILED",
@@ -571,11 +485,7 @@ impl CliError {
 
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Schema(_)
-            | Self::HistoryCapacity
-            | Self::Json { .. }
-            | Self::Toml { .. }
-            | Self::Engine(_) => 10,
+            Self::Schema(_) | Self::HistoryCapacity | Self::Json { .. } | Self::Engine(_) => 10,
             Self::StaticCompile(_) => 20,
             Self::WorkerFailed(_) => 31,
             Self::ReportFailed(_) => 32,
@@ -624,10 +534,6 @@ fn default_history_capacity() -> usize {
     1024
 }
 
-fn default_command_capacity() -> usize {
-    1_024
-}
-
 fn registry_path() -> PathBuf {
     std::env::var_os("TITAN_HOME")
         .map(PathBuf::from)
@@ -660,41 +566,24 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             strategy_workspace::build(&args, runtime.as_deref(), strategy_key.as_deref())?,
             args.source.json,
         ),
-        StrategyCommands::VerifyRelease {
-            release,
-            trusted_keys,
-            require_signature,
-            json,
-        } => {
-            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            print_strategy_value(strategy_workspace::verify_release(&release, trust)?, json)
+        StrategyCommands::VerifyRelease { release, json } => {
+            print_strategy_value(strategy_workspace::verify_release(&release)?, json)
         }
         StrategyCommands::Publish {
             release,
             directory,
-            trusted_keys,
-            require_signature,
             json,
-        } => {
-            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            print_strategy_value(
-                strategy_workspace::publish(&release, &directory, trust)?,
-                json,
-            )
-        }
+        } => print_strategy_value(strategy_workspace::publish(&release, &directory)?, json),
         StrategyCommands::Ls {
             directory,
             workspace,
-            trusted_keys,
-            require_signature,
             json,
         } => {
-            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
             let mut catalog = Vec::new();
             for source in
                 strategy_workspace::compiled_paths(directory.as_deref(), workspace.as_deref())?
             {
-                catalog.push(v13_manifest_json(&source, trust.clone())?);
+                catalog.push(v13_manifest_json(&source)?);
             }
             catalog.sort_by_key(|value| {
                 value["strategy_type"]
@@ -712,14 +601,13 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
                     .map_err(CliError::ResultJson)?
                 );
             } else {
-                println!("STRATEGY\tVERSION\tABI\tSIGNED\tARTIFACT");
+                println!("STRATEGY\tVERSION\tABI\tARTIFACT");
                 for item in catalog {
                     println!(
-                        "{}\t{}\t{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         item["strategy_type"].as_str().unwrap_or("-"),
                         item["source_version"].as_str().unwrap_or("-"),
                         item["abi_version"].as_u64().unwrap_or_default(),
-                        item["signed"].as_bool().unwrap_or(false),
                         item["compiled_strategy"].as_str().unwrap_or("-"),
                     );
                 }
@@ -728,12 +616,9 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
         }
         StrategyCommands::Show {
             compiled_strategy,
-            trusted_keys,
-            require_signature,
             json,
         } => {
-            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            let manifest = v13_manifest_json(&compiled_strategy, trust)?;
+            let manifest = v13_manifest_json(&compiled_strategy)?;
             if json {
                 println!(
                     "{}",
@@ -753,12 +638,9 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
         }
         StrategyCommands::Validate {
             compiled_strategy,
-            trusted_keys,
-            require_signature,
             json,
         } => {
-            let trust = cli_trust_policy(require_signature, &trusted_keys)?;
-            let manifest = v13_manifest_json(&compiled_strategy, trust)?;
+            let manifest = v13_manifest_json(&compiled_strategy)?;
             if json {
                 println!(
                     "{}",
@@ -781,19 +663,16 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     }
 }
 
-fn v13_manifest_json(
-    path: &Path,
-    trust: titan_strategy_runtime::V13TrustPolicy,
-) -> Result<serde_json::Value, CliError> {
+fn v13_manifest_json(path: &Path) -> Result<serde_json::Value, CliError> {
     let path = fs::canonicalize(path).map_err(|source| CliError::Read {
         path: path.into(),
         source,
     })?;
-    let manifest = inspect_compiled_strategy_with_policy(&path, trust)?;
+    let manifest = inspect_compiled_strategy(&path)?;
     Ok(serde_json::json!({
         "strategy_type": manifest.strategy_type,
         "source_version": manifest.source_version,
-        "abi_version": 13,
+        "abi_version": manifest.abi_version,
         "compiled_strategy_digest": hex_digest(&manifest.compiled_strategy_digest),
         "parameters_digest": hex_digest(&manifest.parameters_digest),
         "source_digest": manifest.source_digest.as_ref().map(hex_digest),
@@ -806,112 +685,31 @@ fn v13_manifest_json(
         "recovery_state_schema_version": manifest.state.version,
         "recovery_state_schema_hash": hex_digest(&manifest.state.hash),
         "business_observation_schema": manifest.business_observation.as_ref().map(|v| serde_json::json!({"schema":v.schema,"schema_hash":v.schema_hash})),
-        "signed": manifest.signature.is_some(),
-        "key_id": manifest.signature.as_ref().map(|value| value.key_id.as_ref()),
         "compiled_strategy": path,
     }))
 }
 
-fn inspect_compiled_strategy_with_policy(
+fn inspect_compiled_strategy(
     path: &Path,
-    trust: titan_strategy_runtime::V13TrustPolicy,
-) -> Result<titan_strategy_runtime::CompiledStrategyMetadataV13, CliError> {
-    use titan_strategy_runtime::NativeStrategyLoaderV13;
-    let loader =
-        NativeStrategyLoaderV13::new(std::env::temp_dir().join("titan-cli-v13-inspect"), trust);
+) -> Result<titan_strategy_runtime::ArtifactMetadata, CliError> {
+    use titan_strategy_runtime::NativeStrategyLoader;
+    let loader = NativeStrategyLoader::new(std::env::temp_dir().join("titan-cli-v13-inspect"));
     loader
         .inspect(path)
         .map_err(|error| CliError::Engine(error.to_string()))
 }
 
-fn cli_trust_policy(
-    require_signature: bool,
-    trusted_keys: &[String],
-) -> Result<titan_strategy_runtime::V13TrustPolicy, CliError> {
-    let mut ed25519_keys = BTreeMap::new();
-    for item in trusted_keys {
-        let (key_id, encoded) = item
-            .split_once('=')
-            .ok_or_else(|| CliError::Engine("--trusted-key must use KEY_ID=HEX format".into()))?;
-        if key_id.is_empty() {
-            return Err(CliError::Engine(
-                "--trusted-key key id cannot be empty".into(),
-            ));
-        }
-        let key = decode_ed25519_key(encoded).map_err(|message| {
-            CliError::Engine(format!("invalid trusted Ed25519 key {key_id}: {message}"))
-        })?;
-        if ed25519_keys.insert(Arc::from(key_id), key).is_some() {
-            return Err(CliError::Engine(format!(
-                "duplicate trusted Ed25519 key id {key_id}"
-            )));
-        }
-    }
-    if require_signature && ed25519_keys.is_empty() {
-        return Err(CliError::Engine(
-            "--require-signature requires at least one --trusted-key KEY_ID=HEX".into(),
-        ));
-    }
-    Ok(titan_strategy_runtime::V13TrustPolicy {
-        require_signature,
-        ed25519_keys,
-    })
-}
-
-fn backtest_trust_policy(
-    allow_unsigned_strategy: bool,
-    trusted_ed25519_keys: &BTreeMap<String, String>,
-) -> Result<titan_strategy_runtime::V13TrustPolicy, CliError> {
-    let ed25519_keys = trusted_ed25519_keys
-        .iter()
-        .map(|(key_id, encoded)| {
-            decode_ed25519_key(encoded)
-                .map(|key| (Arc::from(key_id.as_str()), key))
-                .map_err(|message| {
-                    CliError::Engine(format!(
-                        "invalid backtest trusted Ed25519 key {key_id}: {message}"
-                    ))
-                })
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    if !allow_unsigned_strategy && ed25519_keys.is_empty() {
-        return Err(CliError::Engine(
-            "backtest requires trusted_ed25519_keys unless allow_unsigned_strategy is explicitly enabled"
-                .into(),
-        ));
-    }
-    Ok(titan_strategy_runtime::V13TrustPolicy {
-        require_signature: !allow_unsigned_strategy,
-        ed25519_keys,
-    })
-}
-
-fn decode_ed25519_key(value: &str) -> Result<[u8; 32], &'static str> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.len() != 64 {
-        return Err("public key must contain 64 hexadecimal characters");
-    }
-    let mut output = [0_u8; 32];
-    for (index, byte) in output.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| "public key contains non-hexadecimal characters")?;
-    }
-    Ok(output)
-}
-
 fn hex_digest(value: &[u8; 32]) -> String {
-    value.iter().map(|byte| format!("{byte:02x}")).collect()
+    titan_strategy_runtime::hex_identity(value)
 }
 
-struct CompileV13Request<'a> {
+struct CompileRequest<'a> {
     strategy: &'a Path,
     parameters: &'a str,
     target: Option<&'a str>,
     cpu_baseline: &'a str,
     strategy_format: &'a str,
     output: Option<&'a Path>,
-    signing_key: Option<&'a Path>,
-    key_id: Option<&'a str>,
     workspace: Option<&'a strategy_workspace::Workspace>,
     update_lock: bool,
     require_tests: bool,
@@ -979,18 +777,6 @@ fn print_strategy_value(mut value: serde_json::Value, json: bool) -> Result<(), 
     Ok(())
 }
 
-fn resolve_path(base: &Path, path: &Path) -> Result<PathBuf, CliError> {
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
-    };
-    fs::canonicalize(&candidate).map_err(|source| CliError::Read {
-        path: candidate,
-        source,
-    })
-}
-
 fn resolve_run_spec(
     strategy_target: &str,
     environment: Environment,
@@ -1000,74 +786,14 @@ fn resolve_run_spec(
     if environment == Environment::Live {
         return resolve_core_live_run_spec(strategy_target, event_mode, config_path);
     }
-    if event_mode != EventMode::Tick {
-        return Err(CliError::Engine(format!(
-            "ABI V13 backtest currently supports tick event traces only; {} is not published",
-            event_mode.as_str(),
-        )));
-    }
-    let config_path = fs::canonicalize(config_path).map_err(|source| CliError::Read {
-        path: config_path.into(),
-        source,
-    })?;
-    let config_bytes = fs::read(&config_path).map_err(|source| CliError::Read {
-        path: config_path.clone(),
-        source,
-    })?;
-    let config_text = std::str::from_utf8(&config_bytes)
-        .map_err(|error| CliError::Engine(format!("run config is not UTF-8: {error}")))?;
-    let config = toml::from_str::<RunConfig>(config_text).map_err(|source| CliError::Toml {
-        path: config_path.clone(),
-        source,
-    })?;
-    if config.schema_version != RUN_SPEC_VERSION {
-        return Err(CliError::Schema(config.schema_version));
-    }
-    if config.history_capacity == 0 {
-        return Err(CliError::HistoryCapacity);
-    }
-    let base = config_path.parent().unwrap_or(Path::new("."));
-    let backend = config.backtest.ok_or_else(|| {
-        CliError::Engine("backtest environment requires a [backtest] section".into())
-    })?;
-    if backend.command_capacity == 0 {
-        return Err(CliError::Engine(
-            "backtest.command_capacity must be positive".into(),
-        ));
-    }
-    let compiled_strategy = fs::canonicalize(strategy_target).map_err(|source| CliError::Read {
-        path: PathBuf::from(strategy_target),
-        source,
-    })?;
-    let trust = backtest_trust_policy(
-        backend.allow_unsigned_strategy,
-        &backend.trusted_ed25519_keys,
-    )?;
-    let manifest = inspect_compiled_strategy_with_policy(&compiled_strategy, trust)?;
-    let data = resolve_path(base, &backend.data)?;
-
-    let spec = RunSpec {
-        schema_version: RUN_SPEC_VERSION,
-        environment,
-        event_mode,
-        config_path,
-        config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
-        strategy: StrategyRunSpec {
-            strategy_key: manifest.strategy_type.to_string(),
-            source_version: manifest.source_version.to_string(),
-            compiled_strategy,
-            compiled_strategy_digest: hex_digest(&manifest.compiled_strategy_digest),
-        },
-        backend: BackendSpec::Backtest {
-            data,
-            command_capacity: backend.command_capacity,
-            allow_unsigned_strategy: backend.allow_unsigned_strategy,
-            trusted_ed25519_keys: backend.trusted_ed25519_keys,
-        },
-        history_capacity: config.history_capacity,
-    };
-    validate_spec(&spec)?;
-    Ok(spec)
+    // The trace replay backend was removed with its fixtures. Reject here, before resolving the
+    // config, inspecting the artifact or spawning a worker.
+    let _ = event_mode;
+    Err(CliError::Engine(
+        "titan run -e backtest was removed; run the historical backtest instead: \
+         cargo run -p hftbacktest --example grid_history"
+            .into(),
+    ))
 }
 
 fn resolve_core_live_run_spec(
@@ -1093,7 +819,6 @@ fn resolve_core_live_run_spec(
         &config_bytes,
         Some((strategy_name, event_mode)),
     )?;
-    let trust = adapted.v13_trust_policy();
     let definition = adapted
         .strategies
         .first()
@@ -1108,7 +833,7 @@ fn resolve_core_live_run_spec(
             path: PathBuf::from(compiled_strategy),
             source,
         })?;
-    let manifest = inspect_compiled_strategy_with_policy(&compiled_strategy, trust)?;
+    let manifest = inspect_compiled_strategy(&compiled_strategy)?;
     let spec = RunSpec {
         schema_version: RUN_SPEC_VERSION,
         environment: Environment::Live,
@@ -1179,8 +904,6 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
         BackendSpec::Backtest {
             data,
             command_capacity,
-            allow_unsigned_strategy,
-            trusted_ed25519_keys,
         } => {
             if spec.environment != Environment::Backtest {
                 return Err(CliError::Engine(
@@ -1195,7 +918,6 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
             if *command_capacity == 0 || !data.is_file() {
                 return Err(CliError::Engine("invalid V13 trace backtest input".into()));
             }
-            backtest_trust_policy(*allow_unsigned_strategy, trusted_ed25519_keys)?;
         }
         BackendSpec::CoreLive { strategy_key } => {
             if spec.environment != Environment::Live {
@@ -1402,268 +1124,26 @@ fn worker(
     v13_backtest_worker(&registry, run_id, token, &spec, stop)
 }
 
+/// The deterministic trace replay backend was removed.
+///
+/// It replayed a frozen, hand-authored event trace through the strategy and compared the emitted
+/// order intents. It produced no P&L and no matching, so it could not answer anything the real
+/// historical backtest (`hftbacktest/examples/grid_history.rs`) does not, while still needing a
+/// fixture per scenario and an ABI-schema version for the trace format. The adapter it used
+/// (`OfflineAdapter`) stays: the real historical backtest runs strategies through it.
 fn v13_backtest_worker(
-    registry: &Registry,
-    run_id: &str,
-    token: &str,
-    spec: &RunSpec,
-    stop: Arc<AtomicBool>,
+    _registry: &Registry,
+    _run_id: &str,
+    _token: &str,
+    _spec: &RunSpec,
+    _stop: Arc<AtomicBool>,
 ) -> Result<(), CliError> {
-    let record = registry
-        .get(run_id)?
-        .ok_or_else(|| CliError::RunNotFound(run_id.into()))?;
-    let directory = record
-        .result_path
-        .parent()
-        .ok_or_else(|| CliError::Engine("run output directory missing".into()))?;
-    let mut scope = titan_persistence::FactScope::account(
-        titan_persistence::FactEnvironment::Backtest,
-        "simulation",
-    );
-    scope.strategy_id = Some(spec.strategy.strategy_key.clone());
-    scope.run_id = Some(run_id.into());
-    scope.run_generation = Some("1".into());
-    let mut recorder = titan_persistence::RunRecorder::open(
-        directory,
-        scope,
-        run_id.into(),
-        serde_json::to_value(spec).map_err(CliError::ResultJson)?,
-    )
-    .map_err(|e| CliError::Engine(e.to_string()))?;
-    let executed = v13_backtest_engine(registry, run_id, token, spec, stop, &mut recorder);
-    let error = executed.as_ref().err().map(ToString::to_string);
-    let mut result=executed.unwrap_or_else(|_|serde_json::json!({"schema_version":1,"run_id":run_id,"strategy_id":spec.strategy.strategy_key,"strategy_version":spec.strategy.source_version,"status":"FAILED","error":error,"returns":[],"final_state_available":false}));
-    recorder
-        .finish(result["end_at_ns"].as_i64().unwrap_or(0), result.clone())
-        .map_err(|e| CliError::Engine(e.to_string()))?;
-    result["persistence"] = serde_json::json!({"status":"COMMITTED","audit":"full","history":"history.db","archive":"facts.parquet","schema_version":1});
-    write_result_bundle(
-        &record.result_path,
-        run_id,
-        spec,
-        &serde_json::to_vec_pretty(&result).map_err(CliError::ResultJson)?,
-    )?;
-    let status = result["status"].as_str().unwrap_or("FAILED");
-    if !registry.finish(
-        run_id,
-        token,
-        status,
-        if error.is_some() { 1 } else { 0 },
-        error.as_deref(),
-    )? {
-        return Err(CliError::Engine(
-            "run ownership changed before result publication".into(),
-        ));
-    }
-    if let Some(error) = error {
-        return Err(CliError::Engine(error));
-    }
-    Ok(())
+    Err(CliError::Engine(
+        "trace replay was removed; run the historical backtest (hftbacktest grid_history) instead"
+            .into(),
+    ))
 }
 
-fn v13_backtest_engine(
-    registry: &Registry,
-    run_id: &str,
-    token: &str,
-    spec: &RunSpec,
-    stop: Arc<AtomicBool>,
-    recorder: &mut titan_persistence::RunRecorder,
-) -> Result<serde_json::Value, CliError> {
-    use titan_strategy_runtime::{NativeStrategyLoaderV13, OfflineV13Adapter, StagedCommandV13};
-    let BackendSpec::Backtest {
-        data,
-        command_capacity,
-        allow_unsigned_strategy,
-        trusted_ed25519_keys,
-    } = &spec.backend
-    else {
-        return Err(CliError::Engine(
-            "backtest worker received a live spec".into(),
-        ));
-    };
-    let trace_bytes = fs::read(data).map_err(|source| CliError::Read {
-        path: data.clone(),
-        source,
-    })?;
-    let trace =
-        serde_json::from_slice::<V13Trace>(&trace_bytes).map_err(|source| CliError::Json {
-            path: data.clone(),
-            source,
-        })?;
-    recorder.record("input_manifest",0,serde_json::json!({"trace_sha256":format!("{:x}",Sha256::digest(&trace_bytes)),"config_sha256":spec.config_sha256,"compiled_strategy_digest":spec.strategy.compiled_strategy_digest,"model":"frozen_v13_trace","execution_source":"simulated_trace_facts"})).map_err(|e|CliError::Engine(e.to_string()))?;
-    if trace.schema_version != 1 {
-        return Err(CliError::Engine(format!(
-            "unsupported V13 trace schema_version {}",
-            trace.schema_version
-        )));
-    }
-    let trust = backtest_trust_policy(*allow_unsigned_strategy, trusted_ed25519_keys)?;
-    let loader = NativeStrategyLoaderV13::new(
-        registry_path()
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("compiled_strategy-cache"),
-        trust,
-    );
-    let compiled_strategy = loader
-        .load(&spec.strategy.compiled_strategy)
-        .map_err(|error| CliError::Engine(error.to_string()))?;
-    if hex_digest(&compiled_strategy.manifest.compiled_strategy_digest)
-        != spec.strategy.compiled_strategy_digest
-    {
-        return Err(CliError::Engine(
-            "V13 compiled_strategy digest changed after run resolution".into(),
-        ));
-    }
-    let initial = trace.initial;
-    let mut adapter = OfflineV13Adapter::new(titan_strategy_runtime::OfflineV13Config {
-        compiled_strategy: Arc::new(compiled_strategy),
-        strategy_instance_id: 1,
-        generation: 1,
-        command_capacity: *command_capacity,
-        markets: initial.markets,
-        positions: initial.positions,
-        balances: initial.balances,
-        accounts: initial.accounts,
-        active_orders: initial.active_orders,
-    })
-    .map_err(|error| CliError::Engine(error.to_string()))?;
-    adapter
-        .start(initial.now_ns)
-        .map_err(|error| CliError::Engine(error.to_string()))?;
-    registry.transition(run_id, token, "READY")?;
-    registry.transition(run_id, token, "RUNNING")?;
-    let started = Instant::now();
-    let mut event_count = 0_u64;
-    let mut submit_count = 0_u64;
-    let mut cancel_count = 0_u64;
-    let mut last_now_ns = initial.now_ns;
-    for event in trace.events {
-        if stop.load(Ordering::Acquire) {
-            break;
-        }
-        recorder
-            .record(
-                match event.kind {
-                    V13TraceEventKind::Fill => "fill",
-                    V13TraceEventKind::Order => "order",
-                    V13TraceEventKind::Position => "position",
-                    V13TraceEventKind::Balance => "balance",
-                    _ => "trace_event",
-                },
-                event.now_ns,
-                serde_json::to_value(&event).map_err(CliError::ResultJson)?,
-            )
-            .map_err(|e| CliError::Engine(e.to_string()))?;
-        if let Some(update) = event.state {
-            adapter.update_public_state(
-                update.markets,
-                update.positions,
-                update.balances,
-                update.accounts,
-                update.active_orders,
-            );
-        }
-        last_now_ns = last_now_ns.max(event.now_ns);
-        let commands = match event.kind {
-            V13TraceEventKind::Tick => adapter.on_ticks(event.now_ns, &event.ticks),
-            V13TraceEventKind::Depth => match event.depth_batch {
-                Some(info) => adapter.on_depth_batch(event.now_ns, info, &event.depth),
-                None => adapter.on_depth(event.now_ns, &event.depth),
-            },
-            V13TraceEventKind::Fill => adapter.on_fills(event.now_ns, &event.fills),
-            V13TraceEventKind::Order => adapter.on_orders(event.now_ns, &event.orders),
-            V13TraceEventKind::Cancel => adapter.on_cancels(event.now_ns, &event.cancels),
-            V13TraceEventKind::Position => adapter.on_positions(event.now_ns, &event.positions),
-            V13TraceEventKind::Balance => adapter.on_balances(event.now_ns, &event.balances),
-            V13TraceEventKind::AccountState => {
-                adapter.on_account_states(event.now_ns, &event.account_states)
-            }
-            V13TraceEventKind::Timer => adapter.on_timer(
-                event.now_ns,
-                &event
-                    .timer
-                    .unwrap_or(titan_strategy_runtime::TitanTimerView {
-                        fired_ts_ns: event.now_ns,
-                        ..Default::default()
-                    }),
-            ),
-            V13TraceEventKind::Stop => adapter.stop(event.now_ns),
-        }
-        .map_err(|error| CliError::Engine(error.to_string()))?;
-        for command in commands {
-            recorder
-                .record("command", event.now_ns, staged_command_fact(&command))
-                .map_err(|e| CliError::Engine(e.to_string()))?;
-            match command {
-                StagedCommandV13::Submit { .. } => submit_count += 1,
-                StagedCommandV13::Cancel { .. } => cancel_count += 1,
-            }
-        }
-        event_count += 1;
-    }
-    let stop_commands = if adapter.is_stopped() {
-        Vec::new()
-    } else {
-        adapter
-            .stop(last_now_ns)
-            .map_err(|error| CliError::Engine(error.to_string()))?
-    };
-    for command in stop_commands {
-        recorder
-            .record("command", last_now_ns, staged_command_fact(&command))
-            .map_err(|e| CliError::Engine(e.to_string()))?;
-        match command {
-            StagedCommandV13::Submit { .. } => submit_count += 1,
-            StagedCommandV13::Cancel { .. } => cancel_count += 1,
-        }
-    }
-    if !adapter.is_stopped() {
-        return Err(CliError::Engine(
-            "trace ended before strategy stop completed; include a stop event followed by cancel, fill and position confirmations".into(),
-        ));
-    }
-    let state_sha256 = format!("{:x}", Sha256::digest(adapter.state_bytes()));
-    let status = if stop.load(Ordering::Acquire) {
-        "STOPPED"
-    } else {
-        "COMPLETED"
-    };
-    let result = serde_json::json!({
-        "schema_version": 1,
-        "run_id": run_id,
-        "strategy_id": spec.strategy.strategy_key,
-        "strategy_version": spec.strategy.source_version,
-        "compiled_strategy_digest": spec.strategy.compiled_strategy_digest,
-        "environment": spec.environment,
-        "event_mode": spec.event_mode,
-        "config_sha256": spec.config_sha256,
-        "trace_sha256": format!("{:x}", Sha256::digest(&trace_bytes)),
-        "state_sha256": state_sha256,
-        "returns": [],
-        "event_count": event_count,
-        "submit_count": submit_count,
-        "cancel_count": cancel_count,
-        "wall_time_ns": started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-        "end_at_ns": last_now_ns,
-        "status": status,
-    });
-    Ok(result)
-}
-
-fn staged_command_fact(command: &titan_strategy_runtime::StagedCommandV13) -> serde_json::Value {
-    match command {
-        titan_strategy_runtime::StagedCommandV13::Submit { order_id, request } => {
-            serde_json::json!({"kind":"submit","order_id":order_id.to_string(),"request":request})
-        }
-        titan_strategy_runtime::StagedCommandV13::Cancel {
-            command_id,
-            request,
-        } => {
-            serde_json::json!({"kind":"cancel","command_id":command_id.to_string(),"request":request})
-        }
-    }
-}
 fn core_live_worker(
     registry: &Registry,
     run_id: &str,
@@ -1686,10 +1166,7 @@ fn core_live_worker(
         &bytes,
         Some((strategy_key, spec.event_mode)),
     )?;
-    let manifest = inspect_compiled_strategy_with_policy(
-        &spec.strategy.compiled_strategy,
-        adapted.v13_trust_policy(),
-    )?;
+    let manifest = inspect_compiled_strategy(&spec.strategy.compiled_strategy)?;
     if hex_digest(&manifest.compiled_strategy_digest) != spec.strategy.compiled_strategy_digest
         || manifest.source_version.as_ref() != spec.strategy.source_version
     {
@@ -1794,7 +1271,7 @@ fn write_result_bundle(
         run_id: run_id.into(),
         strategy_id: spec.strategy.strategy_key.clone(),
         strategy_version: spec.strategy.source_version.clone(),
-        abi_fingerprint: hex_digest(&titan_strategy_runtime::V13_ABI_FINGERPRINT),
+        abi_fingerprint: hex_digest(&titan_strategy_runtime::ABI_FINGERPRINT),
         committed_at_ns: now_ns(),
         files,
     };
@@ -1805,6 +1282,7 @@ fn write_result_bundle(
             .unwrap_or(Path::new("."))
             .join("storage"),
         &serde_json::to_vec_pretty(&manifest).map_err(CliError::ResultJson)?,
+        Some(&manifest.abi_fingerprint),
     )
     .map_err(|e| CliError::Engine(e.to_string()))?;
     Ok(())
@@ -2095,6 +1573,22 @@ fn canonical_destination(path: &Path) -> Result<PathBuf, CliError> {
     Ok(destination)
 }
 
+/// Refuses a ResultBundle that was produced by a different strategy ABI.
+///
+/// The manifest has always carried `abi_fingerprint`; until now nothing compared it with the host,
+/// so a bundle from an older ABI could be replayed against a newer runtime while its numbers were
+/// derived from a different object schema. The comparison is the only reader of that field.
+fn verify_bundle_abi_fingerprint(recorded: &str) -> Result<(), CliError> {
+    let host = hex_digest(&titan_strategy_runtime::ABI_FINGERPRINT);
+    if recorded != host {
+        return Err(CliError::Engine(format!(
+            "bundle_abi_mismatch: ResultBundle was recorded against another strategy ABI (fingerprint {recorded}); this host runs ABI {} (fingerprint {host}); re-run the strategy, result bundles cannot be migrated",
+            titan_strategy_runtime::STRATEGY_ABI
+        )));
+    }
+    Ok(())
+}
+
 fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Result<(), CliError> {
     if !matches!(renderer, "native" | "quantstats") {
         return Err(CliError::Engine(format!(
@@ -2140,6 +1634,7 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
             "ResultBundle identity or result descriptor missing".into(),
         ));
     }
+    verify_bundle_abi_fingerprint(&manifest.abi_fingerprint)?;
     let bundle = run
         .result_path
         .parent()
@@ -2251,6 +1746,212 @@ fn report(run_id: &str, output: Option<&Path>, renderer: &str, json: bool) -> Re
     }
     println!("{result}");
     Ok(())
+}
+
+fn load_metadata_snapshot(path: &Path) -> Result<titan_market_service::MetadataSnapshot, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid metadata snapshot {}: {error}", path.display()))
+}
+
+fn instruments_command(command: InstrumentsCommands) -> ExitCode {
+    match command {
+        InstrumentsCommands::Verify {
+            config,
+            metadata_snapshot,
+            json,
+        } => {
+            let metadata = match metadata_snapshot
+                .as_deref()
+                .map(load_metadata_snapshot)
+                .transpose()
+            {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "schema_version": 1,
+                                "valid": false,
+                                "errors": [{"code": "configuration_invalid", "subject": config.display().to_string(), "detail": error}]
+                            })
+                        );
+                    } else {
+                        eprintln!("invalid metadata snapshot: {error}");
+                    }
+                    return ExitCode::FAILURE;
+                }
+            };
+            let report = match titan_cli::verify_instrument_units_toml(&config, metadata.as_ref()) {
+                Ok(report) => report,
+                Err(error) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "schema_version": 1,
+                                "valid": false,
+                                "errors": [{"code": "configuration_invalid", "subject": config.display().to_string(), "detail": error.to_string()}]
+                            })
+                        );
+                    } else {
+                        eprintln!("invalid configuration: {error}");
+                    }
+                    return ExitCode::FAILURE;
+                }
+            };
+            let metadata_digest = report.metadata_digest.map(|digest| {
+                digest
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            });
+            if json {
+                let instruments = report
+                    .instruments
+                    .iter()
+                    .map(|units| {
+                        serde_json::json!({
+                            "source_key": units.source_key,
+                            "native_symbol": units.native_symbol,
+                            "asset_id": units.asset_id,
+                            "price_tick": units.price_tick.to_string(),
+                            "quantity_lot": units.quantity_lot.to_string(),
+                            "contract_multiplier": units.contract_multiplier.to_string(),
+                            "base_delta_per_lot": units.base_delta_per_lot.to_string(),
+                            "min_qty_lots": units.min_qty_lots(),
+                            "min_notional_quote": units.min_notional_quote.map(|unit| unit.to_string()),
+                            "quote_currency": units.quote_currency,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let errors = report
+                    .errors
+                    .iter()
+                    .map(|error| {
+                        serde_json::json!({
+                            "code": error.code(),
+                            "subject": error.subject(),
+                            "detail": error.detail(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "valid": report.is_ok(),
+                        "metadata_verified": metadata.is_some(),
+                        "metadata_digest": metadata_digest,
+                        "instruments": instruments,
+                        "errors": errors,
+                    })
+                );
+            } else {
+                for units in report.instruments.iter() {
+                    println!(
+                        "{}:{} asset {} tick {} lot {} multiplier {} base_delta {} min_lots {:?} quote {:?}",
+                        units.source_key,
+                        units.native_symbol,
+                        units.asset_id,
+                        units.price_tick,
+                        units.quantity_lot,
+                        units.contract_multiplier,
+                        units.base_delta_per_lot,
+                        units.min_qty_lots(),
+                        units.quote_currency,
+                    );
+                }
+                for error in report.errors.iter() {
+                    eprintln!("{} [{}] {}", error.code(), error.subject(), error.detail());
+                }
+                if report.instruments.is_empty() && report.is_ok() {
+                    println!(
+                        "no enabled instrument bindings were validated; enable the market sources/accounts to check units"
+                    );
+                }
+                match metadata_digest.as_deref() {
+                    Some(digest) => println!("metadata snapshot digest {digest}"),
+                    None => println!(
+                        "metadata not verified: pass --metadata-snapshot to prove units against venue metadata"
+                    ),
+                }
+                println!(
+                    "instrument unit validation {}: {} instrument(s), {} error(s)",
+                    if report.is_ok() { "passed" } else { "failed" },
+                    report.instruments.len(),
+                    report.errors.len()
+                );
+            }
+            if report.is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        InstrumentsCommands::SnapshotDigest {
+            snapshot,
+            update,
+            json,
+        } => {
+            let mut value = match load_metadata_snapshot(&snapshot) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let stored = value.digest;
+            let computed = value.compute_digest();
+            value.digest = computed;
+            if update {
+                match serde_json::to_vec_pretty(&value)
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| {
+                        fs::write(&snapshot, bytes).map_err(|error| error.to_string())
+                    }) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("cannot rewrite {}: {error}", snapshot.display());
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            let hex = |bytes: &[u8; 32]| {
+                bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            };
+            let matches = stored == computed;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "snapshot": snapshot.display().to_string(),
+                        "stored_digest": hex(&stored),
+                        "computed_digest": hex(&computed),
+                        "matches": matches,
+                        "updated": update,
+                    })
+                );
+            } else {
+                println!("stored   {}", hex(&stored));
+                println!("computed {}", hex(&computed));
+                if !matches && !update {
+                    eprintln!("digest mismatch; re-run with --update to refresh the snapshot");
+                }
+            }
+            if matches || update {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
 }
 
 fn run_configured_core(config: &Path, json: bool) -> Result<(), CliError> {
@@ -2483,6 +2184,7 @@ fn main() -> ExitCode {
                 }
             };
         }
+        Commands::Instruments { command } => return instruments_command(command),
         Commands::CoreRun { config, json } => run_configured_core(&config, json),
         Commands::Run {
             strategy,
@@ -2598,11 +2300,11 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
-mod cli_v13_tests {
+mod cli_tests {
     use super::*;
 
     #[test]
-    fn parses_documented_v13_compile_command() {
+    fn parses_documented_compile_command() {
         let cli = Cli::try_parse_from([
             "titan",
             "strategy",
@@ -2636,16 +2338,5 @@ mod cli_v13_tests {
         assert_eq!(source.strategy, Some(PathBuf::from("strategy.py")));
         assert_eq!(strategy_format.as_deref(), Some("bundle"));
         assert_eq!(output, Some(PathBuf::from("pair.titan")));
-    }
-
-    #[test]
-    fn strategy_validation_trust_keys_are_explicit_and_strict() {
-        assert!(cli_trust_policy(true, &[]).is_err());
-        assert!(cli_trust_policy(false, &["missing-separator".into()]).is_err());
-
-        let policy = cli_trust_policy(true, &[format!("production-2026-09={}", "01".repeat(32))])
-            .expect("valid key must build a signature-required trust policy");
-        assert!(policy.require_signature);
-        assert_eq!(policy.ed25519_keys["production-2026-09"], [1_u8; 32]);
     }
 }

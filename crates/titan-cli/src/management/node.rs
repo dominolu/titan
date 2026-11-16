@@ -472,7 +472,7 @@ pub(crate) fn resource(
         digest: String::new(),
         body,
     });
-    resource.digest = digest(&titan_strategy_runtime::compiler_json_v13(&resource.body));
+    resource.digest = digest(&titan_strategy_runtime::compiler_json(&resource.body));
     resource
 }
 async fn accept(
@@ -972,12 +972,6 @@ async fn execute(
                 .args(["--strategy-format", "bundle", "--output"])
                 .arg(dir.join("strategy.titan"))
                 .arg("--json");
-            if let (Some(key), Some(key_id)) = (&config.signing_key, &config.signing_key_id) {
-                cmd.arg("--signing-key")
-                    .arg(key)
-                    .arg("--key-id")
-                    .arg(key_id);
-            }
             if let Some(workspace) = source_workspace(&template.source) {
                 cmd.arg("--workspace").arg(workspace);
             }

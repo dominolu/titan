@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-const GROUPS: &[&str] = &["strategy", "account", "research", "config"];
+const GROUPS: &[&str] = &["strategy", "account", "config"];
 const BUILTINS: &[&str] = &["help", "use", "back", "history", "exit"];
 const MAX_LINE: usize = 4096;
 const MAX_HISTORY: usize = 100;
@@ -60,7 +60,7 @@ fn print_help(group: Option<&str>, path: &[String]) -> Result<()> {
     writeln!(io::stdout())?;
     writeln!(
         io::stdout(),
-        "Shell: strategy/account/research/config enter a group; use selects a profile at root or target in a group. help, Tab, Up/Down, history, back, exit. Ctrl-C clears the line or ends local observation; Ctrl-D exits an empty prompt. Exiting never stops background services or strategies."
+        "Shell: strategy/account/config enter a group; use selects a profile at root or target in a group. help, Tab, Up/Down, history, back, exit. Ctrl-C clears the line or ends local observation; Ctrl-D exits an empty prompt. Exiting never stops background services or strategies."
     )?;
     Ok(())
 }
@@ -162,7 +162,6 @@ fn history_safe(line: &str) -> bool {
             tokens[0].as_str(),
             "strategy"
                 | "account"
-                | "research"
                 | "config"
                 | "help"
                 | "use"
@@ -211,13 +210,10 @@ fn history_safe(line: &str) -> bool {
     {
         return false;
     }
-    // Configuration and research arguments may contain connection data or arbitrary source parameters.
-    !tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "config" | "database" | "research" | "build" | "backtest" | "report"
-        )
-    })
+    // Configuration arguments may contain connection data.
+    !tokens
+        .iter()
+        .any(|token| matches!(token.as_str(), "config" | "database"))
 }
 
 struct ContextState {

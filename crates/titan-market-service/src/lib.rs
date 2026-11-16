@@ -6,6 +6,7 @@
 mod abi;
 mod core;
 mod error;
+mod metadata;
 mod model;
 mod registry;
 mod service;
@@ -13,6 +14,7 @@ mod service;
 pub use abi::*;
 pub use core::*;
 pub use error::*;
+pub use metadata::*;
 pub use model::*;
 pub use registry::*;
 pub use service::*;

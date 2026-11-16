@@ -2,6 +2,8 @@
 
 适用范围：M2–M3 的 SQLite 历史、Parquet、本地/S3 内容对象、PostgreSQL 投影及结果目录。恢复点维护继续使用[恢复存储手册](recovery_storage_operations.md)。所有命令在持有相应目录权限的节点运维环境执行，不加载交易连接器，不运行策略。
 
+> **外部后端已下线（2026-11-16）**：PostgreSQL 投影与 S3 对象存储已按“聚焦回测与实盘”的决策移除，对应子命令（`prepare-history`/`prepare-objects`/`resume`/`activate`/`prune-history`/`evict-local-objects`/`clean-staging`/`inspect-parquet`）不再存在。本手册中涉及它们的内容仅作**历史参考**；当前可用的 `titan storage` 子命令见 [CLI 文档](titan_cli.md) 的“任务管理”一节。
+
 ## 1. 目录和配置
 
 | 用途 | 实际位置及规则 |

@@ -109,10 +109,19 @@ pub fn commit_result_bundle(
     directory: &Path,
     storage_root: &Path,
     manifest_bytes: &[u8],
+    expected_abi_fingerprint: Option<&str>,
 ) -> Result<ObjectRef> {
     let manifest: Value = serde_json::from_slice(manifest_bytes)?;
     if manifest["schema_version"] != 1 {
         return Err(failure("bundle_schema_unsupported"));
+    }
+    // A bundle's numbers were derived under one strategy ABI. Publishing a bundle from another ABI
+    // would make it unreadable to the host that will later report on it, so the archive refuses it
+    // at the boundary instead of accepting a bundle no reader can consume.
+    if let Some(expected) = expected_abi_fingerprint
+        && manifest["abi_fingerprint"].as_str() != Some(expected)
+    {
+        return Err(failure("bundle_abi_mismatch"));
     }
     let id = manifest["run_id"]
         .as_str()

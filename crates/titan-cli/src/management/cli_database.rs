@@ -1,4 +1,5 @@
-//! Offline database configuration. Only history may use PostgreSQL.
+//! Offline database configuration. History is local SQLite only; remote
+//! history/object backends are frozen and cannot be enabled through the CLI.
 use super::{
     client::{ClientError, ClientOptions},
     frontend_config,
@@ -11,13 +12,13 @@ use std::{
     io::{BufRead, IsTerminal, Read, Write},
     path::{Path, PathBuf},
 };
-use titan_persistence::{PostgresConfig, StorageBudget, StorageControl, StorageProfile};
+use titan_persistence::{StorageBudget, StorageControl, StorageProfile};
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Configure local/node storage offline. Existing stores require validated migration.
     #[command(
-        after_help = "Examples:\n  titan_cli config database --history sqlite --storage-root ./storage\n  titan_cli config database --history postgres --dsn-env TITAN_HISTORY_DSN --storage-root ./storage --save-only\n\nOnly environment references are saved. Management and recovery remain local SQLite.\nRun on the machine owning the storage; this command never writes remote paths."
+        after_help = "Example:\n  titan_cli config database --history sqlite --storage-root ./storage\n\nOnly local SQLite history is available. Management and recovery remain local SQLite.\nRun on the machine owning the storage; this command never writes remote paths."
     )]
     Database(DatabaseArgs),
     /// Show a fixed, redacted configuration summary without connecting to a service.
@@ -25,9 +26,12 @@ pub enum ConfigCommand {
     /// Check references, local access and history connection/schema without modifying storage.
     Check,
 }
+/// The PostgreSQL variant is intentionally frozen: it parses so old scripts get an
+/// explicit refusal instead of an unknown-argument error, but it is never accepted.
 #[derive(Clone, Copy, ValueEnum)]
 pub enum HistoryBackend {
     Sqlite,
+    #[value(hide = true)]
     Postgres,
 }
 impl HistoryBackend {
@@ -40,21 +44,12 @@ impl HistoryBackend {
 }
 #[derive(Args)]
 pub struct DatabaseArgs {
-    /// History backend; SQLite is offered by the interactive wizard.
+    /// History backend; only local SQLite is enabled.
     #[arg(long, value_enum)]
     pub history: Option<HistoryBackend>,
-    /// Name of an environment variable containing the PostgreSQL DSN, never the DSN itself.
-    #[arg(long)]
-    pub dsn_env: Option<String>,
     /// StorageControl directory on this machine/owning node; never a recovery database file.
     #[arg(long)]
     pub storage_root: Option<PathBuf>,
-    /// Permit plaintext PostgreSQL only when every configured host is loopback.
-    #[arg(long)]
-    pub allow_insecure_loopback: bool,
-    /// Additional PEM root certificate for PostgreSQL TLS.
-    #[arg(long)]
-    pub root_certificate: Option<PathBuf>,
     /// Save a candidate without initializing even an empty storage directory.
     #[arg(long)]
     pub save_only: bool,
@@ -73,12 +68,6 @@ struct Database {
     schema_version: u32,
     storage_root: PathBuf,
     history: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dsn_env: Option<String>,
-    #[serde(default)]
-    allow_insecure_loopback: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_certificate: Option<PathBuf>,
     state: String,
 }
 fn invalid(message: &str) -> anyhow::Error {
@@ -90,7 +79,6 @@ fn storage_error(message: &str) -> anyhow::Error {
 impl Database {
     fn profile(&self) -> Result<StorageProfile> {
         if self.schema_version != 1
-            || !matches!(self.history.as_str(), "sqlite" | "postgres")
             || !matches!(self.state.as_str(), "candidate" | "active")
             || !self.storage_root.is_absolute()
         {
@@ -98,31 +86,16 @@ impl Database {
                 "invalid database settings; storage_root must be absolute",
             ));
         }
-        if self.history == "sqlite"
-            && (self.dsn_env.is_some()
-                || self.root_certificate.is_some()
-                || self.allow_insecure_loopback)
-        {
+        // The cold PostgreSQL projection and S3 object backend are frozen: the CLI
+        // never builds a profile that could route history or objects off this host.
+        if self.history != "sqlite" {
             return Err(invalid(
-                "PostgreSQL connection options require --history postgres",
+                "only local SQLite history is enabled; remote history is frozen",
             ));
         }
-        let postgres = if self.history == "postgres" {
-            Some(PostgresConfig {
-                dsn_env: self.dsn_env.clone().ok_or_else(|| {
-                    invalid("PostgreSQL requires --dsn-env ENVIRONMENT_REFERENCE")
-                })?,
-                allow_insecure_loopback: self.allow_insecure_loopback,
-                root_certificate: self.root_certificate.clone(),
-                statement_timeout_ms: 2000,
-                connect_timeout_ms: 2000,
-            })
-        } else {
-            None
-        };
         let profile = StorageProfile {
             schema_version: 1,
-            postgres,
+            postgres: None,
             s3: None,
             budget: StorageBudget::default(),
         };
@@ -135,8 +108,7 @@ impl Database {
         // Construct an allowlist. Do not serialize profile fields, paths, DSNs or references.
         json!({"configured":true,"schema_version":self.schema_version,"requested_history":self.history,
             "saved_state":self.state,"storage_root_configured":!self.storage_root.as_os_str().is_empty(),
-            "credential_reference_configured":self.dsn_env.is_some(),"tls_root_configured":self.root_certificate.is_some(),
-            "allow_insecure_loopback":self.allow_insecure_loopback,"management_backend":"local_sqlite","recovery_backend":"local_sqlite"})
+            "management_backend":"local_sqlite","recovery_backend":"local_sqlite"})
     }
 }
 fn prompt(label: &str, default: Option<&str>) -> Result<String> {
@@ -192,24 +164,22 @@ fn absolute(path: PathBuf) -> Result<PathBuf> {
 fn database_args(mut args: DatabaseArgs, interactive: bool) -> Result<Database> {
     if args.history.is_none() && interactive {
         args.history = Some(
-            match prompt("History backend (sqlite/postgres)", Some("sqlite"))?.as_str() {
+            match prompt("History backend (sqlite)", Some("sqlite"))?.as_str() {
                 "sqlite" => HistoryBackend::Sqlite,
-                "postgres" => HistoryBackend::Postgres,
-                _ => return Err(invalid("choose sqlite or postgres")),
+                _ => return Err(invalid("only sqlite history is available")),
             },
         );
     }
-    let history = args.history.ok_or_else(|| {
-        invalid("non-interactive configuration requires --history sqlite|postgres")
-    })?;
+    if !matches!(args.history, Some(HistoryBackend::Sqlite)) {
+        return Err(invalid(
+            "non-interactive configuration requires --history sqlite",
+        ));
+    }
     if args.storage_root.is_none() && interactive {
         args.storage_root = Some(PathBuf::from(prompt(
             "Local storage directory (run on the owning machine)",
             None,
         )?));
-    }
-    if matches!(history, HistoryBackend::Postgres) && args.dsn_env.is_none() && interactive {
-        args.dsn_env = Some(prompt("DSN environment variable name (not the DSN)", None)?);
     }
     if interactive && !args.save_only {
         let answer = prompt(
@@ -228,10 +198,7 @@ fn database_args(mut args: DatabaseArgs, interactive: bool) -> Result<Database> 
             args.storage_root
                 .ok_or_else(|| invalid("non-interactive configuration requires --storage-root"))?,
         )?,
-        history: history.name().into(),
-        dsn_env: args.dsn_env,
-        allow_insecure_loopback: args.allow_insecure_loopback,
-        root_certificate: args.root_certificate.map(absolute).transpose()?,
+        history: HistoryBackend::Sqlite.name().into(),
         // The caller saves candidate first, then derives active state from the immutable store.
         state: if args.save_only {
             "candidate"
@@ -376,52 +343,18 @@ fn inspect_local(database: &Database) -> Result<Value> {
     Ok(
         json!({"profile_state":if matches {"active"}else{"different_immutable_profile"},
         "application_state":if matches && history_active && database.history == "sqlite" {"active"}else{"candidate"},
-        "history_state":if history_active && database.history == "postgres" {"verification_required"}else if history_active {"active"}else{"migration_required"},
+        "history_state":if history_active {"active"}else{"migration_required"},
         "history_route_count":routes.len(),"local_writable":writable,"safe_to_initialize":false}),
     )
 }
 async fn check(database: &Database) -> Result<Value> {
-    let profile = database.profile()?;
+    database.profile()?;
     let mut result = inspect_local(database)?;
     result["configuration_valid"] = json!(true);
     result["management_backend"] = json!("local_sqlite");
     result["recovery_backend"] = json!("local_sqlite");
-    if let Some(pg) = &profile.postgres {
-        let expected_target = if StorageControl::exists(&database.storage_root) {
-            let control = StorageControl::open(&database.storage_root)
-                .map_err(|_| storage_error("cannot inspect fixed history target"))?;
-            let pinned = control
-                .postgres_target_id()
-                .map_err(|_| storage_error("cannot inspect fixed history target"))?;
-            if control.profile.postgres.is_some() && pinned.is_none() {
-                return Err(storage_error(
-                    "fixed history target is unavailable; reconcile storage before use",
-                ));
-            }
-            pinned
-        } else {
-            None
-        };
-        let checked = pg.check_connection_expected(expected_target.as_deref()).await.map_err(|_| storage_error("history connection, fixed target identity, reference, TLS, permission or schema check failed; private values are hidden"))?;
-        result["target_identity_verified"] =
-            json!(expected_target.is_some() && checked.schema_state == "initialized");
-        if result["profile_state"] == "active"
-            && result["history_state"] == "verification_required"
-            && expected_target.is_some()
-        {
-            result["application_state"] = json!("active");
-            result["history_state"] = json!("active");
-        }
-        result["postgres"] = serde_json::to_value(&checked)
-            .map_err(|_| storage_error("cannot format history connection status"))?;
-        result["connection_ready"] = json!(if checked.schema_state == "initialized" {
-            checked.can_read && checked.can_write
-        } else {
-            checked.can_initialize
-        });
-    } else {
-        result["connection_ready"] = json!(true);
-    }
+    // Only the local SQLite route exists, so no remote connection is verified here.
+    result["connection_ready"] = json!(true);
     result["permissions_ready"] =
         json!(result["local_writable"] == true && result["connection_ready"] == true);
     Ok(result)
@@ -446,9 +379,8 @@ fn maintenance() -> Value {
     json!({"automatic_migration":false,"guidance":[
         "Existing storage profiles are immutable. Saving a candidate does not change a running service or its storage.",
         "Inspect the active store with titan storage inspect --storage-root <local-root>.",
-        "When the active immutable profile already declares the intended PostgreSQL target, use titan storage prepare-history --storage-root <local-root> --database <existing-history-db> --target postgres (or sqlite).",
-        "Only activate the validated plan using titan storage activate --storage-root <local-root> --plan <validated-plan-id>; interrupted plans use titan storage resume.",
-        "If the immutable profile lacks the intended target, reconcile the node's storage configuration through its maintenance procedure; never edit control.db or replace recovery databases.",
+        "History and objects stay on this host's local SQLite/filesystem routes; remote history and object backends are not enabled by this client.",
+        "Never edit control.db or replace recovery databases; reconcile a mismatched storage profile through the node's maintenance procedure.",
         "Run configuration on the machine owning the storage and point its node storage_root to the same initialized directory. No remote service is changed by this command."
     ]})
 }
@@ -491,7 +423,7 @@ pub async fn run(options: &ClientOptions, command: ConfigCommand) -> Result<()> 
             let mut initialized = false;
             if initialize && state["safe_to_initialize"] == true && state["local_writable"] == true
             {
-                let checked = check(&database).await.map_err(|_| storage_error("candidate saved; history connection, reference, permission or schema check failed; storage was not initialized"))?;
+                let checked = check(&database).await.map_err(|_| storage_error("candidate saved; local permission or storage check failed; storage was not initialized"))?;
                 if checked["permissions_ready"] != true {
                     return Err(storage_error(
                         "candidate saved, but initialization requires storage permissions",
@@ -506,16 +438,6 @@ pub async fn run(options: &ClientOptions, command: ConfigCommand) -> Result<()> 
                 }).await.map_err(|_| storage_error("candidate saved; storage initialization task failed"))??;
                 initialized = true;
                 state = inspect_local(&database)?;
-            }
-            if initialize
-                && database.history == "postgres"
-                && StorageControl::exists(&database.storage_root)
-            {
-                state = check(&database).await.map_err(|_| {
-                    storage_error(
-                        "candidate saved; fixed history target identity or connection check failed",
-                    )
-                })?;
             }
             if state["application_state"] == "active" {
                 database.state = "active".into();
@@ -541,43 +463,28 @@ mod tests {
             schema_version: 1,
             storage_root: root,
             history: "sqlite".into(),
-            dsn_env: None,
-            allow_insecure_loopback: false,
-            root_certificate: None,
             state: "candidate".into(),
         }
     }
     #[test]
-    fn database_summary_does_not_expose_paths_or_environment_reference() {
-        let mut database = settings(PathBuf::from("/private/storage-marker"));
-        database.history = "postgres".into();
-        database.dsn_env = Some("PRIVATE_DSN_REFERENCE".into());
-        database.root_certificate = Some("/private/certificate-marker".into());
+    fn database_summary_does_not_expose_paths_or_connection_settings() {
+        let database = settings(PathBuf::from("/private/storage-marker"));
         let text = database.summary().to_string();
-        for marker in [
-            "storage-marker",
-            "PRIVATE_DSN_REFERENCE",
-            "certificate-marker",
-        ] {
-            assert!(!text.contains(marker));
-        }
-        assert_eq!(database.summary()["credential_reference_configured"], true);
+        assert!(!text.contains("storage-marker"));
+        assert_eq!(database.summary()["management_backend"], "local_sqlite");
+        assert_eq!(database.summary()["recovery_backend"], "local_sqlite");
     }
     #[test]
-    fn database_noninteractive_requires_explicit_values_and_rejects_dsn_literals() {
+    fn database_noninteractive_requires_explicit_values_and_rejects_remote_backends() {
         let args = || DatabaseArgs {
             history: None,
-            dsn_env: None,
             storage_root: None,
-            allow_insecure_loopback: false,
-            root_certificate: None,
             save_only: true,
         };
         assert!(database_args(args(), false).is_err());
         let mut provided = args();
         provided.history = Some(HistoryBackend::Postgres);
         provided.storage_root = Some("/storage".into());
-        provided.dsn_env = Some("postgres://secret@localhost/db".into());
         assert!(database_args(provided, false).is_err());
     }
     #[tokio::test]
@@ -595,10 +502,7 @@ mod tests {
             &options,
             ConfigCommand::Database(DatabaseArgs {
                 history: Some(HistoryBackend::Sqlite),
-                dsn_env: None,
                 storage_root: Some(root.clone()),
-                allow_insecure_loopback: false,
-                root_certificate: None,
                 save_only: false,
             }),
         )
@@ -633,10 +537,7 @@ mod tests {
             &options,
             ConfigCommand::Database(DatabaseArgs {
                 history: Some(HistoryBackend::Sqlite),
-                dsn_env: None,
                 storage_root: Some(root.clone()),
-                allow_insecure_loopback: false,
-                root_certificate: None,
                 save_only: true,
             }),
         )
@@ -676,13 +577,12 @@ mod tests {
             inspect_local(&database).unwrap()["application_state"],
             "active"
         );
+        // A non-sqlite history backend is a candidate configuration, not a usable one: the external
+        // backends were retired, so the profile refuses to build.
         database.history = "postgres".into();
-        database.dsn_env = Some("UNRESOLVED_HISTORY_DSN".into());
-        assert_eq!(
-            inspect_local(&database).unwrap()["application_state"],
-            "candidate"
-        );
+        assert!(database.profile().is_err());
         let control = StorageControl::open(&clean).unwrap();
         assert!(control.profile.postgres.is_none());
+        assert!(control.profile.s3.is_none());
     }
 }

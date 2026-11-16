@@ -270,40 +270,6 @@ pub(super) fn private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn journal_root(options: &ClientOptions) -> Result<PathBuf> {
-    let options = resolved_options(options)?;
-    let config = config_path(&options)?;
-    let state = if let Some(path) = variable("XDG_STATE_HOME") {
-        PathBuf::from(path)
-    } else {
-        PathBuf::from(
-            variable("HOME").ok_or_else(|| invalid("configure a private user state directory"))?,
-        )
-        .join(".local/state")
-    };
-    if !state.is_absolute() {
-        return Err(invalid("user state directory must be absolute"));
-    }
-    let identity = super::digest(
-        &[
-            config.as_os_str().as_encoded_bytes(),
-            b"\0",
-            options.profile.as_deref().unwrap_or("direct").as_bytes(),
-            b"\0",
-            options.url.as_deref().unwrap_or("").as_bytes(),
-        ]
-        .concat(),
-    );
-    let parent = state.join("titan/journals");
-    private_directory(&parent)?;
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| invalid("cannot restrict private client directory"))?;
-    let root = parent.join(identity);
-    private_directory(&root)?;
-    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-        .map_err(|_| invalid("cannot restrict private client directory"))?;
-    Ok(root)
-}
 pub(super) fn private_file(path: &Path, append: bool) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)

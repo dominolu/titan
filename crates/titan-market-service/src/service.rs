@@ -29,6 +29,14 @@ pub trait MarketService: Send + Sync {
         Ok(Default::default())
     }
     fn resolve(&self, source_key: &str) -> LocalResult<MarketSourceHandle>;
+    /// Full frozen definition for an already-resolved source. Used by the object-table builder.
+    fn definition(&self, source: MarketSourceHandle) -> LocalResult<MarketSourceDefinition> {
+        let _ = source;
+        Err(crate::MarketError::new(
+            crate::MarketErrorKind::SourceNotFound,
+            "market definition is unavailable",
+        ))
+    }
     fn subscribe(
         &self,
         source: MarketSourceHandle,

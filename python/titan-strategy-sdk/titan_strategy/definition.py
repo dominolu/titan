@@ -25,6 +25,10 @@ class Capability(IntFlag):
     RECOVERY_ORDER_RESULTS = 1 << 5
     PAUSE_SAFE = 1 << 6
     HOST_DEPTH_100 = 1 << 7
+    BUSINESS_FAULT_DRAIN = 1 << 8
+    REQUIRES_PERIODIC_TIMER = 1 << 9
+    MULTI_VENUE_EXECUTION = 1 << 10
+    OBJECT_CONTEXT = 1 << 11
 
 
 _HANDLERS = (
@@ -119,6 +123,12 @@ class StrategySpec:
         if any(subscription.event_kind == EventKind.BAR for subscription in subscriptions):
             raise ValueError("ABI V13 Bar/Hybrid is unavailable until the canonical producer and backtest adapter exist")
         capabilities = Capability(self.capabilities)
+        if capabilities & Capability.REQUIRES_PERIODIC_TIMER and not any(
+            s.event_kind == EventKind.TIMER for s in subscriptions
+        ):
+            raise ValueError("REQUIRES_PERIODIC_TIMER requires a timer subscription")
+        if capabilities & Capability.BUSINESS_FAULT_DRAIN and not capabilities & Capability.STOP_BARRIER:
+            raise ValueError("BUSINESS_FAULT_DRAIN requires STOP_BARRIER")
         if any(s.event_kind in (EventKind.BBO, EventKind.BAR, EventKind.DEPTH) for s in subscriptions):
             if not capabilities & Capability.MARKET_DATA:
                 raise ValueError("market subscriptions require MARKET_DATA capability")

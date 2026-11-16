@@ -792,27 +792,7 @@ impl BrokerApi for HyperliquidClient {
 
     async fn get_instruments(&self) -> Result<Vec<InstrumentInfo>, ApiError> {
         let meta = self.get_meta().await?;
-        Ok(meta
-            .universe
-            .iter()
-            .map(|a| {
-                let lot = 10f64.powi(-(a.sz_decimals as i32));
-                InstrumentInfo {
-                    symbol: a.name.clone(),
-                    base_asset: a.name.clone(),
-                    quote_asset: "USDC".to_string(),
-                    // HL 官方 API 不直接提供 tick size，由策略按价格档位自行处理。
-                    tick_size: 0.0,
-                    lot_size: lot,
-                    min_qty: lot,
-                    contract_size: 1.0,
-                    margin_asset: "USDC".to_string(),
-                    price_precision: 0,
-                    qty_precision: a.sz_decimals,
-                    tradable: true,
-                }
-            })
-            .collect())
+        Ok(meta.universe.iter().map(instrument_from_meta).collect())
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ApiError> {
@@ -2547,5 +2527,57 @@ mod tests {
             .unwrap_or(0.0);
         println!("USDC spot balance after sell: {usdc:.6}");
         assert!(usdc > bal * 0.9, "USDC proceeds should reflect the sale");
+    }
+}
+
+fn instrument_from_meta(a: &m::AssetMeta) -> InstrumentInfo {
+    let lot = 10f64.powi(-(a.sz_decimals as i32));
+    // Size steps are exact powers of ten. The price tick genuinely is not published by the official
+    // API (price rules depend on significant figures per price level), so the exact tick stays
+    // `None` instead of a guessed value.
+    let lot_exact = u8::try_from(a.sz_decimals)
+        .ok()
+        .and_then(|scale| titan_domain_types::DecimalUnit::new(1, scale).ok());
+    InstrumentInfo {
+        symbol: a.name.clone(),
+        base_asset: a.name.clone(),
+        quote_asset: "USDC".to_string(),
+        // HL 官方 API 不直接提供 tick size，由策略按价格档位自行处理。
+        tick_size: 0.0,
+        lot_size: lot,
+        min_qty: lot,
+        contract_size: 1.0,
+        tick_size_exact: None,
+        lot_size_exact: lot_exact,
+        min_qty_exact: lot_exact,
+        contract_size_exact: titan_domain_types::DecimalUnit::new(1, 0).ok(),
+        min_notional_quote: None,
+        quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+        synthetic: false,
+        margin_asset: "USDC".to_string(),
+        price_precision: 0,
+        qty_precision: a.sz_decimals,
+        tradable: true,
+    }
+}
+
+#[cfg(test)]
+mod instrument_meta_tests {
+    use super::*;
+
+    #[test]
+    fn size_steps_are_exact_powers_of_ten_and_tick_stays_unknown() {
+        let meta = m::AssetMeta {
+            name: "BTC".into(),
+            sz_decimals: 5,
+            max_leverage: 50,
+        };
+        let info = instrument_from_meta(&meta);
+        assert_eq!(info.lot_size_exact, Some("0.00001".parse().unwrap()));
+        assert_eq!(info.min_qty_exact, info.lot_size_exact);
+        // The official API does not publish a price tick; guessing one would silently admit a
+        // tick ratio that has no authoritative source.
+        assert_eq!(info.tick_size_exact, None);
+        assert_eq!(info.base_delta_per_lot(), Some("0.00001".parse().unwrap()));
     }
 }

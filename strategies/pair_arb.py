@@ -3,6 +3,7 @@
 from numba import njit
 
 from titan_strategy.definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
+from titan_strategy import testing
 from titan_strategy.parameters import EnumParam, IntParam
 from titan_strategy.state import array, int64, new_state, record, uint8, uint32, uint64
 from titan_strategy.types import EventKind, EventQos
@@ -62,8 +63,6 @@ SPEC = StrategySpec(
                   values=("LONG_SPREAD", "SHORT_SPREAD")),
         EnumParam("mode", required=False, default="MAKER_TAKER",
                   values=("MAKER_TAKER", "TAKER_TAKER")),
-        IntParam("hedge_ratio_numerator", required=False, default=1, minimum=1),
-        IntParam("hedge_ratio_denominator", required=False, default=1, minimum=1),
         IntParam("max_position_lots", required=False, default=10, minimum=1), IntParam("slot_lots", required=False, default=2, minimum=1),
         IntParam("spread_ticks", required=False, default=0, minimum=0),
         IntParam("requote_distance_ticks", required=False, default=1, minimum=0),
@@ -91,8 +90,10 @@ SPEC = StrategySpec(
         EventSubscription(EventKind.ACCOUNT_STATE, "on_account_state", 1, EventQos.RELIABLE_ORDERED),
         EventSubscription(EventKind.TIMER, "on_timer", 1, EventQos.BEST_EFFORT),
     ),
+    # The left/right leg ratio is a platform-proven object fact (ctx.pair), never a parameter.
     capabilities=(Capability.MARKET_DATA | Capability.ACCOUNT_DATA
-                  | Capability.ORDER_EXECUTION | Capability.TIMER),
+                  | Capability.ORDER_EXECUTION | Capability.TIMER
+                  | Capability.OBJECT_CONTEXT),
 )
 
 @njit
@@ -490,6 +491,16 @@ def on_recover(ctx):
 @njit
 def on_start(ctx):
     s, p, sl = ctx.state, ctx.state["pair"], ctx.state["slot"]
+    pair = ctx.pair(0)
+    if (pair["maker_local_asset_no"] != p["left_asset_no"]
+            or pair["hedge_local_asset_no"] != p["right_asset_no"]
+            or pair["maker_local_account_no"] != p["left_account_no"]
+            or pair["hedge_local_account_no"] != p["right_account_no"]
+            or pair["hedge_lots_per_maker_lot"] <= 0):
+        fail_closed(s, 308)
+        return -1
+    p["hedge_ratio_num"] = int(pair["hedge_lots_per_maker_lot"])
+    p["hedge_ratio_den"] = 1
     left_account, right_account = ctx.account(p["left_account_no"]), ctx.account(p["right_account_no"])
     if (left_account["account_no"] != p["left_account_no"]
             or right_account["account_no"] != p["right_account_no"]
@@ -732,8 +743,6 @@ def build(parameters):
                  "max_unhedged_duration_ns", "cancel_retry_limit", "max_slippage_ticks",
                  "quote_cooldown_ns", "market_stale_after_ns"):
         p[name] = parameters[name]
-    p["hedge_ratio_num"] = parameters["hedge_ratio_numerator"]
-    p["hedge_ratio_den"] = parameters["hedge_ratio_denominator"]
     p["max_unhedged_soft"] = parameters["max_unhedged_lots_soft"]
     p["max_unhedged_hard"] = parameters["max_unhedged_lots_hard"]
     p["max_gross_notional_ticks"] = parameters["max_gross_notional_ticks"]
@@ -744,7 +753,38 @@ def build(parameters):
     return StrategyDefinition(SPEC, state, handlers, {"description": "Slot-based pair arbitrage V3"})
 
 
-TESTS = (
+def _decimal(value):
+    return {"coefficient": int(value * 1000000), "scale": 6}
+
+
+_TEST_OBJECTS = testing.objects(
+    symbols=[
+        dict(local_asset_no=asset, asset_id=asset + 1, quote_currency_no=1,
+             margin_currency_no=1, flags=1,
+             price_tick=_decimal(1.0), quantity_lot=_decimal(1.0),
+             contract_multiplier=_decimal(1.0), base_delta_per_lot=_decimal(1.0),
+             min_quantity=_decimal(1.0), min_notional_quote=_decimal(5.0),
+             min_qty_lots=1, min_notional_tick_lots=1)
+        for asset in (0, 1)
+    ],
+    accounts=[
+        dict(local_account_no=account, account_id=account + 1, quote_currency_no=1,
+             margin_currency_no=1, currency_start=0, currency_count=1, flags=1)
+        for account in (0, 1)
+    ],
+    currencies=[
+        dict(local_account_no=0, currency_no=1, flags=1, amount_unit=_decimal(0.000001)),
+    ],
+    pairs=[dict(maker_local_asset_no=0, hedge_local_asset_no=1,
+                maker_local_account_no=0, hedge_local_account_no=1,
+                quote_currency_no=1, flags=1, hedge_lots_per_maker_lot=1,
+                hedge_ticks_per_maker_tick_num=1, hedge_ticks_per_maker_tick_den=1,
+                min_hedge_lots=1, min_hedge_notional_quote=_decimal(5.0),
+                pair_revision=1)],
+    status={"lifecycle": 3},
+)
+
+TESTS = tuple({**scene, "objects": _TEST_OBJECTS} for scene in (
     {"name": "missing_account_fails_closed", "steps": [{"callback": "on_start", "status": -1}],
      "expect": {"commands.submit_count": 0, "commands.cancel_count": 0, "context.last_error_code": -2, "pair.last_error": 301, "state_bytes": {"le": 65536}}},
-)
+))

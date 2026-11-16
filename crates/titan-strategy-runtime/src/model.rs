@@ -34,7 +34,14 @@ pub struct StrategyFileRef {
     pub loader_type: Arc<str>,
     pub uri: Arc<str>,
     pub expected_digest: [u8; 32],
-    pub signature_ref: Option<Arc<str>>,
+    /// Optional pin of the compiled parameter identity.
+    ///
+    /// Artifact bytes are not reproducible (the Numba/LLVM payload differs between builds), while
+    /// `parameters_digest` is stable. A deployment that wants to assert *which* parameters were
+    /// compiled pins this digest; the runtime refuses activation when it differs from the loaded
+    /// manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters_digest: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -65,6 +72,24 @@ pub struct StrategyAccountBinding {
     pub local_account_no: u32,
     pub account_key: Arc<str>,
     pub tradable_assets: Arc<[StrategyTradableAsset]>,
+    /// Operator-declared fee facts for the V14 object table (`fee` accessor).
+    ///
+    /// Fees are not part of the market metadata snapshot, so without an operator declaration the
+    /// host publishes no valid fee record for this account and any artifact that declares
+    /// `requires_fee` is refused at instance creation. Absent is never read as "zero fee".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fees: Option<StrategyAccountFees>,
+}
+
+/// Fee rates in basis points, as signed integers (`negative` is a maker rebate).
+///
+/// Both rates are required: a half-declared fee is refused instead of completing the missing side
+/// with a zero that the strategy would then price trades against.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrategyAccountFees {
+    pub maker_fee_bps: i32,
+    pub taker_fee_bps: i32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -86,8 +111,13 @@ pub struct StrategyRuntimeSpec {
     #[serde(default)]
     pub recovery_reference: Option<crate::RecoveryPointRef>,
     /// Optional platform execution envelope, independent of strategy business parameters.
+    /// Mutually exclusive with `multi_binding`.
     #[serde(default)]
     pub execution_limits: Option<ExecutionLimits>,
+    /// Optional multi-leg execution envelope for cross-venue instances.
+    /// Mutually exclusive with `execution_limits`.
+    #[serde(default)]
+    pub multi_binding: Option<crate::MultiBindingExecutionLimits>,
     pub async_lane_capacity: usize,
     pub critical_reserve: usize,
     pub reliable_pending_capacity: usize,
@@ -113,6 +143,7 @@ impl Default for StrategyRuntimeSpec {
             recovery_checkpoint_sha256: None,
             recovery_reference: None,
             execution_limits: None,
+            multi_binding: None,
             async_lane_capacity: 16_384,
             critical_reserve: 2_048,
             reliable_pending_capacity: 1_024,
@@ -187,9 +218,18 @@ impl StrategyCapabilities {
     pub const CANCEL_ORDER: Self = Self(1 << 6);
     pub const AMEND_ORDER: Self = Self(1 << 7);
     /// The runtime owns a fixed periodic callback. Strategy-directed timer scheduling is not
-    /// exposed by ABI V13.
+    /// exposed by the strategy ABI.
     pub const TIMER_CALLBACK: Self = Self(1 << 8);
     pub const CHECKPOINT_STATE: Self = Self(1 << 9);
+    pub const BUSINESS_FAULT_DRAIN: Self = Self(1 << 10);
+    pub const REQUIRES_PERIODIC_TIMER: Self = Self(1 << 11);
+    pub const MULTI_VENUE_EXECUTION: Self = Self(1 << 12);
+    /// Reads the V14 object table; requires the `object_context` manifest capability.
+    ///
+    /// V14 runtime encoding of [`crate::OBJECT_CONTEXT_CAPABILITY`]; its manifest counterpart is
+    /// [`ManifestCapabilities::OBJECT_CONTEXT`] (`1 << 11`). The two bits are mapped by
+    /// [`crate::compiled_strategy::manifest_from_artifact`] and are deliberately not equal.
+    pub const OBJECT_CONTEXT: Self = Self(1 << 13);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
@@ -203,11 +243,15 @@ pub struct CompiledStrategyMetadata {
     pub runtime_abi: ApiVersion,
     pub parameter_schema: Arc<serde_json::Value>,
     pub parameter_schema_version: u32,
+    /// Stable identity of the normalized parameters baked into the artifact.
+    pub parameters_digest: [u8; 32],
     pub recovery_state_schema_version: u32,
     pub state_byte_len: usize,
     pub callbacks: StrategyCallbackMask,
     pub capabilities: StrategyCapabilities,
     pub subscriptions: Arc<[StrategySubscriptionSpec]>,
+    /// V14 object requirements from the artifact manifest; `None` for V13 artifacts.
+    pub object_manifest: Option<crate::ObjectManifest>,
     pub compiled_strategy_digest: [u8; 32],
 }
 
@@ -295,6 +339,10 @@ pub struct StrategyFlightRecord {
 #[derive(Clone, Debug)]
 pub struct StrategyRuntimeDiagnosticSnapshot {
     pub summary: Arc<str>,
+    /// Admission identity of the instance's object table (units that admission arithmetic uses).
+    pub object_identity_digest: [u8; 32],
+    /// Digest of the metadata snapshot behind the table, for operator correlation.
+    pub metadata_snapshot_digest: [u8; 32],
     pub callback_count: u64,
     pub command_count: u64,
     pub last_error_code: Option<Arc<str>>,

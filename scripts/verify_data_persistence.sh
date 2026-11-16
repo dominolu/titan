@@ -16,8 +16,11 @@ out=$(cd "$out" && pwd)
 : "${TITAN_SOURCE_BASELINE:?provide the source Git baseline for this isolated snapshot}"
 test -x "$TITAN_BROWSER_EXECUTABLE"
 : "${TITAN_VERIFY_PYTHON:=python3}"
-: "${CARGO_TARGET_DIR:=/tmp/titan-deplugin-target}"
-export CARGO_TARGET_DIR CARGO_NET_OFFLINE=true
+# One target directory for every verification on this host: a private one duplicates the whole
+# dependency compile (see scripts/build_env.sh).
+source scripts/build_env.sh
+titan_build_env quiet
+export CARGO_NET_OFFLINE=true
 : "${TITAN_PERSISTENCE_STAGE:=M1}"
 case "$TITAN_PERSISTENCE_STAGE" in M1|M2|M3) ;; *) echo 'Unknown persistence stage' >&2; exit 2 ;; esac
 export TITAN_PERSISTENCE_STAGE
@@ -68,8 +71,6 @@ if [ "$TITAN_PERSISTENCE_STAGE" = M3 ]; then
 fi
 run cli-build "${cargo_cmd[@]}" build --locked -p titan-cli --bin titan
 if [ "$TITAN_PERSISTENCE_STAGE" = M3 ]; then
-  : "${TITAN_M3_SERVICES:?provide the labelled isolated services manifest}"
-  run external-faults "$TITAN_VERIFY_PYTHON" scripts/verify_external_persistence.py --binary "$TITAN_TEST_BINARY" --profile "$TITAN_M3_PROFILE" --services "$TITAN_M3_SERVICES" --contract "$out/external" --output "$out/external-faults"
   run recovery-contention env TITAN_M3_PERFORMANCE="$out/recovery-contention.json" "${cargo_cmd[@]}" test --locked -p titan-strategy-runtime recovery_contention_budget_probe -- --ignored --nocapture --test-threads=1
 fi
 run sdk-tests "$TITAN_VERIFY_PYTHON" -m unittest discover -s python/titan-strategy-sdk/tests -v
@@ -100,13 +101,12 @@ run history-query-isolation "$TITAN_VERIFY_PYTHON" scripts/management_research_q
 if [ "$TITAN_PERSISTENCE_STAGE" != M1 ]; then
   run readonly-image env TITAN_OBSERVATION_FIXTURE="$out/readonly-image.json" "${cargo_cmd[@]}" test --locked -p titan-account-service account_quantity_bound_counts_only_unfilled_remainder_and_keeps_hedge_gross -- --exact observation::tests::account_quantity_bound_counts_only_unfilled_remainder_and_keeps_hedge_gross
   run readonly-observation "$TITAN_VERIFY_PYTHON" scripts/management_observation_smoke.py --repo "$repo" --binary "$TITAN_TEST_BINARY" --fixture "$out/readonly-image.json" --output "$out/readonly" --browser
-  run history-build "${cargo_cmd[@]}" rustc --locked -p hftbacktest --example v13_grid_history -- -C opt-level=2
+  run history-build "${cargo_cmd[@]}" rustc --locked -p hftbacktest --example grid_history -- -C opt-level=2
   mkdir "$out/cli-bundle"
   cp "$out/smoke.titan" "$out/cli-bundle/v13_smoke.titan"
   run cli-result-bundle env TITAN_HOME="$out/cli-home" "$TITAN_VERIFY_PYTHON" scripts/verify_cli_bundle.py "$TITAN_TEST_BINARY" "$out/cli-bundle"
-  run historical-matrix "$TITAN_VERIFY_PYTHON" scripts/management_console_smoke.py --repo "$repo" --binary "$TITAN_TEST_BINARY" --history "$CARGO_TARGET_DIR/debug/examples/v13_grid_history" --data "$TITAN_HISTORY_DATA" --parameters "$TITAN_HISTORY_PARAMETERS" --output "$out/historical" --matrix --browser
-  run local-persistence "$TITAN_VERIFY_PYTHON" scripts/verify_local_persistence.py --binary "$TITAN_TEST_BINARY" --history "$CARGO_TARGET_DIR/debug/examples/v13_grid_history" --matrix "$out/historical" --loopback "$out/loopback" --output "$out/local-persistence" --smoke-strategy "$out/smoke.titan"
-  sha256sum "$CARGO_TARGET_DIR/debug/examples/v13_grid_history" > "$out/history-build-sha256.txt"
+  run historical-matrix "$TITAN_VERIFY_PYTHON" scripts/management_console_smoke.py --repo "$repo" --binary "$TITAN_TEST_BINARY" --history "$CARGO_TARGET_DIR/debug/examples/grid_history" --data "$TITAN_HISTORY_DATA" --parameters "$TITAN_HISTORY_PARAMETERS" --output "$out/historical" --matrix --browser
+  sha256sum "$CARGO_TARGET_DIR/debug/examples/grid_history" > "$out/history-build-sha256.txt"
 fi
 sha256sum "$TITAN_TEST_BINARY" Cargo.lock "$out/smoke.titan" > "$out/build-sha256.txt"
 { rustc --version; cargo --version; "$TITAN_VERIFY_PYTHON" --version; node --version; pnpm --version; } > "$out/toolchain.txt"

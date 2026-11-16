@@ -30,7 +30,7 @@ and both positions. It RETAINS matched cross-exchange positions, not flat accoun
 Pause-safe is deliberately NOT advertised: a hedge may open a second-venue
 position, while the current platform pause gate permits only reduce-only orders.
 Recovery needs host-proven order outcomes; old reference_mm checkpoints cannot
-migrate to this renamed type / source 2.0.0 / recovery schema 2.
+migrate to this renamed type / source 2.0.2 / recovery schema 2.
 
 Compile on titan-build (no separate parameter file):
   printf '{}' | titan strategy compile --strategy strategies/cross_exchange_mm.py \
@@ -44,11 +44,17 @@ import numpy as np
 from numba import njit
 
 from titan_strategy.definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
+from titan_strategy import testing
 from titan_strategy.parameters import FloatParam, IntParam
+from titan_strategy.observation import BusinessObservationSpec, ObservationField
 from titan_strategy.state import array, float64, int64, new_state, record, uint64
 from titan_strategy.types import EventKind, EventQos
 
 BUY, SELL, LIMIT, IOC, POST_ONLY = 1, 2, 1, 2, 4
+# Declared intent carries in the submit request's first reserved byte. The platform verifies
+# it against the bound leg roles once a multi-binding envelope is configured; on a legacy
+# single-market instance it is declarative only and grants no admission relaxation.
+MAKER_QUOTE, KNOWN_FILL_HEDGE = 1, 2
 PENDING, ACCEPTED, PARTIAL, FILLED, CANCEL_PENDING = 1, 2, 3, 4, 5
 CANCELED, REJECTED, EXPIRED, UNKNOWN = 6, 7, 8, 255
 READY, HEDGE, MAX_RETIRED, SAFE = 4, 2, 128, 2**52
@@ -97,23 +103,36 @@ def positive(name, default, maximum=SAFE):
         exclusive_minimum=True, maximum=maximum)
 
 
+MM_OBSERVATION = BusinessObservationSpec(
+    schema_id="titan.cross_exchange_mm", schema_version=1,
+    fields=tuple(ObservationField(name, kind, unit, "mm." + field, label=label)
+        for name, kind, unit, field, label in (
+            ("last_error", "int64", "code", "error", "业务错误码"),
+            ("stopped", "int64", "flag", "stopped", "停止请求"),
+            ("loss_latched", "int64", "flag", "loss_latched", "亏损锁存"),
+            ("risk_latched", "int64", "flag", "risk_latched", "风险锁存"),
+            ("maker_inventory_lots", "int64", "maker_lot", "expected_position_lots", "做市库存"),
+            ("hedge_inventory_lots", "int64", "hedge_lot", "hedge_position_lots", "对冲库存"),
+            ("debt_started_ns", "int64", "ns", "debt_started_ns", "原敞口开始时间"),
+            ("hedge_attempts", "int64", "count", "hedge_attempts", "对冲尝试次数"),
+            ("gross_pnl_tick_lots", "decimal", "maker_tick_lot", "gross_pnl_tick_lots", "两腿毛收益"),
+            ("reference_at_ns", "int64", "ns", "reference_ts_ns", "对冲行情时间"),
+            ("maker_at_ns", "int64", "ns", "venue_ts_ns", "做市行情时间"),
+        )),
+)
+
 SPEC = StrategySpec(
-    strategy_type="cross_exchange_mm", source_version="2.0.0", recovery_state_schema_version=2,
+    strategy_type="cross_exchange_mm", source_version="2.0.3", recovery_state_schema_version=2,
     parameters=(
         integer("account_no", 0, 0, 2**32 - 1), integer("hedge_account_no", 1, 0, 2**32 - 1),
         integer("reference_asset_no", 0, 0, 2**32 - 1), integer("traded_asset_no", 1, 0, 2**32 - 1),
         integer("order_qty_lots", 5, maximum=10**9), integer("max_position_lots", 10, maximum=10**9),
-        integer("hedge_lots_per_maker_lot", 1, maximum=10**9),
         integer("max_hedge_position_lots", 10, maximum=10**9),
-        integer("max_unhedged_lots", 10, maximum=10**9), integer("hedge_min_order_lots", 1, maximum=10**9),
+        integer("max_unhedged_lots", 10, maximum=10**9),
         positive("spread_bps", 10.0, 1000.0),
         FloatParam("skew_bps", required=False, default=5.0, minimum=0.0, maximum=1000.0),
-        positive("requote_threshold_bps", 3.0, 1000.0), positive("reference_tick_ratio", 1.0, 10**9),
-        FloatParam("maker_fee_bps", required=False, default=0.0, minimum=-100.0, maximum=100.0),
-        FloatParam("hedge_fee_bps", required=False, default=4.0, minimum=0.0, maximum=100.0),
         FloatParam("min_profit_bps", required=False, default=2.0, minimum=0.0, maximum=1000.0),
         FloatParam("hedge_slippage_bps", required=False, default=5.0, minimum=0.0, maximum=1000.0),
-        positive("hedge_min_notional_tick_lots", 1.0),
         positive("max_gross_loss_tick_lots", 2000.0), positive("max_notional_tick_lots", 10**12),
         positive("max_hedge_notional_tick_lots", 10**12),
         integer("warmup_ns", 60_000_000_000, maximum=10**15),
@@ -137,7 +156,9 @@ SPEC = StrategySpec(
             (EventKind.TIMER, "on_timer", EventQos.RELIABLE_ORDERED),
         )),
     capabilities=(Capability.MARKET_DATA | Capability.ACCOUNT_DATA | Capability.ORDER_EXECUTION
-        | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS),
+        | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS
+        | Capability.BUSINESS_FAULT_DRAIN | Capability.REQUIRES_PERIODIC_TIMER
+        | Capability.OBJECT_CONTEXT),
 )
 
 
@@ -145,6 +166,16 @@ SPEC = StrategySpec(
 def fail(s, code):
     if s["mm"]["error"] == 0:
         s["mm"]["error"] = code
+
+
+@njit
+def business_result(s):
+    g = s["mm"]
+    if g["error"]:
+        return int(g["error"])
+    if g["loss_latched"]:
+        return 302
+    return 301 if g["risk_latched"] else 0
 
 
 @njit
@@ -350,7 +381,8 @@ def submit(ctx, index, side, qty, price):
     if qty <= 0 or price <= 0 or price > SAFE // qty:
         fail(s, 109)
         return
-    oid = ctx.submit_order(account, asset, side, LIMIT, qty, price, tif)
+    purpose = KNOWN_FILL_HEDGE if index == HEDGE else MAKER_QUOTE
+    oid = ctx.submit_order(account, asset, side, LIMIT, qty, price, tif, False, 0, purpose)
     if oid == 0:
         fail(s, 110)
         return
@@ -416,16 +448,48 @@ def drive_hedge(ctx, execution_ready):
 
 
 @njit
+def quote_safe(ctx, index, price):
+    """Audit live reservations as well as candidates, independent of requote throttling."""
+    s, c, g = ctx.state, ctx.state["config"], ctx.state["mm"]
+    hedge, venue = ctx.market(c["reference_asset_no"]), ctx.market(c["traded_asset_no"])
+    side = BUY if index == 0 else SELL
+    current = s["refs"][index]
+    qty = current["qty_lots"] - current["applied_lots"] if current["order_id"] else c["order_qty_lots"]
+    hedge_price = protected_price(hedge, SELL if side == BUY else BUY, c["hedge_slippage_bps"])
+    available = hedge["best_bid_qty_lots"] if side == BUY else hedge["best_ask_qty_lots"]
+    if (qty <= 0 or available < qty * c["hedge_lots_per_maker_lot"]
+            or c["hedge_lots_per_maker_lot"] * float(hedge_price) < c["hedge_min_notional_tick_lots"]):
+        return False
+    high, low = g["expected_position_lots"], g["expected_position_lots"]
+    mark = max(price, venue["best_ask_ticks"])
+    for i in range(2):
+        r = s["refs"][i]
+        if r["order_id"]:
+            leaves = r["qty_lots"] - r["applied_lots"]
+            if r["side"] == BUY:
+                high += leaves
+            else:
+                low -= leaves
+            mark = max(mark, r["price_ticks"])
+    if not current["order_id"]:
+        if side == BUY:
+            high += qty
+        else:
+            low -= qty
+    worst = max(abs(high), abs(low))
+    return (high <= c["max_position_lots"] and low >= -c["max_position_lots"]
+        and worst * float(mark) <= c["max_notional_tick_lots"]
+        and worst * c["hedge_lots_per_maker_lot"] <= c["max_hedge_position_lots"]
+        and worst * c["hedge_lots_per_maker_lot"] * float(max(hedge_price, hedge["best_ask_ticks"]))
+            <= c["max_hedge_notional_tick_lots"])
+
+
+@njit
 def quote_side(ctx, index, price):
     s, c, g, r = ctx.state, ctx.state["config"], ctx.state["mm"], ctx.state["refs"][index]
     side, qty = BUY if index == 0 else SELL, c["order_qty_lots"]
-    target = g["expected_position_lots"] + (qty if side == BUY else -qty)
-    if abs(target) > c["max_position_lots"]:
-        price = 0
     hedge, venue = ctx.market(c["reference_asset_no"]), ctx.market(c["traded_asset_no"])
-    hedge_qty = qty * c["hedge_lots_per_maker_lot"]
-    available = hedge["best_bid_qty_lots"] if side == BUY else hedge["best_ask_qty_lots"]
-    if available < hedge_qty:
+    if not quote_safe(ctx, index, price):
         price = 0
     hedge_side = SELL if side == BUY else BUY
     hedge_price = protected_price(hedge, hedge_side, c["hedge_slippage_bps"])
@@ -447,27 +511,6 @@ def quote_side(ctx, index, price):
             cancel(ctx, index)
         return
     if price <= 0 or ctx.now < r["next_quote_ns"]:
-        return
-    high, low, mark = g["expected_position_lots"], g["expected_position_lots"], max(price, venue["best_ask_ticks"])
-    for i in range(2):
-        old = s["refs"][i]
-        if old["order_id"]:
-            leaves = old["qty_lots"] - old["applied_lots"]
-            if old["side"] == BUY:
-                high += leaves
-            else:
-                low -= leaves
-            mark = max(mark, old["price_ticks"])
-    if side == BUY:
-        high += qty
-    else:
-        low -= qty
-    worst = max(abs(high), abs(low))
-    if (high > c["max_position_lots"] or low < -c["max_position_lots"]
-            or worst * float(mark) > c["max_notional_tick_lots"]
-            or worst * c["hedge_lots_per_maker_lot"] > c["max_hedge_position_lots"]
-            or worst * c["hedge_lots_per_maker_lot"] * float(hedge["best_ask_ticks"]) > c["max_hedge_notional_tick_lots"]
-            or c["hedge_lots_per_maker_lot"] * float(hedge_price) < c["hedge_min_notional_tick_lots"]):
         return
     submit(ctx, index, side, qty, price)
 
@@ -500,6 +543,12 @@ def drive(ctx):
             * c["reference_tick_ratio"] / c["hedge_lots_per_maker_lot"])
         if g["gross_pnl_tick_lots"] <= -c["max_gross_loss_tick_lots"]:
             g["loss_latched"] = 1
+        if (abs(g["expected_position_lots"]) * float(a["best_ask_ticks"]) > c["max_notional_tick_lots"]
+                or abs(g["hedge_position_lots"]) * float(b["best_ask_ticks"]) > c["max_hedge_notional_tick_lots"]):
+            g["risk_latched"] = 1
+        for i in range(2):
+            if s["refs"][i]["order_id"] and not quote_safe(ctx, i, s["refs"][i]["price_ticks"]):
+                cancel(ctx, i)
     drive_hedge(ctx, execution_ready)
     if g["quotes_draining"]:
         pull(ctx)
@@ -511,16 +560,16 @@ def drive(ctx):
         pull(ctx)
         if g["error"]:
             cancel(ctx, HEDGE)
-        if (g["stopped"] and not g["error"] and positions_ready and execution_ready
+        if ((g["stopped"] or business_result(s)) and positions_ready and execution_ready
                 and debt(s) == 0 and not s["refs"][HEDGE]["order_id"]
                 and not s["refs"][0]["order_id"] and not s["refs"][1]["order_id"]):
             ctx.complete_stop()
-        return
+        return business_result(s)
     fair = g["fair_ticks"]
     if not np.isfinite(fair) or not 0 < fair <= SAFE:
         fail(s, 109)
         pull(ctx)
-        return
+        return business_result(s)
     venue = ctx.market(c["traded_asset_no"])
     lean = c["skew_bps"] * max(-1.0, min(1.0, g["expected_position_lots"] / c["max_position_lots"]))
     bid = int(np.floor(min(fair * (1.0 - (c["spread_bps"] + lean) / 10000.0), venue["best_ask_ticks"] - 1)))
@@ -528,6 +577,15 @@ def drive(ctx):
     quote_side(ctx, 0, bid)
     if not g["error"]:
         quote_side(ctx, 1, ask)
+    return business_result(s)
+
+
+@njit
+def unit_float(value):
+    result = float(value["coefficient"])
+    for _ in range(value["scale"]):
+        result = result / 10.0
+    return result
 
 
 @njit
@@ -540,6 +598,34 @@ def on_start(ctx):
         fail(s, 101)
         return -1
     if not g["started"]:
+        # Exchange facts come from the object table, never from strategy parameters.
+        pair = ctx.pair(0)
+        hedge_symbol = ctx.symbol(c["reference_asset_no"])
+        tick = unit_float(hedge_symbol["price_tick"])
+        lot = unit_float(hedge_symbol["quantity_lot"])
+        c["hedge_lots_per_maker_lot"] = int(pair["hedge_lots_per_maker_lot"])
+        c["hedge_min_order_lots"] = int(pair["min_hedge_lots"])
+        denominator = int(pair["hedge_ticks_per_maker_tick_den"])
+        if denominator > 0:
+            c["reference_tick_ratio"] = (float(pair["hedge_ticks_per_maker_tick_num"])
+                / float(denominator))
+        if tick > 0.0 and lot > 0.0:
+            c["hedge_min_notional_tick_lots"] = (
+                unit_float(pair["min_hedge_notional_quote"]) / (tick * lot))
+        maker_fee = ctx.fee(c["account_no"])
+        hedge_fee = ctx.fee(c["hedge_account_no"])
+        c["maker_fee_bps"] = float(maker_fee["maker_fee_bps"]) if maker_fee["flags"] & 1 else 0.0
+        c["hedge_fee_bps"] = float(hedge_fee["taker_fee_bps"]) if hedge_fee["flags"] & 1 else 0.0
+        if (c["hedge_lots_per_maker_lot"] <= 0
+                or c["hedge_min_order_lots"] > c["hedge_lots_per_maker_lot"]):
+            fail(s, 103)
+            return -1
+        if c["max_position_lots"] * c["hedge_lots_per_maker_lot"] > c["max_hedge_position_lots"]:
+            fail(s, 104)
+            return -1
+        if c["order_qty_lots"] * c["hedge_lots_per_maker_lot"] > c["max_unhedged_lots"]:
+            fail(s, 105)
+            return -1
         dirty = pos["qty_lots"] != 0 or hp["qty_lots"] != 0
         for order in ctx.active_orders():
             if relevant(c, order["account_no"], order["asset_no"]):
@@ -568,7 +654,7 @@ def on_tick(ctx):
             g["reference_ts_ns"] = max(g["reference_ts_ns"], at)
         elif tick["asset_no"] == c["traded_asset_no"]:
             g["venue_ts_ns"] = max(g["venue_ts_ns"], at)
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
@@ -619,7 +705,7 @@ def on_fill(ctx):
                 fail(s, 104)
             r["terminal"], r["terminal_lots"] = FILLED, cumulative
         finish(s, i, ctx.now)
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
@@ -661,7 +747,7 @@ def on_order(ctx):
             r["terminal"], r["terminal_lots"], r["cancel_sent_ns"] = event["status"], event["cumulative_filled_lots"], 0
             r["next_quote_ns"] = max(r["next_quote_ns"], ctx.now + c["retry_backoff_ns"])
             finish(s, i, ctx.now)
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
@@ -672,29 +758,28 @@ def on_cancel(ctx):
             i = find(ctx.state["refs"], event["order_id"])
             if i >= 0 and event["request_result"] == 2:
                 fail(ctx.state, 110)
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
 def on_position(ctx):
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
 def on_account_state(ctx):
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
 def on_timer(ctx):
-    drive(ctx)
+    return drive(ctx)
 
 
 @njit
 def on_stop(ctx):
     ctx.state["mm"]["stopped"] = 1
-    drive(ctx)
-    return 0
+    return drive(ctx)
 
 
 @njit
@@ -751,18 +836,116 @@ def build(parameters):
         raise ValueError("maker and hedge require separate market and account bindings")
     if p["order_qty_lots"] > p["max_position_lots"] or p["skew_bps"] > p["spread_bps"]:
         raise ValueError("invalid maker size or inventory skew")
-    if p["max_position_lots"] * p["hedge_lots_per_maker_lot"] > p["max_hedge_position_lots"]:
-        raise ValueError("hedge position limit cannot cover the maker position limit")
-    if p["hedge_lots_per_maker_lot"] < p["hedge_min_order_lots"]:
-        raise ValueError("every one-lot maker partial fill must be hedgeable")
-    if p["order_qty_lots"] * p["hedge_lots_per_maker_lot"] > p["max_unhedged_lots"]:
-        raise ValueError("one maker order exceeds the unhedged risk budget")
     state = new_state(state_dtype)
-    for name in config_dtype.names:
-        state[0]["config"][name] = p[name]
+    for name, value in p.items():
+        state[0]["config"][name] = value
     return StrategyDefinition(SPEC, state, {
         "on_start": on_start, "on_tick": on_tick, "on_fill": on_fill,
         "on_order": on_order, "on_cancel": on_cancel, "on_position": on_position,
         "on_account_state": on_account_state, "on_timer": on_timer,
         "on_stop": on_stop, "on_recover": on_recover,
-    })
+    }, business_observation=MM_OBSERVATION)
+
+
+def _test_markets(bid=9990, ask=10010, qty=1000):
+    return [{"asset_no": asset, "best_bid_ticks": bid, "best_ask_ticks": ask,
+             "best_bid_qty_lots": qty, "best_ask_qty_lots": qty} for asset in (0, 1)]
+
+
+def _test_ticks(now_ns):
+    return [{"asset_no": asset, "exchange_ts_ns": now_ns, "receive_ts_ns": now_ns}
+            for asset in (0, 1)]
+
+
+_TEST_ACCOUNTS = [{"account_no": account, "account_epoch": 1, "account_sequence": 1, "state": 4}
+                  for account in (0, 1)]
+_TEST_POSITIONS = [
+    {"account_no": 0, "asset_no": 1, "account_sequence": 1, "qty_lots": 0, "position_side": 0},
+    {"account_no": 1, "asset_no": 0, "account_sequence": 1, "qty_lots": 0, "position_side": 0},
+]
+# Default parameters quote both sides at now=2s: bid 9980 / ask 10022, five maker lots each.
+_TEST_QUOTES = [
+    {"order_id": 1, "account_no": 0, "asset_no": 1, "side": 1, "price_ticks": 9980,
+     "qty_lots": 5, "order_type": 1, "time_in_force": 4, "status": 2, "account_sequence": 1,
+     "created_ts_ns": 2_000_000_000, "updated_ts_ns": 2_000_000_000},
+    {"order_id": 2, "account_no": 0, "asset_no": 1, "side": 2, "price_ticks": 10022,
+     "qty_lots": 5, "order_type": 1, "time_in_force": 4, "status": 2, "account_sequence": 1,
+     "created_ts_ns": 2_000_000_000, "updated_ts_ns": 2_000_000_000},
+]
+
+def _decimal(value):
+    scale = 6
+    return {"coefficient": int(round(value * 10**scale)), "scale": scale}
+
+
+_TEST_OBJECTS = testing.objects(
+    symbols=[
+        dict(local_asset_no=0, asset_id=1, quote_currency_no=1, margin_currency_no=1, flags=1,
+             price_tick=_decimal(0.1), quantity_lot=_decimal(0.01),
+             contract_multiplier=_decimal(1.0), base_delta_per_lot=_decimal(0.01),
+             min_quantity=_decimal(0.01), min_notional_quote=_decimal(5.0),
+             min_qty_lots=1, min_notional_tick_lots=1),
+        dict(local_asset_no=1, asset_id=2, quote_currency_no=1, margin_currency_no=1, flags=1,
+             price_tick=_decimal(0.1), quantity_lot=_decimal(0.01),
+             contract_multiplier=_decimal(1.0), base_delta_per_lot=_decimal(0.01),
+             min_quantity=_decimal(0.01), min_notional_quote=_decimal(5.0),
+             min_qty_lots=1, min_notional_tick_lots=1),
+    ],
+    accounts=[
+        dict(local_account_no=0, account_id=1, quote_currency_no=1, margin_currency_no=1,
+             currency_start=0, currency_count=1, flags=1),
+        dict(local_account_no=1, account_id=2, quote_currency_no=1, margin_currency_no=1,
+             currency_start=0, currency_count=1, flags=1),
+    ],
+    currencies=[
+        dict(local_account_no=0, currency_no=1, flags=1, amount_unit=_decimal(0.000001)),
+    ],
+    pairs=[dict(maker_local_asset_no=1, hedge_local_asset_no=0,
+                maker_local_account_no=0, hedge_local_account_no=1,
+                quote_currency_no=1, flags=1, hedge_lots_per_maker_lot=1,
+                hedge_ticks_per_maker_tick_num=1, hedge_ticks_per_maker_tick_den=1,
+                min_hedge_lots=1, min_hedge_notional_quote=_decimal(0.001),
+                pair_revision=1)],
+    fees=[dict(local_account_no=0, flags=1, maker_fee_bps=0, taker_fee_bps=0),
+          dict(local_account_no=1, flags=1, maker_fee_bps=4, taker_fee_bps=4)],
+    status={"lifecycle": 3},
+)
+
+TESTS = tuple({**scene, "objects": _TEST_OBJECTS} for scene in (
+    {"name": "missing_account_fails_closed", "steps": [{"callback": "on_start", "status": -1}],
+     # Missing public views make the zero-filled accessors set last_error_code to -2; the
+     # strategy itself then latches 101 and fails closed without staging any command.
+     "expect": {"commands.submit_count": 0, "commands.cancel_count": 0,
+                "context.last_error_code": -2, "mm.error": 101, "state_bytes": {"le": 65536}}},
+    {"name": "warmup_then_two_sided_postonly_quotes",
+     "state": {"config.warmup_ns": 1_000_000_000},
+     "steps": [
+         {"callback": "on_start",
+          "views": {"accounts": _TEST_ACCOUNTS, "positions": _TEST_POSITIONS},
+          "expect": {"mm.started": 1, "mm.error": 0, "commands.submit_count": 0}},
+         {"callback": "on_tick", "now_ns": 1_000_000_000,
+          "views": {"ticks": _test_ticks(1_000_000_000), "markets": _test_markets()},
+          "expect": {"commands.submit_count": 0}},
+         {"callback": "on_tick", "now_ns": 2_000_000_000,
+          "views": {"ticks": _test_ticks(2_000_000_000), "markets": _test_markets()}},
+     ],
+     "expect": {"commands.submit_count": 2, "commands.cancel_count": 0, "mm.error": 0}},
+    {"name": "resting_quotes_pulled_inside_requote_throttle_when_hedge_budget_breached",
+     "state": {"config.warmup_ns": 1_000_000_000,
+               "config.max_hedge_notional_tick_lots": 50080},
+     "steps": [
+         {"callback": "on_start",
+          "views": {"accounts": _TEST_ACCOUNTS, "positions": _TEST_POSITIONS}},
+         {"callback": "on_tick", "now_ns": 1_000_000_000,
+          "views": {"ticks": _test_ticks(1_000_000_000), "markets": _test_markets()}},
+         {"callback": "on_tick", "now_ns": 2_000_000_000,
+          "views": {"ticks": _test_ticks(2_000_000_000), "markets": _test_markets()},
+          "expect": {"commands.submit_count": 2}},
+         {"callback": "on_tick", "now_ns": 2_000_000_001,
+          "views": {"ticks": _test_ticks(2_000_000_001),
+                    "markets": _test_markets(10000, 10020),
+                    "active_orders": _TEST_QUOTES}},
+     ],
+     "expect": {"commands.cancel_count": {"ge": 1}, "commands.submit_count": 2,
+                "mm.error": 0}},
+))

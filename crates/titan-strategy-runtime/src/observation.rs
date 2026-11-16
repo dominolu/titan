@@ -124,8 +124,8 @@ impl BusinessObservationSnapshot {
         }
     }
 }
-fn invalid() -> V13LoadError {
-    V13LoadError::Contract("invalid business observation schema or projection")
+fn invalid() -> LoadError {
+    LoadError::Contract("invalid business observation schema or projection")
 }
 fn identifier(value: &str, dotted: bool, max: usize) -> bool {
     !value.is_empty()
@@ -135,11 +135,7 @@ fn identifier(value: &str, dotted: bool, max: usize) -> bool {
             b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || (dotted && b == b'.')
         })
 }
-fn resolve_scalar(
-    schema: &Value,
-    path: &str,
-    state_len: usize,
-) -> Result<ScalarRead, V13LoadError> {
+fn resolve_scalar(schema: &Value, path: &str, state_len: usize) -> Result<ScalarRead, LoadError> {
     let mut fields = schema
         .get("fields")
         .and_then(Value::as_array)
@@ -211,7 +207,7 @@ impl ScalarRead {
         value[..self.size].copy_from_slice(&bytes[self.offset..self.offset + self.size]);
         u64::from_le_bytes(value)
     }
-    fn value(&self, bytes: &[u8]) -> Result<Value, V13LoadError> {
+    fn value(&self, bytes: &[u8]) -> Result<Value, LoadError> {
         let bytes = bytes
             .get(self.offset..self.offset.checked_add(self.size).ok_or_else(invalid)?)
             .ok_or_else(invalid)?;
@@ -267,8 +263,8 @@ impl ScalarRead {
 pub(crate) fn compile_business_observation(
     definition: &BusinessObservationDefinition,
     state_schema: &Value,
-    identity: RecoveryStateIdentityV13,
-) -> Result<CompiledBusinessObservation, V13LoadError> {
+    identity: RecoveryStateIdentity,
+) -> Result<CompiledBusinessObservation, LoadError> {
     let schema = &definition.schema;
     if !identifier(&schema.schema_id, true, 128)
         || schema.schema_version == 0
@@ -279,7 +275,7 @@ pub(crate) fn compile_business_observation(
         return Err(invalid());
     }
     let public = serde_json::to_value(schema).map_err(|_| invalid())?;
-    let canonical = compiler_json_v13(&public);
+    let canonical = compiler_json(&public);
     if canonical.len() > MAX_SCHEMA_BYTES {
         return Err(invalid());
     }
@@ -412,8 +408,8 @@ impl BusinessObservationPublisher {
     pub(crate) fn new(
         plan: Arc<CompiledBusinessObservation>,
         strategy: StrategyHandle,
-        identity: RecoveryStateIdentityV13,
-    ) -> Result<Self, V13LoadError> {
+        identity: RecoveryStateIdentity,
+    ) -> Result<Self, LoadError> {
         if plan.source_schema_hash != identity.hash || plan.source_len != identity.byte_len {
             return Err(invalid());
         }
@@ -506,7 +502,7 @@ impl BusinessObservationPublisher {
         }
         None
     }
-    pub(crate) fn snapshot(&self) -> Result<BusinessObservationSnapshot, V13LoadError> {
+    pub(crate) fn snapshot(&self) -> Result<BusinessObservationSnapshot, LoadError> {
         self.request();
         let Some(frame) = self.read_frame() else {
             return Ok(BusinessObservationSnapshot::unavailable(
@@ -531,7 +527,7 @@ impl CompiledBusinessObservation {
         &self,
         frame: &ObservationFrame,
         generation: u64,
-    ) -> Result<BusinessObservationSnapshot, V13LoadError> {
+    ) -> Result<BusinessObservationSnapshot, LoadError> {
         let mut result = BusinessObservationSnapshot {
             protocol_version: 2,
             schema_id: Some(self.schema.schema_id.clone()),
@@ -611,11 +607,11 @@ impl CompiledBusinessObservation {
     fn project(
         &self,
         point: &StrategyRecoveryPoint,
-    ) -> Result<BusinessObservationSnapshot, V13LoadError> {
+    ) -> Result<BusinessObservationSnapshot, LoadError> {
         let publisher = BusinessObservationPublisher::new(
             Arc::new(self.clone()),
             point.strategy,
-            RecoveryStateIdentityV13 {
+            RecoveryStateIdentity {
                 hash: point.state_schema_hash,
                 byte_len: point.state_bytes.len(),
                 version: point.state_schema_version,
@@ -631,33 +627,6 @@ impl CompiledBusinessObservation {
 mod tests {
     use super::*;
 
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-    thread_local! {static ALLOCATIONS:Cell<Option<usize>>=const {Cell::new(None)};}
-    struct CountingAllocator;
-    unsafe impl GlobalAlloc for CountingAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let _ = ALLOCATIONS.try_with(|count| {
-                if let Some(value) = count.get() {
-                    count.set(Some(value + 1));
-                }
-            });
-            unsafe { System.alloc(layout) }
-        }
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(pointer, layout) };
-        }
-        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            let _ = ALLOCATIONS.try_with(|count| {
-                if let Some(value) = count.get() {
-                    count.set(Some(value + 1));
-                }
-            });
-            unsafe { System.realloc(pointer, layout, size) }
-        }
-    }
-    #[global_allocator]
-    static ALLOCATOR: CountingAllocator = CountingAllocator;
     fn publisher(fields: usize) -> BusinessObservationPublisher {
         let mut declaration = definition("old", "uint64");
         let field = declaration.schema.fields[0].clone();
@@ -877,7 +846,7 @@ mod tests {
             let bytes = [0; 16];
             publisher.publish(&bytes, 1, || 1);
             let count = 100000u64;
-            ALLOCATIONS.with(|value| value.set(Some(0)));
+            crate::test_allocations::ALLOCATIONS.with(|value| value.set(Some(0)));
             let start = Instant::now();
             for sequence in 2..count + 2 {
                 black_box(publisher.publish(black_box(&bytes), sequence, || 1));
@@ -891,7 +860,8 @@ mod tests {
                 black_box(publisher.publish(black_box(&bytes), sequence + count + 2, || 1));
                 elapsed[sequence as usize] = start.elapsed().as_nanos();
             }
-            let allocations = ALLOCATIONS.with(|value| value.replace(None).unwrap());
+            let allocations =
+                crate::test_allocations::ALLOCATIONS.with(|value| value.replace(None).unwrap());
             assert_eq!(allocations, 0, "publication must not allocate");
             elapsed.sort_unstable();
             println!(
@@ -932,8 +902,8 @@ mod tests {
     fn schema(name: &str, offset: usize, kind: &str) -> Value {
         json!({"fields":[{"name":name,"offset":offset,"itemsize":8,"type":kind,"shape":[]}]})
     }
-    fn identity(hash: u8) -> RecoveryStateIdentityV13 {
-        RecoveryStateIdentityV13 {
+    fn identity(hash: u8) -> RecoveryStateIdentity {
+        RecoveryStateIdentity {
             version: 1,
             hash: [hash; 32],
             byte_len: 16,

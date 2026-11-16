@@ -9,6 +9,7 @@ import numpy as np
 from numba import njit
 
 from titan_strategy.definition import Capability, EventSubscription, StrategyDefinition, StrategySpec
+from titan_strategy import testing
 from titan_strategy.parameters import EnumParam, FloatParam, IntParam
 from titan_strategy.observation import BusinessObservationSpec, Equals, ObservationField
 from titan_strategy.state import array, float64, int64, new_state, record, uint8, uint32, uint64
@@ -127,7 +128,6 @@ SPEC = StrategySpec(
         integer("flatten_timeout_ns", 120_000_000_000, 1, 10**15),
         integer("retry_backoff_ns", 500_000_000, 1, 10**15),
         integer("cancel_retry_limit", 3, 1, 100), integer("max_rejections", 5, 1, 1000),
-        FloatParam("quote_units_per_tick_lot", required=False, default=1.0, minimum=0.0, exclusive_minimum=True),
         FloatParam("margin_reserve_pct", required=False, default=5.0, minimum=0.0, maximum=100.0),
     ),
     subscriptions=tuple(
@@ -143,7 +143,7 @@ SPEC = StrategySpec(
             (EventKind.TIMER, "on_timer", EventQos.RELIABLE_ORDERED),
         )
     ),
-    capabilities=Capability.MARKET_DATA | Capability.ACCOUNT_DATA | Capability.ORDER_EXECUTION | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS | Capability.PAUSE_SAFE,
+    capabilities=Capability.MARKET_DATA | Capability.ACCOUNT_DATA | Capability.ORDER_EXECUTION | Capability.TIMER | Capability.STOP_BARRIER | Capability.RECOVERY_ORDER_RESULTS | Capability.PAUSE_SAFE | Capability.OBJECT_CONTEXT,
 )
 
 
@@ -714,6 +714,14 @@ def drive(ctx):
 
 
 @njit
+def decimal_float(value):
+    result = float(value["coefficient"])
+    for _ in range(value["scale"]):
+        result = result / 10.0
+    return result
+
+
+@njit
 def on_start(ctx):
     s, c, g = ctx.state, ctx.state["config"], ctx.state["grid"]
     account = ctx.account(c["account_no"])
@@ -725,6 +733,17 @@ def on_start(ctx):
             or balance["account_no"] != c["account_no"] or balance["currency_no"] != c["quote_currency_no"]):
         fail(s, 701, True)
         return -1
+    symbol = ctx.symbol(c["asset_no"])
+    if (symbol["local_asset_no"] != c["asset_no"]
+            or symbol["quote_currency_no"] != c["quote_currency_no"]):
+        fail(s, 705, True)
+        return -1
+    # One tick x one lot in quote units is an exchange fact: quote_per_base x tick x lot, read as
+    # decimals from the object table instead of a strategy parameter.
+    quote_per_base = decimal_float(symbol["price_tick"])
+    lot_units = decimal_float(symbol["quantity_lot"])
+    multiplier = decimal_float(symbol["contract_multiplier"])
+    c["quote_units_per_tick_lot"] = max(quote_per_base * lot_units * multiplier, 1e-18)
     qty = pos["qty_lots"]
     if (qty > g["long_limit_lots"] or qty < g["short_limit_lots"]
             or (qty and (pos["average_price_ticks"] <= 0
@@ -995,6 +1014,9 @@ def build(parameters):
         "stop_action": ("cancel", "flatten"), "start_mode": ("strict", "takeover"),
     }
     for name in c.dtype.names:
+        if name not in p:
+            # Derived exchange facts are filled from ctx.symbol in on_start.
+            continue
         c[name] = enums[name].index(p[name]) if name in enums else p[name]
     if p["size_mode"] == "fixed_qty":
         min_qty = max_qty = p["order_qty_lots"]
@@ -1036,7 +1058,27 @@ def build(parameters):
     return StrategyDefinition(SPEC, state, handlers, {"description": "Bounded linear-contract grid; platform owns net accounting"}, business_observation=GRID_OBSERVATION)
 
 
-TESTS = (
-    {"name": "missing_account_fails_closed", "steps": [{"callback": "on_start", "status": -1}],
-     "expect": {"commands.submit_count": 0, "commands.cancel_count": 0, "context.last_error_code": -2, "grid.last_error": 701, "state_bytes": {"le": 65536}}},
+_TEST_OBJECTS = testing.objects(
+    symbols=[dict(
+        local_asset_no=0, asset_id=1, quote_currency_no=0, margin_currency_no=0, flags=1,
+        price_tick={"coefficient": 1, "scale": 0},
+        quantity_lot={"coefficient": 1, "scale": 0},
+        contract_multiplier={"coefficient": 1, "scale": 0},
+        base_delta_per_lot={"coefficient": 1, "scale": 0},
+        min_quantity={"coefficient": 1, "scale": 0},
+        min_notional_quote={"coefficient": 5, "scale": 0},
+        min_qty_lots=1, min_notional_tick_lots=5,
+    )],
+    accounts=[dict(local_account_no=0, account_id=1, quote_currency_no=0,
+                   margin_currency_no=0, currency_start=0, currency_count=1, flags=1)],
+    currencies=[dict(local_account_no=0, currency_no=0, flags=1,
+                     amount_unit={"coefficient": 1, "scale": 6})],
+    status={"lifecycle": 3},
 )
+
+TESTS = ({**{"name": "missing_account_fails_closed",
+             "steps": [{"callback": "on_start", "status": -1}],
+             "expect": {"commands.submit_count": 0, "commands.cancel_count": 0,
+                        "context.last_error_code": -2, "grid.last_error": 701,
+                        "state_bytes": {"le": 65536}}},
+          },)

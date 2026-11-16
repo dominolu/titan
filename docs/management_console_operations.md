@@ -8,7 +8,7 @@
 
 ```sh
 cargo build --locked -p titan-cli --bins
-cargo rustc --locked -p hftbacktest --example v13_grid_history -- -C opt-level=2
+cargo rustc --locked -p hftbacktest --example grid_history -- -C opt-level=2
 target/debug/titan console export-types --output web/console/src/generated
 cd web/console
 pnpm install --frozen-lockfile
@@ -127,13 +127,13 @@ worker 的 Unix IPC 目录为 `0700`、socket 为 `0600`，请求还绑定令牌
 
 `scripts/management_observation_smoke.py --browser` 在编译服务器验证模拟账户事实的端到端转发、权限、过期、告警和日志。`scripts/management_live_readonly.py` 仅用于已授权实盘节点，使用已验证二进制执行 90 秒只读验收；它以只读方式读取该节点既有账户后端，凭据及完整快照不离开节点，最终输出脱敏证据。脚本包含固定的账户 ID 1 与目标品种保护，不应挪到编译服务器执行真实账户验证。
 
-## M3 签名部署与交易控制
+## M3 产物部署与交易控制
 
 实盘 N 在同一节点协议上接收 Deploy、Start、Pause、Resume、Stop 和 Recover。A 与 N 均须显式启用 `live_control=true`，用户须具有目标节点、live 环境、账户的 operator 权限。编译节点保持交易能力关闭；只读用户继续使用同一 REST/SSE 查询。
 
-配置一个稳定的 `node.bindings.<id>.account_identity`，同一真实账户在各节点必须使用同一个规范身份；它参与 A 的账户/品种占用和订单命名空间占用。该字段须满足资源 ID 规则。N 的 `artifact_sources.<build-node>` 指向已认证的构建节点协议，填写 endpoint、token_env 和 backtest 环境；不能提供任意下载 URL。编译节点配置 `signing_key` 和 `signing_key_id`，私钥仅保留在编译服务器。实盘 runtime 的 `strategy_service.trusted_ed25519_keys` 登记公钥，并声明 `managed_by_console=true`；直接 core-run 会拒绝此配置。
+配置一个稳定的 `node.bindings.<id>.account_identity`，同一真实账户在各节点必须使用同一个规范身份；它参与 A 的账户/品种占用和订单命名空间占用。该字段须满足资源 ID 规则。N 的 `artifact_sources.<build-node>` 指向已认证的构建节点协议，填写 endpoint、token_env 和 backtest 环境；不能提供任意下载 URL。实盘 runtime 须声明 `managed_by_console=true`；直接 core-run 会拒绝此配置。
 
-部署固定签名制品、运行配置摘要和静态绑定。N 复用 E 的原生加载器校验签名、摘要、ABI、目标和通用 CPU 配置，通过暂存和原子发布落地。配置漂移后须重新部署。运行时不依赖 Python；恢复不重新编译策略。制品页显示不可变部署，启动确认显示账户、品种、敞口上限、价格保护、期限和制品中的停止方式。
+部署固定签名制品、运行配置摘要和静态绑定。N 复用 E 的原生加载器校验摘要、ABI、目标和通用 CPU 配置，通过暂存和原子发布落地。配置漂移后须重新部署。运行时不依赖 Python；恢复不重新编译策略。制品页显示不可变部署，启动确认显示账户、品种、敞口上限、价格保护、期限和制品中的停止方式。
 
 本期受控配置采用单账户、单品种、local account/asset 0 的原生策略。平台按精确 tick/lot/合约乘数转换报价金额上限，E 同时约束总持仓、旧挂单剩余量和同批新增委托；对冲腿按绝对量分别计入，旧挂单按各自限价保守计价。下单须具有新鲜 BBO 和价格偏离证明；意图先持久化并 flush，再复查期限后派单。减少风险的委托仍受价格保护。账户以 ObserveAll 接收全部事实，关闭账户时使用 LeaveOpen，不代替其他所有者撤单。
 
@@ -143,7 +143,7 @@ Recover 必须显式引用 N 登记的 checkpoint 文件 SHA256 和旧运行代�
 
 控制回执超时先查询同一 E operation。只读回执查询不会补执行动作；缺少 E 的调用前/后证据时保留 unknown。A/N 重启通过 owner token、PID/启动身份和固定 socket 重新查询原 worker，不能重新启动它。恢复未成功时保留旧账户占用，只有明确的“从未尝试激活”证据可释放失败 Start 的占用。
 
-编译服务器先运行 `scripts/management_control_smoke.py`（loopback 模拟交易所、实际签名制品/A/N/E）和 `--browser` 页面验收。真实账户验收脚本 `scripts/management_live_control.py` 仅在指定实盘节点运行，要求编译服务器的冻结 release 和 SHA256；内置 gate/ID 1/BTC、100 USDT、50 bps、120 秒、最小数量及前后残留核对。它不是长期策略入口。实盘部署完成后关闭本轮 A/N，不注册自动重启交易服务。
+编译服务器先运行 `scripts/management_control_smoke.py`（loopback 模拟交易所、实际编译制品/A/N/E）和 `--browser` 页面验收。真实账户验收脚本 `scripts/management_live_control.py` 仅在指定实盘节点运行，要求编译服务器的冻结 release 和 SHA256；内置 gate/ID 1/BTC、100 USDT、50 bps、120 秒、最小数量及前后残留核对。它不是长期策略入口。实盘部署完成后关闭本轮 A/N，不注册自动重启交易服务。
 
 ## 历史与对象后端（M3）
 

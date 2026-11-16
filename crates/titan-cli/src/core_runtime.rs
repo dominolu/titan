@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeSet, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -20,10 +20,10 @@ use titan_market_service::{
     MarketCoreConfig, MarketServiceCore, MarketSourceDefinition,
 };
 use titan_strategy_runtime::{
-    NativeV13LoaderFactory, NativeV13RuntimeFactory, StrategyAdminService, StrategyCoreConfig,
+    NativeLoaderFactory, NativeRuntimeFactory, StrategyAdminService, StrategyCoreConfig,
     StrategyDataMode, StrategyDefinition, StrategyLoaderRegistry, StrategyOperationState,
     StrategyRecoveryPolicy, StrategyRuntimeFactoryRegistry, StrategyServiceCore,
-    StrategyServiceDependencies, V13TrustPolicy,
+    StrategyServiceDependencies,
 };
 
 pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 1;
@@ -122,10 +122,49 @@ pub struct StrategyServiceConfig {
     pub checkpoint_root: Option<PathBuf>,
     #[serde(default)]
     pub recovery_storage: Option<titan_strategy_runtime::SqliteRecoveryConfig>,
-    #[serde(default, alias = "allow_unsigned_artifacts")]
-    pub allow_unsigned_strategies: bool,
+    /// Startup-fetched metadata snapshot used to build V14 object tables. Relative paths resolve
+    /// against the runtime config directory. The snapshot digest is verified before use.
     #[serde(default)]
-    pub trusted_ed25519_keys: BTreeMap<String, String>,
+    pub metadata_snapshot: Option<PathBuf>,
+    /// Fetch instrument metadata from the venue's public endpoint at startup instead of reading a
+    /// file. Only venues with an implemented transport are accepted; the current set is
+    /// `hyperliquid` (public `/info`, no credentials). Mutually exclusive with `metadata_snapshot`.
+    #[serde(default)]
+    pub metadata_source: Option<MetadataSourceConfig>,
+}
+
+/// Where the startup metadata snapshot comes from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetadataSourceConfig {
+    /// Gate.io USDT perpetuals. Publishes tick, size step, contract multiplier and minimum size,
+    /// so its symbols are the ones that can currently enter multi-leg admission.
+    Gate,
+    /// OKX linear swaps. Publishes tick, contract value and minimum size.
+    Okx,
+    /// Binance USDⓈ-M perpetuals. Publishes tick, step size, minimum quantity and notional.
+    Binance,
+    /// Hyperliquid mainnet public `/info`. Publishes size steps and multiplier but no price tick,
+    /// so its instruments are refused at admission rather than run on a guessed tick.
+    Hyperliquid,
+    /// Hyperliquid testnet public `/info`.
+    HyperliquidTestnet,
+}
+
+impl MetadataSourceConfig {
+    fn transport(self) -> Arc<dyn titan_strategy_runtime::MetadataTransport> {
+        match self {
+            Self::Gate => Arc::new(crate::metadata_transport::GateFuturesMetadataTransport),
+            Self::Okx => Arc::new(crate::metadata_transport::OkxSwapMetadataTransport),
+            Self::Binance => Arc::new(crate::metadata_transport::BinanceFuturesMetadataTransport),
+            Self::Hyperliquid => {
+                Arc::new(crate::metadata_transport::HyperliquidMetadataTransport::mainnet())
+            }
+            Self::HyperliquidTestnet => {
+                Arc::new(crate::metadata_transport::HyperliquidMetadataTransport::testnet())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,21 +201,16 @@ pub struct AdaptedConfiguration {
     strategy_bootstrap: Option<StrategyBootstrap>,
 }
 
-impl AdaptedConfiguration {
-    pub fn v13_trust_policy(&self) -> V13TrustPolicy {
-        self.strategy_bootstrap
-            .as_ref()
-            .map(|bootstrap| V13TrustPolicy {
-                require_signature: bootstrap.config.require_strategy_signature,
-                ed25519_keys: bootstrap.config.trusted_strategy_keys.clone(),
-            })
-            .unwrap_or_default()
-    }
-}
-
 #[derive(Clone)]
 struct StrategyBootstrap {
     config: StrategyCoreConfig,
+    /// Resolved snapshot path retained so the service can re-read and attribute failures to the
+    /// strategy that needed it. The file is validated once here and again on every read.
+    metadata_snapshot_path: Option<PathBuf>,
+    /// Venue whose public endpoint supplies the snapshot, when configured instead of a file.
+    metadata_source: Option<MetadataSourceConfig>,
+    /// Symbols the venue must answer for: every enabled market source binding.
+    metadata_requests: Vec<titan_strategy_runtime::MetadataRequest>,
 }
 
 #[derive(Debug, Error)]
@@ -300,16 +334,25 @@ impl ConfigurationAdapter {
                 "account definitions require account_service.secret_root".into(),
             ));
         }
+        if config.strategy_service.metadata_snapshot.is_some()
+            && config.strategy_service.metadata_source.is_some()
+        {
+            return Err(ConfigurationError::Invalid(
+                "strategy_service.metadata_snapshot and metadata_source cannot both be configured"
+                    .into(),
+            ));
+        }
         let strategy_bootstrap = adapt_strategies(
             &mut config.strategies,
             config_directory,
             config.strategy_service,
+            &config.market_sources,
         )?;
         validate_core_live_strategy_profile(&config.strategies)?;
-        validate_strategy_unit_consistency(
-            &config.strategies,
+        validate_instrument_definitions(
             &config.market_sources,
             &config.accounts,
+            &config.strategies,
         )?;
         Ok(AdaptedConfiguration {
             event_engine: config.event_engine,
@@ -604,13 +647,15 @@ impl TradingRuntime {
         let strategy = if let Some(bootstrap) = strategy_bootstrap {
             let loaders = Arc::new(StrategyLoaderRegistry::default());
             loaders
-                .register(Arc::new(NativeV13LoaderFactory))
+                .register(Arc::new(NativeLoaderFactory))
                 .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
             let runtimes = Arc::new(StrategyRuntimeFactoryRegistry::default());
             runtimes
-                .register(Arc::new(NativeV13RuntimeFactory))
+                .register(Arc::new(NativeRuntimeFactory))
                 .map_err(|error| ApplicationRuntimeError::Strategy(error.to_string()))?;
             let account_query: Arc<dyn AccountQueryService> = account.clone();
+            // Built before `bootstrap.config` is moved into the service.
+            let provider = metadata_provider(&bootstrap);
             Some(Arc::new(
                 StrategyServiceCore::new(
                     bootstrap.config,
@@ -620,6 +665,8 @@ impl TradingRuntime {
                         accounts: account_query,
                         execution_dispatcher: Some(execution.dispatcher()),
                         execution_observer: Some(Arc::new(TracingExecutionObserver)),
+                        metadata_snapshot: None,
+                        metadata_provider: provider,
                     },
                     loaders,
                     runtimes,
@@ -1080,18 +1127,85 @@ fn validate_account_source_capacity(
     Ok(())
 }
 
+/// Builds the configured startup metadata provider: a verified file, a venue fetch, or none.
+///
+/// The venue request list is the set of symbols the configured market sources bind, frozen at
+/// configuration time. The provider re-fetches on every instance creation, so a venue that changes
+/// its metadata mid-run makes the affected instance fail closed instead of silently reusing units.
+fn metadata_provider(
+    bootstrap: &StrategyBootstrap,
+) -> Option<Arc<dyn titan_strategy_runtime::MetadataSnapshotProvider>> {
+    match (
+        bootstrap.metadata_snapshot_path.clone(),
+        bootstrap.metadata_source,
+    ) {
+        (Some(path), _) => Some(Arc::new(FileMetadataSnapshotProvider { path })),
+        // Without a bound symbol there is nothing to ask the venue, and an empty snapshot would
+        // replace the "no object context" state with an empty-identity table for every instance.
+        (None, Some(source)) if !bootstrap.metadata_requests.is_empty() => Some(Arc::new(
+            titan_strategy_runtime::VenueMetadataProvider::new(
+                source.transport(),
+                bootstrap.metadata_requests.clone(),
+                titan_strategy_runtime::MetadataFetchPolicy::default(),
+            ),
+        )),
+        (None, Some(_)) => None,
+        (None, None) => None,
+    }
+}
+
+/// File-backed provider for the startup metadata snapshot. Re-validates on every call so a file
+/// that changes after startup cannot silently feed different units into a new instance.
+pub(crate) struct FileMetadataSnapshotProvider {
+    pub path: PathBuf,
+}
+
+impl titan_strategy_runtime::MetadataSnapshotProvider for FileMetadataSnapshotProvider {
+    fn snapshot(&self) -> Result<Arc<titan_market_service::MetadataSnapshot>, String> {
+        load_metadata_snapshot_file(&self.path).map_err(|error| error.to_string())
+    }
+}
+
+/// Loads and verifies one startup metadata snapshot. The digest is part of the identity that later
+/// feeds `ObjectTable::metadata_snapshot_digest`, so a mismatched file is refused instead of trusted.
+pub(crate) fn load_metadata_snapshot_file(
+    path: &Path,
+) -> Result<Arc<titan_market_service::MetadataSnapshot>, ConfigurationError> {
+    let bytes = std::fs::read(path).map_err(|source| ConfigurationError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let snapshot: titan_market_service::MetadataSnapshot =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            ConfigurationError::Invalid(format!(
+                "metadata snapshot {} is not valid JSON: {error}",
+                path.display()
+            ))
+        })?;
+    if !snapshot.digest_matches() {
+        return Err(ConfigurationError::Invalid(format!(
+            "metadata snapshot {} digest does not match its contents",
+            path.display()
+        )));
+    }
+    if snapshot.schema_version != 1 {
+        return Err(ConfigurationError::Invalid(format!(
+            "metadata snapshot {} has unsupported schema version {}",
+            path.display(),
+            snapshot.schema_version
+        )));
+    }
+    Ok(Arc::new(snapshot))
+}
+
 fn adapt_strategies(
     strategies: &mut [StrategyDefinition],
     config_directory: &Path,
     bootstrap: StrategyServiceConfig,
+    market_sources: &[MarketSourceDefinition],
 ) -> Result<Option<StrategyBootstrap>, ConfigurationError> {
     if strategies.is_empty() {
         return Ok(None);
-    }
-    if !bootstrap.allow_unsigned_strategies && bootstrap.trusted_ed25519_keys.is_empty() {
-        return Err(ConfigurationError::Invalid(
-            "strategy_service requires trusted_ed25519_keys unless allow_unsigned_strategies is explicitly enabled for development".into(),
-        ));
     }
     let mut allowed_roots = Vec::with_capacity(bootstrap.allowed_strategy_roots.len());
     for root in bootstrap.allowed_strategy_roots {
@@ -1110,6 +1224,35 @@ fn adapt_strategies(
         return Err(ConfigurationError::Invalid(
             "checkpoint_root and recovery_storage cannot both be configured".into(),
         ));
+    }
+    let metadata_source = bootstrap.metadata_source;
+    // The venue must answer for every symbol a configured market source binds: those are the only
+    // symbols an object table can reference.
+    let metadata_requests = metadata_source.map(|_| {
+        market_sources
+            .iter()
+            .filter(|source| source.enabled)
+            .flat_map(|source| {
+                source.instruments.iter().map(move |instrument| {
+                    titan_strategy_runtime::MetadataRequest {
+                        local_asset_no: instrument.asset_id.0,
+                        source_key: source.source_key.clone(),
+                        native_symbol: instrument.native_symbol.clone(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let metadata_snapshot_path = match bootstrap.metadata_snapshot.as_ref() {
+        Some(path) => Some(canonical_config_path(
+            config_directory,
+            path,
+            "metadata snapshot",
+        )?),
+        None => None,
+    };
+    if let Some(path) = metadata_snapshot_path.as_ref() {
+        load_metadata_snapshot_file(path)?;
     }
     let recovery_storage = if let Some(mut storage) = bootstrap.recovery_storage {
         storage
@@ -1164,10 +1307,15 @@ fn adapt_strategies(
                 definition.strategy_key
             )));
         }
-        if definition.strategy_file.loader_type.as_ref() != "native-v13" {
+        if definition.strategy_file.loader_type.as_ref() != "native" {
+            let hint = if definition.strategy_file.loader_type.as_ref() == "native-v13" {
+                "; migrate: recompile the strategy and set loader_type = \"native\""
+            } else {
+                ""
+            };
             return Err(ConfigurationError::Invalid(format!(
-                "strategy {} uses unsupported production loader {}",
-                definition.strategy_key, definition.strategy_file.loader_type
+                "strategy {} uses unsupported production loader {}{}",
+                definition.strategy_key, definition.strategy_file.loader_type, hint
             )));
         }
         let relative = definition
@@ -1207,36 +1355,14 @@ fn adapt_strategies(
             .into(),
         checkpoint_root,
         recovery_storage,
-        require_strategy_signature: !bootstrap.allow_unsigned_strategies,
-        trusted_strategy_keys: bootstrap
-            .trusted_ed25519_keys
-            .into_iter()
-            .map(|(key_id, encoded)| {
-                decode_ed25519_key(&encoded)
-                    .map(|key| (Arc::from(key_id), key))
-                    .map_err(|message| {
-                        ConfigurationError::Invalid(format!(
-                            "invalid trusted Ed25519 key: {message}"
-                        ))
-                    })
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?,
         ..StrategyCoreConfig::default()
     };
-    Ok(Some(StrategyBootstrap { config }))
-}
-
-fn decode_ed25519_key(value: &str) -> Result<[u8; 32], &'static str> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.len() != 64 {
-        return Err("public key must contain 64 hexadecimal characters");
-    }
-    let mut output = [0_u8; 32];
-    for (index, byte) in output.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
-            .map_err(|_| "public key contains non-hexadecimal characters")?;
-    }
-    Ok(output)
+    Ok(Some(StrategyBootstrap {
+        metadata_snapshot_path,
+        metadata_source,
+        metadata_requests: metadata_requests.unwrap_or_default(),
+        config,
+    }))
 }
 
 fn canonical_config_path(
@@ -1280,85 +1406,70 @@ fn validate_core_live_strategy_profile(
     Ok(())
 }
 
-/// Rejects live configurations where the same asset id is priced in different tick/lot units by
-/// the Market and Account definitions.
+/// Rejects any configuration whose instrument units cannot be proven consistent.
 ///
-/// Strategies consume integer ticks/lots from the market batch and send integer ticks/lots through
-/// the account execution path. If the two sides are configured with different units, the strategy
-/// believes it is quoting one price/quantity while the account adapter converts to another. This
-/// validation only checks pairs that a strategy actually binds; unrelated definitions are ignored.
-fn validate_strategy_unit_consistency(
-    strategies: &[StrategyDefinition],
+/// The arithmetic lives in `titan_strategy_runtime::validate_instrument_units` so `core-run`,
+/// `titan instruments verify`, the management path and the Python preflight share one verdict
+/// instead of each re-deriving base deltas. This wrapper only maps the first failure into the
+/// configuration error surface.
+fn validate_instrument_definitions(
     market_sources: &[MarketSourceDefinition],
     accounts: &[AccountDefinition],
+    strategies: &[StrategyDefinition],
 ) -> Result<(), ConfigurationError> {
-    for definition in strategies {
-        if !definition.enabled {
-            continue;
-        }
-        let mut market_units = Vec::new();
-        for binding in definition.markets.iter() {
-            let Some(source) = market_sources
-                .iter()
-                .find(|source| source.source_key == binding.source_key)
-            else {
-                // Missing market sources are reported with a dedicated runtime error during
-                // dependency resolution; this validation only checks the units that exist.
-                continue;
-            };
-            let Some(instrument) = source
-                .instruments
-                .iter()
-                .find(|instrument| instrument.asset_id.0 == binding.asset_id)
-            else {
-                return Err(ConfigurationError::Invalid(format!(
-                    "strategy {} binds asset {} but market source {} has no matching instrument",
-                    definition.strategy_key, binding.asset_id, binding.source_key
-                )));
-            };
-            market_units.push((
-                binding.asset_id,
-                instrument.price_tick,
-                instrument.quantity_lot,
-            ));
-        }
-        for account_binding in definition.accounts.iter() {
-            let Some(account) = accounts
-                .iter()
-                .find(|account| account.account_key == account_binding.account_key)
-            else {
-                continue;
-            };
-            for tradable in account_binding.tradable_assets.iter() {
-                let Some(&(_, market_price, market_lot)) = market_units
-                    .iter()
-                    .find(|(asset_id, _, _)| *asset_id == tradable.asset_id)
-                else {
-                    continue;
-                };
-                let Some(instrument) = account
-                    .instruments
-                    .iter()
-                    .find(|instrument| instrument.asset_id.0 == tradable.asset_id)
-                else {
-                    return Err(ConfigurationError::Invalid(format!(
-                        "strategy {} trades asset {} on account {} but the account definition has no matching instrument",
-                        definition.strategy_key, tradable.asset_id, account_binding.account_key
-                    )));
-                };
-                if instrument.price_tick != market_price || instrument.quantity_lot != market_lot {
-                    return Err(ConfigurationError::Invalid(format!(
-                        "strategy {} asset {} unit mismatch: market price={market_price} lot={market_lot}, account price={} lot={}",
-                        definition.strategy_key,
-                        tradable.asset_id,
-                        instrument.price_tick,
-                        instrument.quantity_lot
-                    )));
-                }
-            }
-        }
+    let report =
+        titan_strategy_runtime::validate_instrument_units(market_sources, accounts, strategies);
+    if let Some(error) = report.errors.first() {
+        return Err(ConfigurationError::Invalid(format!(
+            "{} [{}] {}",
+            error.code(),
+            error.subject(),
+            error.detail()
+        )));
     }
     Ok(())
+}
+
+/// Parses a runtime TOML and validates its instrument units without starting any service.
+///
+/// This is the `titan instruments verify` entry point: it is offline, read-only and refuses the
+/// same configurations `core-run` refuses.
+pub fn verify_instrument_units_toml(
+    path: impl AsRef<Path>,
+    metadata: Option<&titan_market_service::MetadataSnapshot>,
+) -> Result<titan_strategy_runtime::InstrumentValidationReport, ConfigurationError> {
+    let path = path.as_ref();
+    let contents = std::fs::read_to_string(path).map_err(|source| ConfigurationError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let config = toml::from_str::<ApplicationConfig>(&contents).map_err(|source| {
+        ConfigurationError::Toml {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    if config.schema_version != APPLICATION_CONFIG_SCHEMA_VERSION {
+        return Err(ConfigurationError::UnsupportedSchema(config.schema_version));
+    }
+    validate_runtime_definitions(&config.market_sources, &config.accounts)?;
+    for strategy in config.strategies.iter().filter(|strategy| strategy.enabled) {
+        titan_strategy_runtime::validate_execution_binding(
+            &strategy.runtime,
+            &strategy.markets,
+            &strategy.accounts,
+            None,
+        )
+        .map_err(|code| ConfigurationError::Invalid(format!("{} {code}", strategy.strategy_key)))?;
+    }
+    Ok(
+        titan_strategy_runtime::validate_instrument_units_with_metadata(
+            &config.market_sources,
+            &config.accounts,
+            &config.strategies,
+            metadata,
+        ),
+    )
 }
 
 fn event_error(error: titan_event_engine::EngineError) -> CoreError {
@@ -1404,6 +1515,45 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// The V14 `fee` domain is fed from the operator binding, so the TOML shape must parse: a
+    /// binding without `fees` stays valid (no fee record), and a declared one carries both rates.
+    #[test]
+    fn account_fees_are_optional_but_both_rates_travel_together() {
+        let inline = r#"
+schema_version = 1
+[[strategies]]
+strategy_key = "fees"
+strategy_id = 1
+package = { loader_type = "native", uri = "file://unused.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+markets = []
+accounts = [
+  { local_account_no = 0, account_key = "maker", tradable_assets = [], fees = { maker_fee_bps = -3, taker_fee_bps = 5 } },
+  { local_account_no = 1, account_key = "hedge", tradable_assets = [] },
+]
+risk_scope = "test"
+runtime = { async_lane_capacity = 8192, critical_reserve = 1024, reliable_pending_capacity = 256, worker_policy = "spin_sleep", timer_capacity = 16, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+recovery = "fresh"
+enabled = true
+definition_version = 1
+"#;
+        let config: ApplicationConfig = toml::from_str(inline).expect("fee bindings parse");
+        let accounts = &config.strategies[0].accounts;
+        let declared = accounts[0].fees.expect("maker declares rates");
+        assert_eq!(declared.maker_fee_bps, -3, "negative is a maker rebate");
+        assert_eq!(declared.taker_fee_bps, 5);
+        assert!(
+            accounts[1].fees.is_none(),
+            "an undeclared account must stay absent, never default to zero"
+        );
+
+        // A half-declared fee (missing taker) is a configuration error, not a zero-filled rate.
+        let half = inline.replace(", taker_fee_bps = 5 ", " ");
+        assert!(
+            toml::from_str::<ApplicationConfig>(&half).is_err(),
+            "a partial fee declaration must be refused"
+        );
+    }
+
     fn application() -> ApplicationConfig {
         ApplicationConfig {
             managed_by_console: false,
@@ -1420,6 +1570,62 @@ mod tests {
     }
 
     #[test]
+    fn metadata_snapshot_and_venue_source_cannot_both_be_configured() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = directory.path().join("metadata.json");
+        std::fs::write(&snapshot, b"{}").unwrap();
+        let mut config = application();
+        config.strategy_service.metadata_source = Some(MetadataSourceConfig::Hyperliquid);
+        config.strategy_service.metadata_snapshot = Some(snapshot);
+        let error = match ConfigurationAdapter::adapt(config, directory.path()) {
+            Ok(_) => panic!("a snapshot file and a venue source must not coexist"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("cannot both be configured"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn venue_metadata_requests_cover_every_enabled_market_binding() {
+        // The provider is asked for exactly the symbols a configured market source binds; that is
+        // the set an object table can reference.
+        let requests: Vec<titan_strategy_runtime::MetadataRequest> = [MarketSourceDefinition {
+            source_key: Arc::from("hyperliquid"),
+            connector_type: Arc::from("hyperliquid"),
+            connector_config: Arc::from(&b""[..]),
+            instruments: Arc::from([titan_market_service::MarketInstrumentBinding {
+                native_symbol: Arc::from("BTC"),
+                asset_id: titan_market_service::AssetId(1),
+                price_tick: "0.1".parse().unwrap(),
+                quantity_lot: "0.00001".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+                min_quantity: None,
+                min_notional_quote: None,
+                linear_quote_currency: Some(Arc::from("USDC")),
+            }]),
+            enabled: true,
+            definition_version: 1,
+        }]
+        .iter()
+        .filter(|source| source.enabled)
+        .flat_map(|source| {
+            source.instruments.iter().map(move |instrument| {
+                titan_strategy_runtime::MetadataRequest {
+                    local_asset_no: instrument.asset_id.0,
+                    source_key: source.source_key.clone(),
+                    native_symbol: instrument.native_symbol.clone(),
+                }
+            })
+        })
+        .collect();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].native_symbol.as_ref(), "BTC");
+        assert_eq!(requests[0].source_key.as_ref(), "hyperliquid");
+    }
+
+    #[test]
     fn adapter_accepts_static_services_and_rejects_zero_capacity() {
         let config = application();
         let adapted = ConfigurationAdapter::adapt(config, Path::new(".")).unwrap();
@@ -1432,22 +1638,6 @@ mod tests {
             ConfigurationAdapter::adapt(config, Path::new(".")),
             Err(ConfigurationError::Invalid(_))
         ));
-    }
-
-    #[test]
-    fn trusted_ed25519_keys_are_strict_and_rotation_friendly() {
-        assert_eq!(decode_ed25519_key(&"01".repeat(32)).unwrap(), [1_u8; 32]);
-        assert_eq!(
-            decode_ed25519_key(&format!("0x{}", "ab".repeat(32))).unwrap(),
-            [0xab; 32]
-        );
-        assert!(decode_ed25519_key("00").is_err());
-        assert!(decode_ed25519_key(&"zz".repeat(32)).is_err());
-
-        let mut keys = BTreeMap::new();
-        keys.insert("current".to_owned(), "01".repeat(32));
-        keys.insert("next".to_owned(), "02".repeat(32));
-        assert_eq!(keys.len(), 2);
     }
 
     #[test]
@@ -1472,9 +1662,70 @@ mod tests {
     }
 
     #[test]
-    fn pair_arb_v13_runtime_template_deserializes_human_readable_byte_fields() {
+    fn startup_metadata_snapshot_is_digest_and_schema_verified() {
+        let directory = std::env::temp_dir().join(format!(
+            "titan-metadata-snapshot-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("metadata.json");
+        let mut snapshot = titan_market_service::MetadataSnapshot {
+            schema_version: 1,
+            captured_at_ns: 1,
+            instruments: vec![],
+            digest: [0; 32],
+        };
+        snapshot.digest = snapshot.compute_digest();
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert!(load_metadata_snapshot_file(&path).is_ok());
+
+        let mut tampered = snapshot.clone();
+        tampered.captured_at_ns = 2;
+        std::fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(load_metadata_snapshot_file(&path).is_err());
+
+        let mut future = snapshot.clone();
+        future.schema_version = 2;
+        future.digest = future.compute_digest();
+        std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
+        assert!(load_metadata_snapshot_file(&path).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn file_metadata_provider_reports_unavailable_or_invalid_snapshots() {
+        use titan_strategy_runtime::MetadataSnapshotProvider;
+
+        let directory = std::env::temp_dir().join(format!(
+            "titan-metadata-provider-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("metadata.json");
+        let mut snapshot = titan_market_service::MetadataSnapshot {
+            schema_version: 1,
+            captured_at_ns: 1,
+            instruments: vec![],
+            digest: [0; 32],
+        };
+        snapshot.digest = snapshot.compute_digest();
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        let provider = FileMetadataSnapshotProvider { path: path.clone() };
+        assert!(provider.snapshot().is_ok());
+
+        std::fs::write(&path, b"{}").unwrap();
+        assert!(provider.snapshot().is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert!(provider.snapshot().is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pair_arb_runtime_template_deserializes_human_readable_byte_fields() {
         let config: ApplicationConfig =
-            toml::from_str(include_str!("../../../deploy/pair_arb_v13/runtime.toml")).unwrap();
+            toml::from_str(include_str!("../../../deploy/pair_arb/runtime.toml")).unwrap();
         assert_eq!(config.market_sources.len(), 2);
         assert!(
             std::str::from_utf8(&config.market_sources[0].connector_config)
@@ -1492,9 +1743,9 @@ mod tests {
         assert_eq!(config.strategies.len(), 1);
         assert_eq!(
             config.strategies[0].strategy_file.loader_type.as_ref(),
-            "native-v13"
+            "native"
         );
-        let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb_v13");
+        let deployment = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/pair_arb");
         ConfigurationAdapter::adapt(config, &deployment).unwrap();
     }
 
@@ -1508,7 +1759,7 @@ schema_version = 1
 [[strategies]]
 strategy_key = "lane"
 strategy_id = 1
-package = { loader_type = "native-v13", uri = "file://unused.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+package = { loader_type = "native", uri = "file://unused.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
 markets = []
 accounts = []
 risk_scope = "test"
@@ -1580,22 +1831,24 @@ config = {}
         storage.driver = "postgres".into();
         let mut config = StrategyServiceConfig {
             allowed_strategy_roots: vec![directory.path().to_owned()],
-            allow_unsigned_strategies: true,
             recovery_storage: Some(storage),
             ..Default::default()
         };
-        assert!(adapt_strategies(&mut definitions, directory.path(), config.clone()).is_err());
+        assert!(adapt_strategies(&mut definitions, directory.path(), config.clone(), &[]).is_err());
         config.recovery_storage.as_mut().unwrap().driver = "sqlite".into();
         config.checkpoint_root = Some(directory.path().to_owned());
-        assert!(adapt_strategies(&mut definitions, directory.path(), config).is_err());
+        assert!(adapt_strategies(&mut definitions, directory.path(), config, &[]).is_err());
         let mut adapted = ConfigurationAdapter::adapt(application(), directory.path()).unwrap();
         adapted.strategy_bootstrap = Some(StrategyBootstrap {
+            metadata_requests: Vec::new(),
+            metadata_source: None,
             config: StrategyCoreConfig {
                 recovery_storage: Some(titan_strategy_runtime::SqliteRecoveryConfig::new(
                     directory.path().join("shared.db"),
                 )),
                 ..Default::default()
             },
+            metadata_snapshot_path: None,
         });
         assert!(
             TradingRuntime::start_observed(
@@ -1612,10 +1865,10 @@ config = {}
             strategy_key: Arc::from("freeze-test"),
             runtime_strategy_no: titan_strategy_runtime::RuntimeStrategyNo(99),
             strategy_file: titan_strategy_runtime::StrategyFileRef {
-                loader_type: Arc::from("native-v13"),
+                loader_type: Arc::from("native"),
                 uri: Arc::from("file:///unused"),
                 expected_digest: [1; 32],
-                signature_ref: None,
+                parameters_digest: None,
             },
             markets: Arc::from([titan_strategy_runtime::StrategyMarketBinding {
                 local_market_no: 0,
@@ -1662,6 +1915,7 @@ config = {}
                 local_asset_no: 0,
                 asset_id: 1,
             }]),
+            fees: None,
         }]);
         assert!(validate_core_live_strategy_profile(&[account_strategy]).is_ok());
     }
@@ -1677,6 +1931,10 @@ config = {}
                 asset_id: titan_market_service::AssetId(1),
                 price_tick: "0.0001".parse().unwrap(),
                 quantity_lot: "0.001".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+                min_quantity: None,
+                min_notional_quote: None,
+                linear_quote_currency: Some(Arc::from("USDT")),
             }]),
             enabled: true,
             definition_version: 1,
@@ -1711,10 +1969,18 @@ config = {}
                 local_asset_no: 0,
                 asset_id: 1,
             }]),
+            fees: None,
         }]);
-        assert!(matches!(
-            validate_strategy_unit_consistency(&[strategy], &[market_source], &[account]),
-            Err(ConfigurationError::Invalid(_))
-        ));
+        let report = titan_strategy_runtime::validate_instrument_units(
+            &[market_source],
+            &[account],
+            &[strategy],
+        );
+        assert!(!report.is_ok());
+        assert!(
+            report
+                .error_codes()
+                .contains(&titan_strategy_runtime::INSTRUMENT_UNITS_MARKET_ACCOUNT_MISMATCH)
+        );
     }
 }

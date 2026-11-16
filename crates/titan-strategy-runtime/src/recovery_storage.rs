@@ -178,7 +178,7 @@ fn checked_payload(bytes: &[u8]) -> LocalResult<StrategyRecoveryPoint> {
         || point.generation > MAX_GENERATION
         || !point.native_snapshot().checksum_valid()
         || (!legacy_orders
-            && crate::runtime_v13::orders_list_checksum(&point.orders_list)
+            && crate::native_runtime::orders_list_checksum(&point.orders_list)
                 != point.orders_list_checksum)
         || point.recovery.as_ref().is_some_and(|baseline| {
             !baseline.integrity_valid(
@@ -1057,7 +1057,7 @@ mod tests {
             event_committed_sequence: u64::MAX,
             compiled_strategy_digest: [1; 32],
             binding_digest: [2; 32],
-            abi_version: STRATEGY_ABI_V13,
+            abi_version: STRATEGY_ABI,
             state_schema_version: 1,
             state_schema_hash: [3; 32],
             state_alignment: 8,
@@ -1068,7 +1068,7 @@ mod tests {
             checksum: [0; 32],
             recovery: None,
         };
-        point.checksum = crate::v13::snapshot_checksum(&point.native_snapshot());
+        point.checksum = crate::strategy::snapshot_checksum(&point.native_snapshot());
         point
     }
     fn store(root: &Path) -> Arc<SqliteRecoveryStore> {
@@ -1477,7 +1477,7 @@ mod tests {
         let generation = a.reserve_generation(RuntimeStrategyNo(77), 0).unwrap();
         let mut large = point(generation, 1);
         large.state_bytes = vec![255; 600000].into();
-        large.checksum = crate::v13::snapshot_checksum(&large.native_snapshot());
+        large.checksum = crate::strategy::snapshot_checksum(&large.native_snapshot());
         assert_eq!(
             a.submit_token(large).unwrap_err().reason_code.as_ref(),
             "recovery_runtime_payload_budget"
@@ -1498,10 +1498,10 @@ mod tests {
             strategy_key: "budget".into(),
             runtime_strategy_no: RuntimeStrategyNo(77),
             strategy_file: StrategyFileRef {
-                loader_type: "native-v13".into(),
+                loader_type: "native".into(),
                 uri: "file:///pinned.titan".into(),
                 expected_digest: [1; 32],
-                signature_ref: None,
+                parameters_digest: None,
             },
             markets: Arc::from([]),
             accounts: Arc::from([]),
@@ -1620,7 +1620,7 @@ mod tests {
                     _ => 500000,
                 };
                 p.state_bytes = vec![255; size].into();
-                p.checksum = crate::v13::snapshot_checksum(&p.native_snapshot());
+                p.checksum = crate::strategy::snapshot_checksum(&p.native_snapshot());
                 sizes.push(serde_json::to_vec(&p).unwrap().len());
                 let start = Instant::now();
                 let token = a.submit_token(p).unwrap();
@@ -1704,7 +1704,7 @@ mod tests {
         db.pragma_update(None, "max_page_count", pages).unwrap();
         let mut large = point(generation, 1);
         large.state_bytes = vec![1; 65536].into();
-        large.checksum = crate::v13::snapshot_checksum(&large.native_snapshot());
+        large.checksum = crate::strategy::snapshot_checksum(&large.native_snapshot());
         let submission = Submission {
             token: RecoverySubmitToken {
                 session: a.session.clone(),

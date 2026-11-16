@@ -2,6 +2,7 @@
 
 mod core_runtime;
 pub mod management;
+mod metadata_transport;
 pub mod registry;
 pub mod runtime_host;
 

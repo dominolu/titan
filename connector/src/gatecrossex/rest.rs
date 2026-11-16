@@ -43,6 +43,25 @@ pub(super) fn number(value: &Value, key: &str) -> Result<f64, ApiError> {
     }
     Ok(n)
 }
+/// Exact decimal step from the venue's string representation (or an exact JSON number).
+pub(super) fn decimal_step(
+    value: &Value,
+    key: &str,
+) -> Result<Option<titan_domain_types::DecimalUnit>, ApiError> {
+    let raw = match value.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s.trim().to_owned(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(_) => return Err(protocol(format!("invalid {key}"))),
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<titan_domain_types::DecimalUnit>()
+        .map(Some)
+        .map_err(|cause| protocol(format!("invalid {key}: {cause}")))
+}
+
 pub(super) fn integer(value: &Value, key: &str) -> Result<i64, ApiError> {
     text(value, key)?
         .parse()

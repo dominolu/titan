@@ -2,6 +2,12 @@ use std::{sync::Arc, time::Instant};
 
 use crate::*;
 
+/// Instrument and currency metadata an execution binding needs for one account.
+pub type ExecutionBindings = (
+    Arc<[AccountInstrumentBinding]>,
+    Arc<[AccountCurrencyBinding]>,
+);
+
 pub trait AccountAdminService: Send + Sync {
     fn create(&self, definition: AccountDefinition) -> LocalResult<AccountHandle>;
     fn start(&self, account: AccountHandle) -> LocalResult<OperationId>;
@@ -17,6 +23,27 @@ pub trait AccountAdminService: Send + Sync {
 }
 
 pub trait AccountService: Send + Sync {
+    fn execution_bindings(&self, _account: AccountHandle) -> LocalResult<ExecutionBindings> {
+        Err(AccountError::new(
+            AccountErrorKind::NotReady,
+            "execution metadata unavailable",
+        ))
+    }
+    fn claim_execution(
+        &self,
+        _accounts: &[AccountHandle],
+        _owner: (u32, u64),
+        exclusive: bool,
+    ) -> LocalResult<AccountExecutionLease> {
+        if exclusive {
+            Err(AccountError::new(
+                AccountErrorKind::NotReady,
+                "exclusive execution ownership unavailable",
+            ))
+        } else {
+            Ok(AccountExecutionLease::default())
+        }
+    }
     fn execution_evidence(
         &self,
         _account: AccountHandle,
@@ -41,6 +68,14 @@ pub trait AccountService: Send + Sync {
         Ok(Default::default())
     }
     fn resolve(&self, account_key: &str) -> LocalResult<AccountHandle>;
+    /// Full frozen definition for an already-resolved account. Used by the object-table builder.
+    fn definition(&self, account: AccountHandle) -> LocalResult<AccountDefinition> {
+        let _ = account;
+        Err(AccountError::new(
+            AccountErrorKind::AccountNotFound,
+            "account definition is unavailable",
+        ))
+    }
     fn orders(
         &self,
         account: AccountHandle,

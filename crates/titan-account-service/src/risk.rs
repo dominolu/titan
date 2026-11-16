@@ -127,11 +127,14 @@ impl RiskPrices {
     }
 }
 
-fn notional_units(
+pub fn notional_units(
     tick_lots: i128,
     instrument: &AccountInstrumentBinding,
     currency: &AccountCurrencyBinding,
 ) -> ObservationResult<i128> {
+    if tick_lots < 0 {
+        return Err("negative risk notional".into());
+    }
     let units = [
         instrument.price_tick,
         instrument.quantity_lot,
@@ -171,6 +174,69 @@ fn notional_units(
     }
     // Conservative rounding at the declared currency precision, never binary floating point.
     Ok(numerator / denominator + i128::from(numerator % denominator != 0))
+}
+
+/// Worst-case collateral one bound notional needs at an explicit initial-margin rate.
+///
+/// The rate is configuration, never a venue guess: a missing or zero rate is refused rather than
+/// defaulted. Rounding is upward at the bound currency precision.
+pub fn collateral_units(
+    bound_tick_lots: i128,
+    instrument: &AccountInstrumentBinding,
+    currency: &AccountCurrencyBinding,
+    margin_rate_bps: u32,
+) -> ObservationResult<i128> {
+    if margin_rate_bps == 0 {
+        return Err("margin rate is required".into());
+    }
+    let notional = notional_units(bound_tick_lots, instrument, currency)?;
+    notional
+        .checked_mul(i128::from(margin_rate_bps))
+        .map(|value| value / 10_000 + i128::from(value % 10_000 != 0))
+        .ok_or("margin overflow".into())
+}
+
+/// One account's collateral headroom for a proposed bound notional.
+///
+/// Every account is projected against its own observed balance: a surplus on one venue never
+/// covers a deficit on another, because the two live in different collateral domains.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarginProjection {
+    pub currency_id: u32,
+    pub available_units: i128,
+    /// Collateral already held by the bound notional the caller passed in.
+    pub required_units: i128,
+    pub headroom_units: i128,
+}
+
+impl MarginProjection {
+    pub fn covered(&self) -> bool {
+        self.headroom_units >= 0
+    }
+}
+
+/// Projects one account against its own observed available balance.
+///
+/// A missing balance or a non-positive availability is a refusal, not a zero requirement: an
+/// unknown margin state must never admit new risk.
+pub fn margin_projection(
+    available_units: Option<i64>,
+    bound_tick_lots: i128,
+    instrument: &AccountInstrumentBinding,
+    currency: &AccountCurrencyBinding,
+    margin_rate_bps: u32,
+) -> ObservationResult<MarginProjection> {
+    let available = available_units.ok_or("margin balance unavailable")?;
+    if available <= 0 {
+        return Err("margin balance not positive".into());
+    }
+    let required = collateral_units(bound_tick_lots, instrument, currency, margin_rate_bps)?;
+    Ok(MarginProjection {
+        currency_id: currency.currency_id.0,
+        available_units: i128::from(available),
+        required_units: required,
+        headroom_units: i128::from(available).saturating_sub(required),
+    })
 }
 
 pub(crate) fn account_risk(
@@ -415,6 +481,63 @@ mod tests {
         )
         .unwrap()
     }
+    fn instrument() -> AccountInstrumentBinding {
+        AccountInstrumentBinding {
+            native_symbol: "BTC_USDT".into(),
+            asset_id: AssetId(1),
+            price_tick: "0.1".parse().unwrap(),
+            quantity_lot: "0.0001".parse().unwrap(),
+            contract_multiplier: "1".parse().unwrap(),
+            linear_quote_currency: Some(CurrencyId(1)),
+        }
+    }
+
+    fn currency() -> AccountCurrencyBinding {
+        AccountCurrencyBinding {
+            native_currency: "USDT".into(),
+            currency_id: CurrencyId(1),
+            amount_unit: "0.000001".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn margin_projection_is_per_account_and_refuses_unknown_balances() {
+        // 100 tick*lots = 100 * 0.1 * 0.0001 = 0.001 quote = 1,000 amount units at 0.000001.
+        let projection =
+            margin_projection(Some(1_000_000), 100, &instrument(), &currency(), 10_000).unwrap();
+        assert_eq!(projection.currency_id, 1);
+        assert!(projection.covered());
+        assert_eq!(projection.required_units, 1_000);
+        assert_eq!(projection.headroom_units, 999_000);
+        // A 50% initial margin halves the requirement.
+        let half =
+            margin_projection(Some(1_000_000), 100, &instrument(), &currency(), 5_000).unwrap();
+        assert_eq!(half.required_units, 500);
+        // Unknown, zero and negative availability are refusals, never a zero requirement.
+        assert!(margin_projection(None, 100, &instrument(), &currency(), 10_000).is_err());
+        assert!(margin_projection(Some(0), 100, &instrument(), &currency(), 10_000).is_err());
+        assert!(margin_projection(Some(-5), 100, &instrument(), &currency(), 10_000).is_err());
+        // A missing margin rate is refused rather than defaulted.
+        assert!(margin_projection(Some(1_000_000), 100, &instrument(), &currency(), 0).is_err());
+        // Insufficient collateral shows as negative headroom, not as a smaller requirement.
+        let short = margin_projection(Some(500), 100, &instrument(), &currency(), 10_000).unwrap();
+        assert!(!short.covered());
+        assert_eq!(short.required_units, 1_000);
+        assert_eq!(short.headroom_units, -500);
+    }
+
+    #[test]
+    fn collateral_rounds_up_at_the_bound_currency_precision() {
+        // One tick*lot is 0.00001 quote units and the amount unit is 0.000001, so a single
+        // tick*lot already needs ten amount units; the rate then rounds upward, never down.
+        let required = collateral_units(1, &instrument(), &currency(), 3_333).unwrap();
+        let notional = notional_units(1, &instrument(), &currency()).unwrap();
+        assert_eq!(notional, 10);
+        assert_eq!(required, 4);
+        assert!(required * 10_000 >= notional * 3_333);
+        assert!(required * 10_000 < notional * 3_333 + 10_000);
+    }
+
     #[test]
     fn monetary_risk_merges_intents_once_and_reserves_fill_position_gaps() {
         let def = definition();

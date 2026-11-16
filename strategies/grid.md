@@ -32,21 +32,18 @@ target/debug/titan strategy compile \
 TITAN_TEST_BINARY="$PWD/target/debug/titan" PYTHONPATH=.:python/titan-strategy-sdk \
   .venv/bin/python -m unittest discover -s python/titan-strategy-sdk/tests -p 'test_grid*.py' -v
 
-cargo +1.94.1 run -p titan-strategy-runtime --example v13_grid_stop_smoke -- \
+cargo +1.94.1 run -p titan-strategy-runtime --example grid_stop_smoke -- \
   verification-artifacts/grid/grid.titan
-
-target/debug/titan run verification-artifacts/grid/grid.titan \
-  -e backtest -m tick -c configs/grid_v13_backtest.toml --json
 ```
 
 策略文件自身包含完整 `SPEC` 参数 schema。参数省略时采用声明的默认值，未知参数、无效枚举和超出整数安全范围的配置会被拒绝。
 
-示例 [回放配置](../../configs/grid_v13_backtest.toml) 和 [确定性事件轨迹](../../fixtures/grid_v13_trace.json) 走通买入成交、撤对侧、停止平仓、等待持仓确认的完整流程，预期产生 3 个下单意图、1 个撤单意图。它不是行情收益回测。轨迹中的 `stop` 事件之后可以继续提供撤单、成交和持仓事实；若轨迹结束时停止屏障尚未释放，CLI 明确失败，不生成成功结果。
+`grid_stop_smoke` 走通买入成交、撤对侧、停止平仓、等待持仓确认的完整流程，预期产生 3 个下单意图、1 个撤单意图。它在进程内驱动同一份原生制品，不需要夹具或回测配置。CLI 的 trace 回放已移除，行情收益回测见下方 Rust 历史入口。
 
-真实行情回测使用 Rust [历史入口](../../hftbacktest/examples/v13_grid_history.rs)，通过同一原生制品和共享账户/费用协调器运行；不使用 Python 策略替身。以下仍只在编译服务器执行：
+真实行情回测使用 Rust [历史入口](../../hftbacktest/examples/grid_history.rs)，通过同一原生制品和共享账户/费用协调器运行；不使用 Python 策略替身。以下仍只在编译服务器执行：
 
 ```bash
-cargo +1.94.1 rustc -p hftbacktest --example v13_grid_history -- -C opt-level=2
+cargo +1.94.1 rustc -p hftbacktest --example grid_history -- -C opt-level=2
 bash scripts/download_grid_history.sh data/grid-history
 bash scripts/run_grid_history.sh data/grid-history verification-artifacts/grid-history/final
 .venv/bin/python scripts/report_grid_history.py \

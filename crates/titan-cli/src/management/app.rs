@@ -276,7 +276,7 @@ impl App {
         } else {
             json!({"request":input,"expected_resources":expected_resources})
         };
-        let payload = digest(&titan_strategy_runtime::compiler_json_v13(&payload_input));
+        let payload = digest(&titan_strategy_runtime::compiler_json(&payload_input));
         if let Some((old, hash)) = self
             .store
             .by_key(&identity.username, &input.idempotency_key)?

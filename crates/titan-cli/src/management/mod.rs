@@ -19,7 +19,6 @@ mod daemon;
 mod frontend;
 mod frontend_config;
 mod frontend_entry;
-mod frontend_research;
 mod frontend_targets;
 mod human;
 mod shell;

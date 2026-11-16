@@ -719,6 +719,12 @@ impl MarketConnector for MarketConnectorRuntime {
                 native_symbol: binding.native_symbol.clone(),
                 asset_id: binding.asset_id,
                 available,
+                price_tick: binding.price_tick,
+                quantity_lot: binding.quantity_lot,
+                contract_multiplier: binding.contract_multiplier,
+                min_quantity: binding.min_quantity,
+                min_notional_quote: binding.min_notional_quote,
+                linear_quote_currency: binding.linear_quote_currency.clone(),
             })
             .collect::<Vec<_>>()
             .into()
@@ -1162,6 +1168,10 @@ mod tests {
                 asset_id: AssetId(7),
                 price_tick: "0.1".parse().unwrap(),
                 quantity_lot: "0.001".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+                min_quantity: None,
+                min_notional_quote: None,
+                linear_quote_currency: None,
             }]),
             market_source_stream: titan_market_service::SourceStreamId(1),
             control_source_stream: titan_market_service::SourceStreamId(2),
@@ -1183,6 +1193,10 @@ mod tests {
                 asset_id: AssetId(7),
                 price_tick: "0.1".parse().unwrap(),
                 quantity_lot: "0.001".parse().unwrap(),
+                contract_multiplier: "1".parse().unwrap(),
+                min_quantity: None,
+                min_notional_quote: None,
+                linear_quote_currency: None,
             }]),
             enabled: true,
             definition_version: 1,
@@ -1194,6 +1208,11 @@ mod tests {
         assert_eq!(connector.health().state, ConnectorHealth::Created);
         assert_eq!(connector.instruments().len(), 1);
         assert!(!connector.instruments()[0].available);
+        // A snapshot carries the frozen binding units, so a caller never has to re-read config.
+        let snapshot = &connector.instruments()[0];
+        assert_eq!(snapshot.price_tick, "0.1".parse().unwrap());
+        assert_eq!(snapshot.quantity_lot, "0.001".parse().unwrap());
+        assert_eq!(snapshot.contract_multiplier, "1".parse().unwrap());
         assert!(
             connector
                 .subscribe(MarketSubscribeRequest {

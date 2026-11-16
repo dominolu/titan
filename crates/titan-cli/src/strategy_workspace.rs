@@ -1,5 +1,5 @@
 //! Source discovery, workspace resolution and immutable strategy releases. Never starts a strategy.
-use super::{CliError, CompileV13Request, compiler, hex_digest, v13_manifest_json};
+use super::{CliError, CompileRequest, compiler, hex_digest, v13_manifest_json};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,7 +9,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
 };
-use titan_strategy_runtime::{V13TrustPolicy, compiler_host_target_v13, compiler_json_v13};
+use titan_strategy_runtime::{compiler_host_target, compiler_json};
 
 fn error(message: impl std::fmt::Display) -> CliError {
     CliError::StaticCompile(message.to_string())
@@ -44,10 +44,6 @@ pub(super) struct CompileArgs {
     pub strategy_format: Option<String>,
     #[arg(long)]
     pub output: Option<PathBuf>,
-    #[arg(long)]
-    pub signing_key: Option<PathBuf>,
-    #[arg(long, requires = "signing_key")]
-    pub key_id: Option<String>,
     /// Intentionally accept and record a changed workspace toolchain.
     #[arg(long)]
     pub update_lock: bool,
@@ -209,7 +205,7 @@ impl Workspace {
         let old: Value = serde_json::from_slice(&fs::read(path).map_err(error)?)
             .map_err(|e| error(format!("invalid workspace titan.lock: {e}")))?;
         let identity = json!({"schema_version":1,
-            "abi_fingerprint":titan_strategy_runtime::V13_ABI_FINGERPRINT,
+            "abi_fingerprint":titan_strategy_runtime::ABI_FINGERPRINT,
             "rustc":env!("TITAN_RUSTC_VERSION"),
             "titan_binary_sha256":digest(&fs::read(std::env::current_exe().map_err(error)?).map_err(error)?),
             "sdk_digest":sdk_digest});
@@ -328,8 +324,8 @@ fn request<'a>(
     args: &'a CompileArgs,
     output: &'a Path,
     require_tests: bool,
-) -> CompileV13Request<'a> {
-    CompileV13Request {
+) -> CompileRequest<'a> {
+    CompileRequest {
         strategy: &prepared.source,
         parameters: &prepared.parameters,
         target: args.target.as_deref(),
@@ -339,8 +335,6 @@ fn request<'a>(
             .unwrap_or(&prepared.workspace.config.strategy.cpu_baseline),
         strategy_format: args.strategy_format.as_deref().unwrap_or("bundle"),
         output: Some(output),
-        signing_key: args.signing_key.as_deref(),
-        key_id: args.key_id.as_deref(),
         workspace: Some(&prepared.workspace),
         update_lock: args.update_lock,
         require_tests,
@@ -465,7 +459,7 @@ pub(super) fn sdk_digest(sdk: &Path) -> Result<String, CliError> {
         &mut files,
         true,
     )?;
-    Ok(digest(&compiler_json_v13(
+    Ok(digest(&compiler_json(
         &serde_json::to_value(files).map_err(error)?,
     )))
 }
@@ -568,10 +562,10 @@ pub(super) fn build(
     let mut release = json!({"schema_version":1,"strategy_type":result["strategy_type"],"source_version":result["source_version"],
         "compiled_strategy_digest":result["compiled_strategy_digest"],"source_digest":result["source_digest"],
         "parameters_digest":result["parameters_digest"],"toolchain":result["toolchain"],
-        "target":args.target.as_deref().unwrap_or(compiler_host_target_v13()),
+        "target":args.target.as_deref().unwrap_or(compiler_host_target()),
         "cpu_baseline":args.cpu_baseline.as_deref().unwrap_or(&prepared.workspace.config.strategy.cpu_baseline),
         "runtime_strategy_key":runtime_key,"files":files});
-    let id = digest(&compiler_json_v13(&release));
+    let id = digest(&compiler_json(&release));
     release["release_id"] = json!(id);
     atomic_json(&stage.path().join("release.json"), &release)?;
     let name = format!("{}-{}", result["strategy_type"].as_str().unwrap(), &id);
@@ -591,6 +585,14 @@ pub(super) fn build(
     Ok(
         json!({"release_id":id,"release":fs::canonicalize(output).map_err(error)?,"strategy_type":result["strategy_type"],"tests":result["tests"],"valid":true}),
     )
+}
+
+fn digest_bytes(hex: &str) -> Vec<toml::Value> {
+    (0..64)
+        .step_by(2)
+        .map(|i| i64::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .map(toml::Value::Integer)
+        .collect()
 }
 
 fn prepare_runtime(
@@ -619,17 +621,15 @@ fn prepare_runtime(
     if key.is_some_and(|key| key != actual) {
         return Err(error("selected runtime strategy_key differs"));
     }
-    let hex = result["compiled_strategy_digest"].as_str().unwrap();
-    let bytes: Vec<toml::Value> = (0..64)
-        .step_by(2)
-        .map(|i| i64::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .map(toml::Value::Integer)
-        .collect();
+    let bytes = digest_bytes(result["compiled_strategy_digest"].as_str().unwrap());
+    // Pin the stable parameter identity alongside the (non-reproducible) artifact digest so a
+    // deployment can prove which parameters were compiled.
+    let parameters_digest = digest_bytes(result["parameters_digest"].as_str().unwrap());
     let strategy = strategy
         .as_table_mut()
         .ok_or_else(|| error("invalid strategy table"))?;
     strategy.remove("strategy_file");
-    strategy.insert("package".into(), toml::Value::try_from(json!({"loader_type":"native-v13","uri":"file://artifacts/strategy.titan","expected_digest":bytes})).map_err(error)?);
+    strategy.insert("package".into(), toml::Value::try_from(json!({"loader_type":"native","uri":"file://artifacts/strategy.titan","expected_digest":bytes,"parameters_digest":parameters_digest})).map_err(error)?);
     let service = runtime
         .get_mut("strategy_service")
         .and_then(toml::Value::as_table_mut)
@@ -649,7 +649,7 @@ fn prepare_runtime(
     Ok(actual)
 }
 
-/// Validate configuration and native trust without provisioning target-node directories.
+/// Validate configuration and native artifacts without provisioning target-node directories.
 /// The adapted configuration is discarded: the emitted file retains every deployment path.
 fn validate_release_runtime(path: &Path) -> Result<(), CliError> {
     let mut config: titan_cli::ApplicationConfig =
@@ -689,17 +689,14 @@ fn validate_release_runtime(path: &Path) -> Result<(), CliError> {
         .uri
         .strip_prefix("file://")
         .ok_or_else(|| error("release runtime requires a file:// native artifact"))?;
-    let manifest = super::inspect_compiled_strategy_with_policy(
-        Path::new(artifact),
-        adapted.v13_trust_policy(),
-    )?;
+    let manifest = super::inspect_compiled_strategy(Path::new(artifact))?;
     if manifest.compiled_strategy_digest != definition.strategy_file.expected_digest {
         return Err(error("release runtime artifact digest differs"));
     }
     Ok(())
 }
 
-pub(super) fn verify_release(path: &Path, trust: V13TrustPolicy) -> Result<Value, CliError> {
+pub(super) fn verify_release(path: &Path) -> Result<Value, CliError> {
     let release_path = path.join("release.json");
     let mut release: Value =
         serde_json::from_slice(&fs::read(&release_path).map_err(error)?).map_err(error)?;
@@ -708,7 +705,7 @@ pub(super) fn verify_release(path: &Path, trust: V13TrustPolicy) -> Result<Value
         .and_then(|o| o.remove("release_id"))
         .and_then(|v| v.as_str().map(str::to_owned))
         .ok_or_else(|| error("release_id missing"))?;
-    if release["schema_version"] != 1 || digest(&compiler_json_v13(&release)) != id {
+    if release["schema_version"] != 1 || digest(&compiler_json(&release)) != id {
         return Err(error("release manifest identity mismatch"));
     }
     let expected: BTreeMap<String, String> =
@@ -759,7 +756,7 @@ pub(super) fn verify_release(path: &Path, trust: V13TrustPolicy) -> Result<Value
     {
         return Err(error("release native verification evidence is incomplete"));
     }
-    let manifest = v13_manifest_json(&path.join("artifacts/strategy.titan"), trust)?;
+    let manifest = v13_manifest_json(&path.join("artifacts/strategy.titan"))?;
     if manifest["compiled_strategy_digest"] != release["compiled_strategy_digest"]
         || manifest["strategy_type"] != release["strategy_type"]
         || manifest["source_version"] != release["source_version"]
@@ -771,7 +768,7 @@ pub(super) fn verify_release(path: &Path, trust: V13TrustPolicy) -> Result<Value
             .map_err(error)?;
     if digest(&fs::read(path.join("source.py")).map_err(error)?) != release["source_digest"]
         || manifest["source_digest"] != release["source_digest"]
-        || digest(&compiler_json_v13(&parameters)) != release["parameters_digest"]
+        || digest(&compiler_json(&parameters)) != release["parameters_digest"]
         || manifest["parameters_digest"] != release["parameters_digest"]
         || manifest["target_triple"] != release["target"]
         || manifest["cpu_baseline"] != release["cpu_baseline"]
@@ -826,16 +823,12 @@ pub(super) fn verify_release(path: &Path, trust: V13TrustPolicy) -> Result<Value
         json!({"valid":true,"release_id":id,"strategy_type":release["strategy_type"],"files":expected.len()}),
     )
 }
-pub(super) fn publish(
-    source: &Path,
-    directory: &Path,
-    trust: V13TrustPolicy,
-) -> Result<Value, CliError> {
-    let verified = verify_release(source, trust.clone())?;
+pub(super) fn publish(source: &Path, directory: &Path) -> Result<Value, CliError> {
+    let verified = verify_release(source)?;
     fs::create_dir_all(directory).map_err(error)?;
     let output = directory.join(verified["release_id"].as_str().unwrap());
     if output.exists() {
-        let existing = verify_release(&output, trust)?;
+        let existing = verify_release(&output)?;
         if existing["release_id"] != verified["release_id"] {
             return Err(error("publish destination contains another release"));
         }
@@ -851,7 +844,7 @@ pub(super) fn publish(
             fs::create_dir_all(target.parent().unwrap()).map_err(error)?;
             fs::copy(source.join(name), target).map_err(error)?;
         }
-        verify_release(stage.path(), trust)?;
+        verify_release(stage.path())?;
         fs::rename(stage.path(), &output).map_err(error)?;
     }
     Ok(

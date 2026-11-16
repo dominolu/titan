@@ -44,6 +44,7 @@ pub struct AccountServiceCore {
     mutation: Mutex<()>,
     binding_pins: titan_core_types::BindingPins<AccountHandle>,
     recording_guard: RwLock<Option<RecordingGuard>>,
+    execution_owners: Arc<crate::execution_ownership::ExecutionOwners>,
 }
 
 impl AccountServiceCore {
@@ -68,6 +69,7 @@ impl AccountServiceCore {
             mutation: Mutex::new(()),
             binding_pins: Default::default(),
             recording_guard: Default::default(),
+            execution_owners: Default::default(),
         })
     }
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
@@ -456,6 +458,32 @@ impl AccountAdminService for AccountServiceCore {
 }
 
 impl AccountService for AccountServiceCore {
+    fn execution_bindings(&self, account: AccountHandle) -> LocalResult<ExecutionBindings> {
+        let entry = self.registry.get(account)?;
+        Ok((
+            entry.definition.instruments.clone(),
+            entry.definition.currencies.clone(),
+        ))
+    }
+
+    fn claim_execution(
+        &self,
+        accounts: &[AccountHandle],
+        owner: (u32, u64),
+        exclusive: bool,
+    ) -> LocalResult<AccountExecutionLease> {
+        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        for account in accounts {
+            self.registry.get(*account)?;
+        }
+        self.execution_owners
+            .claim(
+                &accounts.iter().map(|a| a.account_id.0).collect::<Vec<_>>(),
+                owner,
+                exclusive,
+            )
+            .map_err(|reason| AccountError::new(AccountErrorKind::NotReady, reason))
+    }
     fn execution_evidence(
         &self,
         account: AccountHandle,
@@ -476,6 +504,9 @@ impl AccountService for AccountServiceCore {
     }
     fn resolve(&self, k: &str) -> LocalResult<AccountHandle> {
         self.registry.resolve(k)
+    }
+    fn definition(&self, account: AccountHandle) -> LocalResult<AccountDefinition> {
+        Ok(self.registry.get(account)?.definition.clone())
     }
     fn order_evidence(
         &self,

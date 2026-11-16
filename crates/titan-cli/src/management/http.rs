@@ -174,7 +174,6 @@ pub fn manager_router(config: ManagerConfig) -> Result<Router> {
         .route("/api/v1/files/{id}/{*path}", get(file))
         .route("/api/v1/events", get(events))
         .merge(super::v2::routes())
-        .route("/api/v1/research", get(strategy))
         .route("/api/v1/artifacts", get(resources))
         .layer(DefaultBodyLimit::max(1_048_576))
         .layer(axum::middleware::from_fn(json_errors))
@@ -347,6 +346,8 @@ pub(super) async fn operations(
         ))
     }
 }
+/// Strategy list for the console. Kept when the research endpoint was retired: `/api/v2/strategies`
+/// and the console's strategy table both read through it.
 pub(super) async fn strategy(
     State(app): State<Arc<App>>,
     headers: HeaderMap,
@@ -367,6 +368,7 @@ pub(super) async fn strategy(
     .context("strategy query worker failed")??;
     Ok(Json(result))
 }
+
 pub(super) async fn resources(
     State(app): State<Arc<App>>,
     headers: HeaderMap,

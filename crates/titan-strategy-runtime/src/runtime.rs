@@ -72,7 +72,7 @@ pub trait StrategyClock: Send + Sync {
     fn now_ns(&self) -> i64;
 }
 pub trait StrategyMetrics: Send + Sync {
-    fn callback_duration(&self, _kind: V13EventKind, _duration_ns: u64) {}
+    fn callback_duration(&self, _kind: EventKind, _duration_ns: u64) {}
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -95,7 +95,7 @@ pub struct StrategyRecoveryPoint {
     pub state_alignment: u32,
     pub state_bytes: Arc<[u8]>,
     #[serde(default)]
-    pub orders_list: Arc<[StrategyOrderRecordV13]>,
+    pub orders_list: Arc<[StrategyOrderRecord]>,
     #[serde(default)]
     pub orders_list_checksum: [u8; 32],
     pub public_state_identity: [u8; 32],
@@ -104,8 +104,8 @@ pub struct StrategyRecoveryPoint {
     pub recovery: Option<crate::RecoveryBaseline>,
 }
 impl StrategyRecoveryPoint {
-    pub(crate) fn native_snapshot(&self) -> StrategyStateSnapshotV13 {
-        StrategyStateSnapshotV13 {
+    pub(crate) fn native_snapshot(&self) -> StrategyStateSnapshot {
+        StrategyStateSnapshot {
             checkpoint_id: self.checkpoint_id,
             strategy_instance_id: self.strategy_instance_id,
             generation: self.generation,
@@ -125,11 +125,11 @@ impl StrategyRecoveryPoint {
     }
 }
 
-/// Runtime-owned order lifecycle history for Strategy ABI V13. Each order ID owns one record
+/// Runtime-owned order lifecycle history for Strategy ABI. Each order ID owns one record
 /// updated from confirmed events. Strategy-private Slot/role relationships remain in the
 /// checkpointed typed state and are never duplicated here.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-pub struct StrategyOrderRecordV13 {
+pub struct StrategyOrderRecord {
     pub order_id: u64,
     pub asset_no: u32,
     pub account_no: u32,
@@ -218,7 +218,7 @@ pub trait StrategyRecoveryStore: Send + Sync {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct StrategyPublicStateSeedV13 {
+pub struct StrategyPublicStateSeed {
     pub positions: Arc<[TitanPositionView]>,
     pub balances: Arc<[TitanBalanceView]>,
     pub accounts: Arc<[TitanAccountView]>,
@@ -246,11 +246,17 @@ pub struct StrategyRuntimeBuildContext {
     pub markets: Arc<[ResolvedMarketBinding]>,
     pub accounts: Arc<[ResolvedAccountBinding]>,
     pub execution: Arc<[StrategyExecutionBinding]>,
+    /// Account-service handle. Required by a multi-binding instance, which must prove per-venue
+    /// collateral before any quote can trade.
+    pub accounts_service: Option<Arc<dyn titan_account_service::AccountService>>,
     pub state_snapshot_sink: Arc<dyn StrategyRecoveryStore>,
     pub clock: Arc<dyn StrategyClock>,
     pub metrics: Arc<dyn StrategyMetrics>,
     pub resources: ResourceScopeHandle,
     pub activation: Arc<StrategyActivationGate>,
+    /// Frozen object table for this instance, built by the service from its bound definitions and
+    /// startup metadata snapshot. `None` when no authoritative snapshot is configured.
+    pub object_table: Option<crate::ObjectTable>,
 }
 
 #[derive(Clone)]
@@ -271,6 +277,12 @@ pub trait StrategyRuntimeFactory: Send + Sync {
 }
 
 pub trait StrategyRuntime: EventHandler + Send + Sync {
+    fn attach_execution_lease(
+        &self,
+        _lease: titan_account_service::AccountExecutionLease,
+    ) -> LocalResult<()> {
+        Ok(())
+    }
     fn execution_risk(&self) -> LocalResult<Vec<titan_account_service::ExecutionRiskEvidence>> {
         Ok(Vec::new())
     }
@@ -289,7 +301,7 @@ pub trait StrategyRuntime: EventHandler + Send + Sync {
         ))
     }
     fn attach_lane(&self, lane: PrimaryAsyncLaneHandle) -> LocalResult<()>;
-    fn seed_public_state(&self, seed: StrategyPublicStateSeedV13) -> LocalResult<()>;
+    fn seed_public_state(&self, seed: StrategyPublicStateSeed) -> LocalResult<()>;
     fn seed_recovery_executions(
         &self,
         evidence: Arc<[RecoveryExecutionHistory]>,

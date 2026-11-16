@@ -412,10 +412,10 @@ fn original_bundle_bytes_publish_last_and_registration_retries_without_engine_wo
     let dir = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let bytes = legacy_bundle(dir.path());
-    let r = commit_result_bundle(dir.path(), storage.path(), &bytes).unwrap();
+    let r = commit_result_bundle(dir.path(), storage.path(), &bytes, None).unwrap();
     assert_eq!(fs::read(dir.path().join("manifest.json")).unwrap(), bytes);
     assert_eq!(
-        commit_result_bundle(dir.path(), storage.path(), &bytes).unwrap(),
+        commit_result_bundle(dir.path(), storage.path(), &bytes, None).unwrap(),
         r
     );
     let store = LocalObjectStore::new(storage.path().join("objects")).unwrap();
@@ -427,18 +427,43 @@ fn original_bundle_bytes_publish_last_and_registration_retries_without_engine_wo
         commit_result_bundle(
             dir.path(),
             storage.path(),
-            &serde_json::to_vec(&changed).unwrap()
+            &serde_json::to_vec(&changed).unwrap(),
+            None
         )
         .is_err()
     );
 }
+#[test]
+fn bundle_from_another_strategy_abi_never_publishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let bytes = legacy_bundle(dir.path());
+    let host = "11".repeat(32);
+    let other = "22".repeat(32);
+
+    let mut recorded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    recorded["abi_fingerprint"] = serde_json::json!(other);
+    let recorded = serde_json::to_vec(&recorded).unwrap();
+    let error = commit_result_bundle(dir.path(), storage.path(), &recorded, Some(&host))
+        .expect_err("a bundle from another ABI must not be archived");
+    assert!(error.to_string().contains("bundle_abi_mismatch"), "{error}");
+    assert!(!dir.path().join("manifest.json").exists());
+    assert!(!dir.path().join("manifest.pending.json").exists());
+
+    let mut matching: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    matching["abi_fingerprint"] = serde_json::json!(host);
+    let matching = serde_json::to_vec(&matching).unwrap();
+    commit_result_bundle(dir.path(), storage.path(), &matching, Some(&host))
+        .expect("the host's own ABI identity is accepted");
+}
+
 #[test]
 fn incomplete_tampered_and_escaping_bundle_never_publishes_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let bytes = legacy_bundle(dir.path());
     fs::write(dir.path().join("result.json"), b"changed").unwrap();
-    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes).is_err());
+    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes, None).is_err());
     assert!(!dir.path().join("manifest.json").exists());
     let manifest = PublishedManifest {
         schema_version: 1,
@@ -494,7 +519,7 @@ fn catalog_failure_retains_original_proof_for_registration_without_rerunning_eng
     ResultCatalog::open(&storage.path().join("catalog.db")).unwrap();
     let db = rusqlite::Connection::open(storage.path().join("catalog.db")).unwrap();
     db.execute_batch("CREATE TRIGGER fail_registration BEFORE INSERT ON object_catalog BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
-    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes).is_err());
+    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes, None).is_err());
     assert!(!dir.path().join("manifest.json").exists());
     assert_eq!(
         fs::read(dir.path().join("manifest.pending.json")).unwrap(),
@@ -502,7 +527,7 @@ fn catalog_failure_retains_original_proof_for_registration_without_rerunning_eng
     );
     db.execute_batch("DROP TRIGGER fail_registration").unwrap();
     let proof = fs::read(dir.path().join("manifest.pending.json")).unwrap();
-    commit_result_bundle(dir.path(), storage.path(), &proof).unwrap();
+    commit_result_bundle(dir.path(), storage.path(), &proof, None).unwrap();
     assert_eq!(fs::read(dir.path().join("manifest.json")).unwrap(), bytes);
 }
 #[test]

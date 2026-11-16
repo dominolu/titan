@@ -25,7 +25,7 @@ const VENUE: VenueId = VenueId(0);
 
 struct Layout(Value);
 impl Layout {
-    fn new(path: &Path, compiled_strategy: &LoadedNativeStrategyV13) -> Result<Self> {
+    fn new(path: &Path, compiled_strategy: &LoadedNativeStrategy) -> Result<Self> {
         let value: Value = serde_json::from_slice(&fs::read(path)?)?;
         ensure!(
             value["state_len"].as_u64() == Some(compiled_strategy.manifest.state.byte_len as u64),
@@ -108,7 +108,7 @@ impl Model {
 }
 
 enum Due {
-    Arrival(StagedCommandV13),
+    Arrival(StagedCommand),
     Report(ExecutionReport, u64, Option<TitanPositionView>),
     Fill(TitanFillView),
     Position(TitanPositionView),
@@ -143,8 +143,8 @@ impl Metrics {
 }
 
 struct Replay {
-    adapter: OfflineV13Adapter,
-    compiled_strategy: Arc<LoadedNativeStrategyV13>,
+    adapter: OfflineAdapter,
+    compiled_strategy: Arc<LoadedNativeStrategy>,
     layout: Layout,
     coordinator: ExecutionCoordinator<RateFeeModel>,
     exchange: ExchangeAccountState,
@@ -178,7 +178,7 @@ struct Replay {
 
 impl Replay {
     fn new(
-        compiled_strategy: Arc<LoadedNativeStrategyV13>,
+        compiled_strategy: Arc<LoadedNativeStrategy>,
         layout: Layout,
         output: &Path,
         model: Model,
@@ -216,7 +216,7 @@ impl Replay {
         exchange.seed_balance(CURRENCY, capital)?;
         let mut local = VenueAccount::new(VENUE);
         local.set_balance(CURRENCY, capital)?;
-        let adapter = OfflineV13Adapter::new(OfflineV13Config {
+        let adapter = OfflineAdapter::new(OfflineConfig {
             compiled_strategy: compiled_strategy.clone(),
             strategy_instance_id: 1,
             generation: 1,
@@ -230,6 +230,7 @@ impl Replay {
             }],
             accounts: vec![account],
             active_orders: vec![],
+            object_table: None,
         })?;
         let mut fills = BufWriter::new(File::create(output.join("fills.csv"))?);
         writeln!(
@@ -349,7 +350,7 @@ impl Replay {
             self.local_orders.values().copied().collect(),
         );
     }
-    fn commands(&mut self, commands: Vec<StagedCommandV13>, callback: &str) -> Result<()> {
+    fn commands(&mut self, commands: Vec<StagedCommand>, callback: &str) -> Result<()> {
         self.callbacks += 1;
         if !matches!(callback, "bbo" | "timer")
             || !commands.is_empty()
@@ -372,10 +373,10 @@ impl Replay {
         for command in commands {
             if let Some(recorder) = &mut self.recorder {
                 let body = match &command {
-                    StagedCommandV13::Submit { order_id, request } => {
+                    StagedCommand::Submit { order_id, request } => {
                         json!({"kind":"submit","order_id":order_id.to_string(),"request":request})
                     }
-                    StagedCommandV13::Cancel {
+                    StagedCommand::Cancel {
                         command_id,
                         request,
                     } => {
@@ -387,7 +388,7 @@ impl Replay {
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             }
             match command {
-                StagedCommandV13::Submit { order_id, request } => {
+                StagedCommand::Submit { order_id, request } => {
                     ensure!(
                         !self.local_orders.contains_key(&order_id),
                         "duplicate local order ID"
@@ -421,7 +422,7 @@ impl Replay {
                         request.time_in_force
                     ));
                 }
-                StagedCommandV13::Cancel { request, .. } => {
+                StagedCommand::Cancel { request, .. } => {
                     if let Some(order) = self.local_orders.get_mut(&request.order_id) {
                         order.status = 5;
                         order.updated_ts_ns = self.now;
@@ -541,9 +542,9 @@ impl Replay {
         self.measure(false)?;
         Ok(())
     }
-    fn arrive(&mut self, command: StagedCommandV13) -> Result<()> {
+    fn arrive(&mut self, command: StagedCommand) -> Result<()> {
         match command {
-            StagedCommandV13::Submit { order_id, request } => {
+            StagedCommand::Submit { order_id, request } => {
                 let execution = ExecutionOrderRequest {
                     client_order_id: order_id,
                     venue_id: VENUE,
@@ -652,7 +653,7 @@ impl Replay {
                     }
                 }
             }
-            StagedCommandV13::Cancel { request, .. } => {
+            StagedCommand::Cancel { request, .. } => {
                 if self.exchange_orders.remove(&request.order_id).is_some() {
                     self.coordinator.request_cancel(request.order_id)?;
                     let report = self.coordinator.cancel(
@@ -1057,8 +1058,7 @@ pub fn run(
     run_id: Option<&str>,
 ) -> Result<Value> {
     fs::create_dir_all(output)?;
-    let loader =
-        NativeStrategyLoaderV13::new(output.join("native-cache"), V13TrustPolicy::default());
+    let loader = NativeStrategyLoader::new(output.join("native-cache"));
     let compiled_strategy = Arc::new(loader.load(strategy_path)?);
     ensure!(
         compiled_strategy.manifest.strategy_type.as_ref() == "grid",

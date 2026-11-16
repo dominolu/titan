@@ -13,6 +13,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
+use titan_domain_types::DecimalUnit;
 use titan_market_service::MarketDataKind;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -61,6 +62,29 @@ pub(crate) fn number(v: &Value, key: &str, venue: &'static str) -> Result<f64, A
     .filter(|n: &f64| n.is_finite());
     n.ok_or_else(|| error(venue, format!("invalid {key}")))
 }
+/// Parses one authoritative decimal step strictly from the venue's own representation.
+///
+/// A missing/empty value is `None` (the venue does not publish it); a malformed value is a protocol
+/// error, never a silent `None` or an `f64` approximation.
+pub(crate) fn exact_decimal(
+    v: &Value,
+    key: &str,
+    venue: &'static str,
+) -> Result<Option<DecimalUnit>, ApiError> {
+    let raw = match v.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s.trim().to_owned(),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(_) => return Err(error(venue, format!("invalid {key}"))),
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<DecimalUnit>()
+        .map(Some)
+        .map_err(|cause| error(venue, format!("invalid {key}: {cause}")))
+}
+
 pub(crate) fn optional_number(
     v: &Value,
     key: &str,

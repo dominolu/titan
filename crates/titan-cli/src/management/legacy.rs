@@ -138,7 +138,7 @@ pub(super) fn response(value: &mut Value) {
 pub(super) fn request_digest(input: &super::contract::SubmitOperation) -> anyhow::Result<String> {
     let mut value = serde_json::to_value(input)?;
     response(&mut value);
-    Ok(super::digest(&titan_strategy_runtime::compiler_json_v13(
+    Ok(super::digest(&titan_strategy_runtime::compiler_json(
         &value,
     )))
 }

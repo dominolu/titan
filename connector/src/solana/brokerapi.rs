@@ -146,6 +146,15 @@ impl BrokerApi for SolanaBrokerApi {
                 lot_size: 0.000_001,
                 min_qty: 0.0,
                 contract_size: 1.0,
+                // These are host constants, not venue metadata: mark them synthetic so admission
+                // cannot treat them as authoritative without an explicit audit decision.
+                tick_size_exact: titan_domain_types::DecimalUnit::new(1, 2).ok(),
+                lot_size_exact: titan_domain_types::DecimalUnit::new(1, 6).ok(),
+                min_qty_exact: None,
+                contract_size_exact: titan_domain_types::DecimalUnit::new(1, 0).ok(),
+                min_notional_quote: None,
+                quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+                synthetic: true,
                 margin_asset: String::new(),
                 price_precision: 6,
                 qty_precision: 6,

@@ -213,7 +213,7 @@ async fn observation_schema(
         ));
     }
     Ok(Json(
-        json!({"available":true,"schema":schema,"schema_hash":super::digest(&titan_strategy_runtime::compiler_json_v13(schema))}),
+        json!({"available":true,"schema":schema,"schema_hash":super::digest(&titan_strategy_runtime::compiler_json(schema))}),
     ))
 }
 fn snapshot_instance(body: &Value) -> Option<&Value> {

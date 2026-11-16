@@ -109,6 +109,6 @@ bash scripts/run_grid_history.sh data/grid-history verification-artifacts/grid-h
   --output backtest_reports/grid_history_new_run
 ```
 
-入口：[Rust 回放](../../../../hftbacktest/examples/v13_grid_history.rs)、[下载及校验](../../../../scripts/download_grid_history.sh)、[矩阵脚本](../../../../scripts/run_grid_history.sh)、[编译辅助](../../../../scripts/compile_grid_history.py)、[报告](../../../../scripts/report_grid_history.py)、[策略说明](../../../../strategies/grid/README.md)。Python 仅参与 Numba 编译/布局描述及报告，账户与撮合在 Rust 中执行。
+入口：[Rust 回放](../../../../hftbacktest/examples/v13_grid_history.rs)、[下载及校验](../../../../scripts/download_grid_history.sh)、[矩阵脚本](../../../../scripts/run_grid_history.sh)、[编译辅助](../../../../scripts/compile_grid_history.py)、[报告](../../../../scripts/report_grid_history.py)、[策略说明](../../../../strategies/grid.md)。Python 仅参与 Numba 编译/布局描述及报告，账户与撮合在 Rust 中执行。
 
 这三段样本用于覆盖不同市场和执行失败情形，不构成长周期收益结论。没有 L2 全档队列、完整市场冲击、历史阶梯保证金或精确 mark-price 清算模型；维护保证金线被穿越会直接判失败，不伪造清算成交。真实部署仍需目标账户与品种规则的独立验证，未运行真实账户交易，也未统一开启 ignored 测试。

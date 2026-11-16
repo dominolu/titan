@@ -144,7 +144,6 @@ class Matrix(ManagementFixture):
             require(code == 0 and "--config" in text, "serve-role-help")
         for group, children in (("strategy", ("ls", "show", "start", "pause", "resume", "stop", "logs")),
                                 ("account", ("ls", "show", "balance", "positions", "orders", "risk", "fills")),
-                                ("research", ("build", "backtest", "report")),
                                 ("config", ("database", "show", "check"))):
             for words in ((group,), (group, "--help"), ("help", group)):
                 text = self.front("help-" + "-".join(words), *words, config=False, profile=None, machine=False, timeout=10)
@@ -242,138 +241,6 @@ class Matrix(ManagementFixture):
         text = self.front("default-human-account-list", "account", "ls", machine=False)
         require(bool(text.strip()) and not text.lstrip().startswith("{"), "human-list-output")
         self.record("readable-target-ambiguity-rejected-and-exact-id-preserved")
-
-    def waiting_and_unknown(self):
-        def operation_rows():
-            with sqlite3.connect(self.root / "manager.db") as db:
-                return [(ident, key, json.loads(data)) for ident, key, data in db.execute(
-                    "SELECT id,key,data FROM operations ORDER BY rowid")]
-        baseline = {row[0] for row in operation_rows()}
-        self.pause()
-        try:
-            self.front("research-default-wait-timeout", "research", "build", "grid", "--timeout", "1",
-                       code=8, error_code="WAIT_TIMEOUT", timeout=25)
-            created = [row for row in operation_rows() if row[0] not in baseline]
-            require(len(created) == 1, "default-wait-single-submission")
-            ident, original_key, operation = created[0]
-            require(operation["state"] == "pending" and not operation["cancel_requested"],
-                    "default-wait-timeout-no-cancellation")
-            # Fixture cleanup only: no execution has been admitted by the stopped node.
-            self.call("/api/v2/operations/" + ident + "/cancel", {})
-        finally:
-            self.resume()
-        wait_for(lambda: self.operation(ident)["state"] == "cancelled")
-        self.record("research-waits-by-default-and-timeout-preserves-original-operation")
-        baseline = {row[0] for row in operation_rows()}
-        unknown_parameters = self.root / "unknown-parameters.json"
-        private_write(unknown_parameters, {"synthetic_unknown_probe": 1})
-        self.pause()
-        try:
-            detached = self.front("research-detached", "research", "build", "grid", "--parameters", unknown_parameters,
-                                  "--detach", "--timeout", "60")
-            require(detached["complete"] is False and detached["operation"]["state"] == "pending", "detach-only-accepted")
-            journal_id = detached["journal_id"]
-            require(len(journal_id) == 64 and all(c in "0123456789abcdef" for c in journal_id), "private-journal-identity")
-            op = detached["operation"]
-            directory = self.root / "node/operations" / op["id"]
-            directory.mkdir()
-            private_write(self.root / "frontend-fault.json", {"kind": "admission-evidence-without-receipt",
-                          "operation_id": op["id"], "journal_id": journal_id})
-        finally:
-            self.resume()
-        wait_for(lambda: self.operation(op["id"])["state"] == "unknown")
-        self.front("research-unknown-journal", "research", "build", "--journal", journal_id,
-                   "--timeout", "2", code=7, error_code="OPERATION_UNKNOWN")
-        self.front("research-unknown-journal-repeat", "research", "build", "--journal", journal_id,
-                   "--timeout", "2", code=7, error_code="OPERATION_UNKNOWN")
-        self.front("research-unknown-same-input", "research", "build", "grid", "--parameters", unknown_parameters,
-                   "--timeout", "1", code=7, error_code="OPERATION_UNKNOWN")
-        created = [row for row in operation_rows() if row[0] not in baseline]
-        require(len(created) == 1 and created[0][0] == op["id"] and created[0][2]["state"] == "unknown",
-                "unknown-original-operation-no-new-submit")
-        require(not (directory / "request.json").exists(), "unknown-no-worker-redispatch")
-        journals = [path for path in self.root.rglob("*.jsonl") if journal_id in path.name]
-        require(len(journals) == 1 and journals[0].stat().st_mode & 0o777 == 0o600, "journal-private-mode")
-        entries = [json.loads(line) for line in journals[0].read_text().splitlines()]
-        intents = [entry for entry in entries if entry.get("event") == "operation_intent"]
-        require(len(intents) == 1 and intents[0]["key"] == created[0][1], "journal-retains-only-original-stage-key")
-        require(entries.index(intents[0]) < next(index for index, entry in enumerate(entries)
-            if entry.get("event") == "operation_receipt"), "journal-intent-before-receipt")
-        self.record("detach-and-unknown-journal-never-resubmit-or-advance-pipeline")
-
-    def terminal_failure_retry(self):
-        parameters = self.root / "terminal-failure-parameters.json"
-        private_write(parameters, {"unexpected": 1, "synthetic_terminal_failure_probe": 1})
-        def count():
-            with sqlite3.connect(self.root / "manager.db") as db:
-                return db.execute("SELECT COUNT(*) FROM operations").fetchone()[0]
-        before = count()
-        first = self.front("terminal-research-failure", "research", "build", "grid", "--parameters", parameters,
-                           "--timeout", "60", code=7, error_code="OPERATION_FAILED", timeout=90)
-        require(first["state"] == "failed", "research-terminal-failure-proven")
-        matching = []
-        for path in self.root.rglob("*.jsonl"):
-            events = [json.loads(line) for line in path.read_text().splitlines()]
-            if any(event.get("event") == "operation_receipt" and event.get("receipt", {}).get("id") == first["id"]
-                   for event in events):
-                matching.append((path, events))
-        require(len(matching) == 1 and any(event.get("event") == "finished" and event.get("outcome") == "failed"
-                    for event in matching[0][1]), "terminal-failed-journal-finished")
-        # Same config/profile/target/input: no namespace change hides this rule.
-        second = self.front("terminal-research-explicit-retry", "research", "build", "grid", "--parameters", parameters,
-                            "--timeout", "60", code=7, error_code="OPERATION_FAILED", timeout=90)
-        require(second["state"] == "failed" and second["id"] != first["id"] and count() == before + 2,
-                "terminal-failure-explicit-retry-new-operation")
-        original = self.front("terminal-failed-original-journal", "research", "build", "--journal", matching[0][0].stem,
-                              "--timeout", "2", code=7, error_code="OPERATION_FAILED")
-        require(original["id"] == first["id"] and count() == before + 2, "explicit-old-failed-journal-never-retries")
-        self.record("proven-terminal-failure-allows-new-intent-and-old-journal-stays-fixed")
-
-    def native_build(self):
-        self.env.update(TITAN_STRATEGY_SDK=str(self.args.repo / "python/titan-strategy-sdk"),
-                        TITAN_STRATEGY_PYTHON=os.environ.get("TITAN_STRATEGY_PYTHON", "python3"))
-        code, stdout, _ = self.raw("native-parameter-fixture", [self.args.server_binary, "strategy", "describe",
-            self.args.repo / "strategies/grid.py", "--json"], timeout=180)
-        require(code == 0, "native-normalized-parameter-fixture")
-        parameters = self.root / "native-parameters.json"
-        private_write(parameters, json.loads(stdout)["normalized_parameters"])
-        result = self.front("native-frontend-research-build", "research", "build", "grid", "--parameters", parameters,
-                            "--timeout", "900", timeout=1900)
-        require(result["complete"] is True and result["stage"] == "compile"
-                and result["operation"]["state"] == "succeeded", "new-frontend-build-completed")
-        version = result["resource"]
-        require(version["kind"] == "strategy_version" and version["body"]["strategy_id"] == "grid",
-                "new-frontend-version-business-identity")
-        journal_id = result["journal_id"]
-        journals = [path for path in self.root.rglob("*.jsonl") if journal_id in path.name]
-        require(len(journals) == 1, "new-frontend-build-journal")
-        events = [json.loads(line) for line in journals[0].read_text().splitlines()]
-        intents = [item for item in events if item.get("event") == "operation_intent"]
-        require({item["stage"] for item in intents} == {"describe", "compile"}, "new-frontend-build-stage-operations")
-        saved = [item["resource"] for item in events if item.get("event") == "saved"]
-        frozen = [item for item in saved if item["frozen"]]
-        require(len(frozen) == 1 and frozen[0]["body"]["strategy_id"] == "grid", "new-frontend-frozen-parameter-version")
-        require(version["body"].get("parameter_version_id") == frozen[0]["id"], "new-frontend-fixed-parameter-version")
-        operation_id = result["operation"]["id"]
-        bundle = self.root / "node/operations" / operation_id / "strategy.titan"
-        require(bundle.is_file() and bundle.stat().st_size > 0, "new-frontend-native-bundle-produced")
-        private_der, public_der = self.root / "native-signing.der", self.root / "native-public.der"
-        private_der.write_bytes(bytes.fromhex("302e020100300506032b657004220420") + (self.root / "signing.key").read_bytes())
-        private_der.chmod(0o600)
-        code, _, _ = self.raw("native-public-key-fixture", ["openssl", "pkey", "-inform", "DER", "-in", private_der,
-            "-pubout", "-outform", "DER", "-out", public_der])
-        require(code == 0, "native-signing-public-key-fixture")
-        public_key = public_der.read_bytes()[-32:].hex()
-        code, validation, _ = self.raw("native-rust-signature-validation", [self.args.server_binary, "strategy", "validate",
-            bundle, "--trusted-key", "synthetic=" + public_key, "--require-signature", "--json"])
-        require(code == 0 and json.loads(validation)["valid"] is True
-                and json.loads(validation)["compiled_strategy_digest"] == version["body"]["compiled_strategy_digest"],
-                "new-frontend-bundle-signature-and-identity")
-        require(digest(bundle) == version["body"]["strategy_file_sha256"], "new-frontend-published-file-identity")
-        require(version == self.call("/api/v2/resources/" + version["id"]), "new-frontend-version-authoritative-comparison")
-        private_write(self.root / "native-build-evidence.json", {"journal_id": journal_id, "strategy_version": version,
-            "frozen_parameters": frozen[0], "bundle_sha256": digest(bundle), "operation_keys": [item["key"] for item in intents]})
-        self.record("new-frontend-real-describe-save-freeze-native-compile")
 
     def candidates(self, config_path):
         result = []
@@ -597,7 +464,6 @@ def main():
     for flag in ("repo", "server-binary", "client-binary", "output"):
         parser.add_argument("--" + flag, type=Path, required=True)
     parser.add_argument("--native", action="store_true", help="Run successful new-frontend Describe/save/freeze/compile using the server SDK/native toolchain")
-    parser.add_argument("--skip-research", action="store_true", help="Report research waiting/journal cases as skipped; run help/config/bootstrap/compatibility only")
     args = parser.parse_args()
     address = os.environ.get("TITAN_BUILD_ADDRESS", "")
     args.build_address = address
@@ -632,14 +498,8 @@ def main():
         matrix.bootstrap()
         matrix.service_identity()
         matrix.missing_manager_database()
-        if args.skip_research:
-            summary["skipped"].append("research-default-wait-detach-and-unknown-journal")
-        else:
-            matrix.current_case = "research"
-            matrix.waiting_and_unknown()
         if args.native:
-            matrix.terminal_failure_retry()
-            matrix.native_build()
+            summary["skipped"].append("native-build-reporting-smoke-was-retired-with-the-research-command")
         else:
             summary["skipped"].append("new-frontend-successful-native-build-requires---native")
         matrix.legacy_compatibility()

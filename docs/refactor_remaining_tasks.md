@@ -2,7 +2,7 @@
 
 状态：历史归档（ABI V8/V12 阶段），不再作为当前实现或待办清单
 
-> 当前权威状态见 [Strategy ABI V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。
+> 当前权威状态见 [符号/账户对象实施状态](verification/2026-11-13/symbol-units-p0/STATUS.md)。
 > 本文保留旧架构决策和当时的验收记录，其中 `titan-runtime-abi`、`titan-runtime`、
 > `titan-python-host`、Fresh-only 等描述均不代表当前 V13 实现。
 
@@ -18,7 +18,7 @@
 - [EventEngine 独立技术实现设计](event_engine_technical_design.md)
 - [PluginEngine 独立技术实现设计](plugin_engine_technical_design.md)
 - [Bar/Tick 回测与实盘统一策略接口](bar_tick_numba_strategy.md)
-- [Strategy ABI v8 migration](strategy_abi_v8_migration.md)
+- Strategy ABI v8 migration（该迁移文档已移除；当前契约见[策略观测协议](strategy_observation_protocol.md)）
 
 当前闭环明确采用 `Fresh` 启动，不提供 Risk、checkpoint/store、recovery 或
 `StreamBoundaryProvider` 能力，也不以 no-op 或内存占位实现冒充这些能力。它们只记录在本文末尾的

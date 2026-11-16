@@ -175,13 +175,9 @@ class Matrix:
         require(code == 0 and hashed.strip().startswith("$argon2"), "password-hash")
         private_write(self.root / "parameters.json", {})
         private_write(self.root / "invalid-parameters.json", {"unexpected": 1})
-        signing = self.root / "signing.key"
-        signing.write_bytes(secrets.token_bytes(32))
-        signing.chmod(0o600)
         node = {"id": "build", "listen": f"127.0.0.1:{self.node_port}",
             "token_env": "TITAN_CONSOLE_NODE_TOKEN", "work_root": str(self.root / "node"),
             "titan_program": str(self.args.binary), "environments": ["backtest"], "task_seconds": 900,
-            "signing_key": str(signing), "signing_key_id": "synthetic",
             "parameter_presets": {name: {"strategy_id": strategy, "strategy_name": strategy,
                 "source": str(self.args.repo / "strategies/grid.py"), "parameters": str(self.root / "parameters.json")}
                 for name, strategy in (("grid", "grid"), ("foreign", "foreign"))}}
@@ -683,7 +679,7 @@ def fixture_driver(args, offline=False):
             else:
                 raise CheckFailure("fixture-driver-unsupported-action")
             words += ["--idempotency-key", body["idempotency_key"]]
-        use_frontend = bool(args.client_binary) and not cancel and kind in ("start", "pause", "resume", "stop", "restore", "backtest", "report")
+        use_frontend = bool(args.client_binary) and not cancel and kind in ("start", "pause", "resume", "stop", "restore")
         compatibility_reason = "fixture-setup-or-low-level-action"
         if use_frontend and kind in ("pause", "resume", "stop", "restore"):
             with original(opener, request.Request(session["origin"] + "/api/v2/resources/" + action["run_id"]), timeout=15) as response:
@@ -699,12 +695,6 @@ def fixture_driver(args, offline=False):
                 words = ["strategy", "start", action["run_id"]]
             elif kind in ("pause", "resume", "stop"):
                 words = ["strategy", kind, action["run_id"]]
-            elif kind == "backtest":
-                words = ["research", "backtest", action["strategy_version_id"], "--dataset", action["dataset_id"]]
-                if action.get("stress"):
-                    words += ["--stress"]
-            else:
-                words = ["research", "report", action["backtest_id"]]
             words += ["--detach", "--timeout", "60"]
             remembered = frontend_journals.get(body["idempotency_key"])
             if remembered:
@@ -745,10 +735,8 @@ def fixture_driver(args, offline=False):
         data = value["data"]
         if use_frontend:
             journal_ids = [line.split("=", 1)[1] for line in result.stderr.decode().splitlines() if line.startswith("journal_id=")]
-            journal_id = data.get("journal_id") if value.get("kind") == "research" else (journal_ids[-1] if journal_ids else None)
+            journal_id = journal_ids[-1] if journal_ids else None
             require(isinstance(journal_id, str) and len(journal_id) == 64, "fixture-frontend-journal-identity")
-            if value.get("kind") == "research":
-                data = data["operation"]
             frontend_journals[body["idempotency_key"]] = {"action": action, "journal_id": journal_id,
                 "operation_id": data["id"], "node": node, "environment": environment}
             private_write(args.output / "frontend-route-evidence.json", {

@@ -5,7 +5,11 @@ case " $(hostname -I) " in
   *" ${TITAN_BUILD_ADDRESS:?Set TITAN_BUILD_ADDRESS from private configuration} "*) ;;
   *) echo "Run on build server titan-build" >&2; exit 2 ;;
 esac
-export CARGO_BUILD_JOBS=8 CARGO_TARGET_DIR=/tmp/titan-single-file-target CARGO_NET_OFFLINE=true
+export CARGO_BUILD_JOBS=8 CARGO_NET_OFFLINE=true
+# One target directory for every verification on this host: a private one duplicates the
+# whole dependency compile (see scripts/build_env.sh).
+source scripts/build_env.sh
+titan_build_env quiet
 export TITAN_STRATEGY_SDK="$PWD/python/titan-strategy-sdk"
 export TITAN_STRATEGY_PYTHON="${TITAN_STRATEGY_PYTHON:-python3}"
 export PYTHONPATH="$PWD:$TITAN_STRATEGY_SDK"

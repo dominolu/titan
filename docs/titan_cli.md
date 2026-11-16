@@ -10,59 +10,70 @@
 titan strategy compile \
   --strategy strategies/pair_arb.py \
   --artifact-format bundle \
-  --output pair_arb.titan \
-  --signing-key ed25519-private.key \
-  --key-id production-2026-09
+  --output pair_arb.titan
 
-titan strategy ls \
-  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
-titan strategy show pair_arb.titan \
-  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
-titan strategy validate pair_arb.titan --require-signature \
-  --trusted-key production-2026-09=PUBLIC_KEY_HEX --json
+titan strategy ls --json
+titan strategy show pair_arb.titan --json
+titan strategy validate pair_arb.titan --json
 ```
 
-源码描述、编译和原生回归测试在有界 Python/Numba worker 中执行；运行、产物检查与发布校验不依赖 Python。生产部署默认要求 Ed25519 签名；开发或 shadow 配置只有显式设置 `strategy_service.allow_unsigned_artifacts = true` 才能加载 unsigned artifact。`trusted_ed25519_keys` 支持同时保留多个 key id 以完成轮换。
+源码描述、编译和原生回归测试在有界 Python/Numba worker 中执行；运行、产物检查与发布校验不依赖 Python。制品加载只做完整性校验：`native_library_sha256` 比对、`compiled_strategy_digest` 和 `target_triple`。解析阶段和隔离 worker 会使用同一份策略重复校验，防止 RunSpec 生成后替换制品。
 
-回测也执行制品信任校验。签名制品在 `[backtest].trusted_ed25519_keys` 中配置 `key_id = "64位十六进制公钥"`；仅开发用 unsigned 制品必须显式设置 `allow_unsigned_artifact = true`。解析阶段和隔离 worker 会使用同一份策略重复校验，防止 RunSpec 生成后替换制品或降低信任要求。
+## 历史回测
 
-## V13 Tick trace 回测
+历史回测使用 `hftbacktest/examples/grid_history.rs`，以真实 BBO/成交数据驱动与实盘相同的
+`.titan` 产物，撮合、延迟、费用和队列模型由 HftBacktest 提供：
 
 ```bash
-titan validate deploy/pair_arb_v13/artifacts/pair_arb.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
-
-titan run deploy/pair_arb_v13/artifacts/pair_arb.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
+cargo run -p hftbacktest --example grid_history -- prepare ...
 ```
 
-回测配置只描述 trace 和运行边界：
+CLI 的 `titan run -e backtest`（trace 回放）**已移除**。它重放手工冻结的事件轨迹并比对策略发出的
+订单意图序列，没有盈亏、没有撮合，因此无法回答真实历史回测回答不了的问题，却需要为每个场景维护
+一份夹具和一套 trace schema。相关配置（`configs/*_backtest.toml`）与轨迹夹具（`fixtures/*_trace.json`）
+一并删除；`fixtures/grid_v13_metadata.json` 保留，仅作为 ABI 身份与元数据快照的测试来源。
 
-```toml
-schema_version = 1
-history_capacity = 1024
+底层的 `OfflineV13Adapter` 保留：历史回测正是通过它把 staged command 接到自己的执行模型。
 
-[backtest]
-data = "../fixtures/pair_arb_v13_trace.json"
-command_capacity = 64
-allow_unsigned_artifact = true # 仅 checked-in 开发示例
-```
+当前公开 profile 仅支持 Tick；Bar/Hybrid 会在 controller、SDK 和 Strategy Service 边界被明确拒绝，直到真实 producer、聚合器和契约测试完整。
 
-trace schema 为 1，包含初始 V13 public projections，以及按顺序交付的 tick/depth/account/timer 事实。CLI 使用 `OfflineV13Adapter` 加载与实盘相同的 `.titan`，返回 event、submit、cancel 计数和最终 typed-state digest。需要真实撮合、延迟、费用和队列模型时，HftBacktest 的 `backtest::strategy_v13` 使用同一 adapter，将 staged command 接到其执行模型。
-
-当前公开 V13 profile 仅支持 Tick；Bar/Hybrid 会在 controller、SDK 和 Strategy Service 边界被明确拒绝，直到真实 producer、聚合器和契约测试完整。
+trace 自 `schema_version = 2` 起必须携带 `metadata` 快照（`schema_version`、`captured_at_ns`、
+`instruments`、`digest`）。加载时校验快照自身 digest、覆盖 trace 初始行情的每个 `asset_no`；缺失或
+digest 不符直接拒绝，不做隐式补全。快照可用 `titan instruments snapshot-digest <SNAPSHOT.json>
+[--update]` 重算/刷新，用 `titan instruments verify --config … --metadata-snapshot …` 与运行配置核对。
 
 ## Core Live
 
 ```bash
 titan validate pair-arb-mainnet \
-  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+  -e live -m tick -c deploy/pair_arb/runtime.toml
 
 titan run pair-arb-mainnet \
-  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+  -e live -m tick -c deploy/pair_arb/runtime.toml
 ```
 
 Live 的位置参数是部署配置中的 `strategy_key`。部署侧只配置 artifact URI/digest、market/account binding、risk scope、recovery 和 runtime policy；参数、订阅与 callback 均以 artifact manifest 为准。
+
+## 标的单位校验
+
+```bash
+titan instruments verify --config deploy/pair_arb/runtime.toml --json
+titan instruments verify --config deploy/pair_arb/runtime.toml \
+  --metadata-snapshot SNAPSHOT.json --json
+titan instruments snapshot-digest SNAPSHOT.json --update
+```
+
+只读、离线，不启动服务、不连接交易所。它解析运行配置后调用与 `core-run` 相同的校验器，检查：
+市场/账户两侧 `price_tick`/`quantity_lot`/`contract_multiplier`/报价币是否一致、`base_delta_per_lot`
+是否等于 `quantity_lot × contract_multiplier`、多绑定腿的 maker/hedge 比例是否为精确正整数、
+最小 maker 成交能否整数对冲。退出码 0 表示通过，非 0 表示至少一项错误；`--json` 输出稳定的
+`errors[].code`（如 `instrument_units_market_account_mismatch`、`instrument_lot_ratio_not_integral`）。
+
+`scripts/cross_exchange_mm_preflight.py` 不再自行计算比例，而是调用本命令并原样报告原因码
+（`--titan` 或 `TITAN_BIN` 指定二进制；未提供时仅 shadow 模式给 WARN，受控实盘给 FAIL）。
+提供 `--metadata-snapshot` 时，报告额外核对快照 digest、资产覆盖与单位/报价一致性（原因码
+`instrument_metadata_missing`/`instrument_metadata_mismatch`/`instrument_metadata_digest_mismatch`），
+并在 JSON 中给出 `metadata_verified`/`metadata_digest`；不提供时明确标记“metadata 未校验”。
 
 ## 恢复存储维护
 
@@ -76,7 +87,9 @@ titan recovery --database /srv/titan/recovery/runtime.db inspect
 
 ## 任务管理
 
-统一历史与结果维护使用 `titan storage`：`facts`、`export-facts`、`inspect-parquet`、`register-bundle`、`register-publication`、`publish-manifest` 和 `materialize-bundle`。查询使用固定上界游标，登记重试只操作既有字节，不重跑引擎；M3 增加 `initialize`、`inspect`、`project`、`prepare-history`、`prepare-objects`、`resume`、`activate`、`prune-history`、`evict-local-objects` 和 `clean-staging`。按计划 ID 提交切换回执；回切先回填，恢复点始终本地 SQLite。完整参数及故障处理见[历史与结果存储维护](local_persistence_operations.md)。
+统一历史与结果维护使用 `titan storage`：`initialize`、`inspect`、`facts`、`export-facts`、`register-bundle`、`register-publication`、`publish-manifest`、`project` 和 `materialize-bundle`。查询使用固定上界游标，登记重试只操作既有字节，不重跑引擎。
+
+**外部后端已下线**：PostgreSQL 历史投影与 S3 对象存储按“聚焦回测与实盘”的决策移除，`prepare-history`/`prepare-objects`/`resume`/`activate`/`prune-history`/`evict-local-objects`/`clean-staging`/`inspect-parquet` 子命令一并删除。历史与结果固定落在本地 SQLite 与文件对象。`local_persistence_operations.md` 中关于这些命令的章节仅作历史参考。
 
 ```bash
 titan ls --active

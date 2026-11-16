@@ -8,14 +8,18 @@ from unittest.mock import patch
 import numpy as np
 from numba.core.registry import CPUDispatcher
 
-from titan_strategy import abi_v13
+from titan_strategy import abi, testing
 from strategies import grid
 
 
 def row(dtype, **values):
     result = np.zeros(1, dtype=dtype)
     for name, value in values.items():
-        result[0][name] = value
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                result[0][name][key] = nested
+        else:
+            result[0][name] = value
     return result[0]
 
 
@@ -25,16 +29,16 @@ class Context:
         self.state = self.state_array[0]
         self.is_paused = False
         self.now = 1_000_000_000
-        self.market_row = row(abi_v13.market_dtype, best_bid_ticks=99, best_ask_ticks=101)
-        self.account_row = row(abi_v13.account_dtype, state=4, account_epoch=1, account_sequence=1)
-        self.position_row = row(abi_v13.position_dtype, account_sequence=1)
-        self.balance_row = row(abi_v13.balance_dtype, total_units=100000, available_units=100000)
-        self.active = np.zeros(0, dtype=abi_v13.active_order_dtype)
-        self.fill_rows = np.zeros(0, dtype=abi_v13.fill_dtype)
-        self.order_rows = np.zeros(0, dtype=abi_v13.order_event_dtype)
-        self.cancel_rows = np.zeros(0, dtype=abi_v13.cancel_event_dtype)
+        self.market_row = row(abi.market_dtype, best_bid_ticks=99, best_ask_ticks=101)
+        self.account_row = row(abi.account_dtype, state=4, account_epoch=1, account_sequence=1)
+        self.position_row = row(abi.position_dtype, account_sequence=1)
+        self.balance_row = row(abi.balance_dtype, total_units=100000, available_units=100000)
+        self.active = np.zeros(0, dtype=abi.active_order_dtype)
+        self.fill_rows = np.zeros(0, dtype=abi.fill_dtype)
+        self.order_rows = np.zeros(0, dtype=abi.order_event_dtype)
+        self.cancel_rows = np.zeros(0, dtype=abi.cancel_event_dtype)
         self.recovery_rows = None
-        self.tick_rows = np.zeros(0, dtype=abi_v13.tick_dtype)
+        self.tick_rows = np.zeros(0, dtype=abi.tick_dtype)
         self.submits, self.cancels = [], []
         self.next_id, self.sequence, self.stop_complete = 1, 1, False
 
@@ -49,6 +53,18 @@ class Context:
 
     def market(self, _):
         return self.market_row
+
+    def symbol(self, _):
+        return row(abi.symbol_payload_dtype,
+                   local_asset_no=0, asset_id=1, quote_currency_no=0,
+                   margin_currency_no=0, flags=1,
+                   price_tick={"coefficient": 1, "scale": 0},
+                   quantity_lot={"coefficient": 1, "scale": 0},
+                   contract_multiplier={"coefficient": 1, "scale": 0},
+                   base_delta_per_lot={"coefficient": 1, "scale": 0},
+                   min_quantity={"coefficient": 1, "scale": 0},
+                   min_notional_quote={"coefficient": 5, "scale": 0},
+                   min_qty_lots=1, min_notional_tick_lots=5)
 
     def active_orders(self):
         return self.active
@@ -74,7 +90,7 @@ class Context:
     def submit_order(self, account, asset, side, order_type, qty, price, tif, reduce_only=False):
         order_id = self.next_id
         self.next_id += 1
-        order = row(abi_v13.active_order_dtype, order_id=order_id, account_no=account,
+        order = row(abi.active_order_dtype, order_id=order_id, account_no=account,
                     asset_no=asset, side=side, order_type=order_type, qty_lots=qty,
                     price_ticks=price, time_in_force=tif, reduce_only=reduce_only,
                     status=grid.ACCEPTED, created_ts_ns=self.now, updated_ts_ns=self.now)
@@ -88,7 +104,7 @@ class Context:
 
     def tick(self, bid=99, ask=101):
         self.market_row["best_bid_ticks"], self.market_row["best_ask_ticks"] = bid, ask
-        self.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=self.now)], dtype=abi_v13.tick_dtype)
+        self.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=self.now)], dtype=abi.tick_dtype)
         grid.on_tick(self)
 
     def start(self):
@@ -103,7 +119,7 @@ class Context:
         order["cumulative_filled_lots"] = cumulative
         order["status"] = grid.FILLED if cumulative == order["qty_lots"] else grid.PARTIAL
         self.sequence += 1
-        fill = row(abi_v13.fill_dtype, order_id=order_id, side=order["side"],
+        fill = row(abi.fill_dtype, order_id=order_id, side=order["side"],
                    fill_price_ticks=price, fill_qty_lots=qty, cumulative_filled_lots=cumulative,
                    account_sequence=self.sequence, final_fill=final)
         if update_position:
@@ -116,17 +132,17 @@ class Context:
                 self.position_row["average_price_ticks"] = price if qty > abs(previous) else 0
             self.position_row["qty_lots"] += qty if order["side"] == grid.BUY else -qty
             self.position_row["account_sequence"] = self.sequence
-        self.fill_rows = np.array([fill], dtype=abi_v13.fill_dtype)
+        self.fill_rows = np.array([fill], dtype=abi.fill_dtype)
         grid.on_fill(self)
 
     def terminal(self, order_id, status=grid.CANCELED, cumulative=None):
         index = next(i for i, o in enumerate(self.active) if o["order_id"] == order_id)
         order = self.active[index]
-        event = row(abi_v13.order_event_dtype, order_id=order_id, status=status,
+        event = row(abi.order_event_dtype, order_id=order_id, status=status,
                     price_ticks=order["price_ticks"], qty_lots=order["qty_lots"],
                     cumulative_filled_lots=order["cumulative_filled_lots"] if cumulative is None else cumulative)
         self.active = np.delete(self.active, index)
-        self.order_rows = np.array([event], dtype=abi_v13.order_event_dtype)
+        self.order_rows = np.array([event], dtype=abi.order_event_dtype)
         grid.on_order(self)
 
 
@@ -221,9 +237,9 @@ class TestGrid(unittest.TestCase):
         self.assertEqual(ctx.state["grid"]["anchor_ticks"], 100)
         self.assertEqual(grid.ref_count(ctx.state), 2)
         ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = 2, 2
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=1, side=1,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=1, side=1,
                                      fill_price_ticks=95, fill_qty_lots=2, cumulative_filled_lots=2,
-                                     account_sequence=2, final_fill=1)], dtype=abi_v13.fill_dtype)
+                                     account_sequence=2, final_fill=1)], dtype=abi.fill_dtype)
         grid.on_fill(ctx)
         self.assertEqual(ctx.state["grid"]["anchor_ticks"], 95)
 
@@ -263,8 +279,8 @@ class TestGrid(unittest.TestCase):
     def test_cancel_acceptance_without_terminal_order_does_not_release(self):
         ctx = Context().start()
         ctx.fill(1, 2, 95, final=True)
-        ctx.cancel_rows = np.array([row(abi_v13.cancel_event_dtype, order_id=2, request_result=0,
-                                       final_status=grid.CANCELED)], dtype=abi_v13.cancel_event_dtype)
+        ctx.cancel_rows = np.array([row(abi.cancel_event_dtype, order_id=2, request_result=0,
+                                       final_status=grid.CANCELED)], dtype=abi.cancel_event_dtype)
         grid.on_cancel(ctx)
         self.assertGreaterEqual(grid.find_ref(ctx.state, 2), 0)
         self.assertEqual(len(ctx.submits), 2)
@@ -508,7 +524,7 @@ class TestGrid(unittest.TestCase):
     def test_future_dated_ticks_do_not_make_market_ready(self):
         ctx = Context()
         grid.on_start(ctx)
-        ctx.tick_rows = np.array([row(abi_v13.tick_dtype, receive_ts_ns=ctx.now + 1)], dtype=abi_v13.tick_dtype)
+        ctx.tick_rows = np.array([row(abi.tick_dtype, receive_ts_ns=ctx.now + 1)], dtype=abi.tick_dtype)
         grid.on_tick(ctx)
         self.assertEqual(ctx.submits, [])
 
@@ -570,9 +586,9 @@ class TestGrid(unittest.TestCase):
     def test_review_unknown_fill_is_not_hidden_by_another_orders_sequence(self):
         ctx = Context().start()
         ctx.fill(1, 2, 95, final=True)
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=999, side=1,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=999, side=1,
                                      fill_qty_lots=1, cumulative_filled_lots=1,
-                                     fill_price_ticks=95, account_sequence=1)], dtype=abi_v13.fill_dtype)
+                                     fill_price_ticks=95, account_sequence=1)], dtype=abi.fill_dtype)
         grid.on_fill(ctx)
         self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
 
@@ -580,9 +596,9 @@ class TestGrid(unittest.TestCase):
         ctx = Context().start()
         ctx.terminal(1)
         ctx.fill(2, 2, 105, final=True)
-        ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=1, side=1,
+        ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=1, side=1,
                                      fill_qty_lots=1, cumulative_filled_lots=1,
-                                     fill_price_ticks=95, account_sequence=1)], dtype=abi_v13.fill_dtype)
+                                     fill_price_ticks=95, account_sequence=1)], dtype=abi.fill_dtype)
         grid.on_fill(ctx)
         self.assertEqual(ctx.state["grid"]["status"], grid.RECONCILING)
 
@@ -831,10 +847,10 @@ class TestGrid(unittest.TestCase):
                             for active in ctx.active:
                                 if active["order_id"] == oid:
                                     active["status"], active["cumulative_filled_lots"] = grid.FILLED, 2
-                            ctx.fill_rows = np.array([row(abi_v13.fill_dtype, order_id=oid, side=side,
+                            ctx.fill_rows = np.array([row(abi.fill_dtype, order_id=oid, side=side,
                                                          fill_qty_lots=2, cumulative_filled_lots=2,
                                                          fill_price_ticks=price, account_sequence=2 if buy else 3,
-                                                         final_fill=1)], dtype=abi_v13.fill_dtype)
+                                                         final_fill=1)], dtype=abi.fill_dtype)
                             grid.on_fill(ctx)
                         elif event == "position":
                             ctx.position_row["qty_lots"], ctx.position_row["account_sequence"] = final_position, 10

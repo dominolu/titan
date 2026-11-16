@@ -1,6 +1,6 @@
 """Real offline management integration. Execute only on the build server titan-build."""
 from __future__ import annotations
-import persistence_acceptance as persistence
+import persistence_acceptance as persistence  # local storage only; external backends retired
 import argparse, http.cookiejar, json, os, secrets, signal, socket, sqlite3, subprocess, time
 from pathlib import Path
 from urllib import request, error, parse
@@ -108,12 +108,6 @@ def main():
             for dataset_id in (days if args.matrix else ("sideways",)):
                 prepared=completed(submit({"kind":"prepare","dataset_id":dataset_id}))
                 record("immutable-dataset-prepare-"+dataset_id,sha256=prepared["result"]["prepared_sha256"])
-            if persistence.enabled():
-                storage_root=root/"node/storage"
-                persistence.switch_objects(args.binary,storage_root,"s3",env)
-                persistence.storage(args.binary,storage_root,"evict-local-objects",env=env)
-                for path in (root/"node/operations").glob("*/prepared.bin"):path.unlink()
-                record("dataset-s3-cutover-and-cold-materialization-required")
             selected = [] if args.reuse else (cases if args.matrix else cases[:1])
             if args.reuse and args.matrix:
                 found={}
@@ -172,12 +166,6 @@ def main():
                         if not stress:record("compiled-strategy-s3-original-byte-readback-"+name,sha256=frozen_native)
                     record("backtest-" + name + ("-stress" if stress else "-base"), operation_id=backtest["id"], metrics=result["body"]["metrics"])
                     if not results[-1]["metrics"]["success"]: raise AssertionError("history engine did not complete safely")
-                    if persistence.enabled():
-                        archive=root/"node/operations"/backtest["id"]/"history/history.db"
-                        persistence.switch_history(args.binary,storage_root,archive,"postgres",env)
-                        persistence.storage(args.binary,storage_root,"prune-history","--database",archive,"--through-row",persistence.source_upper(archive),env=env)
-                        persistence.storage(args.binary,storage_root,"project","--database",archive,env=env)
-                        record("postgres-projected-and-local-pruned-"+name+("-stress" if stress else "-base"))
                     if os.environ.get("TITAN_PERSISTENCE_STAGE") in ("M2","M3"):
                         cursor=None;rows=[];upper=None
                         while True:
@@ -192,9 +180,6 @@ def main():
                         assert len({row["row_id"] for row in rows})==len(rows)
                         assert all(row["fact"]["scope"]["environment"]=="backtest" and row["fact"]["scope"]["run_id"]==backtest["id"] for row in rows)
                         record("history-port-"+name+("-stress" if stress else "-base"),records=len(rows),upper_row=upper)
-                    if persistence.enabled():
-                        persistence.switch_history(args.binary,storage_root,archive,"sqlite",env)
-                        record("postgres-to-sqlite-backfill-"+name+("-stress" if stress else "-base"))
                     if regime == "sideways" and direction == "neutral" and not stress:
                         report = completed(submit({"kind": "report", "backtest_id": result["id"]}))
                         if persistence.enabled():
@@ -202,13 +187,6 @@ def main():
                         with operator.open(origin + "/api/v2/files/" + report["id"] + "/report.html") as response:
                             assert b"Verified ResultBundle" in response.read()
                         record("verified-report-render-and-download")
-        if persistence.enabled():
-            if args.resume_after_matrix:
-                plan=persistence.storage(args.binary,storage_root,"activate","--plan",args.resume_object_plan,env=env,timeout=1800)
-                assert plan["phase"]=="committed"
-            else:
-                persistence.switch_objects(args.binary,storage_root,"filesystem",env)
-            record("all-results-and-reports-s3-to-filesystem-backfill")
         invalid = submit({"kind": "describe", "parameter_preset_id": "sideways-neutral", "parameters": {"unexpected": 1}})
         completed(invalid, success=False); record("engine-validation-rejection")
         pending=submit({"kind":"prepare","dataset_id":"sideways"})

@@ -1277,7 +1277,7 @@ fn historical_request_hash_accepts_only_the_same_canonical_retry() {
     let first = store
         .accept("operator", &request, vec![], &hash, None)
         .unwrap();
-    let canonical = super::digest(&titan_strategy_runtime::compiler_json_v13(
+    let canonical = super::digest(&titan_strategy_runtime::compiler_json(
         &serde_json::to_value(&request).unwrap(),
     ));
     let retry = store

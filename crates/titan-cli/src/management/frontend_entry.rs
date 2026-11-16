@@ -42,7 +42,6 @@ pub fn run() -> i32 {
         None => Some(None),
         Some(Command::Strategy { command: None }) => Some(Some("strategy")),
         Some(Command::Account { command: None }) => Some(Some("account")),
-        Some(Command::Research { command: None }) => Some(Some("research")),
         Some(Command::Config { command: None }) => Some(Some("config")),
         _ => None,
     };

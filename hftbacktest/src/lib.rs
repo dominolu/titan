@@ -34,9 +34,6 @@ pub mod depth;
 /// Canonical Bar/Tick data types and deterministic bar construction.
 pub mod market_data;
 
-/// Provides the Rust-native callback strategy interface and two-level strategy context.
-pub mod strategy;
-
 /// Defines HftBacktest types.
 pub mod types;
 

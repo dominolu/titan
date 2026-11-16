@@ -19,17 +19,17 @@ use crate::{
 /// Older hosts can continue to use the normal route during a controlled migration. PRIMARY lanes
 /// and snapshot barriers are intentionally absent.
 #[derive(Clone)]
-pub struct V13EventControlAdapter {
+pub struct EventControlAdapter {
     inner: EventEngineHandle,
 }
 
-impl V13EventControlAdapter {
+impl EventControlAdapter {
     pub fn new(inner: EventEngineHandle) -> Self {
         Self { inner }
     }
 }
 
-impl EventControl for V13EventControlAdapter {
+impl EventControl for EventControlAdapter {
     fn allocate_source_streams(&self, count: u32) -> Result<u32, CoreError> {
         EventControl::allocate_source_streams(&self.inner, count)
     }

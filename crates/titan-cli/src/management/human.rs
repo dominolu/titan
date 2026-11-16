@@ -155,25 +155,6 @@ pub(super) fn write(output: &mut impl Write, kind: &str, data: &Value) -> io::Re
         }
         return detail(output, projection, 0);
     }
-    if kind == "research" {
-        writeln!(output, "Research: {}", text(&data["stage"]))?;
-        writeln!(output, "State:    {}", text(&data["operation"]["state"]))?;
-        if let Some(resource) = data.get("resource").filter(|value| !value.is_null()) {
-            writeln!(
-                output,
-                "Result:   {} ({})",
-                text(&resource["id"]),
-                text(&resource["kind"])
-            )?;
-        }
-        if data["complete"] != true {
-            writeln!(
-                output,
-                "The pipeline is unfinished. Repeat the same command to follow its original task."
-            )?;
-        }
-        return Ok(());
-    }
     if kind == "operation" {
         writeln!(
             output,

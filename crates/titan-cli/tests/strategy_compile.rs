@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
     assert!(String::from_utf8_lossy(&dependencies.stdout).contains("libm.so"));
 }
 #[test]
-fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifier() {
+fn rust_compiles_and_verifies_native_pair_and_bundle_without_python_verifier() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -123,12 +123,6 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
     let directory = tempfile::tempdir().unwrap();
     let pair = directory.path().join("pair/sample");
     let bundle = directory.path().join("bundle/sample.titan");
-    let key = directory.path().join("signing-key");
-    fs::write(
-        &key,
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60\n",
-    )
-    .unwrap();
     let compile = |path: &Path, format: &str| {
         success(cli(
             &root,
@@ -136,15 +130,11 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
                 "strategy",
                 "compile",
                 "--strategy",
-                "strategies/v13_smoke.py",
+                "strategies/smoke.py",
                 "--strategy-format",
                 format,
                 "--output",
                 path.to_str().unwrap(),
-                "--signing-key",
-                key.to_str().unwrap(),
-                "--key-id",
-                "test-rfc8032",
                 "--json",
             ],
         ))
@@ -168,26 +158,10 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
             "TITAN_STRATEGY_PYTHON",
             "/must-not-launch-python-for-verification",
         )
-        .args([
-            "strategy",
-            "validate",
-            bundle.to_str().unwrap(),
-            "--require-signature",
-            "--trusted-key",
-            "test-rfc8032=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-            "--json",
-        ])
+        .args(["strategy", "validate", bundle.to_str().unwrap(), "--json"])
         .output()
         .unwrap();
     assert_eq!(success(verified)["valid"], true);
-    assert!(
-        !cli(
-            &root,
-            &["strategy", "validate", bundle.to_str().unwrap(), "--json"]
-        )
-        .status
-        .success()
-    );
     // Failed compilation must not replace a prior, verified compiled_strategy.
     let rejected = cli(
         &root,
@@ -195,7 +169,7 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
             "strategy",
             "compile",
             "--strategy",
-            "python/titan-strategy-sdk/tests/fixtures/v13_build_side_effect.py",
+            "python/titan-strategy-sdk/tests/fixtures/build_side_effect.py",
             "--output",
             bundle.to_str().unwrap(),
             "--strategy-format",
@@ -221,7 +195,7 @@ fn rust_compiles_signs_and_verifies_native_pair_and_bundle_without_python_verifi
             "strategy",
             "compile",
             "--strategy",
-            "strategies/v13_smoke.py",
+            "strategies/smoke.py",
             "--target",
             "wrong-target",
             "--output",
@@ -266,7 +240,7 @@ fn termination_cancels_compile_process_group_and_cleans_workspace() {
             "strategy",
             "compile",
             "--strategy",
-            "strategies/v13_smoke.py",
+            "strategies/smoke.py",
             "--strategy-format",
             "bundle",
             "--output",
