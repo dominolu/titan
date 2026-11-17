@@ -874,7 +874,14 @@ struct BinanceFeed {
     rest_timer: tokio::time::Interval,
     last_funding: Option<(String, i64)>,
     last_funding_emit_ns: i64,
+    /// Depth frames taken while a REST snapshot was in flight, handed over with it so the
+    /// recorder can align the two.
+    queued_depth: VecDeque<DepthMessage>,
 }
+
+/// The most depth frames kept while a snapshot is in flight (a minute of BTC depth at Binance's
+/// 0 ms pace is some 35,000).
+const QUEUED_DEPTH_MAX: usize = 65_536;
 
 impl BinanceFeed {
     async fn connect(
@@ -908,6 +915,7 @@ impl BinanceFeed {
             ),
             last_funding: None,
             last_funding_emit_ns: 0,
+            queued_depth: VecDeque::new(),
         };
         feed.open_initial().await?;
         feed.oi_timer = interval_at(
@@ -999,7 +1007,31 @@ impl BinanceFeed {
 
     async fn fetch_snapshot(&self) -> anyhow::Result<(SnapshotMessage, u64)> {
         let (endpoint, _, _) = self.urls()?;
-        let limit = match self.market.depth_available {
+        let request = DepthRequest {
+            client: self.client.clone(),
+            endpoint,
+            market: self.market.clone(),
+        };
+        request.fetch().await
+    }
+}
+
+/// A REST depth request on its own, so the future does not borrow the feed while its socket is
+/// being read.
+struct DepthRequest {
+    client: reqwest::Client,
+    endpoint: &'static str,
+    market: MarketConfig,
+}
+
+impl DepthRequest {
+    async fn fetch(self) -> anyhow::Result<(SnapshotMessage, u64)> {
+        let DepthRequest {
+            client,
+            endpoint,
+            market,
+        } = self;
+        let limit = match market.depth_available {
             1..=5 => 5,
             6..=10 => 10,
             11..=20 => 20,
@@ -1008,11 +1040,10 @@ impl BinanceFeed {
             101..=500 => 500,
             _ => 1000,
         };
-        let response: Value = self
-            .client
+        let response: Value = client
             .get(endpoint)
             .query(&[
-                ("symbol", self.market.symbol.as_str()),
+                ("symbol", market.symbol.as_str()),
                 ("limit", &limit.to_string()),
             ])
             .send()
@@ -1024,8 +1055,8 @@ impl BinanceFeed {
             .get("lastUpdateId")
             .and_then(Value::as_u64)
             .ok_or_else(|| anyhow::anyhow!("invalid Binance depth snapshot"))?;
-        let bids = parse_levels(response.get("bids"), &self.market, Side::Bid)?;
-        let asks = parse_levels(response.get("asks"), &self.market, Side::Ask)?;
+        let bids = parse_levels(response.get("bids"), &market, Side::Bid)?;
+        let asks = parse_levels(response.get("asks"), &market, Side::Ask)?;
         let now = now_ns();
         Ok((
             SnapshotMessage {
@@ -1042,7 +1073,9 @@ impl BinanceFeed {
             seq,
         ))
     }
+}
 
+impl BinanceFeed {
     async fn resynchronize(&mut self, reason: GapReason) {
         let old_seq = self.previous_seq;
         let old_exch = self.last_exch_ns;
@@ -1289,6 +1322,98 @@ impl BinanceFeed {
     }
 }
 
+impl BinanceFeed {
+    /// One REST validation snapshot, with the socket read while it is in flight.
+    ///
+    /// The snapshot used to be awaited inside the `select!`: the socket was not read for the whole
+    /// request, so the local book fell behind, and because the snapshot's `lastUpdateId` is ahead
+    /// of what the recorder had processed, almost every comparison came back `stale`. Here the
+    /// request runs beside socket reads; the depth frames that arrive meanwhile are queued with
+    /// the snapshot, and the recorder pumps them into its alignment log before comparing.
+    async fn sample_snapshot(&mut self) -> FeedMessage {
+        let DepthRequest {
+            client,
+            endpoint,
+            market,
+        } = match self.urls() {
+            Ok((endpoint, _, _)) => DepthRequest {
+                client: self.client.clone(),
+                endpoint,
+                market: self.market.clone(),
+            },
+            Err(_) => {
+                return FeedMessage::RestSnapshotQueued(
+                    SnapshotMessage {
+                        exch_ts_ns: now_ns(),
+                        local_ts_ns: now_ns(),
+                        bids: Vec::new(),
+                        asks: Vec::new(),
+                        last_seq: None,
+                    },
+                    Vec::new(),
+                );
+            }
+        };
+        // The request owns its inputs, so the socket can be read while it is in flight.
+        let mut request = Box::pin(
+            DepthRequest {
+                client,
+                endpoint,
+                market,
+            }
+            .fetch(),
+        );
+        let mut frames: Vec<String> = Vec::new();
+        let failure;
+        loop {
+            let Some(socket) = self.socket.as_mut() else {
+                failure = true;
+                break;
+            };
+            let step = tokio::select! {
+                result = &mut request => Some(result.map(|(snapshot, _)| snapshot)),
+                message = socket.next() => match message {
+                    Some(Ok(Message::Text(text))) => {
+                        frames.push(text.to_string());
+                        None
+                    }
+                    _ => {
+                        failure = true;
+                        break;
+                    }
+                },
+            };
+            if let Some(result) = step {
+                match result {
+                    Ok(snapshot) => {
+                        for text in frames {
+                            self.absorb_queued(&text);
+                        }
+                        let queued = self.queued_depth.drain(..).collect();
+                        return FeedMessage::RestSnapshotQueued(snapshot, queued);
+                    }
+                    Err(_) => {
+                        failure = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if failure {
+            self.socket = None;
+        }
+        let snapshot = SnapshotMessage {
+            exch_ts_ns: now_ns(),
+            local_ts_ns: now_ns(),
+            bids: Vec::new(),
+            asks: Vec::new(),
+            last_seq: None,
+        };
+        let queued = self.queued_depth.drain(..).collect();
+        FeedMessage::RestSnapshotQueued(snapshot, queued)
+    }
+}
+
 impl Feed for BinanceFeed {
     async fn next(&mut self) -> Option<FeedMessage> {
         if let Some(message) = self.pending.pop_front() {
@@ -1311,14 +1436,10 @@ impl Feed for BinanceFeed {
                     if let Some(message) = self.poll_open_interest().await { return Some(message); }
                 }
                 _ = self.rest_timer.tick(), if self.settings.validation_interval_ms > 0 => {
-                    let snapshot = self.fetch_snapshot().await.map(|(snapshot, _)| snapshot).unwrap_or_else(|_| SnapshotMessage {
-                        exch_ts_ns: now_ns(),
-                        local_ts_ns: now_ns(),
-                        bids: Vec::new(),
-                        asks: Vec::new(),
-                        last_seq: None,
-                    });
-                    return Some(FeedMessage::RestSnapshot(snapshot));
+                    // The snapshot is fetched while the socket keeps being read, so the depth
+                    // messages that overtake it are handed over with it (see `sample_snapshot`).
+                    let shot = self.sample_snapshot().await;
+                    return Some(shot);
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if reconnect_market => {
                     self.market_socket = self.connect_market_socket().await.ok().flatten();
@@ -1372,6 +1493,60 @@ impl Feed for BinanceFeed {
 
 fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or_default()
+}
+
+impl BinanceFeed {
+    /// Queues one frame the socket delivered while a snapshot was in flight, when it is a depth
+    /// update. Trades, mark price and liquidations are handled by `next()` on its next pass: this
+    /// path only has to carry the depth changes across the snapshot.
+    fn absorb_queued(&mut self, text: &str) {
+        let Ok(root) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
+        let stream = root
+            .get("stream")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !stream.ends_with("@depth@0ms") && !stream.ends_with("@depth@100ms") {
+            return;
+        }
+        let Some(event) = root.get("data") else {
+            return;
+        };
+        if event.get("e").and_then(Value::as_str) != Some("depthUpdate") {
+            return;
+        }
+        let (Some(first), Some(last)) = (
+            event.get("U").and_then(Value::as_u64),
+            event.get("u").and_then(Value::as_u64),
+        ) else {
+            return;
+        };
+        let local_ts_ns = now_ns();
+        let exch_ts_ns = event
+            .get("E")
+            .and_then(Value::as_i64)
+            .and_then(ms_to_ns)
+            .unwrap_or(local_ts_ns);
+        let Ok(mut changes) = parse_changes(event.get("b"), &self.market, Side::Bid) else {
+            return;
+        };
+        let Ok(asks) = parse_changes(event.get("a"), &self.market, Side::Ask) else {
+            return;
+        };
+        changes.extend(asks);
+        if self.queued_depth.len() >= QUEUED_DEPTH_MAX {
+            self.queued_depth.pop_front();
+        }
+        self.queued_depth.push_back(DepthMessage {
+            exch_ts_ns,
+            local_ts_ns,
+            first_prev_seq: None,
+            first_seq: Some(first),
+            last_seq: last,
+            changes,
+        });
+    }
 }
 
 fn ms_to_ns(milliseconds: i64) -> Option<i64> {

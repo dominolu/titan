@@ -51,6 +51,9 @@ pub enum FeedMessage {
     Trade(TradeRecord),
     Aux(AuxRecord),
     RestSnapshot(SnapshotMessage),
+    /// A REST snapshot and the depth messages the feed took while it was in flight, in order:
+    /// the validator pumps them so the snapshot can be aligned (see `RestShadowValidator::pump`).
+    RestSnapshotQueued(SnapshotMessage, Vec<DepthMessage>),
     Gap(GapMessage),
 }
 
@@ -291,6 +294,11 @@ pub enum RestShadowStatus {
     Match,
     Mismatch,
     Stale,
+    /// The snapshot's sequence is ahead of the log: the messages that close the gap were still
+    /// on their way when the snapshot was taken. Not a verdict about the book; the recorder
+    /// pumps those messages in and compares again, and only what still cannot be aligned is
+    /// reported as `stale`.
+    Unaimed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -347,6 +355,51 @@ impl RestShadowValidator {
         self.last_seq
     }
 
+    /// Records a message the socket delivered, tolerating the first one of a session (no
+    /// predecessor yet). A message that does not continue the log starts it again: the alignment
+    /// then reports `stale`, which is the honest answer, and the recorder's book is unaffected.
+    pub fn push_live(&mut self, session_epoch: u32, message: DepthMessage) {
+        if session_epoch != self.session_epoch {
+            self.session_epoch = session_epoch;
+            self.last_seq = None;
+            self.deltas.clear();
+        }
+        if let Some(last) = self.last_seq
+            && message.first_prev_seq != Some(last)
+        {
+            self.last_seq = None;
+            self.deltas.clear();
+        }
+        self.last_seq = Some(message.last_seq);
+        self.deltas.push_back(message);
+        while self.deltas.len() > self.capacity {
+            self.deltas.pop_front();
+        }
+    }
+
+    /// Takes the messages the feed has already queued into the log, in their order.
+    ///
+    /// This is what makes a REST snapshot comparable: the recorder asks for one every
+    /// `validation_interval_ms` and waits for the answer while the socket keeps delivering, so
+    /// the snapshot's `lastUpdateId` is ahead of what this log had seen and every comparison
+    /// ended `stale`. Pumping the queue after the snapshot returns closes that gap; the
+    /// messages are kept, so the next snapshot replays across them too.
+    pub fn pump(
+        &mut self,
+        session_epoch: u32,
+        incoming: &mut std::collections::VecDeque<DepthMessage>,
+    ) {
+        if incoming.is_empty() {
+            return;
+        }
+        self.session_epoch = session_epoch;
+        self.last_seq = None;
+        self.deltas.clear();
+        for message in incoming.drain(..) {
+            self.push_live(session_epoch, message);
+        }
+    }
+
     pub fn compare(
         &self,
         session_epoch: u32,
@@ -370,8 +423,21 @@ impl RestShadowValidator {
             current_seq,
             session_epoch,
         };
-        if session_epoch != self.session_epoch || snapshot_seq > current_seq {
+        if session_epoch != self.session_epoch {
             return Ok(stale());
+        }
+        // A snapshot whose sequence is ahead of the log was taken while the socket kept
+        // delivering and the messages that close the gap have not been pumped in yet. That is
+        // not a verdict about the book (it used to be reported as `stale`, which is why almost
+        // every sample came back undecided).
+        if snapshot_seq > current_seq {
+            return Ok(RestShadowReport {
+                status: RestShadowStatus::Unaimed,
+                differing_levels: 0,
+                snapshot_seq,
+                current_seq,
+                session_epoch,
+            });
         }
         let mut bids: BTreeMap<_, _> = snapshot.0.iter().map(|l| (l.tick, l.qty)).collect();
         let mut asks: BTreeMap<_, _> = snapshot.1.iter().map(|l| (l.tick, l.qty)).collect();
@@ -626,6 +692,10 @@ pub async fn run_market<F: Feed>(
         .transpose()?;
     let mut initialized = false;
     let mut last_times = (0, 0);
+    // Depth messages a REST snapshot captured while it was in flight, written to the validator's
+    // log as they are processed (see `RestShadowValidator::push_live`).
+    let mut queued_depth: std::collections::VecDeque<DepthMessage> =
+        std::collections::VecDeque::new();
     let idle_duration = std::time::Duration::from_millis(u64::from(meta.grid_ms));
     let mut idle =
         tokio::time::interval_at(tokio::time::Instant::now() + idle_duration, idle_duration);
@@ -662,6 +732,22 @@ pub async fn run_market<F: Feed>(
             }
         };
         let closed = match message {
+            FeedMessage::RestSnapshot(snapshot) => {
+                // A feed that does not queue what overtook its snapshot: there is nothing to pump,
+                // and the snapshot is compared against the log as it stands.
+                queued_depth.clear();
+                if rest_shadow.is_some() {
+                    event_writer.write_rest_validation(
+                        root,
+                        venue,
+                        instrument,
+                        &meta.symbol,
+                        snapshot.exch_ts_ns,
+                        &serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": "stale", "differing_levels": 0, "snapshot_seq": snapshot.last_seq, "current_seq": rest_shadow.as_ref().and_then(RestShadowValidator::last_seq), "session_epoch": meta.session_epoch}),
+                    )?;
+                }
+                Vec::new()
+            }
             FeedMessage::Gap(gap) => {
                 if let Some(block) = aggregator.flush(&meta)? {
                     append_block(&mut writer, block, &mut last_times)?;
@@ -704,22 +790,43 @@ pub async fn run_market<F: Feed>(
                 event_writer.write_aux(root, venue, instrument, &meta.symbol, &aux)?;
                 Vec::new()
             }
-            FeedMessage::RestSnapshot(snapshot) => {
+            FeedMessage::RestSnapshotQueued(snapshot, carried) => {
+                // The messages a REST snapshot captured while in flight: pumped into the log to
+                // align this comparison, then kept in order for the depth messages that follow.
+                let mut carried: std::collections::VecDeque<DepthMessage> =
+                    carried.into_iter().collect();
+                queued_depth = carried.clone();
                 let status_event = if let (Some(validator), Some(snapshot_seq)) =
                     (rest_shadow.as_ref(), snapshot.last_seq)
                 {
                     let (bids, asks) = recorder.window();
-                    let report = validator.compare(
+                    let depth = usize::from(meta.depth_requested.min(meta.depth_available));
+                    let mut report = validator.compare(
                         meta.session_epoch,
                         snapshot_seq,
                         (&snapshot.bids, &snapshot.asks),
                         (&bids, &asks),
-                        usize::from(meta.depth_requested.min(meta.depth_available)),
+                        depth,
                     )?;
+                    if report.status == RestShadowStatus::Unaimed
+                        && let Some(validator) = rest_shadow.as_mut()
+                    {
+                        // The messages that close the gap left the socket while the snapshot was
+                        // in flight; the feed queued them for exactly this comparison.
+                        validator.pump(meta.session_epoch, &mut carried);
+                        report = validator.compare(
+                            meta.session_epoch,
+                            snapshot_seq,
+                            (&snapshot.bids, &snapshot.asks),
+                            (&bids, &asks),
+                            depth,
+                        )?;
+                    }
                     let status = match report.status {
                         RestShadowStatus::Match => "match",
                         RestShadowStatus::Mismatch => "mismatch",
                         RestShadowStatus::Stale => "stale",
+                        RestShadowStatus::Unaimed => "unaimed",
                     };
                     serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": status, "differing_levels": report.differing_levels, "snapshot_seq": report.snapshot_seq, "current_seq": report.current_seq, "session_epoch": report.session_epoch})
                 } else {
@@ -751,6 +858,11 @@ pub async fn run_market<F: Feed>(
             }
             FeedMessage::Depth(depth) => {
                 if let Some(validator) = rest_shadow.as_mut() {
+                    // The messages a REST snapshot captured while in flight are history to the
+                    // log; the snapshot itself was aligned across them, so they go in first.
+                    for pending in queued_depth.drain(..) {
+                        validator.push_live(meta.session_epoch, pending);
+                    }
                     validator.push(meta.session_epoch, depth.clone())?;
                 }
                 initialized = true;
@@ -1636,7 +1748,7 @@ depth_available = 1000
     }
 
     #[test]
-    fn rest_shadow_replays_deltas_and_marks_unaligned_snapshots_stale() {
+    fn rest_shadow_replays_deltas_and_marks_unaligned_snapshots_stale_or_unaimed() {
         let mut shadow = RestShadowValidator::new(8, 2).unwrap();
         shadow
             .push(
@@ -1688,6 +1800,23 @@ depth_available = 1000
             )
             .unwrap();
         assert_eq!(report.status, RestShadowStatus::Match);
+        // A snapshot past the newest logged message is not a verdict: it is not aligned yet.
+        let ahead = shadow
+            .compare(
+                2,
+                20,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 2 }],
+                    &[Level { tick: 101, qty: 3 }],
+                ),
+                1,
+            )
+            .unwrap();
+        assert_eq!(ahead.status, RestShadowStatus::Unaimed);
         let stale = shadow
             .compare(
                 2,
@@ -1778,6 +1907,108 @@ depth_available = 1000
             .unwrap();
 
         assert_eq!(report.status, RestShadowStatus::Match);
+    }
+
+    fn shadow_message(
+        first_prev: Option<u64>,
+        first: u64,
+        last: u64,
+        side: Side,
+        tick: i64,
+        qty: u64,
+    ) -> DepthMessage {
+        DepthMessage {
+            exch_ts_ns: 1,
+            local_ts_ns: 2,
+            first_prev_seq: first_prev,
+            first_seq: Some(first),
+            last_seq: last,
+            changes: vec![Change { side, tick, qty }],
+        }
+    }
+
+    #[test]
+    fn rest_shadow_pump_aligns_a_snapshot_taken_while_the_socket_kept_flowing() {
+        // A book with bids at 100 and asks at 101; the snapshot was taken at sequence 13 and the
+        // socket went on to 16 while it was in flight.
+        let mut shadow = RestShadowValidator::new(16, 2).unwrap();
+        let mut queued = std::collections::VecDeque::from(vec![
+            shadow_message(Some(12), 13, 13, Side::Ask, 101, 4),
+            shadow_message(Some(13), 14, 14, Side::Bid, 100, 5),
+            shadow_message(Some(14), 15, 15, Side::Ask, 101, 6),
+            shadow_message(Some(15), 16, 16, Side::Bid, 100, 7),
+        ]);
+        let snapshot = (
+            vec![Level { tick: 100, qty: 1 }],
+            vec![Level { tick: 101, qty: 1 }],
+        );
+        // The recorder's window at sequence 16: bids 100 at 7, asks 101 at 6.
+        let recorder_window = (
+            vec![Level { tick: 100, qty: 7 }],
+            vec![Level { tick: 101, qty: 6 }],
+        );
+        // Nothing logged yet: the snapshot cannot be aligned, so it is no verdict at all.
+        let before = shadow
+            .compare(
+                2,
+                13,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(before.status, RestShadowStatus::Mismatch);
+        shadow.pump(2, &mut queued);
+        assert!(queued.is_empty());
+        assert_eq!(shadow.last_seq(), Some(16));
+        // Aligned on 14..=16, the snapshot replays to exactly the recorder's window.
+        let after = shadow
+            .compare(
+                2,
+                13,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(after.status, RestShadowStatus::Match);
+        // A snapshot past everything queued is not aligned yet.
+        let ahead = shadow
+            .compare(
+                2,
+                17,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(ahead.status, RestShadowStatus::Unaimed);
+    }
+
+    #[test]
+    fn rest_shadow_live_push_starts_a_session_without_a_predecessor() {
+        let mut shadow = RestShadowValidator::new(8, 2).unwrap();
+        shadow.push_live(2, shadow_message(Some(10), 11, 11, Side::Bid, 100, 2));
+        assert_eq!(shadow.last_seq(), Some(11));
+        // A message that does not continue the log restarts it; the alignment says so.
+        shadow.push_live(2, shadow_message(Some(99), 100, 100, Side::Bid, 100, 3));
+        assert_eq!(shadow.last_seq(), Some(100));
+        let report = shadow
+            .compare(
+                2,
+                50,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 3 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                1,
+            )
+            .unwrap();
+        assert_eq!(report.status, RestShadowStatus::Stale);
     }
 
     #[test]
