@@ -350,7 +350,7 @@ fn run(compiled_strategy: PathBuf, fail_flush: bool, queue_overload: bool, inten
         assert_eq!(execution.active_tasks(), 0);
         engine.stop().unwrap();
         execution.shutdown(Instant::now()).unwrap();
-        println!("V13 failed intent durability prevents external dispatch");
+        println!("compiled strategy failed intent durability prevents external dispatch");
         return;
     }
     if queue_overload {
@@ -359,7 +359,9 @@ fn run(compiled_strategy: PathBuf, fail_flush: bool, queue_overload: bool, inten
         release.take().unwrap().send(()).unwrap();
         engine.stop().unwrap();
         assert!(execution.shutdown(Instant::now()).is_err());
-        println!("V13 synchronous local rejection with a full result queue fails without deadlock");
+        println!(
+            "compiled strategy synchronous local rejection with a full result queue fails without deadlock"
+        );
         return;
     }
     tick_result.unwrap();
@@ -449,5 +451,7 @@ fn run(compiled_strategy: PathBuf, fail_flush: bool, queue_overload: bool, inten
     execution
         .shutdown(Instant::now() + Duration::from_secs(3))
         .unwrap();
-    println!("V13 REST -> Stop -> Order -> Fill drain regression passed, fail_flush={fail_flush}");
+    println!(
+        "compiled strategy REST -> Stop -> Order -> Fill drain regression passed, fail_flush={fail_flush}"
+    );
 }

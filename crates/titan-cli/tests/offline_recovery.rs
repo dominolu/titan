@@ -12,6 +12,7 @@ use std::{
     process::Command,
     sync::{Arc, Mutex, OnceLock},
 };
+use titan_core_types::LockUnpoisoned;
 
 use titan_strategy_runtime::{
     NativeStrategyLoader, OfflineAdapter, OfflineConfig, StrategyStateSnapshot,
@@ -30,9 +31,7 @@ fn compile_lock() -> &'static Mutex<()> {
 }
 
 fn compile(directory: &PathBuf, source: &str, extra: &[&str], output: &str) -> PathBuf {
-    let _guard = compile_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = compile_lock().lock_unpoisoned();
     let output = directory.join(output);
     let mut command = Command::new(env!("CARGO_BIN_EXE_titan"));
     command

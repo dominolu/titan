@@ -8,6 +8,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use titan_account_service::{
     ACCOUNT_EVENT_SCHEMA_VERSION, AccountLifecycle, AccountService, AccountSnapshotState,
@@ -45,7 +46,7 @@ impl StrategyExecutionResultRelay {
     }
 
     fn attach(&self, runtime: &Arc<dyn StrategyRuntime>) {
-        *self.target.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(runtime));
+        *self.target.write_unpoisoned() = Some(Arc::downgrade(runtime));
     }
 }
 
@@ -54,8 +55,7 @@ impl ExecutionObserver for StrategyExecutionResultRelay {
         self.audit.observe(result.clone());
         let runtime = self
             .target
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .as_ref()
             .and_then(std::sync::Weak::upgrade);
         if let Some(runtime) = runtime
@@ -173,19 +173,11 @@ fn checkpoint_error(code: &'static str) -> StrategyError {
 
 impl StrategyEntry {
     fn cleanup_before(&self, deadline: Instant) -> LocalResult<()> {
-        *self
-            .cleanup_deadline
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(deadline);
+        *self.cleanup_deadline.lock_unpoisoned() = Some(deadline);
         self.cleanup()
     }
     fn cleanup(&self) -> LocalResult<()> {
-        if let Some(mut scope) = self
-            .resources
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
+        if let Some(mut scope) = self.resources.lock_unpoisoned().take() {
             scope.close().map_err(|_| {
                 StrategyError::new(
                     StrategyErrorKind::Internal,
@@ -242,7 +234,7 @@ struct ColdLoadPermit(Arc<ColdLoadLimiter>);
 
 impl Drop for ColdLoadPermit {
     fn drop(&mut self) {
-        let mut active = self.0.active.lock().unwrap_or_else(|p| p.into_inner());
+        let mut active = self.0.active.lock_unpoisoned();
         *active = active.saturating_sub(1);
         self.0.changed.notify_one();
     }
@@ -250,7 +242,7 @@ impl Drop for ColdLoadPermit {
 
 impl ColdLoadLimiter {
     fn acquire(self: &Arc<Self>, deadline: Instant) -> LocalResult<ColdLoadPermit> {
-        let mut active = self.active.lock().unwrap_or_else(|p| p.into_inner());
+        let mut active = self.active.lock_unpoisoned();
         while *active >= self.capacity {
             let timeout = deadline.saturating_duration_since(Instant::now());
             if timeout.is_zero() {
@@ -343,8 +335,7 @@ impl StrategyServiceCore {
         let entries = self
             .registry
             .state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_id
             .values()
             .cloned()
@@ -627,8 +618,7 @@ impl StrategyServiceCore {
                         .unregister_primary_async_lane_before(
                             token,
                             lane_deadline
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
+                                .lock_unpoisoned()
                                 .unwrap_or_else(|| Instant::now() + lane_stop_timeout),
                         )
                         .map(|_| ())
@@ -994,7 +984,7 @@ impl StrategyServiceCore {
                 else {
                     continue;
                 };
-                let order_id = v13_strategy_order_id(handle, order.client_order_id);
+                let order_id = strategy_order_id(handle, order.client_order_id);
                 if order_id == 0 {
                     continue;
                 }
@@ -1482,11 +1472,7 @@ impl StrategyServiceCore {
     }
 
     fn entry(&self, handle: StrategyHandle) -> LocalResult<Arc<StrategyEntry>> {
-        let state = self
-            .registry
-            .state
-            .read()
-            .unwrap_or_else(|p| p.into_inner());
+        let state = self.registry.state.read_unpoisoned();
         let entry = state
             .by_id
             .get(&handle.runtime_strategy_no)
@@ -1504,22 +1490,19 @@ impl StrategyServiceCore {
         cleanup: bool,
     ) -> StrategyOperationId {
         let id = StrategyOperationId(self.next_operation.fetch_add(1, Ordering::AcqRel));
-        self.operations
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                id,
-                GlobalOperation {
-                    snapshot: StrategyOperationSnapshot {
-                        id,
-                        strategy: Some(entry.handle),
-                        state: StrategyOperationState::Pending,
-                        detail: Arc::from("pending"),
-                    },
-                    runtime: Some((entry.runtime.clone(), local)),
-                    cleanup: cleanup.then_some(entry),
+        self.operations.lock_unpoisoned().insert(
+            id,
+            GlobalOperation {
+                snapshot: StrategyOperationSnapshot {
+                    id,
+                    strategy: Some(entry.handle),
+                    state: StrategyOperationState::Pending,
+                    detail: Arc::from("pending"),
                 },
-            );
+                runtime: Some((entry.runtime.clone(), local)),
+                cleanup: cleanup.then_some(entry),
+            },
+        );
         id
     }
 
@@ -1529,22 +1512,19 @@ impl StrategyServiceCore {
         detail: &'static str,
     ) -> StrategyOperationId {
         let id = StrategyOperationId(self.next_operation.fetch_add(1, Ordering::AcqRel));
-        self.operations
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
-                id,
-                GlobalOperation {
-                    snapshot: StrategyOperationSnapshot {
-                        id,
-                        strategy: handle,
-                        state: StrategyOperationState::Succeeded,
-                        detail: Arc::from(detail),
-                    },
-                    runtime: None,
-                    cleanup: None,
+        self.operations.lock_unpoisoned().insert(
+            id,
+            GlobalOperation {
+                snapshot: StrategyOperationSnapshot {
+                    id,
+                    strategy: handle,
+                    state: StrategyOperationState::Succeeded,
+                    detail: Arc::from(detail),
                 },
-            );
+                runtime: None,
+                cleanup: None,
+            },
+        );
         id
     }
 }
@@ -1587,11 +1567,7 @@ impl StrategyAdminService for StrategyServiceCore {
             return Err(checkpoint_error("required_checkpoint_missing"));
         }
         let minimum_generation = {
-            let state = self
-                .registry
-                .state
-                .read()
-                .unwrap_or_else(|p| p.into_inner());
+            let state = self.registry.state.read_unpoisoned();
             if state.by_id.contains_key(&definition.runtime_strategy_no)
                 || state.by_key.contains_key(&definition.strategy_key)
             {
@@ -1632,11 +1608,7 @@ impl StrategyAdminService for StrategyServiceCore {
         };
         let entry = self.create_entry(definition, generation, restore)?;
         let handle = entry.handle;
-        let mut state = self
-            .registry
-            .state
-            .write()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut state = self.registry.state.write_unpoisoned();
         if state.by_id.contains_key(&handle.runtime_strategy_no)
             || state.by_key.contains_key(&entry.definition.strategy_key)
         {
@@ -1775,11 +1747,7 @@ impl StrategyAdminService for StrategyServiceCore {
             return Err(error);
         }
         {
-            let mut state = self
-                .registry
-                .state
-                .write()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut state = self.registry.state.write_unpoisoned();
             let current = state
                 .by_id
                 .get(&strategy.runtime_strategy_no)
@@ -1824,11 +1792,7 @@ impl StrategyAdminService for StrategyServiceCore {
             ));
         }
         entry.cleanup()?;
-        let mut state = self
-            .registry
-            .state
-            .write()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut state = self.registry.state.write_unpoisoned();
         state.by_id.remove(&strategy.runtime_strategy_no);
         state.by_key.remove(&entry.definition.strategy_key);
         Ok(self.completed_operation(Some(strategy), "removed"))
@@ -1837,8 +1801,7 @@ impl StrategyAdminService for StrategyServiceCore {
     fn list(&self) -> Arc<[StrategyInstanceSnapshot]> {
         self.registry
             .state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_id
             .values()
             .map(|entry| StrategyInstanceSnapshot {
@@ -1854,7 +1817,7 @@ impl StrategyAdminService for StrategyServiceCore {
     }
 
     fn operation(&self, id: StrategyOperationId) -> StrategyOperationSnapshot {
-        let mut operations = self.operations.lock().unwrap_or_else(|p| p.into_inner());
+        let mut operations = self.operations.lock_unpoisoned();
         let Some(operation) = operations.get_mut(&id) else {
             return StrategyOperationSnapshot {
                 id,
@@ -1907,8 +1870,7 @@ impl StrategyService for StrategyServiceCore {
     fn resolve(&self, strategy_key: &str) -> LocalResult<StrategyHandle> {
         self.registry
             .state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_key
             .get(strategy_key)
             .copied()
@@ -2157,7 +2119,7 @@ pub(crate) fn validate_manifest(
             "strategy capability exceeds service authorization",
         ));
     }
-    // V13 parameters are normalized and baked into the signed compiled_strategy. Deployment-time
+    // compiled strategy parameters are normalized and baked into the signed compiled_strategy. Deployment-time
     // definitions cannot override them or their schema; an optional pin lets a deployment assert
     // the stable parameter identity even when the (non-reproducible) artifact digest differs.
     if let Some(expected) = definition.strategy_file.parameters_digest
@@ -2307,7 +2269,7 @@ impl StrategyMetrics for NoopStrategyMetrics {}
 /// (FundingRate, MarkPrice and unsupported control facts)
 /// must be rejected here instead of falling through to a heuristic callback mapping.
 ///
-/// Bar/Hybrid is not part of the runnable V13 profile until one canonical producer and backtest
+/// Bar/Hybrid is not part of the runnable compiled strategy profile until one canonical producer and backtest
 /// adapter exist. Rejecting it at the service boundary prevents compiled_strategies from compiling into a
 /// profile that the runtime cannot dispatch.
 pub fn supported_strategy_subscription(event_type: &str, schema_version: u32) -> bool {

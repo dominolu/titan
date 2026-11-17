@@ -1,4 +1,4 @@
-//! Synthetic public facts through the real arena, PRIMARY lane and native V13 callback.
+//! Synthetic public facts through the real arena, PRIMARY lane and native compiled strategy callback.
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -394,6 +394,6 @@ fn main() {
         .unwrap();
     engine.stop().unwrap();
     println!(
-        "PASS: 48,052-byte snapshot -> arena -> PRIMARY -> V13 Top100; unchanged level backfill, invalidation, resnapshot; same offline reconstruction and legacy replay rejection"
+        "PASS: 48,052-byte snapshot -> arena -> PRIMARY -> compiled strategy Top100; unchanged level backfill, invalidation, resnapshot; same offline reconstruction and legacy replay rejection"
     );
 }

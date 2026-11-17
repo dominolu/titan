@@ -12,6 +12,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use titan_account_service::{AccountFactJournal, AccountService, AccountServiceCore};
+use titan_core_types::{ReadUnpoisoned, WriteUnpoisoned};
 use titan_strategy_runtime::{
     BusinessObservationSnapshot, StrategyAdminService, StrategyService, StrategyServiceCore,
 };
@@ -295,11 +296,7 @@ impl WorkerHost {
         })
     }
     pub fn snapshot(&self) -> Value {
-        self.state
-            .snapshot
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        self.state.snapshot.read_unpoisoned().clone()
     }
     pub fn finish(&mut self) -> Value {
         self.state.stop.store(true, Ordering::Release);
@@ -479,7 +476,7 @@ impl State {
     }
     fn sample(&self) {
         let value=self.build_snapshot().unwrap_or_else(|error|json!({"available":false,"reason":error.to_string(),"captured_at_ns":now(),"account":self.claim.account,"instrument":self.claim.instrument}));
-        *self.snapshot.write().unwrap_or_else(|p| p.into_inner()) = value;
+        *self.snapshot.write_unpoisoned() = value;
     }
     fn execution_risk(&self) -> Result<Vec<titan_account_service::ExecutionRiskEvidence>> {
         let mut evidence = Vec::new();
@@ -514,7 +511,7 @@ impl State {
                 json!({"available":true,"image":self.journal.observe_account_with_execution(&self.claim.account,&image,&execution).map_err(|e|anyhow::anyhow!(e.to_string()))?})
             }
             Err(error) => {
-                let old = self.snapshot.read().unwrap_or_else(|p| p.into_inner());
+                let old = self.snapshot.read_unpoisoned();
                 json!({"available":false,"reason":error.to_string(),"last_valid_image":old.get("account_snapshot").and_then(|v|v.get("image")).or_else(||old.get("account_snapshot").and_then(|v|v.get("last_valid_image")))})
             }
         };
@@ -624,11 +621,7 @@ impl State {
                     })
                     .await?
                 }
-                HostQuery::Snapshot => Ok(self
-                    .snapshot
-                    .read()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone()),
+                HostQuery::Snapshot => Ok(self.snapshot.read_unpoisoned().clone()),
                 HostQuery::History {
                     kind,
                     offset,

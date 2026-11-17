@@ -29,12 +29,12 @@ pub const HOST_OBJECT_IDENTITY_VERSION: u32 = 1;
 /// This string is the single source for one conceptual capability that has two wire encodings:
 ///
 /// - manifest/`ManifestCapabilities` bit [`crate::ManifestCapabilities::OBJECT_CONTEXT`]
-///   (`1 << 11`, the frozen V13 manifest format);
+///   (`1 << 11`, the frozen compiled strategy manifest format);
 /// - runtime `StrategyCapabilities` bit [`crate::StrategyCapabilities::OBJECT_CONTEXT`]
-///   (`1 << 13`, the V14 runtime format consumed after the V13→V14 mapping).
+///   (`1 << 13`, the V14 runtime format consumed after the compiled strategy→V14 mapping).
 ///
 /// The bit numbers differ because the two bit sets are different wire formats, not because the
-/// capability is different: [`crate::compiled_strategy::manifest_from_artifact`] turns the V13 bit into the V14 bit, and the
+/// capability is different: [`crate::compiled_strategy::manifest_from_artifact`] turns the compiled strategy bit into the V14 bit, and the
 /// V14 instance gate in `native_runtime.rs` is the only consumer of the V14 bit. Do not add a
 /// separate literal for either bit elsewhere; reference this constant or the two typed constants.
 pub const OBJECT_CONTEXT_CAPABILITY: &str = "object_context";

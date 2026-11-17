@@ -4,6 +4,7 @@ mod activation;
 mod error;
 mod event;
 mod lifecycle;
+mod lock;
 mod model;
 mod resources;
 
@@ -11,6 +12,7 @@ pub use activation::*;
 pub use error::*;
 pub use event::*;
 pub use lifecycle::*;
+pub use lock::*;
 pub use model::*;
 pub use resources::*;
 

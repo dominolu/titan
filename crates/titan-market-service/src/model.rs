@@ -2,6 +2,7 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+use titan_core_types::LockUnpoisoned;
 
 use serde::{Deserialize, Serialize};
 use titan_core_types::{
@@ -162,10 +163,7 @@ impl MarketEventPublisher {
                 MarketEventPublisherBackend::Core(_) => unreachable!(),
             };
         };
-        let mut committed_sequence = core
-            .source_sequence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut committed_sequence = core.source_sequence.lock_unpoisoned();
         let source_sequence = committed_sequence.saturating_add(1);
         let result = core.inner.publish_with_metadata(
             event_type,
@@ -220,10 +218,7 @@ impl MarketEventPublisher {
         let MarketEventPublisherBackend::Core(core) = &self.backend else {
             unreachable!()
         };
-        let mut committed_sequence = core
-            .source_sequence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut committed_sequence = core.source_sequence.lock_unpoisoned();
         let source_sequence = committed_sequence.saturating_add(1);
         let mut reservation = core
             .inner

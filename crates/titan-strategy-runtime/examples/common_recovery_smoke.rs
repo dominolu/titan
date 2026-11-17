@@ -404,6 +404,6 @@ fn main() {
     assert!(!gate.is_open());
     engine.stop().unwrap();
     println!(
-        "V13 common recovery: session/balance rebase, durable checkpoint failure, startup drift, generation/epoch isolation passed"
+        "compiled strategy common recovery: session/balance rebase, durable checkpoint failure, startup drift, generation/epoch isolation passed"
     );
 }

@@ -7,6 +7,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::LockUnpoisoned;
 use titan_core_types::{CoreError, Resource};
 
 struct Task {
@@ -39,15 +40,9 @@ impl Scheduler {
             .name("strategy-housekeeping".into())
             .spawn(move || {
                 while !worker.stop.load(Ordering::Acquire) {
-                    let tasks: Vec<_> = worker
-                        .tasks
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .values()
-                        .cloned()
-                        .collect();
+                    let tasks: Vec<_> = worker.tasks.lock_unpoisoned().values().cloned().collect();
                     for task in tasks {
-                        let mut task = task.lock().unwrap_or_else(|p| p.into_inner());
+                        let mut task = task.lock_unpoisoned();
                         if task.active && Instant::now() >= task.next {
                             task.next = Instant::now() + task.interval;
                             (task.callback)();
@@ -66,7 +61,7 @@ impl Scheduler {
         interval: Duration,
         callback: impl FnMut() + Send + 'static,
     ) -> ScheduledTask {
-        let mut tasks = self.state.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tasks = self.state.tasks.lock_unpoisoned();
         let id = self.state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let task = Arc::new(Mutex::new(Task {
             active: true,
@@ -84,12 +79,8 @@ impl Scheduler {
 }
 impl Resource for ScheduledTask {
     fn close(&mut self) -> Result<(), CoreError> {
-        self.task.lock().unwrap_or_else(|p| p.into_inner()).active = false;
-        self.state
-            .tasks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.id);
+        self.task.lock_unpoisoned().active = false;
+        self.state.tasks.lock_unpoisoned().remove(&self.id);
         Ok(())
     }
 }

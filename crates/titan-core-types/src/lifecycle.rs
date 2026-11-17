@@ -1,3 +1,4 @@
+use crate::LockUnpoisoned;
 use crate::{CoreError, Resource};
 use std::{
     collections::{HashMap, VecDeque},
@@ -84,21 +85,13 @@ impl<K> Default for BindingPins<K> {
 }
 impl<K: Eq + Hash + Copy + Send + 'static> BindingPins<K> {
     pub fn is_pinned(&self, key: K) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .contains_key(&key)
+        self.0.lock_unpoisoned().contains_key(&key)
     }
     pub fn pin(&self, key: K) -> BindingLease {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(key)
-            .or_default() += 1;
+        *self.0.lock_unpoisoned().entry(key).or_default() += 1;
         let pins = self.0.clone();
         BindingLease(Some(Box::new(move || {
-            let mut pins = pins.lock().unwrap_or_else(|p| p.into_inner());
+            let mut pins = pins.lock_unpoisoned();
             if let Some(count) = pins.get_mut(&key) {
                 *count -= 1;
                 if *count == 0 {

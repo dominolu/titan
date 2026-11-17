@@ -1,6 +1,6 @@
 //! Strategy ABI object context: frozen root/reference layout and versioned payloads.
 //!
-//! V14 appends an object-table view to the V13 callback context. Two layers exist:
+//! V14 appends an object-table view to the compiled strategy callback context. Two layers exist:
 //!
 //! - the **root** ([`StrategyRuntimeContext`]) and every [`TitanObjectRef`] are frozen for the
 //!   whole major and are hashed into `ABI_FINGERPRINT`;
@@ -8,7 +8,7 @@
 //!   hashed into the fingerprint. Appending a field bumps `schema_minor`; readers only require that
 //!   `payload_len` covers the prefix they were compiled against.
 //!
-//! This module is the live layout: the coordinated V13→V14 switch has happened, so
+//! This module is the live layout: the coordinated compiled strategy→V14 switch has happened, so
 //! [`crate::STRATEGY_ABI`] and [`crate::ABI_FINGERPRINT`] resolve here, the service builds an
 //! [`crate::ObjectTable`] per instance and `NativeRuntime` hands it to every callback.
 
@@ -29,7 +29,7 @@ pub const OBJECT_SCHEMA_MAJOR: u16 = 1;
 /// Highest payload schema minor the V14 host understands (appended fields only within a major).
 pub const OBJECT_SCHEMA_MINOR: u16 = 1;
 
-/// ABI fingerprint of the V14 dtype set (root + object ref + V13 views).
+/// ABI fingerprint of the V14 dtype set (root + object ref + compiled strategy views).
 ///
 /// Computed by the Python SDK (`abi.canonical_abi_descriptor`) and pinned here by the layout
 /// tests. The live loader compares against it through [`crate::ABI_FINGERPRINT`].
@@ -275,14 +275,14 @@ pub type TitanObjectQueryFn = unsafe extern "C" fn(
     out_ref: *mut TitanObjectRef,
 ) -> i32;
 
-/// V14 root: V13's field sequence followed by the object-table tail.
+/// V14 root: compiled strategy's field sequence followed by the object-table tail.
 ///
-/// The V13 fields are repeated here rather than nested so that the frozen offsets documented by the
-/// V13 layout are preserved byte-for-byte up to the appended tail.
+/// The compiled strategy fields are repeated here rather than nested so that the frozen offsets documented by the
+/// compiled strategy layout are preserved byte-for-byte up to the appended tail.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct StrategyRuntimeContext {
-    // --- V13 prefix (unchanged offsets) ---
+    // --- compiled strategy prefix (unchanged offsets) ---
     pub struct_size: u32,
     pub abi_version: u32,
     pub event_kind: u32,
@@ -574,7 +574,7 @@ const _: () = {
     assert!(std::mem::size_of::<TitanFeePayloadV1>() == 32);
     assert!(std::mem::size_of::<StrategyRuntimeContext>() == 440);
     assert!(std::mem::align_of::<StrategyRuntimeContext>() == 8);
-    // The V14 tail must start exactly where V13's 392-byte body ends.
+    // The V14 tail must start exactly where compiled strategy's 392-byte body ends.
     assert!(std::mem::offset_of!(StrategyRuntimeContext, objects_ptr) == 392);
     assert!(std::mem::offset_of!(StrategyRuntimeContext, reserved_ext) == 432);
 };
@@ -592,7 +592,7 @@ pub(crate) struct CallbackViews<'a> {
 /// Builds the per-callback V14 root. The object table is borrowed, never rebuilt.
 ///
 /// # Dead code
-/// The coordinated V13→V14 switch calls this from the runtime dispatcher; until then only the layout
+/// The coordinated compiled strategy→V14 switch calls this from the runtime dispatcher; until then only the layout
 /// tests exercise it.
 #[allow(dead_code)]
 pub(crate) fn callback_context(
@@ -860,7 +860,7 @@ mod tests {
         assert!(context.object_context.is_null());
         assert_eq!(context.reserved_tail, 0);
         assert_eq!(context.reserved_ext, 0);
-        // The V13 prefix keeps its frozen offsets and semantics.
+        // The compiled strategy prefix keeps its frozen offsets and semantics.
         assert_eq!(
             context.struct_size, 0,
             "struct_size is filled by the invoke wrapper"

@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::Instant,
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use crate::*;
 
@@ -59,7 +60,7 @@ impl StrategyLoaderRegistry {
                 "loader type must not be empty",
             ));
         }
-        let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
+        let mut factories = self.factories.write_unpoisoned();
         if factories.contains_key(&key) {
             return Err(StrategyError::new(
                 StrategyErrorKind::AlreadyExists,
@@ -78,8 +79,7 @@ impl StrategyLoaderRegistry {
         context: StrategyLoaderContext,
     ) -> LocalResult<Arc<dyn StrategyLoader>> {
         self.factories
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(loader_type)
             .ok_or_else(|| {
                 StrategyError::new(
@@ -133,7 +133,7 @@ impl LoadedStrategyCache {
     }
 
     pub fn get(&self, key: &StrategyCacheKey) -> Option<LoadedStrategy> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock_unpoisoned();
         state.clock = state.clock.wrapping_add(1);
         let clock = state.clock;
         state.values.get_mut(key).map(|cached| {
@@ -143,7 +143,7 @@ impl LoadedStrategyCache {
     }
 
     pub fn insert(&self, key: StrategyCacheKey, compiled_strategy: LoadedStrategy) {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock_unpoisoned();
         if !state.values.contains_key(&key) {
             while state.values.len() >= self.capacity {
                 let victim = state
@@ -176,11 +176,7 @@ impl LoadedStrategyCache {
     }
 
     pub fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values
-            .len()
+        self.state.lock_unpoisoned().values.len()
     }
 }
 
@@ -205,11 +201,12 @@ struct NativeLoader {
 
 impl NativeLoader {
     fn strategy_path(&self, strategy_file: &StrategyFileRef) -> LocalResult<std::path::PathBuf> {
-        let raw = strategy_file.uri.strip_prefix("file://").ok_or_else(|| {
-            strategy_load_error("v13_uri", "V13 compiled_strategy URI must use file://")
-        })?;
+        let raw = strategy_file
+            .uri
+            .strip_prefix("file://")
+            .ok_or_else(|| strategy_load_error("uri", "compiled strategy URI must use file://"))?;
         let path = std::fs::canonicalize(raw).map_err(|_| {
-            strategy_load_error("v13_path", "V13 compiled_strategy path cannot be resolved")
+            strategy_load_error("path", "compiled strategy path cannot be resolved")
         })?;
         let allowed = self.context.allowed_strategy_roots.iter().any(|root| {
             std::fs::canonicalize(root.as_ref()).is_ok_and(|root| path.starts_with(root))
@@ -217,7 +214,7 @@ impl NativeLoader {
         if !allowed {
             return Err(strategy_load_error(
                 "strategy_root_denied",
-                "V13 compiled_strategy is outside allowed roots",
+                "compiled strategy is outside allowed roots",
             ));
         }
         Ok(path)
@@ -229,9 +226,8 @@ impl NativeLoader {
 }
 
 fn manifest_from_artifact(value: &ArtifactMetadata) -> LocalResult<CompiledStrategyMetadata> {
-    let source_version = semver::Version::parse(&value.source_version).map_err(|_| {
-        strategy_load_error("strategy_version", "V13 strategy version is not semver")
-    })?;
+    let source_version = semver::Version::parse(&value.source_version)
+        .map_err(|_| strategy_load_error("strategy_version", "strategy version is not semver"))?;
     let mut capabilities = 0_u64;
     if value
         .capabilities
@@ -260,7 +256,7 @@ fn manifest_from_artifact(value: &ArtifactMetadata) -> LocalResult<CompiledStrat
         .capabilities
         .contains(ManifestCapabilities::OBJECT_CONTEXT)
     {
-        // The object table is the single capability behind two wire encodings: V13 manifest bit
+        // The object table is the single capability behind two wire encodings: compiled strategy manifest bit
         // 1<<11 and V14 runtime bit 1<<13. Both are named by [`OBJECT_CONTEXT_CAPABILITY`]
         // (`"object_context"`), which documents the pair and why the bit numbers differ. Neither
         // typed constant may be replaced by a bare literal here.
@@ -357,11 +353,11 @@ impl StrategyLoader for NativeLoader {
         strategy_file: &StrategyFileRef,
     ) -> Result<CompiledStrategyMetadata, StrategyError> {
         let path = self.strategy_path(strategy_file)?;
-        let value = self.loader().inspect(&path).map_err(v13_load_error)?;
+        let value = self.loader().inspect(&path).map_err(load_error)?;
         if value.compiled_strategy_digest != strategy_file.expected_digest {
             return Err(strategy_load_error(
                 "compiled_strategy_digest_mismatch",
-                "V13 compiled_strategy digest does not match deployment pin",
+                "compiled strategy digest does not match deployment pin",
             ));
         }
         manifest_from_artifact(&value)
@@ -374,18 +370,18 @@ impl StrategyLoader for NativeLoader {
     ) -> Result<LoadedStrategy, StrategyError> {
         if Instant::now() >= deadline {
             return Err(strategy_load_error(
-                "v13_load_deadline",
-                "V13 load deadline expired",
+                "load_deadline",
+                "compiled strategy load deadline expired",
             ));
         }
         let path = self.strategy_path(&request.strategy_file)?;
-        let compiled_strategy = self.loader().load(&path).map_err(v13_load_error)?;
+        let compiled_strategy = self.loader().load(&path).map_err(load_error)?;
         if compiled_strategy.manifest.compiled_strategy_digest
             != request.strategy_file.expected_digest
         {
             return Err(strategy_load_error(
                 "compiled_strategy_digest_mismatch",
-                "V13 compiled_strategy digest does not match deployment pin",
+                "compiled strategy digest does not match deployment pin",
             ));
         }
         let manifest = manifest_from_artifact(&compiled_strategy.manifest)?;
@@ -413,23 +409,18 @@ fn strategy_load_error(code: &'static str, message: impl Into<Arc<str>>) -> Stra
 /// The previous `map_err(|_| ...)` erased every cause, so a fingerprint change (the expected
 /// consequence of an ABI revision) looked like an unspecified load failure. An operator could not
 /// tell "recompile the strategy" from a corrupt file.
-fn v13_load_error(error: LoadError) -> StrategyError {
+fn load_error(error: LoadError) -> StrategyError {
     let (kind, code) = match &error {
-        LoadError::AbiVersion { .. } => {
-            (StrategyErrorKind::AbiMismatch, "v13_abi_version_mismatch")
-        }
-        LoadError::AbiFingerprint => (
-            StrategyErrorKind::AbiMismatch,
-            "v13_abi_fingerprint_mismatch",
-        ),
-        LoadError::AbiLayout { .. } => (StrategyErrorKind::AbiMismatch, "v13_abi_layout_mismatch"),
-        LoadError::Bundle(_) => (StrategyErrorKind::LoadFailed, "v13_bundle_invalid"),
-        LoadError::Io(_) => (StrategyErrorKind::LoadFailed, "v13_io"),
-        LoadError::Cbor(_) => (StrategyErrorKind::LoadFailed, "v13_cbor_invalid"),
-        LoadError::Contract(_) => (StrategyErrorKind::LoadFailed, "v13_contract_violation"),
-        LoadError::State(_) => (StrategyErrorKind::InvalidState, "v13_state_invalid"),
-        LoadError::Native(_) => (StrategyErrorKind::LoadFailed, "v13_native_load_failed"),
-        LoadError::Callback { .. } => (StrategyErrorKind::CallbackFailed, "v13_callback_failed"),
+        LoadError::AbiVersion { .. } => (StrategyErrorKind::AbiMismatch, "abi_version_mismatch"),
+        LoadError::AbiFingerprint => (StrategyErrorKind::AbiMismatch, "abi_fingerprint_mismatch"),
+        LoadError::AbiLayout { .. } => (StrategyErrorKind::AbiMismatch, "abi_layout_mismatch"),
+        LoadError::Bundle(_) => (StrategyErrorKind::LoadFailed, "bundle_invalid"),
+        LoadError::Io(_) => (StrategyErrorKind::LoadFailed, "io_error"),
+        LoadError::Cbor(_) => (StrategyErrorKind::LoadFailed, "cbor_invalid"),
+        LoadError::Contract(_) => (StrategyErrorKind::LoadFailed, "contract_violation"),
+        LoadError::State(_) => (StrategyErrorKind::InvalidState, "state_invalid"),
+        LoadError::Native(_) => (StrategyErrorKind::LoadFailed, "native_load_failed"),
+        LoadError::Callback { .. } => (StrategyErrorKind::CallbackFailed, "callback_failed"),
     };
     StrategyError::new(kind, "native_loader", code, error.to_string())
 }
@@ -440,34 +431,34 @@ mod tests {
 
     #[test]
     fn abi_mismatch_is_reported_as_a_structured_reason() {
-        let error = v13_load_error(LoadError::AbiFingerprint);
+        let error = load_error(LoadError::AbiFingerprint);
         assert_eq!(error.kind, StrategyErrorKind::AbiMismatch);
-        assert_eq!(error.reason_code.as_ref(), "v13_abi_fingerprint_mismatch");
+        assert_eq!(error.reason_code.as_ref(), "abi_fingerprint_mismatch");
         assert!(error.message.contains("recompile"), "{}", error.message);
 
-        let error = v13_load_error(LoadError::AbiVersion {
+        let error = load_error(LoadError::AbiVersion {
             artifact: 13,
             host: 14,
         });
         assert_eq!(error.kind, StrategyErrorKind::AbiMismatch);
-        assert_eq!(error.reason_code.as_ref(), "v13_abi_version_mismatch");
+        assert_eq!(error.reason_code.as_ref(), "abi_version_mismatch");
         assert!(error.message.contains("artifact 13"));
         assert!(error.message.contains("host 14"));
 
-        let error = v13_load_error(LoadError::Contract("state mismatch"));
+        let error = load_error(LoadError::Contract("state mismatch"));
         assert_eq!(error.kind, StrategyErrorKind::LoadFailed);
-        assert_eq!(error.reason_code.as_ref(), "v13_contract_violation");
+        assert_eq!(error.reason_code.as_ref(), "contract_violation");
         assert!(error.message.contains("state mismatch"));
     }
 
     /// The old status code moved the object-context capability through hard-coded bits while the
     /// manifest string lived elsewhere, so three literals described one capability. The bits are
     /// still the two frozen wire formats, but they are now documented as one capability in
-    /// `object_gate.rs::OBJECT_CONTEXT_CAPABILITY`; this pins that the V13→V14 translation still
+    /// `object_gate.rs::OBJECT_CONTEXT_CAPABILITY`; this pins that the compiled strategy→V14 translation still
     /// means the same thing and that the two bit numbers are deliberately different.
     /// This repository was not compiled for this change, so the checks are deliberately limited to
     /// what is structural: the string source, the two bit numbers, their inequality, and the
-    /// V13→V14 translation. They do not re-implement `manifest_from_artifact`'s other validations.
+    /// compiled strategy→V14 translation. They do not re-implement `manifest_from_artifact`'s other validations.
     #[test]
     fn object_context_capability_keeps_its_meaning_across_bits() {
         assert_eq!(OBJECT_CONTEXT_CAPABILITY, "object_context");
@@ -487,7 +478,7 @@ mod tests {
             !StrategyCapabilities::OBJECT_CONTEXT
                 .contains(StrategyCapabilities::MULTI_VENUE_EXECUTION)
         );
-        // The V14 bit is not reachable from any V13 bit other than OBJECT_CONTEXT.
+        // The V14 bit is not reachable from any compiled strategy bit other than OBJECT_CONTEXT.
         let all_but_object_context = ManifestCapabilities(
             ManifestCapabilities::MARKET_DATA.0
                 | ManifestCapabilities::ACCOUNT_DATA.0

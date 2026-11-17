@@ -159,5 +159,5 @@ fn main() {
     assert!(!recovered.command_gate_open());
     recovered.complete_restore([0; 32], 2).unwrap();
     recovered.invoke(EventKind::Start, &mut context).unwrap();
-    println!("V13 pair-arb state-machine smoke passed");
+    println!("compiled strategy pair-arb state-machine smoke passed");
 }

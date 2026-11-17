@@ -1,5 +1,5 @@
 //! Source discovery, workspace resolution and immutable strategy releases. Never starts a strategy.
-use super::{CliError, CompileRequest, compiler, hex_digest, v13_manifest_json};
+use super::{CliError, CompileRequest, compiler, hex_digest, manifest_json};
 use clap::Args;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -756,7 +756,7 @@ pub(super) fn verify_release(path: &Path) -> Result<Value, CliError> {
     {
         return Err(error("release native verification evidence is incomplete"));
     }
-    let manifest = v13_manifest_json(&path.join("artifacts/strategy.titan"))?;
+    let manifest = manifest_json(&path.join("artifacts/strategy.titan"))?;
     if manifest["compiled_strategy_digest"] != release["compiled_strategy_digest"]
         || manifest["strategy_type"] != release["strategy_type"]
         || manifest["source_version"] != release["source_version"]

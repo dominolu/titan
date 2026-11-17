@@ -1,4 +1,5 @@
 use std::{sync::Arc, time::Duration};
+use titan_core_types::LockUnpoisoned;
 
 use crossbeam_channel::bounded;
 use titan_core_types::{
@@ -152,8 +153,7 @@ impl EventControl for EventEngineHandle {
             .next_transaction
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_unpoisoned()
             .insert(id, (base.0, Vec::new()));
         Ok(RouteTransaction(id))
     }
@@ -195,8 +195,7 @@ impl EventControl for EventEngineHandle {
         }
         let (base_version, staged) = self
             .transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_unpoisoned()
             .remove(&transaction.0)
             .ok_or_else(|| {
                 control_error(
@@ -247,10 +246,7 @@ impl EventControl for EventEngineHandle {
     }
 
     fn abort(&self, transaction: RouteTransaction) {
-        self.transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&transaction.0);
+        self.transactions.lock_unpoisoned().remove(&transaction.0);
     }
 
     fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), CoreError> {
@@ -366,10 +362,7 @@ fn stage_subscription(
             false,
         ));
     }
-    let mut transactions = handle
-        .transactions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut transactions = handle.transactions.lock_unpoisoned();
     let (_, staged) = transactions.get_mut(&transaction.0).ok_or_else(|| {
         control_error(
             ErrorKind::SubscriptionRejected,

@@ -454,7 +454,7 @@ fn main() {
         .shutdown(Instant::now() + Duration::from_secs(3))
         .unwrap();
     println!(
-        "V13 grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation"
+        "compiled strategy grid stop barrier passed: cancel confirmation, reduce-only exit, position confirmation"
     );
 }
 
@@ -585,7 +585,7 @@ fn recovery_probe(
         }
     }
     println!(
-        "V13 grid recovery passed: proven cancels, missing results rejected, changed fills rejected, gate closed"
+        "compiled strategy grid recovery passed: proven cancels, missing results rejected, changed fills rejected, gate closed"
     );
 }
 
@@ -725,5 +725,5 @@ fn offline_stop(compiled_strategy: Arc<LoadedNativeStrategy>) {
         )
         .unwrap();
     assert!(adapter.is_stopped());
-    println!("V13 offline grid stop barrier passed");
+    println!("compiled strategy offline grid stop barrier passed");
 }

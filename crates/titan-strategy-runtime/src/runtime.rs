@@ -6,6 +6,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::{ReadUnpoisoned, WriteUnpoisoned};
 
 use serde::{Deserialize, Serialize};
 use titan_account_service::ExecutionHandle;
@@ -346,7 +347,7 @@ pub struct StrategyRuntimeFactoryRegistry {
 impl StrategyRuntimeFactoryRegistry {
     pub fn register(&self, factory: Arc<dyn StrategyRuntimeFactory>) -> LocalResult<()> {
         let key: Arc<str> = Arc::from(factory.runtime_type());
-        let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
+        let mut factories = self.factories.write_unpoisoned();
         if factories.insert(key, factory).is_some() {
             return Err(StrategyError::new(
                 StrategyErrorKind::AlreadyExists,
@@ -359,8 +360,7 @@ impl StrategyRuntimeFactoryRegistry {
     }
     pub fn get(&self, runtime_type: &str) -> LocalResult<Arc<dyn StrategyRuntimeFactory>> {
         self.factories
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(runtime_type)
             .cloned()
             .ok_or_else(|| {

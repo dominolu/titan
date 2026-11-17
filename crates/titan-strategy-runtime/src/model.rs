@@ -250,7 +250,7 @@ pub struct CompiledStrategyMetadata {
     pub callbacks: StrategyCallbackMask,
     pub capabilities: StrategyCapabilities,
     pub subscriptions: Arc<[StrategySubscriptionSpec]>,
-    /// V14 object requirements from the artifact manifest; `None` for V13 artifacts.
+    /// V14 object requirements from the artifact manifest; `None` for compiled strategy artifacts.
     pub object_manifest: Option<crate::ObjectManifest>,
     pub compiled_strategy_digest: [u8; 32],
 }

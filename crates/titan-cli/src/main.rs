@@ -87,7 +87,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run a V13 compiled_strategy backtest or a configured Core Live strategy in an isolated worker.
+    /// Run a compiled strategy backtest or a configured Core Live strategy in an isolated worker.
     Run {
         /// `.titan` path for backtest; configured strategy_key for live.
         #[arg(value_name = "STRATEGY_FILE_OR_KEY")]
@@ -115,7 +115,7 @@ enum Commands {
         #[arg(long)]
         registry: PathBuf,
     },
-    /// Validate a V13 compiled_strategy/backtest trace or Core Live deployment without starting Python.
+    /// Validate a compiled strategy/backtest trace or Core Live deployment without starting Python.
     Validate {
         #[arg(value_name = "STRATEGY_FILE_OR_KEY")]
         strategy: String,
@@ -583,7 +583,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             for source in
                 strategy_workspace::compiled_paths(directory.as_deref(), workspace.as_deref())?
             {
-                catalog.push(v13_manifest_json(&source)?);
+                catalog.push(manifest_json(&source)?);
             }
             catalog.sort_by_key(|value| {
                 value["strategy_type"]
@@ -618,7 +618,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             compiled_strategy,
             json,
         } => {
-            let manifest = v13_manifest_json(&compiled_strategy)?;
+            let manifest = manifest_json(&compiled_strategy)?;
             if json {
                 println!(
                     "{}",
@@ -640,7 +640,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
             compiled_strategy,
             json,
         } => {
-            let manifest = v13_manifest_json(&compiled_strategy)?;
+            let manifest = manifest_json(&compiled_strategy)?;
             if json {
                 println!(
                     "{}",
@@ -663,7 +663,7 @@ fn strategy_command(command: StrategyCommands) -> Result<(), CliError> {
     }
 }
 
-fn v13_manifest_json(path: &Path) -> Result<serde_json::Value, CliError> {
+fn manifest_json(path: &Path) -> Result<serde_json::Value, CliError> {
     let path = fs::canonicalize(path).map_err(|source| CliError::Read {
         path: path.into(),
         source,
@@ -827,7 +827,7 @@ fn resolve_core_live_run_spec(
         .strategy_file
         .uri
         .strip_prefix("file://")
-        .ok_or_else(|| CliError::Engine("V13 compiled_strategy URI must use file://".into()))?;
+        .ok_or_else(|| CliError::Engine("compiled strategy URI must use file://".into()))?;
     let compiled_strategy =
         fs::canonicalize(compiled_strategy).map_err(|source| CliError::Read {
             path: PathBuf::from(compiled_strategy),
@@ -894,7 +894,7 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
             .all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(CliError::Engine(
-            "resolved V13 compiled_strategy digest is invalid".into(),
+            "resolved compiled strategy digest is invalid".into(),
         ));
     }
     if spec.history_capacity == 0 {
@@ -911,12 +911,10 @@ fn validate_spec(spec: &RunSpec) -> Result<(), CliError> {
                 ));
             }
             if spec.event_mode != EventMode::Tick {
-                return Err(CliError::Engine(
-                    "V13 trace backtest requires tick mode".into(),
-                ));
+                return Err(CliError::Engine("trace backtest requires tick mode".into()));
             }
             if *command_capacity == 0 || !data.is_file() {
-                return Err(CliError::Engine("invalid V13 trace backtest input".into()));
+                return Err(CliError::Engine("invalid trace backtest input".into()));
             }
         }
         BackendSpec::CoreLive { strategy_key } => {
@@ -1121,7 +1119,7 @@ fn worker(
     if let BackendSpec::CoreLive { strategy_key } = &spec.backend {
         return core_live_worker(&registry, run_id, token, &spec, strategy_key, stop);
     }
-    v13_backtest_worker(&registry, run_id, token, &spec, stop)
+    backtest_worker(&registry, run_id, token, &spec, stop)
 }
 
 /// The deterministic trace replay backend was removed.
@@ -1131,7 +1129,7 @@ fn worker(
 /// historical backtest (`hftbacktest/examples/grid_history.rs`) does not, while still needing a
 /// fixture per scenario and an ABI-schema version for the trace format. The adapter it used
 /// (`OfflineAdapter`) stays: the real historical backtest runs strategies through it.
-fn v13_backtest_worker(
+fn backtest_worker(
     _registry: &Registry,
     _run_id: &str,
     _token: &str,
@@ -2322,7 +2320,7 @@ mod cli_tests {
             "--output",
             "pair.titan",
         ])
-        .expect("documented V13 compile command must parse");
+        .expect("documented compiled strategy compile command must parse");
         let Commands::Strategy {
             command:
                 StrategyCommands::Compile(strategy_workspace::CompileArgs {

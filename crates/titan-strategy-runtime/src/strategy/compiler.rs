@@ -32,7 +32,7 @@ pub struct NumbaMetadata {
     pub subscriptions: Vec<NumbaSubscription>,
     pub capabilities: Vec<String>,
     pub build: serde_json::Value,
-    /// V14 object-context facts. `None` for V13 artifacts; all or nothing.
+    /// V14 object-context facts. `None` for compiled strategy artifacts; all or nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_schema_major: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,7 +263,7 @@ impl NumbaMetadata {
         Ok(())
     }
 
-    /// CBOR manifest entries for the V14 object context; empty for V13 artifacts.
+    /// CBOR manifest entries for the V14 object context; empty for compiled strategy artifacts.
     fn object_manifest_fields(&self) -> Result<Vec<(CborValue, CborValue)>, LoadError> {
         let (Some(major), Some(minor), Some(hash)) = (
             self.object_schema_major,

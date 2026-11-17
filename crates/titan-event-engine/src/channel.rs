@@ -8,6 +8,7 @@ use std::{
     thread::Thread,
     time::{Duration, Instant},
 };
+use titan_core_types::LockUnpoisoned;
 
 use crossbeam_queue::ArrayQueue;
 use titan_core_types::{
@@ -219,12 +220,12 @@ impl EventReceiver for SubscriberChannel {
                 }
                 SubscriberRuntimeMode::Park => {
                     let current = std::thread::current();
-                    *self.waiter.lock().unwrap_or_else(|p| p.into_inner()) = Some(current.clone());
+                    *self.waiter.lock_unpoisoned() = Some(current.clone());
                     let tracked = self.pop_next().or_else(|| {
                         std::thread::park_timeout(idle_wait.max(self.idle_sleep));
                         self.pop_next()
                     });
-                    let mut waiter = self.waiter.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut waiter = self.waiter.lock_unpoisoned();
                     if waiter
                         .as_ref()
                         .is_some_and(|thread| thread.id() == current.id())
@@ -345,11 +346,7 @@ impl SubscriberChannel {
 
     fn wake_waiter(&self) {
         if self.runtime_mode == SubscriberRuntimeMode::Park
-            && let Some(waiter) = self
-                .waiter
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
+            && let Some(waiter) = self.waiter.lock_unpoisoned().as_ref()
         {
             waiter.unpark();
         }

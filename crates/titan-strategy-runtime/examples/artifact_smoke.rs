@@ -23,11 +23,11 @@ fn main() {
     let manifest = PathBuf::from(std::env::args_os().nth(1).expect("manifest path"));
     let cache = PathBuf::from(std::env::args_os().nth(2).expect("cache path"));
     let loader = NativeStrategyLoader::new(cache);
-    let compiled_strategy = loader.load(&manifest).expect("load V13 compiled_strategy");
+    let compiled_strategy = loader.load(&manifest).expect("load compiled strategy");
     let mut instance = compiled_strategy
         .instantiate(42, 1)
         .expect("instantiate compiled_strategy");
-    instance.start().expect("start V13 instance");
+    instance.start().expect("start compiled strategy instance");
     let markets = [TitanMarketView {
         asset_no: 0,
         best_bid_ticks: 2,
@@ -62,5 +62,5 @@ fn main() {
         .expect("reconcile successor generation");
     assert_eq!(successor.state.as_bytes(), instance.state.as_bytes());
     assert!(!successor.command_gate_open());
-    println!("V13 native compiled_strategy smoke passed: {words:?}");
+    println!("compiled strategy native compiled_strategy smoke passed: {words:?}");
 }

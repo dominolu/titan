@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use titan_core_types::LockUnpoisoned;
 
 type OwnerBook = BTreeMap<u32, BTreeMap<(u32, u64), bool>>;
 
@@ -39,7 +40,7 @@ impl ExecutionOwners {
         if keys.len() != accounts.len() || keys.is_empty() || owner.0 == 0 || owner.1 == 0 {
             return Err("invalid_execution_ownership");
         }
-        let mut all = self.owners.lock().unwrap_or_else(|p| p.into_inner());
+        let mut all = self.owners.lock_unpoisoned();
         if keys.iter().any(|id| {
             all.get(id).is_some_and(|owners| {
                 owners.contains_key(&owner)
@@ -81,7 +82,7 @@ impl LeaseInner {
         if self.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        let mut all = self.book.owners.lock().unwrap_or_else(|p| p.into_inner());
+        let mut all = self.book.owners.lock_unpoisoned();
         for id in &self.accounts {
             if let Some(owners) = all.get_mut(id) {
                 owners.remove(&self.owner);

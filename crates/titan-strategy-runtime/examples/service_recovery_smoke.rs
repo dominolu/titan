@@ -350,5 +350,7 @@ fn main() {
             .unwrap();
     }
     engine.stop().unwrap();
-    println!("V13 Service -> Factory -> Instance recovery passed, generation={generation}");
+    println!(
+        "compiled strategy Service -> Factory -> Instance recovery passed, generation={generation}"
+    );
 }

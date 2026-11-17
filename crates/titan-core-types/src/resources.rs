@@ -1,3 +1,4 @@
+use crate::LockUnpoisoned;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -48,15 +49,11 @@ impl ResourceScope {
     }
 
     pub fn resource_count(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entries
-            .len()
+        self.state.lock_unpoisoned().entries.len()
     }
 
     pub fn resource_counts(&self) -> BTreeMap<Arc<str>, usize> {
-        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.lock_unpoisoned();
         let mut counts = BTreeMap::new();
         for entry in &state.entries {
             *counts.entry(entry.name.clone()).or_insert(0) += 1;
@@ -66,7 +63,7 @@ impl ResourceScope {
 
     pub fn close(&mut self) -> Result<(), Vec<CoreError>> {
         let mut entries = {
-            let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut state = self.state.lock_unpoisoned();
             if state.closed {
                 return Ok(());
             }
@@ -103,7 +100,7 @@ impl ResourceScopeHandle {
         name: impl Into<Arc<str>>,
         mut resource: impl Resource,
     ) -> Result<(), CoreError> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock_unpoisoned();
         if state.closed {
             drop(state);
             let mut error = CoreError::new(

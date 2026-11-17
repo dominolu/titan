@@ -105,7 +105,7 @@ impl EventKind {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // frozen V13-era call shape; V14 wires the table as the last argument
+#[allow(clippy::too_many_arguments)] // frozen compiled strategy-era call shape; V14 wires the table as the last argument
 pub(crate) fn callback_context(
     now_ns: i64,
     schema_version: u32,
@@ -203,7 +203,7 @@ impl ManifestCapabilities {
     pub const MULTI_VENUE_EXECUTION: Self = Self(1 << 10);
     /// The artifact reads the V14 object table (`object_context` manifest capability).
     ///
-    /// V13 manifest encoding of [`crate::OBJECT_CONTEXT_CAPABILITY`]; the V14 runtime counterpart
+    /// compiled strategy manifest encoding of [`crate::OBJECT_CONTEXT_CAPABILITY`]; the V14 runtime counterpart
     /// is [`StrategyCapabilities::OBJECT_CONTEXT`](crate::StrategyCapabilities::OBJECT_CONTEXT)
     /// (`1 << 13`). The mapping lives in [`crate::compiled_strategy::manifest_from_artifact`]; the two bit numbers differ on
     /// purpose because the bit sets are different wire formats.
@@ -285,7 +285,7 @@ pub fn apply_deprecated_unit_placeholders(markets: &mut [TitanMarketView]) -> bo
 // Nothing here changes layout: do not add serde attributes to reserved fields and do not rename
 // them — both would move the ABI fingerprint.
 
-macro_rules! v13_view {
+macro_rules! view {
     ($name:ident { $($field:ident: $type:ty),* $(,)? }) => {
         #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
         #[serde(default, deny_unknown_fields)]
@@ -294,7 +294,7 @@ macro_rules! v13_view {
     };
 }
 
-v13_view!(TitanTickView {
+view!(TitanTickView {
     asset_no: u32,
     kind: u8,
     side: u8,
@@ -305,7 +305,7 @@ v13_view!(TitanTickView {
     qty_lots: i64,
     source_sequence: u64
 });
-v13_view!(TitanBarView {
+view!(TitanBarView {
     asset_no: u32,
     reserved: u32,
     timeframe_ns: i64,
@@ -317,7 +317,7 @@ v13_view!(TitanBarView {
     close_ticks: i64,
     volume_lots: i64
 });
-v13_view!(TitanDepthView {
+view!(TitanDepthView {
     asset_no: u32,
     level: u32,
     exchange_ts_ns: i64,
@@ -330,7 +330,7 @@ v13_view!(TitanDepthView {
     is_snapshot: u8,
     reserved: [u8; 5]
 });
-v13_view!(TitanFillView {
+view!(TitanFillView {
     order_id: u64,
     asset_no: u32,
     account_no: u32,
@@ -345,7 +345,7 @@ v13_view!(TitanFillView {
     final_fill: u8,
     reserved: [u8; 5]
 });
-v13_view!(TitanOrderEventView {
+view!(TitanOrderEventView {
     order_id: u64,
     asset_no: u32,
     account_no: u32,
@@ -359,7 +359,7 @@ v13_view!(TitanOrderEventView {
     position_side: u8,
     reserved: [u8; 5]
 });
-v13_view!(TitanCancelEventView {
+view!(TitanCancelEventView {
     order_id: u64,
     asset_no: u32,
     account_no: u32,
@@ -369,7 +369,7 @@ v13_view!(TitanCancelEventView {
     final_status: u8,
     reserved: [u8; 6]
 });
-v13_view!(TitanPositionEventView {
+view!(TitanPositionEventView {
     asset_no: u32,
     account_no: u32,
     qty_lots: i64,
@@ -380,7 +380,7 @@ v13_view!(TitanPositionEventView {
     position_side: u8,
     reserved: [u8; 7]
 });
-v13_view!(TitanBalanceEventView {
+view!(TitanBalanceEventView {
     account_no: u32,
     currency_no: u32,
     total_units: i64,
@@ -388,7 +388,7 @@ v13_view!(TitanBalanceEventView {
     event_ts_ns: i64,
     account_sequence: u64
 });
-v13_view!(TitanAccountStateEventView {
+view!(TitanAccountStateEventView {
     account_no: u32,
     reserved0: u32,
     account_epoch: u64,
@@ -398,15 +398,15 @@ v13_view!(TitanAccountStateEventView {
     reason: u8,
     reserved: [u8; 6]
 });
-v13_view!(TitanTimerView {
+view!(TitanTimerView {
     timer_id: u64,
     scheduled_ts_ns: i64,
     fired_ts_ns: i64
 });
-// Deprecated placeholders kept byte-compatible for the frozen V13 layout: `tick_size`/`lot_size`
+// Deprecated placeholders kept byte-compatible for the frozen compiled strategy layout: `tick_size`/`lot_size`
 // are always 1 and carry no exchange meaning; authoritative units live in the V14 object table
 // (`ctx.symbol`). Removing the fields needs another ABI major, so they stay as reserved slots.
-v13_view!(TitanMarketView {
+view!(TitanMarketView {
     asset_no: u32,
     flags: u32,
     best_bid_ticks: i64,
@@ -417,7 +417,7 @@ v13_view!(TitanMarketView {
     lot_size: i64,
     source_sequence: u64
 });
-v13_view!(TitanPositionView {
+view!(TitanPositionView {
     asset_no: u32,
     account_no: u32,
     qty_lots: i64,
@@ -427,14 +427,14 @@ v13_view!(TitanPositionView {
     position_side: u8,
     reserved: [u8; 7]
 });
-v13_view!(TitanBalanceView {
+view!(TitanBalanceView {
     account_no: u32,
     currency_no: u32,
     total_units: i64,
     available_units: i64,
     account_sequence: u64
 });
-v13_view!(TitanAccountView {
+view!(TitanAccountView {
     account_no: u32,
     reserved: u32,
     account_epoch: u64,
@@ -443,7 +443,7 @@ v13_view!(TitanAccountView {
     reason: u8,
     reserved2: [u8; 6]
 });
-v13_view!(TitanActiveOrderView {
+view!(TitanActiveOrderView {
     order_id: u64,
     asset_no: u32,
     account_no: u32,
@@ -461,7 +461,7 @@ v13_view!(TitanActiveOrderView {
     position_side: u8,
     reserved: [u8; 2]
 });
-v13_view!(TitanSubmitOrderRequest {
+view!(TitanSubmitOrderRequest {
     asset_no: u32,
     account_no: u32,
     price_ticks: i64,
@@ -476,7 +476,7 @@ v13_view!(TitanSubmitOrderRequest {
     position_side: u8,
     reserved: [u8; 2]
 });
-v13_view!(TitanCancelOrderRequest {
+view!(TitanCancelOrderRequest {
     order_id: u64,
     asset_no: u32,
     account_no: u32
@@ -811,10 +811,10 @@ pub struct ArtifactMetadata {
     pub native_library: Arc<str>,
     pub callback_mask: u64,
     pub parameter_schema: Arc<serde_json::Value>,
-    /// Source identity of the compiled strategy; optional for older V13 producers.
+    /// Source identity of the compiled strategy; optional for older compiled strategy producers.
     pub source_digest: Option<[u8; 32]>,
     pub parameters_digest: [u8; 32],
-    /// V14 object requirements declared by the artifact. `None` for V13 artifacts.
+    /// V14 object requirements declared by the artifact. `None` for compiled strategy artifacts.
     pub object_manifest: Option<crate::ObjectManifest>,
     pub subscriptions: Arc<[EventSubscription]>,
     pub capabilities: ManifestCapabilities,
@@ -1745,7 +1745,7 @@ fn parse_manifest(
             _ => return Err(LoadError::Contract("unknown strategy capability")),
         };
     }
-    // The literal above is intentionally spelled out: it is the frozen V13 manifest vocabulary.
+    // The literal above is intentionally spelled out: it is the frozen compiled strategy manifest vocabulary.
     // Everything downstream (bit translation, runtime gate) goes through
     // [`crate::OBJECT_CONTEXT_CAPABILITY`] / the two typed capability constants so that the
     // capability has exactly one documented meaning.
@@ -2282,7 +2282,7 @@ mod tests {
         assert_eq!(placeholder_market[0].tick_size, DEPRECATED_UNIT_PLACEHOLDER);
         assert_eq!(placeholder_market[0].lot_size, DEPRECATED_UNIT_PLACEHOLDER);
 
-        // The V13 root context reserved slot (frozen offset) is zero as well.
+        // The compiled strategy root context reserved slot (frozen offset) is zero as well.
 
         // Reserved bytes are not rejected, rewritten or "repaired" by serde: a producer that
         // (incorrectly) writes into a *placeholder* is not silently reinterpreted. Omitted bytes
@@ -2726,7 +2726,7 @@ mod layout_tests {
     #[test]
     fn canonical_descriptor_fixture_matches_rust_fingerprint_and_layout() {
         let (text, document) = fixture();
-        // Historical V13 fixture: it pins the retired layout and fingerprint, not the live ABI.
+        // Historical compiled strategy fixture: it pins the retired layout and fingerprint, not the live ABI.
         assert_eq!(
             document["abi_version"].as_u64(),
             Some(u64::from(STRATEGY_ABI))
@@ -2734,7 +2734,7 @@ mod layout_tests {
         let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
         assert_eq!(
             digest, ABI_FINGERPRINT,
-            "fixture fingerprint != V13 constant: historical layout drifted"
+            "fixture fingerprint != compiled strategy constant: historical layout drifted"
         );
 
         assert_layout!(
@@ -3133,7 +3133,7 @@ mod acceptance_tests {
 
     #[test]
     fn deprecated_market_unit_placeholders_stay_constant() {
-        // The frozen V13 layout keeps tick_size/lot_size slots, but they must never carry venue
+        // The frozen compiled strategy layout keeps tick_size/lot_size slots, but they must never carry venue
         // data: the constant is the only writer and it is 1.
         assert_eq!(DEPRECATED_UNIT_PLACEHOLDER, 1);
         let view = TitanMarketView::default();
@@ -3143,7 +3143,10 @@ mod acceptance_tests {
         assert_eq!(std::mem::offset_of!(TitanMarketView, tick_size), 40);
         assert_eq!(std::mem::offset_of!(TitanMarketView, lot_size), 48);
         assert_eq!(std::mem::offset_of!(TitanMarketView, source_sequence), 56);
-        assert_eq!(size, 64, "market view layout is frozen by the V13 prefix");
+        assert_eq!(
+            size, 64,
+            "market view layout is frozen by the compiled strategy prefix"
+        );
     }
 
     #[test]

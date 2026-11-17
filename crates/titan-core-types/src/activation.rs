@@ -1,3 +1,4 @@
+use crate::LockUnpoisoned;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
 use tokio::sync::watch;
@@ -50,10 +51,7 @@ impl ActivationGate {
     }
 
     pub fn activate(&self) -> bool {
-        let _guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = self.lock.lock_unpoisoned();
         if self
             .state
             .compare_exchange(
@@ -73,10 +71,7 @@ impl ActivationGate {
     }
 
     pub fn quiesce(&self) -> bool {
-        let _guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = self.lock.lock_unpoisoned();
         if self
             .state
             .compare_exchange(
@@ -96,10 +91,7 @@ impl ActivationGate {
     }
 
     pub fn stop(&self) {
-        let _guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = self.lock.lock_unpoisoned();
         self.state
             .store(ActivationState::Stopped as u8, Ordering::Release);
         self.changed.notify_all();
@@ -107,10 +99,7 @@ impl ActivationGate {
     }
 
     pub fn wait_until_active(&self) -> ActivationState {
-        let mut guard = self
-            .lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = self.lock.lock_unpoisoned();
         loop {
             let state = self.state();
             if state != ActivationState::Prepared {

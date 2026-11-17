@@ -1,4 +1,4 @@
-//! Explicit build-server-only generation of a no-order native V13 measurement strategy.
+//! Explicit build-server-only generation of a no-order native compiled strategy measurement strategy.
 use anyhow::{Result, ensure};
 use serde_json::json;
 use sha2::{Digest, Sha256};
