@@ -2,7 +2,7 @@
 
 > 状态：不再是可执行契约。ABI V13 当前只发布 Tick profile；Bar/Hybrid producer、聚合器与端到端
 > 测试未完成前，SDK、CLI 和 Strategy Service 均 fail-fast。本文件仅保留历史撮合语义背景，当前接口以
-> `strategy_abi_v13_typed_state_blob_technical_design.md` 和 `titan_cli.md` 为准。
+> `strategy_observation_protocol.md` 和 `titan_cli.md` 为准。
 
 ## 目标
 
@@ -36,11 +36,8 @@ def on_bar(s):
     pass
 ```
 
-禁止把下列 Rust 形式作为最终用户 API：
-
-```rust
-fn on_bar(&mut self, hbt: &mut impl Bot<MD>, ctx: &mut StrategyCtx, bars: &BarBatch)
-```
+禁止把 Rust `Strategy` trait 形式（`hftbacktest::strategy` 的 `StrategyCtx`/`run_strategy`）作为
+用户 API：该模块已于 ABI V14 退役删除，见 [Rust 策略接口（已退役）](rust_strategy.md)。
 
 `s` 是一个 Numba `jitclass` 策略对象，统一封装：
 
@@ -287,8 +284,8 @@ submit 与 cancel；不支持 modify，修改订单必须显式 cancel/replace�
 ### 可重复回调边界基准
 
 旧的进程内 Python host benchmark 已随 ABI V13 hard cutover 删除。当前性能验证直接加载 `.titan`
-native artifact，并使用 `StrategyRuntimeContextV13`、typed state blob 与统一 command staging；运行时不链接
-Python 或 Numba。
+native artifact，并使用 `StrategyRuntimeContext`（无版本后缀，版本身份由 `STRATEGY_ABI`/`ABI_FINGERPRINT`
+承载）、typed state blob 与统一 command staging；运行时不链接 Python 或 Numba。
 
 Apple M1 Pro / aarch64 macOS 的当前实测报告保存在
 [`numba_rust_callback_benchmark_m1_pro.json`](numba_rust_callback_benchmark_m1_pro.json)：Rust 回调 P50/P99/P99.9
@@ -344,12 +341,12 @@ NPZ 可以作为交换和归档格式；大规模回测应允许未压缩 NPY �
 
 1. 恢复一个最小 Python/Numba binding crate，并恢复 Rust/Python ABI 布局校验；
 2. 定义显式 `Bar`、`Tick`、`Hybrid` 数据源和能力校验；
-3. 从当前 `StrategyCtx::fill` 与帧循环中移除隐式 Bar 聚合；
+3. 帧循环不再做隐式 Bar 聚合（原 Rust `StrategyCtx` 路径已删除，聚合只在 canonical Bar builder 内）；
 4. 实现 Bar-only 事件跳转和独立 Bar 撮合模型；
 5. 实现 Hybrid 事件合并，并在 Tick 数据提前结束时 fail-fast；
 6. 实现 Rust canonical live Bar builder 的 watermark/迟到/空 Bar 规则；
 7. 将交易所 Candle、canonical Bar 与 REST recovery 归一化并按显式优先级去重；
-8. 保留 Rust `Strategy` trait 作为内部测试或兼容入口，但文档默认示例改为 Numba
+8. Rust `Strategy` trait 已删除，不再作为内部测试或兼容入口；唯一接口是 Numba
    `on_tick(s)` / `on_bar(s)`。
 
 ## 验收标准

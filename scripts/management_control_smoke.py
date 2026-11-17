@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """M3 build-server acceptance: real A/N/worker/connector, loopback simulated venue only."""
-import persistence_acceptance as persistence
+import persistence_acceptance as persistence  # local storage only; external backends retired
 import argparse, base64, hashlib, shutil, http.cookiejar, json, os, select, secrets, signal, socket, sqlite3, struct, subprocess, threading, time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,16 +112,13 @@ def main():
     vp=venue.server_port;mp,bp,np=port(),port(),port();origin=f"http://127.0.0.1:{mp}"
     password,token=secrets.token_hex(24),secrets.token_hex(32);env=dict(os.environ,RUST_LOG="warn,titan_strategy_runtime=debug,connector::gatecrossex::stream=debug",TITAN_CONSOLE_NODE_TOKEN=token,TITAN_STRATEGY_PYTHON=os.environ.get("TITAN_STRATEGY_PYTHON", "python3"),TITAN_STRATEGY_SDK=str(args.repo/"python/titan-strategy-sdk"))
     hashed=subprocess.check_output([str(args.binary),"console","password-hash"],input=password.encode(),env=env).decode().strip()
-    key=root/"signing.key";seed=secrets.token_bytes(32);key.write_bytes(seed);key.chmod(0o600)
-    der=root/"key.der";der.write_bytes(bytes.fromhex("302e020100300506032b657004220420")+seed);der.chmod(0o600)
-    public=subprocess.check_output(["openssl","pkey","-inform","DER","-in",str(der),"-pubout","-outform","DER"])[-32:].hex()
     description=subprocess.check_output([str(args.binary),"strategy","describe",str(args.repo/"strategies/grid.py"),"--json"],env=env);parameters=json.loads(description)["normalized_parameters"];parameters.update(quote_currency_no=1,lower_price_ticks=800,upper_price_ticks=1200,grid_levels=200,order_qty_lots=1,allocated_capital_tick_lots=100000,max_notional_tick_lots=100000,leverage=1,quote_units_per_tick_lot=100000,stop_action="cancel",max_slippage_ticks=2,order_timeout_ns=600_000_000_000)
     if args.parameters_file:parameters=json.loads(args.parameters_file.read_text())
     (root/"parameters.json").write_text(json.dumps(parameters));secret=root/"secrets";secret.mkdir();(secret/"gate.toml").write_text('api_key="synthetic"\nsecret="synthetic"\n');secret.chmod(0o700);(secret/"gate.toml").chmod(0o600)
     cfg=toml({"rest_url":f"http://127.0.0.1:{vp}/api/v4","public_ws_url":f"ws://127.0.0.1:{vp}/public","private_ws_url":f"ws://127.0.0.1:{vp}/private","market_quantity_multipliers":{SYMBOL:1.0}})
     instrument={"native_symbol":SYMBOL,"asset_id":1,"price_tick":unit(1),"quantity_lot":unit(1,3)}
     duration=lambda secs,nanos=0:{"secs":secs,"nanos":nanos}
-    runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret)},"strategy_service":{"trusted_ed25519_keys":{"acceptance":public}},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":cfg,"instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":cfg,"ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","runtime_strategy_no":77,"strategy_file":{"loader_type":"native-v13","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"acceptance","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(10),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"run_config_revision":1}]}
+    runtime={"schema_version":1,"managed_by_console":True,"account_service":{"secret_root":str(secret)},"strategy_service":{},"market_sources":[{"source_key":"gate-market","connector_type":"gate-crossex","connector_config":cfg,"instruments":[instrument],"enabled":True,"definition_version":1}],"accounts":[{"account_key":"gate","account_id":1,"connector_type":"gate-crossex-account","credential_ref":"secret://file/gate.toml","connector_config":cfg,"ownership":"ObserveAll","shutdown_order_policy":"LeaveOpen","instruments":[{**instrument,"contract_multiplier":unit(1)}],"currencies":[{"native_currency":"USDT","currency_id":1,"amount_unit":unit(1,8)}],"enabled":True,"definition_version":1}],"strategies":[{"strategy_key":"grid","runtime_strategy_no":77,"strategy_file":{"loader_type":"native","uri":"file://unused.titan","expected_digest":[1]*32},"markets":[{"local_market_no":0,"local_asset_no":0,"source_key":"gate-market","asset_id":1,"data_mode":"tick"}],"accounts":[{"local_account_no":0,"account_key":"gate","tradable_assets":[{"local_asset_no":0,"asset_id":1}]}],"risk_scope":"acceptance","runtime":{"async_lane_capacity":256,"critical_reserve":32,"reliable_pending_capacity":32,"worker_policy":"park","timer_capacity":16,"max_commands_per_callback":64,"checkpoint_interval":duration(1),"timer_interval":duration(0,100000000),"max_handler_duration":duration(1),"startup_timeout":duration(10),"stop_timeout":duration(10)},"recovery":"fresh","enabled":True,"run_config_revision":1}]}
     runtime["accounts"][0]["instruments"][0]["linear_quote_currency"]=1
     runtime["account_service"]["recording_environment"]="simulation"
     # Keep a genuine pre-confirmation checkpoint so recovery must query historical orders.
@@ -130,7 +127,7 @@ def main():
     (root/"runtime.toml").write_text(toml(runtime))
     binding={"account":"gate","account_identity":"synthetic-gate-1","instrument":SYMBOL,"runtime_config":str(root/"runtime.toml"),"strategy_key":"grid","max_exposure_quote":"100","max_price_deviation_bps":50,"max_duration_seconds":120}
     remote=lambda p,live:{"endpoint":f"http://127.0.0.1:{p}","token_env":"TITAN_CONSOLE_NODE_TOKEN","environments":["live" if live else "backtest"],"live_control":live}
-    build={"id":"build","listen":f"127.0.0.1:{bp}","token_env":"TITAN_CONSOLE_NODE_TOKEN","work_root":str(root/"build"),"titan_program":str(args.binary),"environments":["backtest"],"signing_key":str(key),"signing_key_id":"acceptance","parameter_presets":{"grid":{"strategy_id":"grid","strategy_name":"网格策略","source":str(args.repo/"strategies/grid.py"),"parameters":str(root/"parameters.json")}}}
+    build={"id":"build","listen":f"127.0.0.1:{bp}","token_env":"TITAN_CONSOLE_NODE_TOKEN","work_root":str(root/"build"),"titan_program":str(args.binary),"environments":["backtest"],"parameter_presets":{"grid":{"strategy_id":"grid","strategy_name":"网格策略","source":str(args.repo/"strategies/grid.py"),"parameters":str(root/"parameters.json")}}}
     node={"id":"live","listen":f"127.0.0.1:{np}","token_env":"TITAN_CONSOLE_NODE_TOKEN","work_root":str(root/"live"),"titan_program":str(args.binary),"environments":["live"],"live_control":True,"bindings":{"gate-btc":binding},"strategy_sources":{"build":remote(bp,False)}}
     users=[{"username":name,"password_hash":hashed,"role":role,"nodes":["build","live"],"accounts":["gate"],"environments":["backtest","live"]} for name,role in (("operator","operator"),("reader","reader"))]
     manager={"listen":f"127.0.0.1:{mp}","public_origin":origin,"database":str(root/"manager.db"),"web_root":str(args.repo/"web/console/dist"),"secure_cookie":False,"nodes":{"build":remote(bp,False),"live":remote(np,True)},"users":users}
@@ -176,7 +173,7 @@ def main():
             package=root/"strategy_version-source";operation=package/"operations"/built["id"];operation.mkdir(parents=True);(package/"published").mkdir()
             for name in ("strategy.titan","receipt.json"):shutil.copy2(root/"build/operations"/built["id"]/name,operation/name)
             shutil.copy2(root/"build/published"/(strategy_version["id"]+".json"),package/"published"/(strategy_version["id"]+".json"))
-            (package/"manifest.json").write_text(json.dumps({"strategy_version":strategy_version,"public_key":public,"parameters":parameters,"strategy_file_sha256":hashlib.file_digest((operation/"strategy.titan").open("rb"),"sha256").hexdigest()},indent=2))
+            (package/"manifest.json").write_text(json.dumps({"strategy_version":strategy_version,"parameters":parameters,"strategy_file_sha256":hashlib.file_digest((operation/"strategy.titan").open("rb"),"sha256").hexdigest()},indent=2))
             assert not venue.calls
             passed("prepare-only-no-account-or-trading-connection")
             return
@@ -305,20 +302,6 @@ def main():
             passed("history-cursor-fixed-bound-and-cross-scope-rejected")
             passed("latest-history-order-and-cursor-direction-are-preserved")
             passed("platform-bootstrap-facts-do-not-invent-strategy-attribution")
-        if persistence.enabled():
-            store=root/"live/storage";history=root/"live/account-facts.sqlite3"
-            native_before=persistence.digest(deployed);recovery_before=checkpoint_bytes()
-            switched=persistence.switch_history(args.binary,store,history,"postgres",env)
-            pg_page=fact_page(run,"business_observation")
-            assert pg_page["items"] and pg_page["recording"]["backend"]=="postgres"
-            assert checkpoint_bytes()==recovery_before and persistence.digest(deployed)==native_before
-            persistence.switch_objects(args.binary,store,"s3",env)
-            persistence.switch_objects(args.binary,store,"filesystem",env)
-            returned=persistence.switch_history(args.binary,store,history,"sqlite",env)
-            assert fact_page(run,"business_observation")["recording"]["backend"]=="sqlite"
-            assert checkpoint_bytes()==recovery_before and persistence.digest(deployed)==native_before
-            (root/"backend-switch.json").write_text(json.dumps({"passed":True,"postgres":switched,"sqlite":returned,"strategy_sha256":native_before,"recovery_sha256":hashlib.sha256(recovery_before).hexdigest()},indent=2))
-            passed("running-native-strategy-history-and-object-roundtrip-keeps-local-recovery-identical")
         cursor=call("/api/v2/snapshot")["cursor"]
         with opener.open(origin+"/api/v2/events?cursor="+cursor,timeout=8) as stream:
             until=time.monotonic()+5

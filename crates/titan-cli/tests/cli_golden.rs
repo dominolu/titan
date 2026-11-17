@@ -9,7 +9,7 @@ fn live_fixture() -> &'static str {
 }
 
 #[test]
-fn v13_live_validation_needs_no_python_runtime() {
+fn live_validation_needs_no_python_runtime() {
     let output = Command::new(env!("CARGO_BIN_EXE_titan"))
         .current_dir(workspace())
         .args([

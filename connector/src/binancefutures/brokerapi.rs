@@ -100,29 +100,41 @@ fn symbol_matches(requested: Option<&str>, actual: &str) -> bool {
         .unwrap_or(true)
 }
 
-fn instrument_from_symbol(si: &m::SymbolInfo) -> InstrumentInfo {
+fn instrument_from_symbol(si: &m::SymbolInfo) -> Result<InstrumentInfo, ApiError> {
     let mut tick_size = 0.0;
     let mut lot_size = 0.0;
     let mut min_qty = 0.0;
+    let mut tick_exact = None;
+    let mut lot_exact = None;
+    let mut min_qty_exact = None;
+    let mut min_notional_quote = None;
     for f in &si.filters {
         match f.filter_type.as_str() {
             "PRICE_FILTER" => {
                 if let Some(t) = &f.tick_size {
                     tick_size = f64_or_zero(t);
+                    tick_exact = exact_decimal_string("binance-futures", t, "tickSize")?;
                 }
             }
             "LOT_SIZE" => {
                 if let Some(s) = &f.step_size {
                     lot_size = f64_or_zero(s);
+                    lot_exact = exact_decimal_string("binance-futures", s, "stepSize")?;
                 }
                 if let Some(q) = &f.min_qty {
                     min_qty = f64_or_zero(q);
+                    min_qty_exact = exact_decimal_string("binance-futures", q, "minQty")?;
+                }
+            }
+            "MIN_NOTIONAL" => {
+                if let Some(n) = &f.min_notional {
+                    min_notional_quote = exact_decimal_string("binance-futures", n, "minNotional")?;
                 }
             }
             _ => {}
         }
     }
-    InstrumentInfo {
+    Ok(InstrumentInfo {
         symbol: si.symbol.to_lowercase(),
         base_asset: si.base_asset.clone(),
         quote_asset: si.quote_asset.clone(),
@@ -130,11 +142,37 @@ fn instrument_from_symbol(si: &m::SymbolInfo) -> InstrumentInfo {
         lot_size,
         min_qty,
         contract_size: f64_or_zero(&si.contract_size),
+        tick_size_exact: tick_exact,
+        lot_size_exact: lot_exact,
+        min_qty_exact,
+        contract_size_exact: exact_decimal_string(
+            "binance-futures",
+            &si.contract_size,
+            "contractSize",
+        )?,
+        min_notional_quote,
+        quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+        synthetic: false,
         margin_asset: si.margin_asset.clone(),
         price_precision: si.price_precision,
         qty_precision: si.quantity_precision,
         tradable: si.status == "TRADING",
+    })
+}
+
+fn exact_decimal_string(
+    exchange: &'static str,
+    value: &str,
+    field: &'static str,
+) -> Result<Option<titan_domain_types::DecimalUnit>, ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
     }
+    value
+        .parse::<titan_domain_types::DecimalUnit>()
+        .map(Some)
+        .map_err(|cause| ApiError::new(exchange, "PROTOCOL", format!("invalid {field}: {cause}")))
 }
 
 fn ticker_from(t24: &m::Ticker24h, p: Option<&m::PremiumIndex>) -> Ticker {
@@ -903,7 +941,10 @@ impl BrokerApi for BinanceFuturesClient {
 
     async fn get_instruments(&self) -> Result<Vec<InstrumentInfo>, ApiError> {
         let symbols = self.get_exchange_info().await?;
-        Ok(symbols.iter().map(instrument_from_symbol).collect())
+        symbols
+            .iter()
+            .map(instrument_from_symbol)
+            .collect::<Result<Vec<_>, ApiError>>()
     }
 
     async fn get_ticker(&self, symbol: &str) -> Result<Ticker, ApiError> {
@@ -2291,17 +2332,29 @@ mod tests {
                 "contractSize": "0.001",
                 "filters": [
                     {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
-                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"}
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"}
                 ]
             }]
         }"#;
         let info: m::ExchangeInfo = serde_json::from_str(json).unwrap();
-        let inst = instrument_from_symbol(&info.symbols[0]);
+        let inst = instrument_from_symbol(&info.symbols[0]).unwrap();
         assert_eq!(inst.symbol, "btcusdt");
         assert_eq!(inst.tick_size, 0.10);
         assert_eq!(inst.lot_size, 0.001);
         assert_eq!(inst.min_qty, 0.001);
         assert_eq!(inst.contract_size, 0.001);
+        // The exact values come from the venue's decimal strings, not from `f64`.
+        assert_eq!(inst.tick_size_exact, Some("0.1".parse().unwrap()));
+        assert_eq!(inst.lot_size_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.min_qty_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.contract_size_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(inst.min_notional_quote, Some("5".parse().unwrap()));
+        assert_eq!(inst.base_delta_per_lot(), Some("0.000001".parse().unwrap()));
+        assert_eq!(
+            inst.quantity_dimension,
+            crate::api::QuantityDimension::NativeQuantity
+        );
         assert_eq!(inst.margin_asset, "USDT");
         assert!(inst.tradable);
     }

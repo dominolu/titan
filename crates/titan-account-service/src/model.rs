@@ -7,6 +7,7 @@ use std::{
     },
     time::{Instant, SystemTime},
 };
+use titan_core_types::LockUnpoisoned;
 
 pub use titan_domain_types::DecimalUnit;
 
@@ -370,7 +371,7 @@ impl AccountEventPublisher {
         } else {
             self.account_stream
         };
-        let mut committed = sequence_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut committed = sequence_lock.lock_unpoisoned();
         let source_sequence = committed.saturating_add(1);
         let result = self
             .inner
@@ -430,7 +431,7 @@ impl AccountEventPublisher {
         } else {
             self.account_stream
         };
-        let mut committed = sequence_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let mut committed = sequence_lock.lock_unpoisoned();
         let source_sequence = committed.saturating_add(1);
         let mut reservation = self
             .inner

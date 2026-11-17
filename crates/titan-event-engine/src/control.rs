@@ -1,4 +1,5 @@
 use std::{sync::Arc, time::Duration};
+use titan_core_types::LockUnpoisoned;
 
 use crossbeam_channel::bounded;
 use titan_core_types::{
@@ -19,17 +20,17 @@ use crate::{
 /// Older hosts can continue to use the normal route during a controlled migration. PRIMARY lanes
 /// and snapshot barriers are intentionally absent.
 #[derive(Clone)]
-pub struct V13EventControlAdapter {
+pub struct EventControlAdapter {
     inner: EventEngineHandle,
 }
 
-impl V13EventControlAdapter {
+impl EventControlAdapter {
     pub fn new(inner: EventEngineHandle) -> Self {
         Self { inner }
     }
 }
 
-impl EventControl for V13EventControlAdapter {
+impl EventControl for EventControlAdapter {
     fn allocate_source_streams(&self, count: u32) -> Result<u32, CoreError> {
         EventControl::allocate_source_streams(&self.inner, count)
     }
@@ -152,8 +153,7 @@ impl EventControl for EventEngineHandle {
             .next_transaction
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_unpoisoned()
             .insert(id, (base.0, Vec::new()));
         Ok(RouteTransaction(id))
     }
@@ -195,8 +195,7 @@ impl EventControl for EventEngineHandle {
         }
         let (base_version, staged) = self
             .transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lock_unpoisoned()
             .remove(&transaction.0)
             .ok_or_else(|| {
                 control_error(
@@ -247,10 +246,7 @@ impl EventControl for EventEngineHandle {
     }
 
     fn abort(&self, transaction: RouteTransaction) {
-        self.transactions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&transaction.0);
+        self.transactions.lock_unpoisoned().remove(&transaction.0);
     }
 
     fn retire_subscription(&self, token: SubscriptionToken) -> Result<(), CoreError> {
@@ -366,10 +362,7 @@ fn stage_subscription(
             false,
         ));
     }
-    let mut transactions = handle
-        .transactions
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut transactions = handle.transactions.lock_unpoisoned();
     let (_, staged) = transactions.get_mut(&transaction.0).ok_or_else(|| {
         control_error(
             ErrorKind::SubscriptionRejected,

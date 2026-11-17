@@ -158,11 +158,6 @@ fn runtime_config(
         "runtime configuration must declare managed_by_console=true"
     );
     raw.managed_by_console = false;
-    ensure!(
-        !raw.strategy_service.allow_unsigned_strategies
-            && !raw.strategy_service.trusted_ed25519_keys.is_empty(),
-        "managed deployment requires signature trust"
-    );
     raw.strategies
         .retain(|s| s.strategy_key.as_ref() == binding.strategy_key);
     ensure!(
@@ -209,6 +204,17 @@ fn runtime_config(
     let cap = top / bottom;
     ensure!(cap > 0, "exposure envelope is below one tick lot");
     let strategy = &mut raw.strategies[0];
+    // A multi-leg instance needs a multi-binding envelope, which the managed single-leg admission
+    // below cannot express. Refuse it by name instead of reporting a generic binding mismatch.
+    ensure!(
+        strategy.markets.len() == 1 && strategy.accounts.len() == 1,
+        "managed admission supports one market and one account; multi-leg bindings require the \
+         multi-binding execution envelope (worklist B8)"
+    );
+    ensure!(
+        strategy.runtime.execution_limits.is_none() && strategy.runtime.multi_binding.is_none(),
+        "managed admission owns the execution envelope; a runtime configuration must not pre-set one"
+    );
     ensure!(
         strategy.enabled
             && strategy.accounts.len() == 1
@@ -423,11 +429,9 @@ pub(super) async fn execute(
                 runtime_sha256,
                 binding_sha256: binding_hash(config, binding_id)?,
             };
-            // Validation needs final URI, so inspect staged bytes with the target's trust policy first.
-            let trust = trust_policy(&raw)?;
-            let loader = titan_strategy_runtime::NativeStrategyLoaderV13::new(
+            // Validation needs the final URI, so inspect the staged bytes first.
+            let loader = titan_strategy_runtime::NativeStrategyLoader::new(
                 config.work_root.join("native-cache"),
-                trust,
             );
             let loaded = loader.load(&path)?;
             ensure!(
@@ -728,23 +732,6 @@ pub(super) async fn reconcile_receipt(config: &NodeConfig, old: Receipt) -> Resu
         },
         state,
         ..old
-    })
-}
-fn trust_policy(raw: &crate::ApplicationConfig) -> Result<titan_strategy_runtime::V13TrustPolicy> {
-    ensure!(
-        !raw.strategy_service.allow_unsigned_strategies
-            && !raw.strategy_service.trusted_ed25519_keys.is_empty(),
-        "signature trust required"
-    );
-    let keys = raw
-        .strategy_service
-        .trusted_ed25519_keys
-        .iter()
-        .map(|(k, v)| Ok((Arc::from(k.as_str()), decode_hash(v)?)))
-        .collect::<Result<_>>()?;
-    Ok(titan_strategy_runtime::V13TrustPolicy {
-        require_signature: true,
-        ed25519_keys: keys,
     })
 }
 fn checkpoint_path(raw: &crate::ApplicationConfig) -> Result<PathBuf> {

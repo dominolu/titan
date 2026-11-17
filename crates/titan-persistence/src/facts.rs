@@ -169,6 +169,13 @@ pub struct HistoryFilter {
     pub strategy_id: Option<String>,
     pub run_id: Option<String>,
     pub kind: Option<String>,
+    /// Inclusive bounds on the persisted envelope's received_at_ns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ns: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ns: Option<i64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -543,7 +550,11 @@ impl SqliteHistoryQuery {
 }
 impl HistoryQuery for SqliteHistoryQuery {
     fn page(&self, request: &HistoryRequest) -> Result<HistoryPage> {
-        if request.limit == 0 || request.limit > 200 || request.filter.account.len() > 256 {
+        if request.limit == 0
+            || request.limit > 200
+            || request.filter.account.len() > 256
+            || matches!((request.filter.from_ns, request.filter.to_ns), (Some(from), Some(to)) if from > to)
+        {
             return Err(failure("history_query_invalid"));
         }
         // Authorization has already produced this exact filter; never filter after pagination.
@@ -581,7 +592,7 @@ impl HistoryQuery for SqliteHistoryQuery {
         } else {
             sha256(&serde_json::to_vec(&request.filter)?)
         };
-        let upper:u64=tx.query_row("SELECT coalesce(max(id),0) FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0",params![request.filter.environment.as_str(),request.filter.account,request.filter.strategy_id,request.filter.run_id,request.filter.kind],|r|r.get(0))?;
+        let upper:u64=tx.query_row("SELECT coalesce(max(id),0) FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0 AND (?8 IS NULL OR json_extract(CAST(payload AS TEXT),'$.scope.run_generation')=?8) AND (?6 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)>=?6) AND (?7 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)<=?7)",params![request.filter.environment.as_str(),request.filter.account,request.filter.strategy_id,request.filter.run_id,request.filter.kind,request.filter.from_ns,request.filter.to_ns,request.filter.run_generation],|r|r.get(0))?;
         let (upper, after) = if let Some(c) = &request.cursor {
             if c.store_id != store
                 || c.filter_sha256 != filter
@@ -595,9 +606,9 @@ impl HistoryQuery for SqliteHistoryQuery {
             (upper, 0)
         };
         let sql = if request.newest_first {
-            "SELECT id,payload,sha256 FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0 AND (?6=0 OR id<?6) AND id<=?7 ORDER BY id DESC LIMIT ?8"
+            "SELECT id,payload,sha256 FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0 AND (?11 IS NULL OR json_extract(CAST(payload AS TEXT),'$.scope.run_generation')=?11) AND (?6=0 OR id<?6) AND id<=?7 AND (?9 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)>=?9) AND (?10 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)<=?10) ORDER BY id DESC LIMIT ?8"
         } else {
-            "SELECT id,payload,sha256 FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0 AND id>?6 AND id<=?7 ORDER BY id LIMIT ?8"
+            "SELECT id,payload,sha256 FROM archive_records WHERE environment=?1 AND account=?2 AND (?3 IS NULL OR strategy=?3) AND (?4 IS NULL OR run=?4) AND (?5 IS NULL OR kind=?5) AND replay=0 AND (?11 IS NULL OR json_extract(CAST(payload AS TEXT),'$.scope.run_generation')=?11) AND id>?6 AND id<=?7 AND (?9 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)>=?9) AND (?10 IS NULL OR CAST(json_extract(CAST(payload AS TEXT),'$.received_at_ns') AS INTEGER)<=?10) ORDER BY id LIMIT ?8"
         };
         let mut query = tx.prepare(sql)?;
         let rows = query.query_map(
@@ -609,7 +620,10 @@ impl HistoryQuery for SqliteHistoryQuery {
                 request.filter.kind,
                 after,
                 upper,
-                request.limit + 1
+                request.limit + 1,
+                request.filter.from_ns,
+                request.filter.to_ns,
+                request.filter.run_generation
             ],
             |r| {
                 Ok((
@@ -633,7 +647,20 @@ impl HistoryQuery for SqliteHistoryQuery {
             }
             let fact: FactEnvelope = serde_json::from_slice(&payload)?;
             fact.validate()?;
-            if fact.scope.environment != request.filter.environment
+            if request
+                .filter
+                .run_generation
+                .as_ref()
+                .is_some_and(|generation| fact.scope.run_generation.as_ref() != Some(generation))
+                || request
+                    .filter
+                    .from_ns
+                    .is_some_and(|from| fact.received_at_ns < from)
+                || request
+                    .filter
+                    .to_ns
+                    .is_some_and(|to| fact.received_at_ns > to)
+                || fact.scope.environment != request.filter.environment
                 || fact.scope.account != request.filter.account
                 || request
                     .filter

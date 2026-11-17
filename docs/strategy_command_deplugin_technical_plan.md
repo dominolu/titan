@@ -2,8 +2,7 @@
 
 状态：历史归档（ABI V12 过渡方案），不再作为当前实现契约
 
-> 当前策略执行契约见 [Strategy ABI V13 typed-state 技术设计](strategy_abi_v13_typed_state_blob_technical_design.md)
-> 与 [V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。本文的 ABI V12、
+> 当前策略执行契约见 [策略观测协议](strategy_observation_protocol.md)。本文的 ABI V12、
 > `BacktestCommandBuffer` 和旧 runtime 描述仅用于追溯迁移过程。
 
 ## 1. 架构决策

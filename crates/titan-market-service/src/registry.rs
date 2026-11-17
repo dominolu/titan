@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use crate::{
     AssetId, ConnectorLifecycle, MarketConnector, MarketError, MarketErrorKind,
@@ -55,7 +56,7 @@ impl ConnectorEntry {
     }
 
     pub(crate) fn close_resources(&self) -> Result<(), MarketError> {
-        let mut guard = self.resources.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.resources.lock_unpoisoned();
         let Some(mut resources) = guard.take() else {
             return Ok(());
         };
@@ -105,7 +106,7 @@ impl ConnectorRegistry {
         source_key: &str,
         max_sources: usize,
     ) -> Result<(MarketSourceId, u64), MarketError> {
-        let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.read_unpoisoned();
         let max_id = u32::try_from(max_sources).map_err(|_| {
             MarketError::new(
                 MarketErrorKind::CapacityExceeded,
@@ -180,7 +181,7 @@ impl ConnectorRegistry {
                 ));
             }
         }
-        let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.read_unpoisoned();
         let retained_instruments: usize = state
             .by_id
             .values()
@@ -225,7 +226,7 @@ impl ConnectorRegistry {
     }
 
     pub(crate) fn insert(&self, entry: Arc<ConnectorEntry>) -> Result<(), MarketError> {
-        let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.write_unpoisoned();
         if state.by_id.contains_key(&entry.handle.source_id)
             || state.by_key.contains_key(&entry.definition.source_key)
         {
@@ -267,7 +268,7 @@ impl ConnectorRegistry {
         &self,
         handle: MarketSourceHandle,
     ) -> Result<Arc<ConnectorEntry>, MarketError> {
-        let state = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let state = self.state.read_unpoisoned();
         let entry = state
             .by_id
             .get(&handle.source_id)
@@ -283,8 +284,7 @@ impl ConnectorRegistry {
 
     pub(crate) fn resolve(&self, key: &str) -> Result<MarketSourceHandle, MarketError> {
         self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_key
             .get(key)
             .copied()
@@ -296,7 +296,7 @@ impl ConnectorRegistry {
         handle: MarketSourceHandle,
     ) -> Result<Arc<ConnectorEntry>, MarketError> {
         self.get(handle)?;
-        let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.write_unpoisoned();
         let entry = state
             .by_id
             .remove(&handle.source_id)
@@ -314,7 +314,7 @@ impl ConnectorRegistry {
         new_entry: Arc<ConnectorEntry>,
     ) -> Result<Arc<ConnectorEntry>, MarketError> {
         self.get(old)?;
-        let mut state = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.write_unpoisoned();
         let old_entry =
             state.by_id.get(&old.source_id).cloned().ok_or_else(|| {
                 MarketError::new(MarketErrorKind::SourceNotFound, "source not found")
@@ -348,8 +348,7 @@ impl ConnectorRegistry {
 
     pub(crate) fn list_entries(&self) -> Vec<Arc<ConnectorEntry>> {
         self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_id
             .values()
             .cloned()
@@ -367,11 +366,7 @@ impl ConnectorRegistry {
     }
 
     pub fn len(&self) -> usize {
-        self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .by_id
-            .len()
+        self.state.read_unpoisoned().by_id.len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0

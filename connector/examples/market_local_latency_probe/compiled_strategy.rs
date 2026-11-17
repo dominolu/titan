@@ -1,4 +1,4 @@
-//! Explicit build-server-only generation of a no-order native V13 measurement strategy.
+//! Explicit build-server-only generation of a no-order native compiled strategy measurement strategy.
 use anyhow::{Result, ensure};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -12,23 +12,23 @@ pub fn build(root: &Path) -> Result<()> {
     let schema = json!({"itemsize":size,"alignment":8,"endian":"little","fields":[]});
     let mut hashed = schema.clone();
     hashed["schema_version"] = json!(1);
-    let meta = NumbaMetadataV13 {
+    let meta = NumbaMetadata {
         protocol_version: 1,
         abi_version: 13,
-        abi_fingerprint: V13_ABI_FINGERPRINT,
+        abi_fingerprint: ABI_FINGERPRINT,
         strategy_type: "l2_local_latency".into(),
         source_version: "1.0.0".into(),
         callbacks: vec!["on_depth".into()],
         callback_mask: 8,
         recovery_state_schema_version: 1,
-        recovery_state_schema_hash: Sha256::digest(compiler_json_v13(&hashed)).into(),
+        recovery_state_schema_hash: Sha256::digest(compiler_json(&hashed)).into(),
         state_len: size,
         state_alignment: 8,
         initial_state: vec![0; size],
         recovery_state_schema: schema,
         business_observation: None,
         parameter_schema: json!({"type":"object"}),
-        subscriptions: vec![NumbaSubscriptionV13 {
+        subscriptions: vec![NumbaSubscription {
             event: "depth".into(),
             handler: "on_depth".into(),
             schema_version: 1,
@@ -36,6 +36,12 @@ pub fn build(root: &Path) -> Result<()> {
         }],
         capabilities: vec!["market_data".into()],
         build: json!({"compiler":"native-c-latency-probe","no_orders":true}),
+        object_schema_major: None,
+        object_schema_minor: None,
+        object_schema_hash: None,
+        object_identity_version: None,
+        requires_fee: None,
+        object_requirements: Vec::new(),
     };
     let source = format!(
         r#"{}
@@ -62,8 +68,8 @@ int32_t titan_numba_impl_on_depth(int32_t *result, void **exception, void *point
 }}
 "#,
         meta.descriptor_source()?,
-        std::mem::offset_of!(StrategyRuntimeContextV13, state_ptr),
-        std::mem::offset_of!(StrategyRuntimeContextV13, depth_ptr),
+        std::mem::offset_of!(StrategyRuntimeContext, state_ptr),
+        std::mem::offset_of!(StrategyRuntimeContext, depth_ptr),
         CAPACITY,
         std::mem::offset_of!(TitanDepthView, receive_ts_ns)
     );
@@ -82,16 +88,15 @@ int32_t titan_numba_impl_on_depth(int32_t *result, void **exception, void *point
         .status()?;
     ensure!(status.success(), "probe C compilation failed");
     let library = fs::read(root.join("probe.so"))?;
-    write_compiled_strategy_v13(StrategyCompileOutputV13 {
+    write_compiled_strategy(StrategyCompileOutput {
         metadata: &meta,
         library: &library,
         source_digest: Sha256::digest(source.as_bytes()).into(),
         parameters_digest: [0; 32],
-        target_triple: compiler_host_target_v13(),
+        target_triple: compiler_host_target(),
         cpu_baseline: "generic",
         bundle: true,
         output: &root.join("probe.titan"),
-        signing: None,
     })?;
     Ok(())
 }

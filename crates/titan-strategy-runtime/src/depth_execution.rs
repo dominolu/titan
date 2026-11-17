@@ -1,10 +1,10 @@
 //! Shared live/replay admission while a required depth view is unavailable.
-use crate::{StagedCommandV13, TitanActiveOrderView, TitanPositionView};
+use crate::{StagedCommand, TitanActiveOrderView, TitanPositionView};
 use std::collections::BTreeMap;
 
 pub(crate) fn validate_depth_commands(
     ready: bool,
-    commands: &[StagedCommandV13],
+    commands: &[StagedCommand],
     positions: &[TitanPositionView],
     orders: &[TitanActiveOrderView],
 ) -> Result<(), &'static str> {
@@ -24,7 +24,7 @@ pub(crate) fn validate_depth_commands(
             (i128::from(order.qty_lots) - i128::from(order.cumulative_filled_lots)).max(0);
     }
     for command in commands {
-        let StagedCommandV13::Submit { request, .. } = command else {
+        let StagedCommand::Submit { request, .. } = command else {
             continue;
         };
         if request.reduce_only != 1 {
@@ -68,8 +68,8 @@ pub(crate) fn validate_depth_commands(
 mod tests {
     use super::*;
     use crate::{TitanCancelOrderRequest, TitanSubmitOrderRequest};
-    fn submit(qty: i64, reduce: u8, side: u8, position_side: u8) -> StagedCommandV13 {
-        StagedCommandV13::Submit {
+    fn submit(qty: i64, reduce: u8, side: u8, position_side: u8) -> StagedCommand {
+        StagedCommand::Submit {
             order_id: 10,
             request: TitanSubmitOrderRequest {
                 qty_lots: qty,
@@ -87,7 +87,7 @@ mod tests {
             ..Default::default()
         };
         let commands = [
-            StagedCommandV13::Cancel {
+            StagedCommand::Cancel {
                 command_id: 2,
                 request: TitanCancelOrderRequest::default(),
             },

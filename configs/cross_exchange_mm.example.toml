@@ -1,0 +1,134 @@
+# cross_exchange_mm 双市场/双账户运行配置样例（公开模板，不含任何凭据）
+#
+# 状态：模板，默认全部禁用。当前**不能**作为受控实盘配置使用：
+# 受控实盘 execution_limits 路径仍要求单市场绑定（crates/titan-strategy-runtime/src/runtime_v13.rs
+# 的 execution_binding_unproven），双市场受控执行属于平台阶段 B 未完成项。
+# 本文件只提供绑定形状、timer 必填项和预检输入；启用前必须完成
+# docs/cross_exchange_mm_live_worklist.md 的 B1-B9，并运行
+# `scripts/cross_exchange_mm_preflight.py` 通过。
+#
+# 说明：
+# - 策略参数在编译期固化进产物，部署期 parameters 必须为 {}。
+# - 账户/行情源只引用 secret://file/<name>.toml，凭据文件放在 secret_root 下、权限 0600。
+# - maker 与 hedge 必须是两个独立账户、两个独立市场（策略在 build() 中拒绝同账户或同市场）。
+# - 首版只允许同一经济资产的线性 NET 合约，且报价/抵押币相同；缺少可靠 FX 的跨币组合不准入。
+# - 多绑定执行包络（multi_binding）尚未可用：它需要 B5/B7/B8 完成。届时每条腿需声明
+#   margin_rate_bps（初始保证金率，基点，1..=100000），用于逐所保证金投影；缺省视为 100%。
+#   平台不会猜交易所保证金率，缺省值只表示"按全额名义占用"。
+# - 示例选 okx(USDT 线性永续) + binance-futures(USDT 线性永续) 仅用于说明结构，
+#   两所的 tick/lot/contract_multiplier/最小金额必须按 D2 清单用原生元数据核对后才能填数。
+
+schema_version = 1
+
+[market_service]
+max_sources = 16
+max_instruments = 4096
+stop_timeout_ms = 15000
+
+[account_service]
+max_accounts = 32
+max_instruments_per_account = 4096
+max_currencies_per_account = 512
+secret_root = "secrets"
+startup_timeout_ms = 30000
+stop_timeout_ms = 15000
+
+[strategy_service]
+allowed_artifact_roots = ["artifacts"]
+checkpoint_root = "checkpoints"
+
+[execution]
+worker_threads = 2
+max_active_tasks = 8192
+shutdown_deadline_ms = 15000
+
+[event_engine.ingress]
+max_sources = 8192
+
+[[market_sources]]
+source_key = "maker-venue-sample"
+connector_type = "okx"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://ws.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://ws.okx.com:8443/ws/v5/private"
+simulated = false
+td_mode = "cross"
+safety_timeout_ms = 30000
+'''
+# 单位示例，必须在 D2 中用原生元数据核对后填写；数量单位是 maker lot 的基础币 delta 来源。
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 }, contract_multiplier = { coefficient = 1, scale = 0 }, linear_quote_currency = "USDT" }]
+enabled = false
+definition_version = 1
+
+[[market_sources]]
+source_key = "hedge-venue-sample"
+connector_type = "binance-futures"
+connector_config = '''
+stream_url = "wss://fstream.binance.com/ws"
+api_url = "https://fapi.binance.com"
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTCUSDT", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 3 }, contract_multiplier = { coefficient = 1, scale = 0 }, linear_quote_currency = "USDT" }]
+enabled = false
+definition_version = 1
+
+[[accounts]]
+account_key = "maker-account-sample"
+account_id = 2001
+connector_type = "okx-account"
+credential_ref = "secret://file/maker-venue.toml"
+connector_config = '''
+rest_url = "https://www.okx.com"
+public_ws_url = "wss://ws.okx.com:8443/ws/v5/public"
+private_ws_url = "wss://ws.okx.com:8443/ws/v5/private"
+simulated = false
+td_mode = "cross"
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTC-USDT-SWAP", asset_id = 1001, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 2 }, contract_multiplier = { coefficient = 1, scale = 0 }, linear_quote_currency = 1 }]
+currencies = [{ native_currency = "USDT", currency_id = 1, amount_unit = { coefficient = 1, scale = 8 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = false
+definition_version = 1
+
+[[accounts]]
+account_key = "hedge-account-sample"
+account_id = 2002
+connector_type = "binance-futures-account"
+credential_ref = "secret://file/hedge-venue.toml"
+connector_config = '''
+stream_url = "wss://fstream.binance.com/ws"
+api_url = "https://fapi.binance.com"
+safety_timeout_ms = 30000
+'''
+instruments = [{ native_symbol = "BTCUSDT", asset_id = 1002, price_tick = { coefficient = 1, scale = 1 }, quantity_lot = { coefficient = 1, scale = 3 }, contract_multiplier = { coefficient = 1, scale = 0 }, linear_quote_currency = 1 }]
+currencies = [{ native_currency = "USDT", currency_id = 1, amount_unit = { coefficient = 1, scale = 8 } }]
+ownership = "ObserveAll"
+shutdown_order_policy = "CancelAll"
+enabled = false
+definition_version = 1
+
+[[strategies]]
+strategy_key = "cross_exchange_mm"
+strategy_id = 9101
+# 产物由 `titan strategy build` 冻结后放入 artifacts/；摘要必须与产物一致。
+package = { loader_type = "native", uri = "file://artifacts/strategy.titan", expected_digest = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
+# 0 = reference/hedge 市场，1 = traded/maker 市场，与策略参数 reference_asset_no=0 / traded_asset_no=1 对应。
+markets = [
+  { local_market_no = 0, local_asset_no = 0, source_key = "hedge-venue-sample", asset_id = 1002, data_mode = "tick" },
+  { local_market_no = 1, local_asset_no = 1, source_key = "maker-venue-sample", asset_id = 1001, data_mode = "tick" },
+]
+accounts = [
+  { local_account_no = 0, account_key = "maker-account-sample", tradable_assets = [{ local_asset_no = 1, asset_id = 1001 }] },
+  { local_account_no = 1, account_key = "hedge-account-sample", tradable_assets = [{ local_asset_no = 0, asset_id = 1002 }] },
+]
+risk_scope = "cross-exchange-mm-sample"
+# 恢复策略："fresh" 表示新代次启动；实盘必须与恢复流程一致，不能省略。
+recovery = "fresh"
+definition_version = 1
+# timer_interval 必填：策略声明 REQUIRES_PERIODIC_TIMER，缺失会被拒绝启动（periodic_timer_required）。
+# stop_timeout 必须覆盖撤单 + 已知欠量对冲 + 确认/持久化预算；受控管理路径当前上限 10 秒。
+runtime = { async_lane_capacity = 8192, critical_reserve = 2048, reliable_pending_capacity = 1024, worker_policy = "spin_sleep", timer_capacity = 64, timer_interval = { secs = 0, nanos = 100000000 }, max_handler_duration = { secs = 0, nanos = 100000000 }, startup_timeout = { secs = 30, nanos = 0 }, stop_timeout = { secs = 10, nanos = 0 } }
+enabled = false

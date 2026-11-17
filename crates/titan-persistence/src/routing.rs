@@ -222,6 +222,10 @@ impl StorageControl {
         db.busy_timeout(Duration::from_millis(200))?;
         Ok(db)
     }
+    /// Opaque pinned store identity for verification, never a server address or credential.
+    pub fn postgres_target_id(&self) -> Result<Option<String>> {
+        self.target("postgres")
+    }
     fn target(&self, name: &str) -> Result<Option<String>> {
         use rusqlite::OptionalExtension;
         Ok(self

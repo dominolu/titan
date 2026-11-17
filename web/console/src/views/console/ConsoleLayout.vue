@@ -27,9 +27,22 @@ watch(
 );
 const navigation = [
   { path: "/runs", label: "运行总览", icon: "monitor" },
-  { path: "/strategies", label: "策略管理", icon: "settings" },
-  { path: "/accounts", label: "账户风险", icon: "shield" }
+  { path: "/strategies/live", label: "实盘策略", icon: "settings" },
+  { path: "/strategies/backtest", label: "策略回测", icon: "chart" },
+  { path: "/accounts", label: "账户管理", icon: "shield" }
 ];
+function isSelected(path: string) {
+  if (path.startsWith("/strategies/")) {
+    const project =
+      route.meta.project ??
+      route.query.project ??
+      (route.query.tab === "live" ? "live" : "backtest");
+    return (
+      route.path.startsWith("/strategies/") && path.endsWith("/" + project)
+    );
+  }
+  return route.path === path || route.path.startsWith(path + "/");
+}
 const nodes = computed(() => store.resources.filter(r => r.kind === "node"));
 const connected = computed(
   () => nodes.value.filter(n => body(n).online === true).length
@@ -85,21 +98,25 @@ onMounted(() =>
       </div>
       <p class="nav-caption">工作台</p>
       <nav>
-        <router-link
-          v-for="entry in navigation"
-          :key="entry.path"
-          :to="entry.path"
-          :aria-label="entry.label"
-          :class="{
-            selected:
-              route.path === entry.path ||
-              route.path.startsWith(entry.path + '/')
-          }"
-          @click="mobileMenu = false"
-          ><ConsoleIcon :name="entry.icon" /><span>{{
-            entry.label
-          }}</span></router-link
-        >
+        <template v-for="entry in navigation" :key="entry.path">
+          <p
+            v-if="entry.path === '/strategies/live'"
+            class="nav-caption strategy-nav-heading"
+          >
+            策略管理
+          </p>
+          <router-link
+            :to="entry.path"
+            :aria-label="entry.label"
+            :class="{
+              selected: isSelected(entry.path)
+            }"
+            @click="mobileMenu = false"
+            ><ConsoleIcon :name="entry.icon" /><span>{{
+              entry.label
+            }}</span></router-link
+          >
+        </template>
       </nav>
       <div v-if="store.runs.length" class="recent-runs">
         <p class="nav-caption">运行实例</p>

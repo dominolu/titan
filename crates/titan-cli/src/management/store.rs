@@ -638,11 +638,23 @@ impl Store {
             resources,
         })
     }
+    #[cfg(test)]
     pub fn list_strategies(
         &self,
         identity: &Identity,
         offset: usize,
         limit: usize,
+    ) -> Result<Vec<StrategySummary>> {
+        self.list_strategies_filtered(identity, offset, limit, None, None, None)
+    }
+    pub fn list_strategies_filtered(
+        &self,
+        identity: &Identity,
+        offset: usize,
+        limit: usize,
+        node: Option<&str>,
+        account: Option<&str>,
+        environment: Option<&str>,
     ) -> Result<Vec<StrategySummary>> {
         let db = self.strategy_connection()?;
         let mut stmt = db.prepare(&format!("SELECT {STRATEGY_PROJECTION} FROM resources WHERE kind IN ('parameter_preset','template','parameter_version','version','strategy_version','artifact','backtest','report','deployment','run') ORDER BY CASE WHEN kind IN ('parameter_preset','template') THEN 0 ELSE 1 END,rowid DESC"))?;
@@ -653,6 +665,12 @@ impl Store {
             let env = item.body["environment"].as_str().unwrap_or("backtest");
             if !allowed(identity, &item.node_id, env)
                 || !account_allowed(identity, item.body["account"].as_str())
+            {
+                continue;
+            }
+            if node.is_some_and(|value| item.node_id != value)
+                || account.is_some_and(|value| item.body["account"].as_str() != Some(value))
+                || environment.is_some_and(|value| env != value)
             {
                 continue;
             }
@@ -701,6 +719,31 @@ impl Store {
         strategy: Option<&str>,
         resource_id: Option<&str>,
     ) -> Result<Vec<Resource>> {
+        self.list_resources_filtered(
+            identity,
+            kind,
+            offset,
+            limit,
+            strategy,
+            resource_id,
+            None,
+            None,
+            None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn list_resources_filtered(
+        &self,
+        identity: &Identity,
+        kind: Option<&str>,
+        offset: usize,
+        limit: usize,
+        strategy: Option<&str>,
+        resource_id: Option<&str>,
+        node: Option<&str>,
+        account: Option<&str>,
+        environment: Option<&str>,
+    ) -> Result<Vec<Resource>> {
         let db = self.strategy_connection()?;
         let mut stmt = db.prepare(&format!(
             "SELECT {STRATEGY_PROJECTION} FROM resources WHERE (?1 IS NULL OR kind=?1 OR kind=CASE ?1 WHEN 'strategy_version' THEN 'artifact' WHEN 'parameter_version' THEN 'version' WHEN 'parameter_preset' THEN 'template' ELSE ?1 END) AND (?2 IS NULL OR id=?2) ORDER BY rowid DESC",
@@ -717,6 +760,12 @@ impl Store {
                 .unwrap_or("backtest");
             if !allowed(identity, &item.node_id, env)
                 || !account_allowed(identity, item.body.get("account").and_then(Value::as_str))
+            {
+                continue;
+            }
+            if node.is_some_and(|value| item.node_id != value)
+                || account.is_some_and(|value| item.body["account"].as_str() != Some(value))
+                || environment.is_some_and(|value| env != value)
             {
                 continue;
             }
@@ -965,6 +1014,92 @@ fn event(
 mod research_read_tests {
     use super::*;
     use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn resource_scope_filters_and_authorization_precede_pagination() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("db")).unwrap();
+        for (id, node, account, environment) in [
+            ("match-old", "build", "account-a", "backtest"),
+            ("match-new", "build", "account-a", "backtest"),
+            ("other-account", "build", "account-b", "backtest"),
+            ("other-environment", "build", "account-a", "simulation"),
+            ("hidden-node", "private", "account-a", "backtest"),
+        ] {
+            store
+                .save_resource(
+                    Resource {
+                        id: id.into(),
+                        kind: "run".into(),
+                        node_id: node.into(),
+                        revision: String::new(),
+                        frozen: false,
+                        digest: String::new(),
+                        body: json!({"account":account,"environment":environment,"strategy_id":id}),
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        let actor = Identity {
+            username: "reader".into(),
+            role: Role::Reader,
+            nodes: vec!["build".into()],
+            accounts: vec!["account-a".into(), "account-b".into()],
+            environments: vec!["backtest".into(), "simulation".into()],
+        };
+        let query = |offset| {
+            store
+                .list_resources_filtered(
+                    &actor,
+                    Some("run"),
+                    offset,
+                    1,
+                    None,
+                    None,
+                    Some("build"),
+                    Some("account-a"),
+                    Some("backtest"),
+                )
+                .unwrap()
+        };
+        assert_eq!(query(0)[0].id, "match-new");
+        assert_eq!(query(1)[0].id, "match-old");
+        assert!(query(2).is_empty());
+        let summaries = store
+            .list_strategies_filtered(
+                &actor,
+                0,
+                100,
+                Some("build"),
+                Some("account-a"),
+                Some("backtest"),
+            )
+            .unwrap();
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|value| value.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["match-new", "match-old"]
+        );
+        assert!(
+            store
+                .list_resources_filtered(
+                    &actor,
+                    None,
+                    0,
+                    1,
+                    None,
+                    None,
+                    Some("private"),
+                    None,
+                    None
+                )
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn research_reads_do_not_take_admission_mutex_and_return_full_authorized_bodies() {

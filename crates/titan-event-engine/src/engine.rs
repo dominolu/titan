@@ -10,6 +10,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use crossbeam_queue::ArrayQueue;
@@ -206,10 +207,7 @@ impl AsyncFastLane {
             .name(format!("event-fast-lane-{token}"))
             .spawn(move || worker_lane.run())
             .map_err(|error| EngineError::SubscriberRuntime(error.to_string()))?;
-        *lane
-            .join
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(join);
+        *lane.join.lock_unpoisoned() = Some(join);
         Ok(lane)
     }
 
@@ -354,7 +352,7 @@ impl AsyncFastLane {
         if let Some(worker) = self.worker.get() {
             worker.unpark();
         }
-        let mut slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slot = self.join.lock_unpoisoned();
         if let Some(join) = slot.as_ref() {
             while !join.is_finished() {
                 if Instant::now() >= deadline {
@@ -418,8 +416,7 @@ impl EngineShared {
                 self.source_sequences
                     .get(header.source_id as usize)
                     .ok_or(PublishError::InvalidEvent)?
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()),
+                    .lock_unpoisoned(),
             )
         };
         if source
@@ -481,10 +478,7 @@ impl EngineShared {
         header: EventHeader,
         payload: &OwnedEvent,
     ) {
-        let routes = self
-            .fast_lanes
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let routes = self.fast_lanes.read_unpoisoned();
         for (token, route) in routes.iter() {
             if !route.active.load(Ordering::Acquire)
                 || route.descriptor_ids.binary_search(&descriptor.id).is_err()
@@ -546,10 +540,7 @@ impl EngineShared {
         header: EventHeader,
         payload: &OwnedEvent,
     ) {
-        let lanes = self
-            .primary_lanes
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lanes = self.primary_lanes.read_unpoisoned();
         for lane in lanes.values() {
             if lane.matches(descriptor.id, header.routing_key) {
                 lane.enqueue(descriptor.clone(), header, payload.clone());
@@ -563,8 +554,7 @@ impl EngineShared {
         schema_version: u32,
     ) -> Option<Arc<EventDescriptor>> {
         self.catalog
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .read_unpoisoned()
             .get(event_type)
             .and_then(|versions| versions.get(&schema_version))
             .cloned()
@@ -752,15 +742,10 @@ impl EventEngine {
         {
             return Err(EngineError::AlreadyStarted);
         }
-        let control_rx = self
-            .control_rx
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .ok_or_else(|| {
-                self.shared.running.store(false, Ordering::Release);
-                EngineError::AlreadyStarted
-            })?;
+        let control_rx = self.control_rx.lock_unpoisoned().take().ok_or_else(|| {
+            self.shared.running.store(false, Ordering::Release);
+            EngineError::AlreadyStarted
+        })?;
         let shared = self.shared.clone();
         let thread_shared = shared.clone();
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
@@ -787,12 +772,7 @@ impl EventEngine {
                         sequence: 0,
                         detail: 0,
                     });
-                    for channel in thread_shared
-                        .channel_registry
-                        .read()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .values()
-                    {
+                    for channel in thread_shared.channel_registry.read_unpoisoned().values() {
                         channel.request_stop();
                     }
                 }
@@ -809,10 +789,7 @@ impl EventEngine {
                 cpu_affinity.expect("an unbound worker cannot fail binding"),
             ));
         }
-        *self
-            .runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(runtime);
+        *self.runtime.lock_unpoisoned() = Some(runtime);
         self.shared
             .accepting_publications
             .store(true, Ordering::Release);
@@ -833,24 +810,10 @@ impl EventEngine {
             }
             thread::yield_now();
         }
-        let has_runtime = self
-            .runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some();
+        let has_runtime = self.runtime.lock_unpoisoned().is_some();
         if !has_runtime
-            && self
-                .shared
-                .fast_lanes
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_empty()
-            && self
-                .shared
-                .primary_lanes
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_empty()
+            && self.shared.fast_lanes.read_unpoisoned().is_empty()
+            && self.shared.primary_lanes.read_unpoisoned().is_empty()
         {
             return Ok(());
         }
@@ -866,8 +829,7 @@ impl EventEngine {
         } else {
             self.shared
                 .channel_registry
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .read_unpoisoned()
                 .values()
                 .cloned()
                 .collect()
@@ -875,7 +837,7 @@ impl EventEngine {
         for channel in channels {
             channel.stop_and_drain();
         }
-        let mut slot = self.runtime.lock().unwrap_or_else(|p| p.into_inner());
+        let mut slot = self.runtime.lock_unpoisoned();
         if let Some(runtime) = slot.as_ref() {
             while !runtime.is_finished() {
                 if Instant::now() >= deadline {
@@ -890,43 +852,29 @@ impl EventEngine {
         drop(slot);
         while self.shared.critical_ingress.pop().is_some() {}
         while self.shared.market_ingress.pop().is_some() {}
-        self.shared
-            .channel_registry
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        self.shared.channel_registry.write_unpoisoned().clear();
         let fast_lanes: Vec<_> = self
             .shared
             .fast_lanes
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .values()
             .cloned()
             .collect();
         for route in fast_lanes {
             route.stop_until(deadline)?;
         }
-        self.shared
-            .fast_lanes
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        self.shared.fast_lanes.write_unpoisoned().clear();
         let primary_lanes: Vec<_> = self
             .shared
             .primary_lanes
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .values()
             .cloned()
             .collect();
         for lane in primary_lanes {
             lane.stop_and_join_until(deadline)?;
         }
-        self.shared
-            .primary_lanes
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        self.shared.primary_lanes.write_unpoisoned().clear();
         self.shared.running.store(false, Ordering::Release);
         // Subscriber runtimes observe channel closure asynchronously. Give a just-returning
         // handler a bounded chance to drop its final EventLease before reporting a real leak.
@@ -1023,8 +971,7 @@ impl EventEngineHandle {
                 || !self
                     .shared
                     .reserved_cpu_affinities
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .lock_unpoisoned()
                     .insert(core)
             {
                 return Err(EngineError::InvalidPrimaryLaneConfig);
@@ -1045,8 +992,7 @@ impl EventEngineHandle {
                 if let Some(core) = reserved_affinity {
                     self.shared
                         .reserved_cpu_affinities
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .lock_unpoisoned()
                         .remove(&core);
                 }
                 return Err(error);
@@ -1054,8 +1000,7 @@ impl EventEngineHandle {
         };
         self.shared
             .primary_lanes
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write_unpoisoned()
             .insert(token, lane.clone());
         Ok(PrimaryAsyncLaneHandle {
             lane,
@@ -1076,16 +1021,14 @@ impl EventEngineHandle {
         let lane = self
             .shared
             .primary_lanes
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .write_unpoisoned()
             .remove(&token.0);
         if let Some(lane) = lane {
             lane.stop_and_join_until(deadline)?;
             if let Some(core) = lane.cpu_affinity() {
                 self.shared
                     .reserved_cpu_affinities
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .lock_unpoisoned()
                     .remove(&core);
             }
             Ok(true)
@@ -1115,19 +1058,15 @@ impl EventEngineHandle {
         routing_keys.sort_unstable();
         routing_keys.dedup();
         let token = self.shared.next_fast_lane.fetch_add(1, Ordering::Relaxed);
-        self.shared
-            .fast_lanes
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                token,
-                Arc::new(FastLaneRoute {
-                    descriptor_ids: Arc::from([descriptor.id]),
-                    routing_keys: routing_keys.into(),
-                    dispatch: FastLaneDispatch::Inline(handler),
-                    active: Arc::new(AtomicBool::new(true)),
-                }),
-            );
+        self.shared.fast_lanes.write_unpoisoned().insert(
+            token,
+            Arc::new(FastLaneRoute {
+                descriptor_ids: Arc::from([descriptor.id]),
+                routing_keys: routing_keys.into(),
+                dispatch: FastLaneDispatch::Inline(handler),
+                active: Arc::new(AtomicBool::new(true)),
+            }),
+        );
         Ok(FastLaneToken(token))
     }
 
@@ -1180,29 +1119,20 @@ impl EventEngineHandle {
             self.shared.fault_signals.clone(),
             self.shared.metrics.clone(),
         )?;
-        self.shared
-            .fast_lanes
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                token,
-                Arc::new(FastLaneRoute {
-                    descriptor_ids: descriptor_ids.into(),
-                    routing_keys: routing_keys.into(),
-                    dispatch: FastLaneDispatch::Async(lane),
-                    active,
-                }),
-            );
+        self.shared.fast_lanes.write_unpoisoned().insert(
+            token,
+            Arc::new(FastLaneRoute {
+                descriptor_ids: descriptor_ids.into(),
+                routing_keys: routing_keys.into(),
+                dispatch: FastLaneDispatch::Async(lane),
+                active,
+            }),
+        );
         Ok(FastLaneToken(token))
     }
 
     pub fn unregister_fast_lane(&self, token: FastLaneToken) -> bool {
-        let route = self
-            .shared
-            .fast_lanes
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&token.0);
+        let route = self.shared.fast_lanes.write_unpoisoned().remove(&token.0);
         if let Some(route) = route {
             route.stop();
             true
@@ -1219,11 +1149,7 @@ impl EventEngineHandle {
         pool: PoolKind,
     ) -> Result<Arc<EventDescriptor>, EngineError> {
         let event_type = event_type.into();
-        let mut catalog = self
-            .shared
-            .catalog
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut catalog = self.shared.catalog.write_unpoisoned();
         if let Some(existing) = catalog
             .get(event_type.as_ref())
             .and_then(|versions| versions.get(&schema_version))
@@ -1472,18 +1398,13 @@ impl EventEngineHandle {
     pub fn subscriber_health(&self, token: u64) -> Option<SubscriberHealthSnapshot> {
         self.shared
             .health_registry
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .read_unpoisoned()
             .get(&token)
             .map(|health| health.snapshot())
     }
 
     pub fn top_pressure_subscribers(&self, limit: usize) -> Vec<(u64, SubscriberHealthSnapshot)> {
-        let registry = self
-            .shared
-            .health_registry
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let registry = self.shared.health_registry.read_unpoisoned();
         let mut result = registry
             .iter()
             .map(|(id, health)| (*id, health.snapshot()))
@@ -1494,11 +1415,7 @@ impl EventEngineHandle {
     }
 
     pub fn pressure_subscriber_batch(&self) -> Vec<(u64, SubscriberHealthSnapshot)> {
-        let registry = self
-            .shared
-            .health_registry
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let registry = self.shared.health_registry.read_unpoisoned();
         let budget = self
             .shared
             .config
@@ -1900,13 +1817,11 @@ impl EventLoop {
             self.reserved_pending_unused += route_guarantee;
             self.shared
                 .health_registry
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .write_unpoisoned()
                 .insert(token, health);
             self.shared
                 .channel_registry
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .write_unpoisoned()
                 .insert(token, channel.clone());
             self.routes.insert(token, route);
             self.route_index
@@ -1966,13 +1881,11 @@ impl EventLoop {
             }
             self.shared
                 .health_registry
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .write_unpoisoned()
                 .remove(&token);
             self.shared
                 .channel_registry
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .write_unpoisoned()
                 .remove(&token);
             if let Some(reply) = self.retire_waiters.remove(&token) {
                 let _ = reply.try_send(Ok((route.channel, !channel_still_used)));
@@ -2038,16 +1951,8 @@ impl EventLoop {
             }
             channels.push(route.channel);
         }
-        self.shared
-            .health_registry
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
-        self.shared
-            .channel_registry
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        self.shared.health_registry.write_unpoisoned().clear();
+        self.shared.channel_registry.write_unpoisoned().clear();
         channels
     }
 

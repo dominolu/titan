@@ -1,0 +1,19 @@
+[Unit]
+Description=Titan cross_exchange_mm ABI V13 shadow instance
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/titan-cross-exchange-mm-current
+Environment="PATH=%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment="RUST_LOG=warn"
+ExecStart=%h/titan-cross-exchange-mm-current/target/release/titan core-run --config %h/titan-cross-exchange-mm-current/deploy/cross_exchange_mm/runtime.toml --json
+Restart=no
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=append:%h/titan-cross-exchange-mm-current/deploy/cross_exchange_mm/logs/runtime.log
+StandardError=append:%h/titan-cross-exchange-mm-current/deploy/cross_exchange_mm/logs/runtime.log
+
+[Install]
+WantedBy=default.target

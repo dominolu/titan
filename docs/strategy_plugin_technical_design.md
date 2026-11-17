@@ -4,8 +4,7 @@
 
 状态：历史归档（ABI V8/旧 StrategyPlugin 方案），不再作为当前实现契约
 
-> 当前权威设计见 [Strategy ABI V13 typed-state 技术设计](strategy_abi_v13_typed_state_blob_technical_design.md)
-> 与 [V13 重构后适配审计](strategy_abi_v13_post_refactor_audit.md)。本文涉及的
+> 当前权威设计见 [策略观测协议](strategy_observation_protocol.md)。本文涉及的
 > `StrategyRuntimeContext`、`titan-runtime-abi`、`titan-runtime` 和 `titan-python-host`
 > 均为已经删除的历史架构。
 
@@ -22,7 +21,7 @@
 - [EventEngine独立技术实现设计](event_engine_technical_design.md)
 - [PluginEngine独立技术实现设计](plugin_engine_technical_design.md)
 - [Bar/Tick 回测与实盘统一策略接口](bar_tick_numba_strategy.md)
-- [Strategy ABI v8 migration](strategy_abi_v8_migration.md)
+- Strategy ABI v8 migration（该迁移文档已移除；当前契约见[策略观测协议](strategy_observation_protocol.md)）
 
 ## 1. 设计目标
 

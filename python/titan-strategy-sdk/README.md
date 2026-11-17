@@ -1,7 +1,7 @@
 # titan-strategy-sdk（Strategy ABI V13）
 
 该 SDK 提供 Numba 策略编写和目标文件桥接；唯一的制品编译入口是 Rust `titan strategy compile`。
-策略使用 typed state、只读 public views 和 callback-local command staging；生产运行时只加载 `native-v13` 制品，不嵌入 Python。
+策略使用 typed state、只读 public views 和 callback-local command staging；生产运行时只加载 `native-v14` 制品，不嵌入 Python。
 
 主要模块：
 
@@ -121,3 +121,21 @@ ABI fingerprint、CBOR 字段、签名覆盖范围及 pair/bundle 读取方式�
 报告模块及其 Python 依赖保持原样。
 
 管理暂停使用可选的 `Capability.PAUSE_SAFE`（bit 6）和 `ctx.is_paused`。声明该能力的策略在暂停期间仍会收到事实和定时器，必须保留订单引用和保护性退出；host 仅允许撤单及 reduce-only 委托。此标志使用既有 V13 context flags 的 bit 1，STOP_READY 输出仍为 bit 0，结构布局不变。未声明能力的制品拒绝 Pause；旧 host 会拒绝未知能力位。
+
+## ABI V14 对象上下文
+
+策略在回调内通过只读 accessor 读取平台证明的交易所事实，不再用参数硬编码：
+
+| accessor | 返回 | 说明 |
+| --- | --- | --- |
+| `ctx.symbol(asset_no)` | `TitanSymbolPayloadV1` | price tick、lot、合约乘数、base delta、最小量与最小金额（Decimal） |
+| `ctx.account_info(account_no)` | `TitanAccountPayloadV1` | 报价/保证金币种编号、持仓模式、保证金域 |
+| `ctx.currency(account_no, currency_no)` | `TitanCurrencyPayloadV1` | 账户币种 `amount_unit` |
+| `ctx.pair(pair_no)` | `TitanPairPayloadV1` | 平台证明的腿间比例、tick 比、最小对冲量 |
+| `ctx.status()` | `TitanStatusPayloadV1` | 入口生命周期/标志与上一次回调结果（滞后语义） |
+| `ctx.fee(account_no)` | `TitanFeePayloadV1` | 费率；`flags & 1 == 0` 表示不可得，不置错 |
+
+使用任一 accessor 必须声明 `Capability.OBJECT_CONTEXT`；对象缺失或版本不兼容时 accessor 返回零记录并写
+`last_error_code = -2`，宿主据此判定回调失败。`loader_type` 为 `native-v14`，旧的 `native-v13` 配置会被
+拒绝并要求迁移。策略不得声明合约乘数、tick/lot、最小金额、费率或腿间比等交易所事实参数——
+`scripts/check_strategy_no_exchange_facts.py` 会拒绝这类参数。

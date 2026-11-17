@@ -144,7 +144,7 @@ Rust 源码接口变更：`Connector::shutdown` 返回独立 future；初始化/
 - [x] 新增可选 `on_recover` 生命周期回调，仅承担策略私有业务状态重建；恢复期间 submit/cancel 被宿主 gate 拒绝。
 - [x] 外部执行前持久化完整命令批次及私有状态；意图 flush 失败时不发送订单。该同步持久化路径有额外 I/O 成本，本轮没有实盘延迟 SLA 结论。
 - [x] `pair_arb` 移除账户 epoch/sequence 四个私有字段及重复会话处理；恢复回调只处理 Slot/ref/成交序列业务状态。制品版本 3.1.0、state schema 4。
-- [x] `v13_smoke` 也接入通用恢复，验证协议可复用于其他策略。
+- [x] `smoke` 也接入通用恢复，验证协议可复用于其他策略。
 - [x] 新增账户一致性、事实基线防篡改、已确认撤单、未知订单、缺失终态、离线成交变化、未完成成交、绑定变更等回归；原生测试覆盖恢复落盘失败、启动漂移及运行会话变化后的关闭行为。
 
 可自动处理账户会话/序列变化、余额变化及有确证且累计成交不变的订单状态变化。缺失终态、无法证明的成交历史、持仓变化或未知活动订单会明确拒绝；没有推导或伪造成交，也没有自动跨制品/state schema 迁移。账户图像中的终态受保留范围限制，跨进程重启缺失的订单结果仍需补齐历史事实后才能恢复。
@@ -222,9 +222,9 @@ direct_submit 检查 ready/active/readiness_fence 后返回 future，但 future 
 
 ### R5 — P1：允许下单但未声明账户回调的策略缺少宿主必需的私有事实订阅
 
-位置：[订阅自动补齐条件](../crates/titan-strategy-runtime/src/service_core.rs#L705)、[REST 终态等待私有事实](../crates/titan-strategy-runtime/src/runtime_v13.rs#L1233)、[仓库 smoke 策略](../strategies/v13_smoke.py#L19)。
+位置：[订阅自动补齐条件](../crates/titan-strategy-runtime/src/service_core.rs#L705)、[REST 终态等待私有事实](../crates/titan-strategy-runtime/src/runtime_v13.rs#L1233)、[仓库 smoke 策略](../strategies/smoke.py#L19)。
 
-ServiceCore 只在 manifest 已声明至少一个 titan.account 订阅时补齐内部私有事件。SDK 允许 BBO-only + ORDER_EXECUTION，仓库 v13_smoke 就是该配置。这类策略可以下单，但宿主接收不到 Order/Fill/Position/账户失效事件。新增 REST 处理又明确保留已成交订单为非终态，等待私有事实，因此订单不能正常退役、停止排空可超时，公共持仓和账户会话也不能更新。业务回调是否订阅与宿主是否需要维护账户状态是两回事。
+ServiceCore 只在 manifest 已声明至少一个 titan.account 订阅时补齐内部私有事件。SDK 允许 BBO-only + ORDER_EXECUTION，仓库 smoke 就是该配置。这类策略可以下单，但宿主接收不到 Order/Fill/Position/账户失效事件。新增 REST 处理又明确保留已成交订单为非终态，等待私有事实，因此订单不能正常退役、停止排空可超时，公共持仓和账户会话也不能更新。业务回调是否订阅与宿主是否需要维护账户状态是两回事。
 
 修复建议：只要绑定账户并具有账户/执行能力，就独立补齐宿主所需事实订阅；策略可以不声明 on_order/on_fill，宿主仍必须更新自己的状态。用 ServiceCore 实际创建 BBO-only 执行策略，再推送私有 Fill/终态/失效事件验证排空，不能在测试中手工给运行时附加全部订阅而绕过此路径。
 

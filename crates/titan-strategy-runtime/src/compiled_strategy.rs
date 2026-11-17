@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::Instant,
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use crate::*;
 
@@ -10,14 +11,12 @@ use crate::*;
 pub struct LoadedStrategy {
     pub id: CompiledStrategyDigest,
     pub manifest: CompiledStrategyMetadata,
-    pub native: Arc<LoadedNativeStrategyV13>,
+    pub native: Arc<LoadedNativeStrategy>,
 }
 
 #[derive(Clone)]
 pub struct StrategyLoaderContext {
     pub allowed_strategy_roots: Arc<[Arc<str>]>,
-    pub require_signature: bool,
-    pub ed25519_keys: BTreeMap<Arc<str>, [u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -61,7 +60,7 @@ impl StrategyLoaderRegistry {
                 "loader type must not be empty",
             ));
         }
-        let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
+        let mut factories = self.factories.write_unpoisoned();
         if factories.contains_key(&key) {
             return Err(StrategyError::new(
                 StrategyErrorKind::AlreadyExists,
@@ -80,8 +79,7 @@ impl StrategyLoaderRegistry {
         context: StrategyLoaderContext,
     ) -> LocalResult<Arc<dyn StrategyLoader>> {
         self.factories
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(loader_type)
             .ok_or_else(|| {
                 StrategyError::new(
@@ -135,7 +133,7 @@ impl LoadedStrategyCache {
     }
 
     pub fn get(&self, key: &StrategyCacheKey) -> Option<LoadedStrategy> {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock_unpoisoned();
         state.clock = state.clock.wrapping_add(1);
         let clock = state.clock;
         state.values.get_mut(key).map(|cached| {
@@ -145,7 +143,7 @@ impl LoadedStrategyCache {
     }
 
     pub fn insert(&self, key: StrategyCacheKey, compiled_strategy: LoadedStrategy) {
-        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock_unpoisoned();
         if !state.values.contains_key(&key) {
             while state.values.len() >= self.capacity {
                 let victim = state
@@ -178,40 +176,37 @@ impl LoadedStrategyCache {
     }
 
     pub fn len(&self) -> usize {
-        self.state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values
-            .len()
+        self.state.lock_unpoisoned().values.len()
     }
 }
 
-pub struct NativeV13LoaderFactory;
+pub struct NativeLoaderFactory;
 
-impl StrategyLoaderFactory for NativeV13LoaderFactory {
+impl StrategyLoaderFactory for NativeLoaderFactory {
     fn loader_type(&self) -> &str {
-        "native-v13"
+        "native"
     }
 
     fn create(
         &self,
         context: StrategyLoaderContext,
     ) -> Result<Arc<dyn StrategyLoader>, StrategyError> {
-        Ok(Arc::new(NativeV13Loader { context }))
+        Ok(Arc::new(NativeLoader { context }))
     }
 }
 
-struct NativeV13Loader {
+struct NativeLoader {
     context: StrategyLoaderContext,
 }
 
-impl NativeV13Loader {
+impl NativeLoader {
     fn strategy_path(&self, strategy_file: &StrategyFileRef) -> LocalResult<std::path::PathBuf> {
-        let raw = strategy_file.uri.strip_prefix("file://").ok_or_else(|| {
-            strategy_load_error("v13_uri", "V13 compiled_strategy URI must use file://")
-        })?;
+        let raw = strategy_file
+            .uri
+            .strip_prefix("file://")
+            .ok_or_else(|| strategy_load_error("uri", "compiled strategy URI must use file://"))?;
         let path = std::fs::canonicalize(raw).map_err(|_| {
-            strategy_load_error("v13_path", "V13 compiled_strategy path cannot be resolved")
+            strategy_load_error("path", "compiled strategy path cannot be resolved")
         })?;
         let allowed = self.context.allowed_strategy_roots.iter().any(|root| {
             std::fs::canonicalize(root.as_ref()).is_ok_and(|root| path.starts_with(root))
@@ -219,31 +214,24 @@ impl NativeV13Loader {
         if !allowed {
             return Err(strategy_load_error(
                 "strategy_root_denied",
-                "V13 compiled_strategy is outside allowed roots",
+                "compiled strategy is outside allowed roots",
             ));
         }
         Ok(path)
     }
 
-    fn loader(&self) -> NativeStrategyLoaderV13 {
-        NativeStrategyLoaderV13::new(
-            std::env::temp_dir().join("titan-native-v13-cache"),
-            V13TrustPolicy {
-                require_signature: self.context.require_signature,
-                ed25519_keys: self.context.ed25519_keys.clone(),
-            },
-        )
+    fn loader(&self) -> NativeStrategyLoader {
+        NativeStrategyLoader::new(std::env::temp_dir().join("titan-native-cache"))
     }
 }
 
-fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStrategyMetadata> {
-    let source_version = semver::Version::parse(&value.source_version).map_err(|_| {
-        strategy_load_error("strategy_version", "V13 strategy version is not semver")
-    })?;
+fn manifest_from_artifact(value: &ArtifactMetadata) -> LocalResult<CompiledStrategyMetadata> {
+    let source_version = semver::Version::parse(&value.source_version)
+        .map_err(|_| strategy_load_error("strategy_version", "strategy version is not semver"))?;
     let mut capabilities = 0_u64;
     if value
         .capabilities
-        .contains(StrategyCapabilitiesV13::MARKET_DATA)
+        .contains(ManifestCapabilities::MARKET_DATA)
     {
         capabilities |= StrategyCapabilities::READ_TICK.0
             | StrategyCapabilities::READ_BAR.0
@@ -251,36 +239,61 @@ fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStra
     }
     if value
         .capabilities
-        .contains(StrategyCapabilitiesV13::ACCOUNT_DATA)
+        .contains(ManifestCapabilities::ACCOUNT_DATA)
     {
         capabilities |= StrategyCapabilities::READ_ACCOUNT.0;
     }
     if value
         .capabilities
-        .contains(StrategyCapabilitiesV13::ORDER_EXECUTION)
+        .contains(ManifestCapabilities::ORDER_EXECUTION)
     {
         capabilities |= StrategyCapabilities::SUBMIT_ORDER.0 | StrategyCapabilities::CANCEL_ORDER.0;
     }
-    if value.capabilities.contains(StrategyCapabilitiesV13::TIMER) {
+    if value.capabilities.contains(ManifestCapabilities::TIMER) {
         capabilities |= StrategyCapabilities::TIMER_CALLBACK.0;
+    }
+    if value
+        .capabilities
+        .contains(ManifestCapabilities::OBJECT_CONTEXT)
+    {
+        // The object table is the single capability behind two wire encodings: compiled strategy manifest bit
+        // 1<<11 and V14 runtime bit 1<<13. Both are named by [`OBJECT_CONTEXT_CAPABILITY`]
+        // (`"object_context"`), which documents the pair and why the bit numbers differ. Neither
+        // typed constant may be replaced by a bare literal here.
+        capabilities |= StrategyCapabilities::OBJECT_CONTEXT.0;
+    }
+    for (native, runtime) in [
+        (
+            ManifestCapabilities::BUSINESS_FAULT_DRAIN,
+            StrategyCapabilities::BUSINESS_FAULT_DRAIN,
+        ),
+        (
+            ManifestCapabilities::REQUIRES_PERIODIC_TIMER,
+            StrategyCapabilities::REQUIRES_PERIODIC_TIMER,
+        ),
+        (
+            ManifestCapabilities::MULTI_VENUE_EXECUTION,
+            StrategyCapabilities::MULTI_VENUE_EXECUTION,
+        ),
+    ] {
+        if value.capabilities.contains(native) {
+            capabilities |= runtime.0;
+        }
     }
     let mut subscriptions = Vec::new();
     for item in value.subscriptions.iter() {
         let event_type: Arc<str> = Arc::from(match item.event {
-            V13EventKind::Tick => titan_market_service::BBO_EVENT,
-            V13EventKind::Bar => titan_market_service::BAR_BATCH_EVENT,
-            V13EventKind::Depth => titan_market_service::DEPTH_BATCH_EVENT,
-            V13EventKind::Fill => titan_account_service::FILL_EVENT,
-            V13EventKind::Order | V13EventKind::Cancel => {
-                titan_account_service::ORDER_CHANGED_EVENT
+            EventKind::Tick => titan_market_service::BBO_EVENT,
+            EventKind::Bar => titan_market_service::BAR_BATCH_EVENT,
+            EventKind::Depth => titan_market_service::DEPTH_BATCH_EVENT,
+            EventKind::Fill => titan_account_service::FILL_EVENT,
+            EventKind::Order | EventKind::Cancel => titan_account_service::ORDER_CHANGED_EVENT,
+            EventKind::Position => titan_account_service::POSITION_CHANGED_EVENT,
+            EventKind::Balance => titan_account_service::BALANCE_CHANGED_EVENT,
+            EventKind::AccountState => titan_account_service::STREAM_STATE_CHANGED_EVENT,
+            EventKind::Timer | EventKind::Start | EventKind::Stop | EventKind::Recover => {
+                "titan.strategy.Timer"
             }
-            V13EventKind::Position => titan_account_service::POSITION_CHANGED_EVENT,
-            V13EventKind::Balance => titan_account_service::BALANCE_CHANGED_EVENT,
-            V13EventKind::AccountState => titan_account_service::STREAM_STATE_CHANGED_EVENT,
-            V13EventKind::Timer
-            | V13EventKind::Start
-            | V13EventKind::Stop
-            | V13EventKind::Recover => "titan.strategy.Timer",
         });
         if event_type.as_ref() == "titan.strategy.Timer" {
             continue;
@@ -290,9 +303,9 @@ fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStra
             schema_version: item.schema_version,
             routing_keys: Arc::from([]),
             qos: match item.qos {
-                V13EventQos::Latest => titan_core_types::EventQos::Latest,
-                V13EventQos::ReliableOrdered => titan_core_types::EventQos::ReliableOrdered,
-                V13EventQos::BestEffort => titan_core_types::EventQos::BestEffort,
+                SubscriptionQos::Latest => titan_core_types::EventQos::Latest,
+                SubscriptionQos::ReliableOrdered => titan_core_types::EventQos::ReliableOrdered,
+                SubscriptionQos::BestEffort => titan_core_types::EventQos::BestEffort,
             },
         };
         if !subscriptions
@@ -308,7 +321,7 @@ fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStra
     }
     if value
         .capabilities
-        .contains(StrategyCapabilitiesV13::HOST_DEPTH_100)
+        .contains(ManifestCapabilities::HOST_DEPTH_100)
     {
         subscriptions.push(StrategySubscriptionSpec {
             event_type: Arc::from(titan_market_service::STREAM_INVALIDATED_EVENT),
@@ -318,36 +331,36 @@ fn manifest_v13(value: &CompiledStrategyMetadataV13) -> LocalResult<CompiledStra
         });
     }
     Ok(CompiledStrategyMetadata {
-        runtime_type: Arc::from("native-v13"),
+        runtime_type: Arc::from("native"),
         source_version,
-        runtime_abi: titan_core_types::ApiVersion::new(13, 0),
+        runtime_abi: titan_core_types::ApiVersion::new(14, 0),
         parameter_schema: value.parameter_schema.clone(),
         parameter_schema_version: 1,
+        parameters_digest: value.parameters_digest,
         recovery_state_schema_version: value.state.version,
         state_byte_len: value.state.byte_len,
         callbacks: StrategyCallbackMask(value.callback_mask as u32),
         capabilities: StrategyCapabilities(capabilities),
         subscriptions: subscriptions.into(),
+        object_manifest: value.object_manifest.clone(),
         compiled_strategy_digest: value.compiled_strategy_digest,
     })
 }
 
-impl StrategyLoader for NativeV13Loader {
+impl StrategyLoader for NativeLoader {
     fn inspect(
         &self,
         strategy_file: &StrategyFileRef,
     ) -> Result<CompiledStrategyMetadata, StrategyError> {
         let path = self.strategy_path(strategy_file)?;
-        let value = self.loader().inspect(&path).map_err(|_| {
-            strategy_load_error("v13_inspect", "V13 compiled_strategy inspection failed")
-        })?;
+        let value = self.loader().inspect(&path).map_err(load_error)?;
         if value.compiled_strategy_digest != strategy_file.expected_digest {
             return Err(strategy_load_error(
                 "compiled_strategy_digest_mismatch",
-                "V13 compiled_strategy digest does not match deployment pin",
+                "compiled strategy digest does not match deployment pin",
             ));
         }
-        manifest_v13(&value)
+        manifest_from_artifact(&value)
     }
 
     fn load(
@@ -357,23 +370,21 @@ impl StrategyLoader for NativeV13Loader {
     ) -> Result<LoadedStrategy, StrategyError> {
         if Instant::now() >= deadline {
             return Err(strategy_load_error(
-                "v13_load_deadline",
-                "V13 load deadline expired",
+                "load_deadline",
+                "compiled strategy load deadline expired",
             ));
         }
         let path = self.strategy_path(&request.strategy_file)?;
-        let compiled_strategy = self.loader().load(&path).map_err(|_| {
-            strategy_load_error("v13_load", "V13 native compiled_strategy load failed")
-        })?;
+        let compiled_strategy = self.loader().load(&path).map_err(load_error)?;
         if compiled_strategy.manifest.compiled_strategy_digest
             != request.strategy_file.expected_digest
         {
             return Err(strategy_load_error(
                 "compiled_strategy_digest_mismatch",
-                "V13 compiled_strategy digest does not match deployment pin",
+                "compiled strategy digest does not match deployment pin",
             ));
         }
-        let manifest = manifest_v13(&compiled_strategy.manifest)?;
+        let manifest = manifest_from_artifact(&compiled_strategy.manifest)?;
         Ok(LoadedStrategy {
             id: CompiledStrategyDigest {
                 digest: manifest.compiled_strategy_digest,
@@ -384,11 +395,103 @@ impl StrategyLoader for NativeV13Loader {
     }
 }
 
-fn strategy_load_error(code: &'static str, message: &'static str) -> StrategyError {
+fn strategy_load_error(code: &'static str, message: impl Into<Arc<str>>) -> StrategyError {
     StrategyError::new(
         StrategyErrorKind::LoadFailed,
-        "native_v13_loader",
+        "native_loader",
         code,
         message,
     )
+}
+
+/// Maps a loader failure onto a stable reason code.
+///
+/// The previous `map_err(|_| ...)` erased every cause, so a fingerprint change (the expected
+/// consequence of an ABI revision) looked like an unspecified load failure. An operator could not
+/// tell "recompile the strategy" from a corrupt file.
+fn load_error(error: LoadError) -> StrategyError {
+    let (kind, code) = match &error {
+        LoadError::AbiVersion { .. } => (StrategyErrorKind::AbiMismatch, "abi_version_mismatch"),
+        LoadError::AbiFingerprint => (StrategyErrorKind::AbiMismatch, "abi_fingerprint_mismatch"),
+        LoadError::AbiLayout { .. } => (StrategyErrorKind::AbiMismatch, "abi_layout_mismatch"),
+        LoadError::Bundle(_) => (StrategyErrorKind::LoadFailed, "bundle_invalid"),
+        LoadError::Io(_) => (StrategyErrorKind::LoadFailed, "io_error"),
+        LoadError::Cbor(_) => (StrategyErrorKind::LoadFailed, "cbor_invalid"),
+        LoadError::Contract(_) => (StrategyErrorKind::LoadFailed, "contract_violation"),
+        LoadError::State(_) => (StrategyErrorKind::InvalidState, "state_invalid"),
+        LoadError::Native(_) => (StrategyErrorKind::LoadFailed, "native_load_failed"),
+        LoadError::Callback { .. } => (StrategyErrorKind::CallbackFailed, "callback_failed"),
+    };
+    StrategyError::new(kind, "native_loader", code, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abi_mismatch_is_reported_as_a_structured_reason() {
+        let error = load_error(LoadError::AbiFingerprint);
+        assert_eq!(error.kind, StrategyErrorKind::AbiMismatch);
+        assert_eq!(error.reason_code.as_ref(), "abi_fingerprint_mismatch");
+        assert!(error.message.contains("recompile"), "{}", error.message);
+
+        let error = load_error(LoadError::AbiVersion {
+            artifact: 13,
+            host: 14,
+        });
+        assert_eq!(error.kind, StrategyErrorKind::AbiMismatch);
+        assert_eq!(error.reason_code.as_ref(), "abi_version_mismatch");
+        assert!(error.message.contains("artifact 13"));
+        assert!(error.message.contains("host 14"));
+
+        let error = load_error(LoadError::Contract("state mismatch"));
+        assert_eq!(error.kind, StrategyErrorKind::LoadFailed);
+        assert_eq!(error.reason_code.as_ref(), "contract_violation");
+        assert!(error.message.contains("state mismatch"));
+    }
+
+    /// The old status code moved the object-context capability through hard-coded bits while the
+    /// manifest string lived elsewhere, so three literals described one capability. The bits are
+    /// still the two frozen wire formats, but they are now documented as one capability in
+    /// `object_gate.rs::OBJECT_CONTEXT_CAPABILITY`; this pins that the compiled strategy→V14 translation still
+    /// means the same thing and that the two bit numbers are deliberately different.
+    /// This repository was not compiled for this change, so the checks are deliberately limited to
+    /// what is structural: the string source, the two bit numbers, their inequality, and the
+    /// compiled strategy→V14 translation. They do not re-implement `manifest_from_artifact`'s other validations.
+    #[test]
+    fn object_context_capability_keeps_its_meaning_across_bits() {
+        assert_eq!(OBJECT_CONTEXT_CAPABILITY, "object_context");
+        assert_eq!(ManifestCapabilities::OBJECT_CONTEXT.0, 1 << 11);
+        assert_eq!(StrategyCapabilities::OBJECT_CONTEXT.0, 1 << 13);
+        // Not a copy: the two wire formats use different bit numbers on purpose.
+        assert_ne!(
+            ManifestCapabilities::OBJECT_CONTEXT.0,
+            StrategyCapabilities::OBJECT_CONTEXT.0
+        );
+        // Neither bit leaks into the neighbour bit of its own set.
+        assert!(
+            !ManifestCapabilities::OBJECT_CONTEXT
+                .contains(ManifestCapabilities::MULTI_VENUE_EXECUTION)
+        );
+        assert!(
+            !StrategyCapabilities::OBJECT_CONTEXT
+                .contains(StrategyCapabilities::MULTI_VENUE_EXECUTION)
+        );
+        // The V14 bit is not reachable from any compiled strategy bit other than OBJECT_CONTEXT.
+        let all_but_object_context = ManifestCapabilities(
+            ManifestCapabilities::MARKET_DATA.0
+                | ManifestCapabilities::ACCOUNT_DATA.0
+                | ManifestCapabilities::ORDER_EXECUTION.0
+                | ManifestCapabilities::TIMER.0
+                | ManifestCapabilities::STOP_BARRIER.0
+                | ManifestCapabilities::RECOVERY_ORDER_RESULTS.0
+                | ManifestCapabilities::PAUSE_SAFE.0
+                | ManifestCapabilities::HOST_DEPTH_100.0
+                | ManifestCapabilities::BUSINESS_FAULT_DRAIN.0
+                | ManifestCapabilities::REQUIRES_PERIODIC_TIMER.0
+                | ManifestCapabilities::MULTI_VENUE_EXECUTION.0,
+        );
+        assert!(!all_but_object_context.contains(ManifestCapabilities::OBJECT_CONTEXT));
+    }
 }

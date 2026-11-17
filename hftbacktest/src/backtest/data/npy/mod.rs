@@ -320,10 +320,10 @@ pub fn read_npy_file<D: NpyDTyped + Clone>(filepath: &str) -> std::io::Result<Da
 
         #[cfg(not(feature = "s3"))]
         {
-            return Err(Error::new(
+            Err(Error::new(
                 ErrorKind::Unsupported,
                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
-            ));
+            ))
         }
     } else {
         let mut file = File::open(filepath)?;
@@ -353,10 +353,10 @@ pub fn read_npz_file<D: NpyDTyped + Clone>(filepath: &str, name: &str) -> std::i
 
         #[cfg(not(feature = "s3"))]
         {
-            return Err(Error::new(
+            Err(Error::new(
                 ErrorKind::Unsupported,
                 "S3 support is not enabled. Enable the 's3' feature in Cargo.toml to use S3 paths: features = [\"s3\"]",
-            ));
+            ))
         }
     } else {
         let mut archive = zip::ZipArchive::new(File::open(filepath)?)?;

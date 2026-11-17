@@ -3,7 +3,7 @@
 set -euo pipefail
 data_dir=${1:-data/grid-history}
 output=${2:-verification-artifacts/grid-history/final}
-runner=target/debug/examples/v13_grid_history
+runner=target/debug/examples/grid_history
 export TITAN_STRATEGY_PYTHON="$PWD/.venv/bin/python"
 export TITAN_STRATEGY_SDK="$PWD/python/titan-strategy-sdk"
 export PYTHONPATH=.:python/titan-strategy-sdk

@@ -435,6 +435,13 @@ impl BrokerApi for BackpackClient {
                     lot_size: lot,
                     min_qty: number(&r["filters"]["quantity"], "minQuantity", NAME)?,
                     contract_size: 1.0,
+                    tick_size_exact: exact_decimal(&r["filters"]["price"], "tickSize", NAME)?,
+                    lot_size_exact: exact_decimal(&r["filters"]["quantity"], "stepSize", NAME)?,
+                    min_qty_exact: exact_decimal(&r["filters"]["quantity"], "minQuantity", NAME)?,
+                    contract_size_exact: titan_domain_types::DecimalUnit::new(1, 0).ok(),
+                    min_notional_quote: exact_decimal(&r["filters"], "minNotional", NAME)?,
+                    quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+                    synthetic: false,
                     price_precision: precision(tick),
                     qty_precision: precision(lot),
                     tradable: r["orderBookState"] == "Open",
@@ -973,6 +980,27 @@ mod tests {
     fn market() -> Value {
         json!([{"symbol":"BTC_USDC_PERP","baseSymbol":"BTC","quoteSymbol":"USDC","marketType":"PERP","filters":{"price":{"tickSize":"0.1"},"quantity":{"stepSize":"0.001","minQuantity":"0.001"}},"orderBookState":"Open"}])
     }
+    #[tokio::test]
+    async fn instrument_metadata_is_exact_and_never_approximated() {
+        let (url, mut rx, task) = http(vec![(200, market())]).await;
+        let client = BackpackClient::new(config(&url, &path("bpx-instruments"))).unwrap();
+        let instruments = client.get_instruments().await.unwrap();
+        rx.recv().await.unwrap();
+        task.await.unwrap();
+        assert_eq!(instruments.len(), 1);
+        assert_eq!(instruments[0].tick_size_exact, Some("0.1".parse().unwrap()));
+        assert_eq!(
+            instruments[0].lot_size_exact,
+            Some("0.001".parse().unwrap())
+        );
+        assert_eq!(instruments[0].min_qty_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(
+            instruments[0].base_delta_per_lot(),
+            Some("0.001".parse().unwrap())
+        );
+        assert!(!instruments[0].synthetic);
+    }
+
     fn request() -> UnifiedOrderRequest {
         UnifiedOrderRequest {
             symbol: "BTC_USDC_PERP".into(),

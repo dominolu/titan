@@ -294,7 +294,9 @@ impl HistoryQuery for PostgresHistoryQuery {
         let source = self.source.clone();
         let target_id = self.projection.target_id.clone();
         self.projection.with_client(move|db|Box::pin(async move {
-        if request.limit == 0 || request.limit > 200 || request.filter.account.len() > 256 {
+        if request.limit == 0 || request.limit > 200 || request.filter.account.len() > 256
+            || matches!((request.filter.from_ns, request.filter.to_ns), (Some(from), Some(to)) if from > to)
+        {
             return Err(failure("history_query_invalid"));
         }
 
@@ -323,7 +325,7 @@ impl HistoryQuery for PostgresHistoryQuery {
             sha256(&serde_json::to_vec(&request.filter)?)
         };
         let f = &request.filter;
-        let upper=tx.query_one("SELECT coalesce(max(row_id),0) FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND row_id<=$7",&[&source,&f.environment.as_str(),&f.account,&f.strategy_id,&f.run_id,&f.kind,&committed]).await.map_err(postgres_error)?.get::<_,i64>(0) as u64;
+        let upper=tx.query_one("SELECT coalesce(max(row_id),0) FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND row_id<=$7 AND ($10::TEXT IS NULL OR convert_from(payload,'UTF8')::jsonb->'scope'->>'run_generation'=$10) AND ($8::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT>=$8) AND ($9::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT<=$9)",&[&source,&f.environment.as_str(),&f.account,&f.strategy_id,&f.run_id,&f.kind,&committed,&f.from_ns,&f.to_ns,&f.run_generation]).await.map_err(postgres_error)?.get::<_,i64>(0) as u64;
         let (upper, after) = if let Some(c) = &request.cursor {
             if c.store_id != store
                 || c.filter_sha256 != filter
@@ -337,15 +339,15 @@ impl HistoryQuery for PostgresHistoryQuery {
             (upper, 0)
         };
         let sql = if request.newest_first {
-            "SELECT row_id,payload,sha256 FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND ($7::BIGINT=0 OR row_id<$7) AND row_id<=$8 ORDER BY row_id DESC LIMIT $9"
+            "SELECT row_id,payload,sha256 FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND ($7::BIGINT=0 OR row_id<$7) AND row_id<=$8 AND ($12::TEXT IS NULL OR convert_from(payload,'UTF8')::jsonb->'scope'->>'run_generation'=$12) AND ($10::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT>=$10) AND ($11::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT<=$11) ORDER BY row_id DESC LIMIT $9"
         } else {
-            "SELECT row_id,payload,sha256 FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND row_id>$7 AND row_id<=$8 ORDER BY row_id LIMIT $9"
+            "SELECT row_id,payload,sha256 FROM titan_fact_records WHERE source_id=$1 AND environment=$2 AND account=$3 AND ($4::TEXT IS NULL OR strategy=$4) AND ($5::TEXT IS NULL OR run=$5) AND ($6::TEXT IS NULL OR kind=$6) AND replay=false AND row_id>$7 AND row_id<=$8 AND ($12::TEXT IS NULL OR convert_from(payload,'UTF8')::jsonb->'scope'->>'run_generation'=$12) AND ($10::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT>=$10) AND ($11::BIGINT IS NULL OR (convert_from(payload,'UTF8')::jsonb->>'received_at_ns')::BIGINT<=$11) ORDER BY row_id LIMIT $9"
         };
         let env = f.environment.as_str();
         let after = after as i64;
         let upper_sql = upper as i64;
         let limit = (request.limit + 1) as i64;
-        let args: [&(dyn ToSql + Sync); 9] = [
+        let args: [&(dyn ToSql + Sync); 12] = [
             &source,
             &env,
             &f.account,
@@ -355,6 +357,9 @@ impl HistoryQuery for PostgresHistoryQuery {
             &after,
             &upper_sql,
             &limit,
+            &f.from_ns,
+            &f.to_ns,
+            &f.run_generation,
         ];
         let rows = tx.query_raw(sql, args).await.map_err(postgres_error)?;
         pin_mut!(rows);
@@ -373,7 +378,10 @@ impl HistoryQuery for PostgresHistoryQuery {
             }
             let fact: FactEnvelope = serde_json::from_slice(&bytes)?;
             fact.validate()?;
-            if fact.scope.environment != f.environment
+            if f.run_generation.as_ref().is_some_and(|generation| fact.scope.run_generation.as_ref() != Some(generation))
+                || f.from_ns.is_some_and(|from| fact.received_at_ns < from)
+                || f.to_ns.is_some_and(|to| fact.received_at_ns > to)
+                || fact.scope.environment != f.environment
                 || fact.scope.account != f.account
                 || f.strategy_id
                     .as_ref()

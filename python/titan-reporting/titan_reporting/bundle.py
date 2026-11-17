@@ -13,6 +13,21 @@ class BundleError(RuntimeError):
     pass
 
 
+def _host_abi_fingerprint() -> str:
+    """The strategy ABI fingerprint this reporting environment expects, or "" when unknown.
+
+    The reporting package is deliberately runtime-agnostic (it renders committed bundles), so the
+    expected value comes from the deployment. When it is not configured the schema and integrity
+    checks still apply; the Rust CLI always enforces the fingerprint comparison.
+    """
+    import os
+
+    value = os.environ.get("TITAN_ABI_FINGERPRINT", "").strip().lower()
+    if value.startswith("0x"):
+        value = value[2:]
+    return value if len(value) == 64 else ""
+
+
 @dataclass(frozen=True)
 class ResultBundle:
     root: Path
@@ -28,6 +43,10 @@ def load_bundle(path: str | Path) -> ResultBundle:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
         raise BundleError(f"unsupported ResultBundle schema {manifest.get('schema_version')}")
+    recorded = manifest.get("abi_fingerprint")
+    expected = _host_abi_fingerprint()
+    if recorded and expected and recorded.strip().lower() != expected:
+        raise BundleError(f"bundle_abi_mismatch: recorded {recorded}, this host runs {expected}")
     decoded: dict[str, Any] = {}
     seen: set[str] = set()
     for descriptor in manifest.get("files", ()):

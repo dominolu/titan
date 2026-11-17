@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use titan_core_types::ResourceScope;
 
@@ -27,7 +28,7 @@ impl AccountConnectorFactoryRegistry {
                 "empty connector type",
             ));
         }
-        let mut values = self.values.write().unwrap_or_else(|p| p.into_inner());
+        let mut values = self.values.write_unpoisoned();
         if values.contains_key(&connector_type) {
             return Err(AccountError::new(
                 AccountErrorKind::AlreadyExists,
@@ -43,8 +44,7 @@ impl AccountConnectorFactoryRegistry {
         connector_type: &str,
     ) -> Result<Arc<dyn AccountConnectorFactory>, AccountError> {
         self.values
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(connector_type)
             .cloned()
             .ok_or_else(|| {
@@ -56,7 +56,7 @@ impl AccountConnectorFactoryRegistry {
     }
 
     pub fn len(&self) -> usize {
-        self.values.read().unwrap_or_else(|p| p.into_inner()).len()
+        self.values.read_unpoisoned().len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -116,12 +116,7 @@ impl AccountEntry {
     pub(crate) fn close_resources(&self) -> Result<(), AccountError> {
         self.close_publication();
         self.secret_active.store(false, Ordering::Release);
-        let Some(mut resources) = self
-            .resources
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        else {
+        let Some(mut resources) = self.resources.lock_unpoisoned().take() else {
             return Ok(());
         };
         resources.close().map_err(|errors| {
@@ -162,7 +157,7 @@ pub struct AccountRegistry {
 
 impl AccountRegistry {
     pub(crate) fn next_generation(&self, account_key: &str, account_id: AccountId) -> u64 {
-        let s = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let s = self.state.read_unpoisoned();
         s.last_generation_by_key
             .get(account_key)
             .copied()
@@ -237,7 +232,7 @@ impl AccountRegistry {
                 "managed ownership requires a client id prefix",
             ));
         }
-        let s = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let s = self.state.read_unpoisoned();
         if replacing.is_none() && s.by_id.len() >= max_accounts {
             return Err(AccountError::new(
                 AccountErrorKind::CapacityExceeded,
@@ -263,7 +258,7 @@ impl AccountRegistry {
     }
 
     pub(crate) fn insert(&self, e: Arc<AccountEntry>) -> Result<(), AccountError> {
-        let mut s = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut s = self.state.write_unpoisoned();
         if s.by_id.contains_key(&e.handle.account_id)
             || s.by_key.contains_key(&e.definition.account_key)
         {
@@ -282,7 +277,7 @@ impl AccountRegistry {
     }
 
     pub(crate) fn get(&self, h: AccountHandle) -> Result<Arc<AccountEntry>, AccountError> {
-        let s = self.state.read().unwrap_or_else(|p| p.into_inner());
+        let s = self.state.read_unpoisoned();
         let e = s.by_id.get(&h.account_id).ok_or_else(|| {
             AccountError::new(AccountErrorKind::AccountNotFound, "account not found")
         })?;
@@ -296,8 +291,7 @@ impl AccountRegistry {
     }
     pub(crate) fn resolve(&self, key: &str) -> Result<AccountHandle, AccountError> {
         self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_key
             .get(key)
             .copied()
@@ -307,7 +301,7 @@ impl AccountRegistry {
     }
     pub(crate) fn remove(&self, h: AccountHandle) -> Result<Arc<AccountEntry>, AccountError> {
         self.get(h)?;
-        let mut s = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut s = self.state.write_unpoisoned();
         let e = s.by_id.remove(&h.account_id).ok_or_else(|| {
             AccountError::new(AccountErrorKind::AccountNotFound, "account not found")
         })?;
@@ -320,7 +314,7 @@ impl AccountRegistry {
         new: Arc<AccountEntry>,
     ) -> Result<Arc<AccountEntry>, AccountError> {
         self.get(old)?;
-        let mut s = self.state.write().unwrap_or_else(|p| p.into_inner());
+        let mut s = self.state.write_unpoisoned();
         let old_e = s.by_id.get(&old.account_id).cloned().ok_or_else(|| {
             AccountError::new(AccountErrorKind::AccountNotFound, "account not found")
         })?;
@@ -336,8 +330,7 @@ impl AccountRegistry {
     }
     pub(crate) fn list_entries(&self) -> Vec<Arc<AccountEntry>> {
         self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .by_id
             .values()
             .cloned()
@@ -353,11 +346,7 @@ impl AccountRegistry {
         v.into()
     }
     pub fn len(&self) -> usize {
-        self.state
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .by_id
-            .len()
+        self.state.read_unpoisoned().by_id.len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0

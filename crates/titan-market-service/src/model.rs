@@ -2,6 +2,7 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+use titan_core_types::LockUnpoisoned;
 
 use serde::{Deserialize, Serialize};
 use titan_core_types::{
@@ -26,13 +27,31 @@ pub struct MarketSourceHandle {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MarketInstrumentBinding {
     pub native_symbol: Arc<str>,
     pub asset_id: AssetId,
     /// Exchange price tick represented by one `price_ticks` unit in Market ABI payloads.
     pub price_tick: DecimalUnit,
-    /// Exchange quantity lot represented by one `quantity_lots` unit in Market ABI payloads.
+    /// One native quantity lot represented by one `quantity_lots` unit in Market ABI payloads.
+    /// Contract venues express this in contracts; the base-currency delta is
+    /// `quantity_lot * contract_multiplier`.
     pub quantity_lot: DecimalUnit,
+    /// Base-currency value of one native lot. Required: without it the market side cannot state
+    /// the base-currency delta of one ABI lot, and no cross-venue ratio can be proven.
+    pub contract_multiplier: DecimalUnit,
+    /// Exchange minimum order quantity in native units. `None` means the venue metadata does not
+    /// publish it; a zero value is never a substitute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_quantity: Option<DecimalUnit>,
+    /// Exchange minimum order notional in the binding's linear quote currency. `None` means the
+    /// venue metadata does not publish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_notional_quote: Option<DecimalUnit>,
+    /// Native currency that prices this linear instrument. `None` declares an unknown/inverse
+    /// valuation; such an instrument is refused by multi-leg admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_quote_currency: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -144,10 +163,7 @@ impl MarketEventPublisher {
                 MarketEventPublisherBackend::Core(_) => unreachable!(),
             };
         };
-        let mut committed_sequence = core
-            .source_sequence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut committed_sequence = core.source_sequence.lock_unpoisoned();
         let source_sequence = committed_sequence.saturating_add(1);
         let result = core.inner.publish_with_metadata(
             event_type,
@@ -202,10 +218,7 @@ impl MarketEventPublisher {
         let MarketEventPublisherBackend::Core(core) = &self.backend else {
             unreachable!()
         };
-        let mut committed_sequence = core
-            .source_sequence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut committed_sequence = core.source_sequence.lock_unpoisoned();
         let source_sequence = committed_sequence.saturating_add(1);
         let mut reservation = core
             .inner
@@ -317,6 +330,26 @@ pub struct InstrumentSnapshot {
     pub native_symbol: Arc<str>,
     pub asset_id: AssetId,
     pub available: bool,
+    /// Exchange price tick represented by one `price_ticks` unit in Market ABI payloads.
+    ///
+    /// These are the frozen binding units of the running instance; they are not live venue
+    /// metadata and never change while the source is active.
+    pub price_tick: DecimalUnit,
+    /// One native quantity lot represented by one `quantity_lots` unit; contracts for contract
+    /// venues, base units otherwise.
+    pub quantity_lot: DecimalUnit,
+    /// Base-currency value of one native lot. `quantity_lot * contract_multiplier` is the base
+    /// delta of one ABI quantity lot.
+    pub contract_multiplier: DecimalUnit,
+    /// Exchange minimum order quantity in native units, when the venue publishes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_quantity: Option<DecimalUnit>,
+    /// Exchange minimum order notional in `linear_quote_currency`, when published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_notional_quote: Option<DecimalUnit>,
+    /// Native quote currency of this linear instrument; `None` marks an unknown/inverse valuation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_quote_currency: Option<Arc<str>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

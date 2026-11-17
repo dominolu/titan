@@ -1,0 +1,190 @@
+{
+  "schema_version": 4,
+  "runtime_abi": {
+    "abi_version": 14,
+    "abi_fingerprint": [
+      24,
+      126,
+      132,
+      186,
+      18,
+      125,
+      216,
+      53,
+      203,
+      119,
+      114,
+      42,
+      159,
+      183,
+      178,
+      52,
+      203,
+      165,
+      245,
+      35,
+      188,
+      255,
+      238,
+      21,
+      14,
+      160,
+      76,
+      75,
+      237,
+      58,
+      246,
+      77
+    ],
+    "object_schema_hash": [
+      11,
+      126,
+      61,
+      46,
+      56,
+      222,
+      4,
+      163,
+      19,
+      125,
+      199,
+      109,
+      15,
+      29,
+      85,
+      14,
+      92,
+      60,
+      210,
+      131,
+      149,
+      195,
+      70,
+      28,
+      10,
+      212,
+      7,
+      192,
+      114,
+      177,
+      251,
+      20
+    ]
+  },
+  "metadata": {
+    "schema_version": 1,
+    "captured_at_ns": 1700000000000,
+    "instruments": [
+      {
+        "asset_no": 0,
+        "native_symbol": "TEST-SYNTH-BTC",
+        "price_tick": {
+          "coefficient": 1,
+          "scale": 1
+        },
+        "quantity_lot": {
+          "coefficient": 1,
+          "scale": 2
+        },
+        "contract_multiplier": {
+          "coefficient": 1,
+          "scale": 0
+        },
+        "linear_quote_currency": "USDT",
+        "synthetic": true
+      }
+    ],
+    "digest": [
+      227,
+      168,
+      169,
+      81,
+      172,
+      61,
+      225,
+      248,
+      44,
+      61,
+      255,
+      6,
+      125,
+      59,
+      158,
+      253,
+      158,
+      155,
+      58,
+      186,
+      53,
+      81,
+      205,
+      240,
+      78,
+      145,
+      5,
+      248,
+      237,
+      251,
+      5,
+      199
+    ]
+  },
+  "accounts": [
+    {
+      "account_key": "trace-account-0",
+      "account_id": 1,
+      "connector_type": "trace",
+      "credential_ref": "secret://trace",
+      "connector_config": "",
+      "instruments": [
+        {
+          "native_symbol": "TEST-SYNTH-BTC",
+          "asset_id": 1,
+          "price_tick": {
+            "coefficient": 1,
+            "scale": 1
+          },
+          "quantity_lot": {
+            "coefficient": 1,
+            "scale": 2
+          },
+          "contract_multiplier": {
+            "coefficient": 1,
+            "scale": 0
+          },
+          "linear_quote_currency": 1
+        }
+      ],
+      "currencies": [
+        {
+          "native_currency": "USDT",
+          "currency_id": 1,
+          "amount_unit": "0.000001"
+        }
+      ],
+      "ownership": "ObserveAll",
+      "shutdown_order_policy": "LeaveOpen",
+      "enabled": true,
+      "definition_version": 1
+    }
+  ],
+  "account_instruments": [
+    {
+      "account_no": 0,
+      "asset_id": 1,
+      "native_symbol": "TEST-SYNTH-BTC",
+      "price_tick": {
+        "coefficient": 1,
+        "scale": 1
+      },
+      "quantity_lot": {
+        "coefficient": 1,
+        "scale": 2
+      },
+      "contract_multiplier": {
+        "coefficient": 1,
+        "scale": 0
+      }
+    }
+  ]
+}

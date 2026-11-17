@@ -5,6 +5,44 @@ use std::{io::Read, path::PathBuf};
 
 #[derive(Debug, Subcommand)]
 pub enum ConsoleCommand {
+    /// Authenticate for this process and check the management connection.
+    #[command(alias = "check")]
+    Login,
+    /// Authenticate, revoke this process's session, and exit.
+    Logout,
+    Account {
+        #[command(subcommand)]
+        command: super::managed_observe::AccountCommand,
+    },
+    Binding {
+        #[command(subcommand)]
+        command: super::managed_observe::BindingCommand,
+    },
+    Strategy {
+        #[command(subcommand)]
+        command: super::managed_strategy::StrategyCommand,
+    },
+    Parameter {
+        #[command(subcommand)]
+        command: super::managed_strategy::ParameterCommand,
+    },
+    Deployment {
+        #[command(subcommand)]
+        command: super::managed_run::DeploymentCommand,
+    },
+    Run {
+        #[command(subcommand)]
+        command: super::managed_run::RunCommand,
+    },
+    Operation {
+        #[command(subcommand)]
+        command: super::managed_operation::OperationCommand,
+    },
+    Status(super::managed_observe::StatusArgs),
+    Watch(super::managed_observe::WatchArgs),
+    Logs(super::managed_observe::LogsArgs),
+    History(super::managed_observe::HistoryArgs),
+    Facts(super::managed_observe::FactsArgs),
     #[command(hide = true)]
     ManagedWorker {
         #[arg(long)]
@@ -22,7 +60,9 @@ pub enum ConsoleCommand {
     /// Run one authenticated execution node.
     Node {
         #[arg(long)]
-        config: PathBuf,
+        config: Option<PathBuf>,
+        #[command(subcommand)]
+        command: Option<super::managed_observe::NodeCommand>,
     },
     #[command(hide = true)]
     NodeWorker {
@@ -52,12 +92,6 @@ pub enum ConsoleCommand {
     /// Submit a fixed operation through the same API used by the console.
     Request {
         #[arg(long)]
-        url: String,
-        #[arg(long)]
-        username: String,
-        #[arg(long)]
-        password_env: String,
-        #[arg(long)]
         request: PathBuf,
     },
 }
@@ -67,7 +101,7 @@ fn async_runtime() -> Result<tokio::runtime::Runtime> {
         .enable_all()
         .build()?)
 }
-pub fn run(command: ConsoleCommand) -> Result<()> {
+pub fn run(command: ConsoleCommand, options: super::client::ClientOptions) -> Result<()> {
     match command {
         ConsoleCommand::ManagedWorker {
             config,
@@ -99,11 +133,20 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
                 .context("manager configuration missing")?;
             async_runtime()?.block_on(super::serve_manager(config))
         }
-        ConsoleCommand::Node { config } => {
+        ConsoleCommand::Node {
+            config: Some(config),
+            command: None,
+        } => {
             let node = ConsoleConfig::load(&config)?
                 .node
                 .context("node configuration missing")?;
             async_runtime()?.block_on(super::serve_node(node, config))
+        }
+        ConsoleCommand::Node {
+            config: Some(_),
+            command: Some(_),
+        } => {
+            anyhow::bail!("node --config cannot be combined with a management query")
         }
         ConsoleCommand::NodeWorker {
             config,
@@ -132,41 +175,125 @@ pub fn run(command: ConsoleCommand) -> Result<()> {
             println!("{hash}");
             Ok(())
         }
-        ConsoleCommand::Request {
-            url,
-            username,
-            password_env,
-            request,
-        } => async_runtime()?.block_on(async move {
-            let origin = url.trim_end_matches('/');
-            let client = reqwest::Client::builder().cookie_store(true).build()?;
-            let password =
-                std::env::var(password_env).context("password environment reference is missing")?;
-            let session: Session = client
-                .post(format!("{origin}/api/v1/session"))
-                .header("Origin", origin)
-                .json(&serde_json::json!({"username":username,"password":password}))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
+        ConsoleCommand::Request { request } => async_runtime()?.block_on(async move {
+            let client = super::client::Client::connect(&options).await?;
+            let request: SubmitOperation =
+                serde_json::from_value(super::client::read_json(&request)?).map_err(|_| {
+                    super::client::ClientError::new(
+                        "INVALID_INPUT",
+                        "invalid fixed operation request",
+                    )
+                })?;
+            super::checked_id(&request.node_id).map_err(|_| {
+                super::client::ClientError::new("INVALID_INPUT", "invalid node identity")
+            })?;
+            if client
+                .options()
+                .node
+                .as_deref()
+                .is_some_and(|node| node != request.node_id)
+                || client
+                    .environment()
+                    .is_some_and(|environment| environment != request.action.environment())
+            {
+                return Err(super::client::ClientError::new(
+                    "INVALID_INPUT",
+                    "request does not match selected node or environment",
+                )
+                .into());
+            }
+            if request.idempotency_key.is_empty()
+                || request.idempotency_key.len() > 128
+                || !request
+                    .idempotency_key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+            {
+                return Err(super::client::ClientError::new(
+                    "INVALID_INPUT",
+                    "invalid idempotency key",
+                )
+                .into());
+            }
+            {
+                use std::io::Write;
+                let mut stderr = std::io::stderr().lock();
+                writeln!(stderr, "idempotency_key={}", request.idempotency_key)?;
+                stderr.flush()?;
+            }
+            let body = client
+                .post("/api/v1/operations", serde_json::to_value(request)?)
                 .await?;
-            let request: SubmitOperation = serde_json::from_slice(&std::fs::read(request)?)?;
-            let response = client
-                .post(format!("{origin}/api/v1/operations"))
-                .header("Origin", origin)
-                .header("X-CSRF-Token", session.csrf_token)
-                .json(&request)
-                .send()
-                .await?;
-            let status = response.status();
-            let body = response.text().await?;
-            println!("{body}");
-            ensure!(
-                status.is_success(),
-                "management request rejected ({status})"
-            );
+            if options.json || options.ndjson {
+                client.print_kind("operation", &body)?;
+            } else {
+                println!("{body}");
+            }
             Ok(())
         }),
+        command => {
+            async_runtime()?.block_on(async move {
+                let client = super::client::Client::connect(&options).await?;
+                match command {
+                    ConsoleCommand::Login => {
+                        let session = client.get("/api/v2/session", &[]).await?;
+                        client.print_kind("connection", &serde_json::json!({
+                        "identity": session["identity"], "api_version": session["api_version"],
+                        "build": session["build"], "expires_at_ns": session["expires_at_ns"]
+                    }))
+                    }
+                    ConsoleCommand::Logout => {
+                        client.delete("/api/v2/session").await?;
+                        client
+                            .print_kind("connection", &serde_json::json!({"session_revoked": true}))
+                    }
+                    ConsoleCommand::Account { command } => {
+                        super::managed_observe::execute_account(&client, command).await
+                    }
+                    ConsoleCommand::Binding { command } => {
+                        super::managed_observe::execute_binding(&client, command).await
+                    }
+                    ConsoleCommand::Node {
+                        config: None,
+                        command: Some(command),
+                    } => super::managed_observe::execute_node(&client, command).await,
+                    ConsoleCommand::Node {
+                        config: None,
+                        command: None,
+                    } => anyhow::bail!("node requires --config or a query subcommand"),
+                    ConsoleCommand::Strategy { command } => {
+                        super::managed_strategy::run_strategy(&client, command).await
+                    }
+                    ConsoleCommand::Parameter { command } => {
+                        super::managed_strategy::run_parameter(&client, command).await
+                    }
+                    ConsoleCommand::Deployment { command } => {
+                        super::managed_run::run_deployment(&client, command).await
+                    }
+                    ConsoleCommand::Run { command } => {
+                        super::managed_run::run_run(&client, command).await
+                    }
+                    ConsoleCommand::Operation { command } => {
+                        super::managed_operation::execute(&client, command).await
+                    }
+                    ConsoleCommand::Status(args) => {
+                        super::managed_observe::execute_status(&client, args).await
+                    }
+                    ConsoleCommand::Watch(args) => {
+                        super::managed_observe::execute_watch(&client, args).await
+                    }
+                    ConsoleCommand::Logs(args) => {
+                        super::managed_observe::execute_logs(&client, args).await
+                    }
+                    ConsoleCommand::History(args) => {
+                        super::managed_observe::execute_history(&client, args).await
+                    }
+                    ConsoleCommand::Facts(args) => {
+                        super::managed_observe::execute_facts(&client, args).await
+                    }
+                    _ => unreachable!("server commands were handled before authentication"),
+                }
+            })
+        }
     }
 }

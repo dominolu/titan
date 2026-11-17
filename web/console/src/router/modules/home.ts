@@ -1,5 +1,6 @@
+import type { RouteRecordRaw } from "vue-router";
 const Layout = () => import("@/views/console/ConsoleLayout.vue");
-export default {
+const home: RouteRecordRaw = {
   path: "/",
   name: "Home",
   component: Layout,
@@ -22,15 +23,27 @@ export default {
     {
       path: "/backtests",
       name: "Backtests",
-      component: () => import("@/views/console/LegacyStrategyRoute.vue"),
-      meta: { title: "历史回测", icon: "ep/data-line" }
+      redirect: "/strategies/backtest",
+      meta: { title: "策略回测", icon: "ep/data-line" }
     },
     {
       path: "/strategies",
       alias: "/research",
       name: "Strategies",
+      redirect: "/strategies/backtest",
+      meta: { title: "策略管理", icon: "ep/set-up" }
+    },
+    {
+      path: "/strategies/live",
+      name: "LiveStrategies",
       component: () => import("@/views/console/StrategyList.vue"),
-      meta: { title: "策略", icon: "ep/set-up" }
+      meta: { title: "实盘策略", icon: "ep/video-play", project: "live" }
+    },
+    {
+      path: "/strategies/backtest",
+      name: "BacktestStrategies",
+      component: () => import("@/views/console/StrategyList.vue"),
+      meta: { title: "策略回测", icon: "ep/data-line", project: "backtest" }
     },
     {
       path: "/strategies/:strategyId",
@@ -54,8 +67,9 @@ export default {
     {
       path: "/accounts",
       name: "Accounts",
-      component: () => import("@/views/console/AccountRisk.vue"),
-      meta: { title: "账户风险", icon: "ep/warning" }
+      component: () => import("@/views/console/AccountManagement.vue"),
+      meta: { title: "账户管理", icon: "ep/user" }
     }
   ]
-} satisfies RouteConfigsTable;
+};
+export default home;

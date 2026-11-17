@@ -1,5 +1,5 @@
 //! Receive-to-native-strategy benchmark using the real MarketService, EventEngine PRIMARY async
-//! lane and NativeV13Runtime. Public data only; the strategy has no account or execution binding.
+//! lane and NativeRuntime. Public data only; the strategy has no account or execution binding.
 #[path = "market_local_latency_probe/compiled_strategy.rs"]
 mod compiled_strategy;
 use anyhow::{Result, ensure};
@@ -148,14 +148,15 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
             asset_id: market::AssetId(1),
             price_tick: tick.parse().map_err(anyhow::Error::msg)?,
             quantity_lot: lot.parse().map_err(anyhow::Error::msg)?,
+            contract_multiplier: "1".parse().map_err(anyhow::Error::msg)?,
+            min_quantity: None,
+            min_notional_quote: None,
+            linear_quote_currency: None,
         }]),
         enabled: true,
         definition_version: 1,
     })?;
-    let loader = strategy::NativeStrategyLoaderV13::new(
-        output.join("cache"),
-        strategy::V13TrustPolicy::default(),
-    );
+    let loader = strategy::NativeStrategyLoader::new(output.join("cache"));
     let native = Arc::new(loader.load(compiled_strategy)?);
     let id = strategy::CompiledStrategyDigest {
         digest: native.manifest.compiled_strategy_digest,
@@ -167,10 +168,10 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
         qos: EventQos::ReliableOrdered,
     };
     let package = strategy::StrategyFileRef {
-        loader_type: Arc::from("native-v13"),
+        loader_type: Arc::from("native"),
         uri: Arc::from(compiled_strategy.to_string_lossy().as_ref()),
         expected_digest: id.digest,
-        signature_ref: None,
+        parameters_digest: None,
     };
     let handle = strategy::StrategyHandle {
         runtime_strategy_no: strategy::RuntimeStrategyNo(777),
@@ -197,21 +198,23 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
     let native_strategy = strategy::LoadedStrategy {
         id,
         manifest: strategy::CompiledStrategyMetadata {
-            runtime_type: Arc::from("native-v13"),
+            runtime_type: Arc::from("native"),
             source_version: "1.0.0".parse()?,
             runtime_abi: ApiVersion::new(1, 0),
             parameter_schema: Arc::new(json!({})),
             parameter_schema_version: 1,
+            parameters_digest: native.manifest.parameters_digest,
             recovery_state_schema_version: 1,
             state_byte_len: native.manifest.state.byte_len,
             callbacks: strategy::StrategyCallbackMask(8),
             capabilities: strategy::StrategyCapabilities::READ_DEPTH,
             subscriptions: Arc::from([subscription]),
+            object_manifest: None,
             compiled_strategy_digest: id.digest,
         },
         native,
     };
-    let runtime = strategy::NativeV13RuntimeFactory.create(
+    let runtime = strategy::NativeRuntimeFactory.create(
         &definition,
         native_strategy,
         strategy::StrategyRuntimeBuildContext {
@@ -227,12 +230,14 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
                 data_mode: strategy::StrategyDataMode::Tick,
             }]),
             accounts: Arc::from([]),
+            accounts_service: None,
             execution: Arc::from([]),
             state_snapshot_sink: sink.clone(),
             clock: Arc::new(Clock),
             metrics: Arc::new(Metrics),
             resources: scope.handle(),
             activation: Arc::new(strategy::StrategyActivationGate::default()),
+            object_table: None,
         },
     )?;
     let lane = events.register_primary_async_lane(
@@ -325,7 +330,7 @@ fn run(compiled_strategy: &Path, venue: &str, seconds: u64, output: &Path) -> Re
         latencies.push(latency as f64 / 1000.0);
     }
     let metrics = engine.metrics().snapshot();
-    let result = json!({"venue":venue,"symbol":symbol,"seconds":seconds,"warmup_seconds":10,"account_used":false,"allocation_audit":{"warmup_seconds":5,"rust_alloc_or_realloc_calls":audit_allocations,"callbacks":audit_callbacks,"scope":"whole probe process; counting disabled during latency window"},"path":"WS frame before JSON -> connector -> MarketEventBridge -> EventArena -> PRIMARY async lane -> NativeV13Runtime -> native on_depth entry","clock":"same-host CLOCK_REALTIME; exchange timestamps excluded","latency_us":stats(latencies),"callbacks_total":n,"drop_total":metrics.drop_total,"resync_total":metrics.resync_total,"lane_progress":format!("{:?}",lane.progress()),"strategy_state":format!("{:?}",runtime.state().lifecycle)});
+    let result = json!({"venue":venue,"symbol":symbol,"seconds":seconds,"warmup_seconds":10,"account_used":false,"allocation_audit":{"warmup_seconds":5,"rust_alloc_or_realloc_calls":audit_allocations,"callbacks":audit_callbacks,"scope":"whole probe process; counting disabled during latency window"},"path":"WS frame before JSON -> connector -> MarketEventBridge -> EventArena -> PRIMARY async lane -> NativeRuntime -> native on_depth entry","clock":"same-host CLOCK_REALTIME; exchange timestamps excluded","latency_us":stats(latencies),"callbacks_total":n,"drop_total":metrics.drop_total,"resync_total":metrics.resync_total,"lane_progress":format!("{:?}",lane.progress()),"strategy_state":format!("{:?}",runtime.state().lifecycle)});
     fs::write(
         output.join("summary.json"),
         serde_json::to_vec_pretty(&result)?,

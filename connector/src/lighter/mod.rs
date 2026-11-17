@@ -33,7 +33,16 @@ mod market_width_tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(client.market("ETH").await.unwrap().index, wide);
+        let market = client.market("ETH").await.unwrap();
+        assert_eq!(market.index, wide);
+        assert_eq!(market.info.tick_size_exact, Some("0.1".parse().unwrap()));
+        assert_eq!(market.info.lot_size_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(market.info.min_qty_exact, Some("0.001".parse().unwrap()));
+        assert_eq!(
+            market.info.base_delta_per_lot(),
+            Some("0.001".parse().unwrap())
+        );
+        assert!(!market.info.synthetic);
         rx.recv().await.unwrap();
         task.await.unwrap();
     }
@@ -198,6 +207,17 @@ impl LighterClient {
                         lot_size: 10f64.powi(-(qp as i32)),
                         min_qty: number(r, "min_base_amount", NAME)?,
                         contract_size: 1.0,
+                        tick_size_exact: u8::try_from(pp)
+                            .ok()
+                            .and_then(|scale| titan_domain_types::DecimalUnit::new(1, scale).ok()),
+                        lot_size_exact: u8::try_from(qp)
+                            .ok()
+                            .and_then(|scale| titan_domain_types::DecimalUnit::new(1, scale).ok()),
+                        min_qty_exact: exact_decimal(r, "min_base_amount", NAME)?,
+                        contract_size_exact: titan_domain_types::DecimalUnit::new(1, 0).ok(),
+                        min_notional_quote: None,
+                        quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+                        synthetic: false,
                         price_precision: pp as u32,
                         qty_precision: qp as u32,
                         tradable: r["status"] == "active" && r["market_type"] == "perp",
@@ -1244,6 +1264,13 @@ mod tests {
                 lot_size: 0.001,
                 min_qty: 0.001,
                 contract_size: 1.0,
+                tick_size_exact: Some("0.1".parse().unwrap()),
+                lot_size_exact: Some("0.001".parse().unwrap()),
+                min_qty_exact: Some("0.001".parse().unwrap()),
+                contract_size_exact: Some("1".parse().unwrap()),
+                min_notional_quote: None,
+                quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+                synthetic: false,
                 price_precision: 1,
                 qty_precision: 3,
                 tradable: true,

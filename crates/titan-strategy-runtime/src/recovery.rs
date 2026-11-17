@@ -8,13 +8,13 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct RecoveryBaseline {
     pub version: u32,
     pub pending_execution: bool,
-    pub public: StrategyPublicStateSeedV13,
+    pub public: StrategyPublicStateSeed,
     pub checksum: [u8; 32],
 }
 
 impl RecoveryBaseline {
     pub(crate) fn capture(
-        public: StrategyPublicStateSeedV13,
+        public: StrategyPublicStateSeed,
         snapshot: [u8; 32],
         orders: [u8; 32],
     ) -> Self {
@@ -70,7 +70,7 @@ impl RecoveryBaseline {
     ) -> bool {
         !(self.version != 1
             || self.checksum != self.digest(snapshot, orders)
-            || public_state_identity_v13(
+            || public_state_identity(
                 &self.public.accounts,
                 &self.public.active_orders,
                 &self.public.positions,
@@ -82,8 +82,8 @@ impl RecoveryBaseline {
 /// Complete known-order results for unchanged executions. Images alone never prove changed fills.
 pub(crate) fn reconcile_recovery(
     baseline: &RecoveryBaseline,
-    current: &StrategyPublicStateSeedV13,
-    records: &mut BTreeMap<u64, StrategyOrderRecordV13>,
+    current: &StrategyPublicStateSeed,
+    records: &mut BTreeMap<u64, StrategyOrderRecord>,
 ) -> Result<(), &'static str> {
     if baseline.pending_execution {
         return Err("recovery_checkpoint_has_pending_fill");
@@ -223,8 +223,8 @@ pub(crate) fn recovery_seed(
     balances: &[TitanBalanceView],
     active_orders: &[TitanActiveOrderView],
     recovery_orders: &[TitanActiveOrderView],
-) -> StrategyPublicStateSeedV13 {
-    StrategyPublicStateSeedV13 {
+) -> StrategyPublicStateSeed {
+    StrategyPublicStateSeed {
         accounts: Arc::from(accounts),
         positions: Arc::from(positions),
         balances: Arc::from(balances),
@@ -239,8 +239,8 @@ pub(crate) fn recovery_seed(
 /// ambiguous execution timestamps and fractional average-price rounding stay fail-closed.
 pub(crate) fn recovery_execution_plan(
     baseline: &RecoveryBaseline,
-    current: &StrategyPublicStateSeedV13,
-    records: &mut BTreeMap<u64, StrategyOrderRecordV13>,
+    current: &StrategyPublicStateSeed,
+    records: &mut BTreeMap<u64, StrategyOrderRecord>,
     histories: &[RecoveryExecutionHistory],
 ) -> Result<Vec<TitanFillView>, &'static str> {
     if baseline.pending_execution || histories.len() > 128 {
@@ -398,8 +398,8 @@ mod tests {
     use super::*;
     fn history_fixture() -> (
         RecoveryBaseline,
-        StrategyPublicStateSeedV13,
-        BTreeMap<u64, StrategyOrderRecordV13>,
+        StrategyPublicStateSeed,
+        BTreeMap<u64, StrategyOrderRecord>,
         RecoveryExecutionHistory,
     ) {
         let (baseline, mut current, records) = fixture();
@@ -542,8 +542,8 @@ mod tests {
     }
     fn fixture() -> (
         RecoveryBaseline,
-        StrategyPublicStateSeedV13,
-        BTreeMap<u64, StrategyOrderRecordV13>,
+        StrategyPublicStateSeed,
+        BTreeMap<u64, StrategyOrderRecord>,
     ) {
         let order = TitanActiveOrderView {
             order_id: 7,
@@ -575,7 +575,7 @@ mod tests {
             &[order],
         );
         let baseline = RecoveryBaseline::capture(public.clone(), [1; 32], [2; 32]);
-        let record = StrategyOrderRecordV13 {
+        let record = StrategyOrderRecord {
             order_id: 7,
             price_ticks: 100,
             qty_lots: 2,
@@ -683,7 +683,7 @@ mod tests {
     fn incomplete_checkpoint_does_not_hide_a_fill_delivery_gap() {
         let (baseline, current, mut records) = fixture();
         let baseline = baseline.with_pending_execution(true, [1; 32], [2; 32]);
-        let identity = public_state_identity_v13(
+        let identity = public_state_identity(
             &baseline.public.accounts,
             &baseline.public.active_orders,
             &baseline.public.positions,
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn baseline_checksum_binds_public_facts_private_snapshot_and_order_history() {
         let (mut baseline, _, _) = fixture();
-        let identity = public_state_identity_v13(
+        let identity = public_state_identity(
             &baseline.public.accounts,
             &baseline.public.active_orders,
             &baseline.public.positions,

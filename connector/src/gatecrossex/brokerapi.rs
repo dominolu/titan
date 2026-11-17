@@ -344,6 +344,16 @@ impl BrokerApi for GateCrossExClient {
                     lot_size: lot,
                     min_qty: number(v, "min_size")?,
                     contract_size: 1.0,
+                    tick_size_exact: decimal_step(v, "tick_size")?,
+                    lot_size_exact: decimal_step(v, "lot_size")?,
+                    min_qty_exact: decimal_step(v, "min_size")?,
+                    contract_size_exact: titan_domain_types::DecimalUnit::new(1, 0).ok(),
+                    // CrossEx REST sizes are base-currency amounts, not contract counts. The
+                    // rule's `contract_size` is a legacy display field and is not used for
+                    // conversion (see engineering memory §8).
+                    quantity_dimension: crate::api::QuantityDimension::NativeQuantity,
+                    synthetic: false,
+                    min_notional_quote: decimal_step(v, "min_notional")?,
                     margin_asset: quote.to_owned(),
                     price_precision: precision(tick),
                     qty_precision: precision(lot),

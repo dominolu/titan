@@ -7,6 +7,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::LockUnpoisoned;
 
 use crate::{AccountConnector, AccountHandle, AssetId, ClientOrderId, Id128};
 
@@ -296,7 +297,7 @@ impl ExecutionRuntime {
         while self.active_tasks() != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        let mut tasks = self.state.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tasks = self.state.tasks.lock_unpoisoned();
         let unfinished = self.active_tasks();
         if self.active_tasks() != 0 {
             for task in tasks.iter() {
@@ -480,7 +481,7 @@ impl ExecutionHandle {
                 outcome,
             });
         });
-        let mut tasks = self.state.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        let mut tasks = self.state.tasks.lock_unpoisoned();
         tasks.retain(|task| !task.is_finished());
         tasks.push(task);
         self.state.spawned.fetch_add(1, Ordering::Relaxed);

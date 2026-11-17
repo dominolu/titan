@@ -46,7 +46,7 @@ flowchart TB
 | [CLI lib](../crates/titan-cli/src/lib.rs) 与 [运行组装](../crates/titan-cli/src/core_runtime.rs) | 按实际复用需要整理模块接口，保留 runtime 组装 | 基线库仅导出 core runtime；现已增加共享 management、registry 与 runtime_host 入口 |
 | [Rust 编译器](../crates/titan-cli/src/compiler.rs) | 补齐描述/校验结果导出，保持独立任务进程执行 | 当前入口注册进程级信号，不在 HTTP 进程内直接运行 |
 | [本机 Registry](../crates/titan-cli/src/registry.rs) | 保留 owner token、PID/启动身份与心跳，补充操作回执和重启核对 | N 管本机事实，A 不远程修改 Registry |
-| [历史回测入口](../hftbacktest/examples/v13_grid_history.rs)、[场景脚本](../scripts/run_grid_history.sh) | 将准备数据、策略版本及执行模型显式化，为 N 提供固定调用入口 | 复用真实回放和 Rust 记账；脚本不再成为第二个管理调度器 |
+| [历史回测入口](../hftbacktest/examples/grid_history.rs)、[场景脚本](../scripts/run_grid_history.sh) | 将准备数据、策略版本及执行模型显式化，为 N 提供固定调用入口 | 复用真实回放和 Rust 记账；脚本不再成为第二个管理调度器 |
 | [历史回测输出](../hftbacktest/examples/grid_history/engine.rs) 与 [ResultBundle](result_bundle_schema.md) | 在 E 中适配结果描述、完整性清单和报告输入 | 统一字段和引用，不在 A 或 U 增加收益公式 |
 | [策略管理接口](../crates/titan-strategy-runtime/src/service.rs)、[生命周期与恢复](../crates/titan-strategy-runtime/src/service_core.rs) | worker 增加薄 IPC 适配，调用已有服务并返回实际 operation | N 只维护客户端，E 不再实现平行生命周期状态机 |
 | [账户服务](../crates/titan-account-service/src/service.rs) 与 [策略模型](../crates/titan-strategy-runtime/src/model.rs) | E 补齐事实持续留存、统一指标及版本化业务快照 | A 仅保存索引和只读投影，策略只保存自身业务状态 |

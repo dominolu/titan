@@ -5,7 +5,7 @@ import { getHistoryMode } from "./utils";
 import { ensureSession } from "@/utils/auth";
 import { usePermissionStoreHook } from "@/store/modules/permission";
 import NProgress from "@/utils/progress";
-export const constantRoutes = [home] as RouteRecordRaw[];
+export const constantRoutes: RouteRecordRaw[] = [home];
 export const constantMenus = [home, ...remaining];
 export const remainingPaths = remaining.map(route => route.path);
 export const router = createRouter({

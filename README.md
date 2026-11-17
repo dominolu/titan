@@ -58,19 +58,15 @@ export TITAN_STRATEGY_PYTHON="$PWD/.venv/bin/python"
 
 ### 2. 编译并运行示例
 
-使用仓库中的只读事件计数策略与 Tick trace，体验从策略源码到事件回放的完整流程，无需交易所账户：
+使用仓库中的只读事件计数策略，体验从策略源码到编译产物的完整流程，无需交易所账户：
 
 ```bash
 titan strategy compile strategies/event_counter.py
-
-titan validate build/strategies/event_counter.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml
-
-titan run build/strategies/event_counter.titan \
-  -e backtest -m tick -c configs/pair_arb_v13_backtest.toml --json
+titan strategy validate build/strategies/event_counter.titan --json
 ```
 
-CLI 当前支持 Tick 模式。订单簿历史回测的撮合、延迟和队列模型由底层 HftBacktest 提供，使用方式见[回测接口](docs/titan_cli.md#v13-tick-trace-回测)和[历史回测示例](docs/verification/2026-10-22/grid-history/README.md)。
+历史回测（真实 BBO/成交数据、撮合、延迟与队列模型）由 HftBacktest 提供，见
+[回测接口](docs/titan_cli.md#历史回测)与[历史回测示例](docs/verification/2026-10-22/grid-history/README.md)。
 
 ### 3. 查看结果
 
@@ -122,14 +118,14 @@ def on_tick(ctx):
 
 ## 实盘部署
 
-将编译后的策略文件部署到目标节点，在部署配置中更新文件路径与摘要，并绑定行情源、账户、交易品种和风险域。[配对套利部署模板](deploy/pair_arb_v13/README.md)提供了配置与服务示例；完成凭据引用、品种单位、风险配置及所需组件的启用后，通过同一 CLI 启动：
+将编译后的策略文件部署到目标节点，在部署配置中更新文件路径与摘要，并绑定行情源、账户、交易品种和风险域。[配对套利部署模板](deploy/pair_arb/README.md)提供了配置与服务示例；完成凭据引用、品种单位、风险配置及所需组件的启用后，通过同一 CLI 启动：
 
 ```bash
 titan validate pair-arb-mainnet \
-  -e live -m tick -c deploy/pair_arb_v13/runtime.toml
+  -e live -m tick -c deploy/pair_arb/runtime.toml
 
 titan run pair-arb-mainnet \
-  -e live -m tick -c deploy/pair_arb_v13/runtime.toml --detach --json
+  -e live -m tick -c deploy/pair_arb/runtime.toml --detach --json
 ```
 
 实盘以部署文件中的 `strategy_key` 为入口。使用 `titan show RUN_ID` 和 `titan logs RUN_ID` 查询状态，使用 `titan stop RUN_ID` 发起策略的停止流程。
@@ -148,7 +144,7 @@ Python / Numba 策略
                 运行记录与 ResultBundle
 ```
 
-Rust 运行时统一管理行情、账户、策略与执行；EventEngine 在服务之间传递事件，Python 回调在编译后以原生机器码运行。架构和扩展方式见 [EventEngine](crates/titan-event-engine/README.md)与[策略运行时](docs/strategy_abi_v13_implementation_status.md)。
+Rust 运行时统一管理行情、账户、策略与执行；EventEngine 在服务之间传递事件，Python 回调在编译后以原生机器码运行。架构和扩展方式见 [EventEngine](crates/titan-event-engine/README.md)与[策略运行时](docs/strategy_observation_protocol.md)。
 
 ## 文档
 
@@ -157,7 +153,7 @@ Rust 运行时统一管理行情、账户、策略与执行；EventEngine 在服
 | CLI 与自动化 | [命令、回测与运行管理](docs/titan_cli.md) |
 | 策略开发 | [Python/Numba SDK](python/titan-strategy-sdk/README.md) · [策略接口](docs/bar_tick_numba_strategy.md) |
 | 交易所接入 | [接入指南](docs/exchange_onboarding.md) · [原生 API 目录](docs/exchange_api_catalog.md) |
-| 部署与恢复 | [部署模板](deploy/pair_arb_v13/README.md) · [恢复存储](docs/recovery_storage_operations.md) |
+| 部署与恢复 | [部署模板](deploy/pair_arb/README.md) · [恢复存储](docs/recovery_storage_operations.md) |
 | 结果与报告 | [ResultBundle](docs/result_bundle_schema.md) |
 | 管理平台 | [管理平台说明](docs/management_console_requirements.md) |
 | 开发与验证 | [工程约定](AGENTS.md) · [完整文档索引](docs/README.md) |

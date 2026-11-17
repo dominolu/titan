@@ -53,6 +53,10 @@ pub enum HyperliquidError {
     Serde(#[from] serde_json::Error),
     #[error("Reqwest: {0}")]
     Reqwest(#[from] reqwest::Error),
+    /// The public endpoint answered with a non-success status. 429 in particular must stay
+    /// distinguishable so callers can apply a bounded retry instead of treating it as a parse error.
+    #[error("HttpStatus: {status} {body}")]
+    HttpStatus { status: u16, body: String },
     #[error("Tungstenite: {0}")]
     Tungstenite(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("K256: {0}")]

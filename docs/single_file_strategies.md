@@ -16,10 +16,10 @@
 - 本地只编辑与审查，所有构建、格式化和测试均在编译服务器执行。本次不访问实盘账户或启动实盘策略。
 - 参数覆盖在编译时应用，部署不能覆盖已编译参数。显式参数文件继续兼容。
 - SPEC 是策略业务身份的来源；文件名只是定位入口。新建源码只需要单个文件。
-- Python 只负责策略声明、Numba 对象及测试桥接；Rust 负责产物格式、签名、摘要、流水线与发布。
+- Python 只负责策略声明、Numba 对象及测试桥接；Rust 负责产物格式、摘要、流水线与发布。
 - 内嵌 TESTS 使用有界、JSON 可表达的场景；编译两阶段使用同一份源及参数并比较场景和规范化参数，原生测试在产物发布前执行。
 - 运行配置必须显式选择，不能从策略名推断交易所、账户或风险预算。生成配置只修改指定实例的产物引用与摘要，原配置保持可审查。
-- 发布包固定源码、最终参数、产物、测试结果、构建身份与可选运行配置。摘要验证、ABI、能力、恢复身份和原生签名策略保持严格；发布不自动启动。
+- 发布包固定源码、最终参数、产物、测试结果、构建身份与可选运行配置。摘要验证、ABI、能力、恢复身份和原生完整性校验保持严格；发布不自动启动。
 - workspace lock 记录解析后的工具链身份，缺失时生成；不匹配默认拒绝，显式 --update-lock 才可更新。
 - 既有已验收发布产物和历史证据不重写。迁移源码后必须重新编译验收，不能声称兼容旧 checkpoint。
 
@@ -42,7 +42,7 @@ titan strategy ls --json
 `compile` 默认使用源码参数、bundle 格式与 `build/strategies/<文件名>.titan`，并在发布产物前执行已声明 TESTS。
 `test` 要求至少一组内嵌场景，只输出测试结果，临时编译结果自动清理。未声明场景时 `compile` 明确记录 `not_declared`，不冒充业务测试通过。
 `discover` 只列出平铺 `.py`，不导入源码；`describe` 在有界 worker 中验证参数、状态及回调。`ls` 列出工作区生成的产物与既有 deploy 产物。
-旧的 `--strategy SOURCE.py`、`--parameters overrides.json`、`--output`、显式 pair 格式及签名参数继续支持。
+旧的 `--strategy SOURCE.py`、`--parameters overrides.json`、`--output` 及显式 pair 格式继续支持。
 `--set` 覆盖参数文件中的同名项，SDK 再补全源码默认值并校验。重复覆盖、未知参数、错误类型与非法范围均拒绝。
 同一组最终参数使用相同的规范化参数摘要；编译参数摘要口径由原始覆盖输入改为最终参数，这会改变旧产物身份。
 
@@ -110,14 +110,13 @@ titan strategy publish /path/to/release --directory /srv/titan/releases --json
 可选 `--runtime` 必须只含一个实例，`--strategy-key` 显式核对实例。工具生成完整 `runtime.toml`，固定 bundle 路径、摘要及允许目录，复用现有运行配置校验与原生产物信任检查；输入配置不回写。
 凭据、节点数据目录和账户事实不进入发布包。目标节点所需路径必须按原运行配置规定准备；校验失败不会形成发布版本。
 构建和发布校验将秘密目录、checkpoint 和恢复数据库路径投影到独立临时目录进行结构校验，发布配置保留原始路径，不创建或读取目标节点目录。部署节点的普通 `titan validate` 与启动继续严格检查实际路径；构建通过不表示这些目录已部署。
-签名发布仍需显式信任，例如：
+发布校验不依赖额外信任配置：
 
 ```bash
-titan strategy verify-release /path/to/release --require-signature --trusted-key production=PUBLIC_KEY_HEX
+titan strategy verify-release /path/to/release --json
 bash scripts/publish_strategy.sh --release /path/to/release \
-  --host ubuntu@node --remote-root /srv/titan/releases --remote-titan /opt/titan/bin/titan \
-  --require-signature --trusted-key production=PUBLIC_KEY_HEX
+  --host ubuntu@node --remote-root /srv/titan/releases --remote-titan /opt/titan/bin/titan
 ```
 
 通用 SSH 脚本在目标节点暂存、核对传输的 release manifest 身份，然后调用目标节点既有可信 Titan 完成验证和原子发布。不会启动策略或切换当前版本。
-release 清单摘要用于身份及完整性；原生策略的真实性仍由调用方要求的 Ed25519 信任策略校验。
+release 清单摘要用于身份及完整性；原生策略由 `native_library_sha256`、`compiled_strategy_digest` 与 `target_triple` 三重校验保证完整性。

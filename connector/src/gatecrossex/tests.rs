@@ -195,6 +195,25 @@ async fn metadata_uses_base_quantity_without_contract_multiplier() {
     server.await.unwrap();
     assert_eq!(instruments[0].contract_size, 1.0);
     assert_eq!(instruments[0].lot_size, 0.001);
+    // Exact metadata comes from the venue's decimal strings; the legacy `contract_size` field in
+    // the rule must not be used as a multiplier.
+    assert_eq!(instruments[0].tick_size_exact, Some("0.1".parse().unwrap()));
+    assert_eq!(
+        instruments[0].lot_size_exact,
+        Some("0.001".parse().unwrap())
+    );
+    assert_eq!(
+        instruments[0].min_notional_quote,
+        Some("5".parse().unwrap())
+    );
+    assert_eq!(
+        instruments[0].base_delta_per_lot(),
+        Some("0.001".parse().unwrap())
+    );
+    assert_eq!(
+        instruments[0].quantity_dimension,
+        crate::api::QuantityDimension::NativeQuantity
+    );
     assert!(
         !requests
             .recv()
@@ -1554,6 +1573,10 @@ fn borrowed_depth_matches_owned_market_abi_and_keeps_frame_storage() {
             asset_id: market::AssetId(7),
             price_tick: "0.1".parse().unwrap(),
             quantity_lot: "0.0001".parse().unwrap(),
+            contract_multiplier: "1".parse().unwrap(),
+            min_quantity: None,
+            min_notional_quote: None,
+            linear_quote_currency: None,
         }]),
         market_source_stream: market::SourceStreamId(1),
         control_source_stream: market::SourceStreamId(2),

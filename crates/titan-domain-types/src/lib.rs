@@ -1,7 +1,7 @@
 //! Version-neutral domain types shared by market, account and backtest components.
 //!
 //! Strategy ABI definitions intentionally do not live here. The only executable strategy
-//! contract is ABI V13 in `titan-strategy-runtime`.
+//! contract is Strategy ABI in `titan-strategy-runtime`.
 
 use std::{ffi::c_void, fmt, marker::PhantomData, str::FromStr, sync::Arc};
 
@@ -74,10 +74,127 @@ where
 
 /// Exact positive decimal unit represented as `coefficient * 10^-scale`. This is the single
 /// authoritative tick/lot unit shared by Market and Account definitions.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+///
+/// Deserialization always goes through [`DecimalUnit::new`], so a configuration or wire payload
+/// cannot install a zero unit or more than [`DecimalUnit::MAX_SCALE`] decimal places. Both the
+/// `{ coefficient, scale }` table form used by runtime TOML and an exact decimal string
+/// (`"0.01"`) are accepted; serialization keeps the table form so existing payloads do not change.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Encode, Decode)]
 pub struct DecimalUnit {
     coefficient: u64,
     scale: u8,
+}
+
+impl<'de> Deserialize<'de> for DecimalUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DecimalUnitVisitor;
+
+        impl<'de> de::Visitor<'de> for DecimalUnitVisitor {
+            type Value = DecimalUnit;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a { coefficient, scale } table or an exact decimal string")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                DecimalUnit::from_str(value).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                const FIELDS: &[&str] = &["coefficient", "scale"];
+                let mut coefficient = None;
+                let mut scale = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "coefficient" => {
+                            if coefficient.is_some() {
+                                return Err(de::Error::duplicate_field("coefficient"));
+                            }
+                            coefficient = Some(map.next_value::<u64>()?);
+                        }
+                        "scale" => {
+                            if scale.is_some() {
+                                return Err(de::Error::duplicate_field("scale"));
+                            }
+                            scale = Some(map.next_value::<u64>()?);
+                        }
+                        other => return Err(de::Error::unknown_field(other, FIELDS)),
+                    }
+                }
+                let coefficient =
+                    coefficient.ok_or_else(|| de::Error::missing_field("coefficient"))?;
+                let scale = scale.ok_or_else(|| de::Error::missing_field("scale"))?;
+                let scale = u8::try_from(scale)
+                    .map_err(|_| de::Error::custom("decimal unit scale must fit in 8 bits"))?;
+                DecimalUnit::new(coefficient, scale).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(DecimalUnitVisitor)
+    }
+}
+
+/// Exact reduced ratio `numerator / denominator` between two [`DecimalUnit`] values.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct Ratio {
+    numerator: u64,
+    denominator: u64,
+}
+
+impl Ratio {
+    /// Reduces `numerator / denominator`; a zero denominator is refused.
+    pub fn new(numerator: u64, denominator: u64) -> Option<Self> {
+        if denominator == 0 {
+            return None;
+        }
+        let divisor = gcd_u64(numerator, denominator);
+        Some(Self {
+            numerator: numerator / divisor,
+            denominator: denominator / divisor,
+        })
+    }
+
+    pub const fn numerator(self) -> u64 {
+        self.numerator
+    }
+
+    pub const fn denominator(self) -> u64 {
+        self.denominator
+    }
+
+    pub const fn is_integral(self) -> bool {
+        self.denominator == 1
+    }
+
+    /// The integer quotient when the ratio is integral; `None` for a fractional ratio.
+    pub fn as_integral_u64(self) -> Option<u64> {
+        self.is_integral().then_some(self.numerator)
+    }
+}
+
+fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
 }
 /// Wire projection for authoritative observations; input parameters keep their numeric types.
 pub fn json_numbers_as_strings(value: serde_json::Value) -> serde_json::Value {
@@ -124,6 +241,50 @@ impl DecimalUnit {
     pub fn as_f64(self) -> f64 {
         self.coefficient as f64 / 10_f64.powi(i32::from(self.scale))
     }
+
+    /// Exact product of two units. Returns `None` when the product needs more than
+    /// [`DecimalUnit::MAX_SCALE`] decimal places or its coefficient does not fit in `u64`.
+    ///
+    /// Approximating the product is never allowed: an inexact tick/lot silently changes both the
+    /// strategy's arithmetic and the admission identity.
+    pub fn checked_mul(self, rhs: Self) -> Option<Self> {
+        let mut coefficient = u128::from(self.coefficient) * u128::from(rhs.coefficient);
+        let mut scale = u16::from(self.scale) + u16::from(rhs.scale);
+        while scale > u16::from(Self::MAX_SCALE) {
+            if !coefficient.is_multiple_of(10) {
+                return None;
+            }
+            coefficient /= 10;
+            scale -= 1;
+        }
+        let coefficient = u64::try_from(coefficient).ok()?;
+        Self::new(coefficient, scale as u8).ok()
+    }
+
+    /// Exact quotient `self / rhs` as a reduced ratio. A zero right side or an unrepresentable
+    /// ratio returns `None`.
+    pub fn ratio_to(self, rhs: Self) -> Option<Ratio> {
+        let mut numerator = u128::from(self.coefficient);
+        let mut denominator = u128::from(rhs.coefficient);
+        let exponent = i32::from(rhs.scale) - i32::from(self.scale);
+        let factor = 10_u128.checked_pow(exponent.unsigned_abs())?;
+        if exponent >= 0 {
+            numerator = numerator.checked_mul(factor)?;
+        } else {
+            denominator = denominator.checked_mul(factor)?;
+        }
+        Ratio::new(
+            u64::try_from(numerator).ok()?,
+            u64::try_from(denominator).ok()?,
+        )
+    }
+
+    /// `ceil(self / denominator)` as an exact integer count (used for minimum-lot admission).
+    pub fn ceil_div_by(self, denominator: Self) -> Option<u64> {
+        let ratio = self.ratio_to(denominator)?;
+        let sum = u128::from(ratio.numerator()).checked_add(u128::from(ratio.denominator()) - 1)?;
+        u64::try_from(sum / u128::from(ratio.denominator())).ok()
+    }
 }
 
 impl fmt::Display for DecimalUnit {
@@ -144,12 +305,25 @@ impl fmt::Display for DecimalUnit {
 
 impl FromStr for DecimalUnit {
     type Err = &'static str;
+    /// Parses a plain decimal (`"0.01"`) or an exact exponent form (`"1e-7"`, `"2.5E-8"`).
+    ///
+    /// Exchange metadata sometimes publishes steps in scientific notation. Parsing it here keeps a
+    /// single exact decimal path: the value is never routed through `f64`.
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let input = input.trim();
         if input.is_empty() || input.starts_with('-') || input.starts_with('+') {
             return Err("invalid positive decimal unit");
         }
-        let (whole, fraction) = input.split_once('.').unwrap_or((input, ""));
+        let (mantissa, exponent) = match input.split_once(['e', 'E']) {
+            Some((mantissa, exponent)) => {
+                let exponent = exponent
+                    .parse::<i32>()
+                    .map_err(|_| "invalid positive decimal unit")?;
+                (mantissa, exponent)
+            }
+            None => (input, 0),
+        };
+        let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
         if whole.is_empty()
             || fraction.len() > usize::from(Self::MAX_SCALE)
             || !whole
@@ -161,7 +335,19 @@ impl FromStr for DecimalUnit {
         }
         let digits = format!("{whole}{fraction}");
         let coefficient = digits.parse::<u64>().map_err(|_| "decimal unit overflow")?;
-        Self::new(coefficient, fraction.len() as u8)
+        let scale = i64::try_from(fraction.len()).map_err(|_| "decimal unit overflow")?
+            - i64::from(exponent);
+        if scale < 0 {
+            let factor = 10_u64
+                .checked_pow(u32::try_from(-scale).map_err(|_| "decimal unit overflow")?)
+                .ok_or("decimal unit overflow")?;
+            let coefficient = coefficient
+                .checked_mul(factor)
+                .ok_or("decimal unit overflow")?;
+            return Self::new(coefficient, 0);
+        }
+        let scale = u8::try_from(scale).map_err(|_| "invalid positive decimal unit")?;
+        Self::new(coefficient, scale)
     }
 }
 
@@ -553,5 +739,101 @@ impl Default for RuntimeFunding {
             amount: 0.0,
             rounding_increment: 1e-12,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimal_unit_deserialization_normalizes_and_rejects_invalid_values() {
+        let unit: DecimalUnit = serde_json::from_str(r#"{"coefficient":10,"scale":1}"#).unwrap();
+        assert_eq!(unit, DecimalUnit::new(1, 0).unwrap());
+        assert_eq!(unit.coefficient(), 1);
+        assert_eq!(unit.scale(), 0);
+
+        let from_string: DecimalUnit = serde_json::from_str(r#""0.01""#).unwrap();
+        assert_eq!(from_string, DecimalUnit::new(1, 2).unwrap());
+        // Exchange metadata publishes steps in scientific notation; parse it exactly.
+        assert_eq!(
+            "1e-7".parse::<DecimalUnit>(),
+            Ok(DecimalUnit::new(1, 7).unwrap())
+        );
+        assert_eq!(
+            "2.5E-8".parse::<DecimalUnit>(),
+            Ok(DecimalUnit::new(25, 9).unwrap())
+        );
+        assert_eq!(
+            "1e2".parse::<DecimalUnit>(),
+            Ok(DecimalUnit::new(100, 0).unwrap())
+        );
+        assert!("1e".parse::<DecimalUnit>().is_err());
+        assert!("1e-19".parse::<DecimalUnit>().is_err());
+
+        assert!(serde_json::from_str::<DecimalUnit>(r#"{"coefficient":0,"scale":0}"#).is_err());
+        assert!(serde_json::from_str::<DecimalUnit>(r#"{"coefficient":1,"scale":19}"#).is_err());
+        assert!(
+            serde_json::from_str::<DecimalUnit>(r#"{"coefficient":1,"scale":0,"extra":1}"#)
+                .is_err()
+        );
+        assert!(serde_json::from_str::<DecimalUnit>(r#"{"coefficient":1}"#).is_err());
+        assert!(serde_json::from_str::<DecimalUnit>(r#""0""#).is_err());
+        assert!(serde_json::from_str::<DecimalUnit>(r#""-0.01""#).is_err());
+    }
+
+    #[test]
+    fn decimal_unit_serialization_keeps_the_table_form() {
+        let unit = DecimalUnit::new(25, 2).unwrap();
+        assert_eq!(
+            serde_json::to_string(&unit).unwrap(),
+            r#"{"coefficient":25,"scale":2}"#
+        );
+    }
+
+    #[test]
+    fn checked_multiplication_is_exact_or_refuses() {
+        let price_tick = DecimalUnit::new(1, 2).unwrap();
+        let base_delta = DecimalUnit::new(1, 3).unwrap();
+        assert_eq!(
+            price_tick.checked_mul(base_delta),
+            Some(DecimalUnit::new(1, 5).unwrap())
+        );
+        // 0.0000000001 * 0.0000000001 needs 20 decimal places and must not be rounded.
+        let tiny = DecimalUnit::new(1, 10).unwrap();
+        assert_eq!(tiny.checked_mul(tiny), None);
+        // A product that overflows u64 after normalization is refused.
+        let large = DecimalUnit::new(u64::MAX, 0).unwrap();
+        assert_eq!(large.checked_mul(large), None);
+    }
+
+    #[test]
+    fn ratio_and_ceiling_division_are_exact() {
+        let maker_lot = DecimalUnit::new(1, 2).unwrap();
+        let hedge_lot = DecimalUnit::new(1, 3).unwrap();
+        let ratio = maker_lot.ratio_to(hedge_lot).unwrap();
+        assert_eq!((ratio.numerator(), ratio.denominator()), (10, 1));
+        assert!(ratio.is_integral());
+        assert_eq!(ratio.as_integral_u64(), Some(10));
+
+        let reversed = hedge_lot.ratio_to(maker_lot).unwrap();
+        assert_eq!((reversed.numerator(), reversed.denominator()), (1, 10));
+        assert!(!reversed.is_integral());
+
+        let min_quantity = DecimalUnit::new(15, 1).unwrap();
+        // 1.5 / 0.01 = 150 whole lots, rounded up.
+        assert_eq!(min_quantity.ceil_div_by(maker_lot), Some(150));
+        let partial = DecimalUnit::new(11, 1).unwrap();
+        assert_eq!(
+            partial.ceil_div_by(DecimalUnit::new(1, 0).unwrap()),
+            Some(2)
+        );
+        assert_eq!(
+            maker_lot
+                .ratio_to(DecimalUnit::new(1, 0).unwrap())
+                .unwrap()
+                .numerator(),
+            1
+        );
     }
 }

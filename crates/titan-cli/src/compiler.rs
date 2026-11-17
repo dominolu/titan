@@ -1,5 +1,5 @@
 //! Orchestrates disposable Numba workers; all platform and compiled_strategy policy stays in Rust.
-use super::{CliError, CompileV13Request, hex_digest};
+use super::{CliError, CompileRequest, hex_digest};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -17,8 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 use titan_strategy_runtime::{
-    NumbaMetadataV13, StrategyCompileOutputV13, V13_ABI_FINGERPRINT, compiler_host_target_v13,
-    compiler_json_v13, validate_compile_target_v13, write_compiled_strategy_v13,
+    ABI_FINGERPRINT, NumbaMetadata, StrategyCompileOutput, compiler_host_target, compiler_json,
+    object_schema_hash, validate_compile_target, write_compiled_strategy,
 };
 
 fn failed(error: impl std::fmt::Display) -> CliError {
@@ -118,37 +118,14 @@ fn run_tool(
     }
 }
 
-fn read_metadata(path: &Path) -> Result<NumbaMetadataV13, CliError> {
+fn read_metadata(path: &Path) -> Result<NumbaMetadata, CliError> {
     if fs::metadata(path).map_err(failed)?.len() > 4 * 1024 * 1024 {
         return Err(failed("Numba metadata exceeds compiler limit"));
     }
-    let metadata: NumbaMetadataV13 =
+    let metadata: NumbaMetadata =
         serde_json::from_slice(&fs::read(path).map_err(failed)?).map_err(failed)?;
     metadata.validate().map_err(failed)?;
     Ok(metadata)
-}
-
-fn read_seed(path: &Path) -> Result<[u8; 32], CliError> {
-    let raw = fs::read(path).map_err(failed)?;
-    // Raw seeds are binary: never trim whitespace bytes from a 32-byte seed.
-    if raw.len() == 32 {
-        return Ok(raw.try_into().unwrap());
-    }
-    let encoded = std::str::from_utf8(&raw)
-        .map_err(|_| failed("signing key must be 32 raw bytes or 64 hex characters"))?
-        .trim();
-    if encoded.len() != 64 {
-        return Err(failed(
-            "signing key must be 32 raw bytes or 64 hex characters",
-        ));
-    }
-    let mut seed = [0; 32];
-    for (index, byte) in seed.iter_mut().enumerate() {
-        let pair = encoded.as_bytes().get(index * 2..index * 2 + 2).unwrap();
-        let pair = std::str::from_utf8(pair).map_err(|_| failed("signing key is not ASCII hex"))?;
-        *byte = u8::from_str_radix(pair, 16).map_err(|_| failed("signing key is not ASCII hex"))?;
-    }
-    Ok(seed)
 }
 
 fn forbidden_symbol(name: &str) -> bool {
@@ -164,7 +141,7 @@ struct NumbaObject {
 
 fn normalize_objects(
     work: &Path,
-    metadata: &NumbaMetadataV13,
+    metadata: &NumbaMetadata,
     stop: &AtomicBool,
 ) -> Result<(), CliError> {
     let path = work.join("objects.json");
@@ -242,7 +219,7 @@ fn normalize_objects(
 fn inspect_symbols(
     work: &Path,
     library: &Path,
-    metadata: &NumbaMetadataV13,
+    metadata: &NumbaMetadata,
     stop: &AtomicBool,
 ) -> Result<(), CliError> {
     let undefined = run_tool(
@@ -339,44 +316,26 @@ fn run_bridge(
     Ok(())
 }
 
-pub(super) fn compile(request: &CompileV13Request<'_>) -> Result<serde_json::Value, CliError> {
+pub(super) fn compile(request: &CompileRequest<'_>) -> Result<serde_json::Value, CliError> {
     let output = request
         .output
         .ok_or_else(|| failed("--output is required"))?;
-    let target = request.target.unwrap_or(compiler_host_target_v13());
-    validate_compile_target_v13(target, request.cpu_baseline).map_err(failed)?;
+    let target = request.target.unwrap_or(compiler_host_target());
+    validate_compile_target(target, request.cpu_baseline).map_err(failed)?;
     if !matches!(request.strategy_format, "pair" | "bundle") {
         return Err(failed("invalid compiled_strategy format"));
-    }
-    if request.signing_key.is_some() != request.key_id.is_some()
-        || request.key_id.is_some_and(|id| id.trim().is_empty())
-    {
-        return Err(failed(
-            "--signing-key and a nonempty --key-id are required together",
-        ));
     }
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, stop.clone()).map_err(failed)?;
     }
-    let mut seed = request.signing_key.map(read_seed).transpose()?;
-    let result = compile_inner(request, output, target, seed.as_ref(), &stop, false);
-    if let Some(seed) = &mut seed {
-        // Keep key bytes out of the Python worker, its request, logs and compiled_strategy metadata.
-        for byte in seed {
-            unsafe {
-                std::ptr::write_volatile(byte, 0);
-            }
-        }
-    }
-    result
+    compile_inner(request, output, target, &stop, false)
 }
 
 fn compile_inner(
-    request: &CompileV13Request<'_>,
+    request: &CompileRequest<'_>,
     output: &Path,
     target: &str,
-    seed: Option<&[u8; 32]>,
     stop: &AtomicBool,
     describe_only: bool,
 ) -> Result<serde_json::Value, CliError> {
@@ -422,9 +381,9 @@ fn compile_inner(
         workspace.preflight_lock(&sdk_snapshot, request.update_lock)?;
     }
     let input = serde_json::json!({"protocol_version":1,"source":snapshot,"parameters":parameters,
-        "cpu_baseline":request.cpu_baseline,"runtime_abi":{"abi_version":13,"fingerprint":hex_digest(&V13_ABI_FINGERPRINT)}});
+        "cpu_baseline":request.cpu_baseline,"runtime_abi":{"abi_version":14,"fingerprint":hex_digest(&ABI_FINGERPRINT),"object_schema_hash":hex_digest(&object_schema_hash())}});
     let input_path = work.join("request.json");
-    fs::write(&input_path, compiler_json_v13(&input)).map_err(failed)?;
+    fs::write(&input_path, compiler_json(&input)).map_err(failed)?;
     let mut first = None;
     let mut first_normalized = None;
     let mut first_cases = None;
@@ -482,7 +441,7 @@ fn compile_inner(
         return Ok(
             serde_json::json!({"metadata":metadata,"normalized_parameters":normalized,
             "source_digest":hex_digest(&Sha256::digest(&source).into()),
-            "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&normalized)).into()),
+            "parameters_digest":hex_digest(&Sha256::digest(compiler_json(&normalized)).into()),
             "tests":{"declared":cases.as_array().unwrap().len(),"mode":"not_run"},"toolchain":toolchain}),
         );
     }
@@ -569,16 +528,15 @@ fn compile_inner(
     if let (Some(workspace), Some(lock)) = (request.workspace, toolchain.as_ref()) {
         workspace.save_lock(lock, request.update_lock)?;
     }
-    let compiled_strategy = write_compiled_strategy_v13(StrategyCompileOutputV13 {
+    let compiled_strategy = write_compiled_strategy(StrategyCompileOutput {
         metadata: &metadata,
         library: &library,
         source_digest: Sha256::digest(&source).into(),
-        parameters_digest: Sha256::digest(compiler_json_v13(&normalized)).into(),
+        parameters_digest: Sha256::digest(compiler_json(&normalized)).into(),
         target_triple: target,
         cpu_baseline: request.cpu_baseline,
         bundle: request.strategy_format == "bundle",
         output,
-        signing: request.key_id.zip(seed),
     })
     .map_err(failed)?;
     Ok(
@@ -586,7 +544,7 @@ fn compile_inner(
         "compiled_strategy_digest":hex_digest(&compiled_strategy.manifest.compiled_strategy_digest),"native_library_sha256":hex_digest(&compiled_strategy.manifest.native_library_sha256),
         "paths":compiled_strategy.paths,"metadata":metadata,"normalized_parameters":normalized,
         "source_digest":hex_digest(&Sha256::digest(&source).into()),
-        "parameters_digest":hex_digest(&Sha256::digest(compiler_json_v13(&normalized)).into()),
+        "parameters_digest":hex_digest(&Sha256::digest(compiler_json(&normalized)).into()),
         "tests":tests,"toolchain":toolchain}),
     )
 }
@@ -602,46 +560,23 @@ pub(super) fn describe(
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, stop.clone()).map_err(failed)?;
     }
-    let request = CompileV13Request {
+    let request = CompileRequest {
         strategy,
         parameters,
         target: None,
         cpu_baseline: "x86-64",
         strategy_format: "bundle",
         output: Some(&output),
-        signing_key: None,
-        key_id: None,
         workspace,
         update_lock: false,
         require_tests: false,
     };
-    compile_inner(
-        &request,
-        &output,
-        compiler_host_target_v13(),
-        None,
-        &stop,
-        true,
-    )
+    compile_inner(&request, &output, compiler_host_target(), &stop, true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn binary_signing_seeds_preserve_whitespace_and_hex_is_strict() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("key");
-        let mut seed = [7; 32];
-        seed[0] = b' ';
-        seed[31] = b'\n';
-        fs::write(&path, seed).unwrap();
-        assert_eq!(read_seed(&path).unwrap(), seed);
-        fs::write(&path, format!("{}\n", hex_digest(&seed))).unwrap();
-        assert_eq!(read_seed(&path).unwrap(), seed);
-        fs::write(&path, "é".repeat(32)).unwrap();
-        assert!(read_seed(&path).is_err());
-    }
     #[test]
     fn timeout_kills_worker_group_and_reaps_it() {
         let temp = tempfile::tempdir().unwrap();

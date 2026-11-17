@@ -24,8 +24,8 @@ from numba.extending import intrinsic
 import numba
 import numpy as np
 
-from . import abi_v13
-from .context_v13 import StrategyContextType, make_context_from_pointer
+from . import abi
+from .context import StrategyContextType, make_context_from_pointer
 from .definition import Capability, StrategyDefinition, StrategySpec
 from .state import (
     StateFieldLayout, StateLayout, canonical_state_schema, describe_state_schema, state_schema_hash,
@@ -53,6 +53,7 @@ class ValidatedStrategy:
     handlers: tuple[ValidatedHandler, ...]
     callback_mask: int
     initial_state: bytes
+    abi: object
 
 
 _FORBIDDEN_CALLS = {
@@ -63,7 +64,10 @@ _PUBLIC_ACCESSORS = {
     "market", "position", "balance", "account", "active_orders", "ticks", "bars", "depth",
     "fills", "order_events", "cancel_events", "position_events", "balance_events",
     "account_state_events", "timer", "recovery_orders", "depth_batch",
+    # V14 object accessors (require the OBJECT_CONTEXT capability).
+    "symbol", "account_info", "currency", "pair", "status", "fee",
 }
+_OBJECT_ACCESSORS = {"symbol", "account_info", "currency", "pair", "status", "fee"}
 
 
 def _module_ast(source_file: Path) -> ast.Module:
@@ -102,7 +106,9 @@ def _root_name(node: ast.AST) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
-def _validate_handler_ast(handler: CPUDispatcher, name: str) -> frozenset[str]:
+def _validate_handler_ast(
+    handler: CPUDispatcher, name: str, *, business_fault_drain: bool = False
+) -> frozenset[str]:
     try:
         tree = ast.parse(inspect.getsource(handler.py_func))
     except (OSError, TypeError, IndentationError) as exc:
@@ -156,7 +162,15 @@ def _validate_handler_ast(handler: CPUDispatcher, name: str) -> frozenset[str]:
                 sign, value = -1, value.operand
             if not (isinstance(value, ast.Constant) and type(value.value) is int
                     and sign * value.value in (0, -1, -2, -3, -4)):
-                raise StrategyCompileError(f"{name}: return None or a literal ABI callback status (0, -1..-4)")
+                # Declared business-fault drain lets a handler return a computed business
+                # code. The host only treats 1..=65535 as a latched business fault and
+                # keeps stricter failure semantics for every other value.
+                if business_fault_drain:
+                    continue
+                raise StrategyCompileError(
+                    f"{name}: return None or a literal ABI callback status (0, -1..-4); "
+                    "computed business codes require the BUSINESS_FAULT_DRAIN capability"
+                )
     return frozenset(context_calls)
 
 
@@ -270,7 +284,9 @@ def load_strategy_definition(source_file: Path, parameters: dict[str, object]) -
     return definition
 
 
-def validate_handler(name: str, handler: object) -> ValidatedHandler:
+def validate_handler(
+    name: str, handler: object, *, business_fault_drain: bool = False
+) -> ValidatedHandler:
     if not isinstance(handler, CPUDispatcher):
         raise StrategyCompileError(f"{name}: handler must be a module-level @njit dispatcher")
     function = handler.py_func
@@ -283,15 +299,27 @@ def validate_handler(name: str, handler: object) -> ValidatedHandler:
         for parameter in parameters
     ):
         raise StrategyCompileError(f"{name}: ABI V13 requires exactly (ctx)")
-    context_calls = _validate_handler_ast(handler, name)
+    context_calls = _validate_handler_ast(
+        handler, name, business_fault_drain=business_fault_drain
+    )
     return ValidatedHandler(name, handler, context_calls)
+
+
+def runtime_abi_module(runtime_abi: dict[str, object]):
+    """Validates the descriptor the Rust controller injected against the single ABI module.
+
+    There is exactly one layout: version identity is carried by the descriptor's
+    `abi_version`/fingerprint, never by selecting a different module.
+    """
+    abi.validate_abi_descriptor(runtime_abi)
+    return abi
 
 
 def validate_strategy_definition(
     definition: StrategyDefinition,
     runtime_abi: dict[str, object],
 ) -> ValidatedStrategy:
-    abi_v13.validate_abi_descriptor(runtime_abi)
+    abi = runtime_abi_module(runtime_abi)
     layout = validate_state_dtype(definition.state.dtype, max_state_bytes=65_536, max_alignment=8)
     if definition.state.shape != (1,) or not definition.state.flags.c_contiguous:
         raise StrategyCompileError("initial state must be one C-contiguous record")
@@ -299,7 +327,11 @@ def validate_strategy_definition(
         json.dumps(dict(definition.metadata), sort_keys=True, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise StrategyCompileError("metadata must be JSON-safe") from exc
-    validated = tuple(validate_handler(name, value) for name, value in definition.handlers.items())
+    business_fault_drain = bool(definition.spec.capabilities & Capability.BUSINESS_FAULT_DRAIN)
+    validated = tuple(
+        validate_handler(name, value, business_fault_drain=business_fault_drain)
+        for name, value in definition.handlers.items()
+    )
     handler_names = {item.name for item in validated}
     subscribed_handlers = {item.handler for item in definition.spec.subscriptions}
     for subscription in definition.spec.subscriptions:
@@ -331,6 +363,10 @@ def validate_strategy_definition(
         raise StrategyCompileError("depth_batch requires HOST_DEPTH_100 capability")
     if "recovery_orders" in context_calls and not definition.spec.capabilities & Capability.RECOVERY_ORDER_RESULTS:
         raise StrategyCompileError("recovery_orders requires RECOVERY_ORDER_RESULTS capability")
+    if context_calls & _OBJECT_ACCESSORS and not definition.spec.capabilities & Capability.OBJECT_CONTEXT:
+        raise StrategyCompileError(
+            "object accessors require OBJECT_CONTEXT capability"
+        )
     if definition.spec.capabilities & Capability.RECOVERY_ORDER_RESULTS and "on_recover" not in handler_names:
         raise StrategyCompileError("RECOVERY_ORDER_RESULTS requires on_recover")
     source_schema = canonical_state_schema(layout, schema_version=definition.spec.recovery_state_schema_version)
@@ -359,8 +395,9 @@ def validate_strategy_definition(
         canonical_schema=source_schema,
         schema_hash=state_schema_hash(source_schema),
         handlers=validated,
-        callback_mask=abi_v13.callback_mask(handler_names),
+        callback_mask=abi.callback_mask(handler_names),
         initial_state=bytes(initial_state),
+        abi=abi,
     )
 
 
@@ -374,10 +411,10 @@ def _bridge(handler: ValidatedHandler, context_type: StrategyContextType, strate
     expected_alignment = strategy.state_layout.alignment
     expected_version = strategy.definition.spec.recovery_state_schema_version
     expected_hash = tuple(strategy.schema_hash)
-    context_size = abi_v13.runtime_context_dtype.itemsize
+    context_size = strategy.abi.runtime_context_dtype.itemsize
 
     def field_offset(name: str) -> int:
-        return int(abi_v13.runtime_context_dtype.fields[name][1])
+        return int(strategy.abi.runtime_context_dtype.fields[name][1])
 
     @intrinsic
     def validate_native_context(typingctx, pointer):
@@ -400,7 +437,7 @@ def _bridge(handler: ValidatedHandler, context_type: StrategyContextType, strate
                 builder.icmp_unsigned("<", load("struct_size", ir.IntType(32)),
                                       ir.Constant(ir.IntType(32), context_size)),
                 builder.icmp_unsigned("!=", load("abi_version", ir.IntType(32)),
-                                      ir.Constant(ir.IntType(32), abi_v13.ABI_VERSION)),
+                                      ir.Constant(ir.IntType(32), strategy.abi.ABI_VERSION)),
             )
             schema_condition = builder.or_(
                 builder.icmp_unsigned("!=", load("state_len", ir.IntType(64)),
@@ -513,12 +550,46 @@ def emit_callback_bridge(
     return numba_implementation
 
 
-def describe_strategy(strategy: ValidatedStrategy) -> dict[str, object]:
+CORE_SYMBOL_FIELDS: Final = (
+    1 << 0 | 1 << 1 | 1 << 2 | 1 << 3 | 1 << 8 | 1 << 9 | 1 << 10 | 1 << 11
+)
+
+
+def _object_requirements(strategy: ValidatedStrategy, abi) -> list[dict[str, int]]:
+    calls = set().union(*(handler.context_calls for handler in strategy.handlers))
+    symbol_size = int(abi.symbol_payload_dtype.itemsize)
+    requirements = [
+        {"domain": abi.DOMAIN_SYMBOL, "major": abi.PAYLOAD_MAJOR,
+         "min_minor": abi.PAYLOAD_MINOR, "min_payload_len": symbol_size,
+         "min_count": 1, "required_fields": CORE_SYMBOL_FIELDS},
+        {"domain": abi.DOMAIN_ACCOUNT, "major": abi.PAYLOAD_MAJOR,
+         "min_minor": abi.PAYLOAD_MINOR,
+         "min_payload_len": int(abi.account_payload_dtype.itemsize),
+         "min_count": 1, "required_fields": 0},
+        {"domain": abi.DOMAIN_CURRENCY, "major": abi.PAYLOAD_MAJOR,
+         "min_minor": abi.PAYLOAD_MINOR,
+         "min_payload_len": int(abi.currency_payload_dtype.itemsize),
+         "min_count": 1, "required_fields": 0},
+    ]
+    if "pair" in calls:
+        requirements.append({
+            "domain": abi.DOMAIN_PAIR, "major": abi.PAYLOAD_MAJOR,
+            "min_minor": abi.PAYLOAD_MINOR,
+            "min_payload_len": int(abi.pair_payload_dtype.itemsize),
+            "min_count": 1, "required_fields": 0,
+        })
+    return requirements
+
+
+def describe_strategy(
+    strategy: ValidatedStrategy, runtime_abi: dict[str, object] | None = None
+) -> dict[str, object]:
     """Typed bridge facts. Rust validates them and builds the compiled strategy."""
     spec = strategy.definition.spec
-    return {
-        "protocol_version": 2, "abi_version": 13,
-        "abi_fingerprint": list(abi_v13.ABI_FINGERPRINT),
+    module = runtime_abi_module(runtime_abi) if runtime_abi is not None else abi
+    payload: dict[str, object] = {
+        "protocol_version": 2, "abi_version": module.ABI_VERSION,
+        "abi_fingerprint": list(module.ABI_FINGERPRINT),
         "strategy_type": spec.strategy_type, "source_version": spec.source_version,
         "callbacks": [handler.name for handler in strategy.handlers],
         "callback_mask": strategy.callback_mask,
@@ -538,6 +609,16 @@ def describe_strategy(strategy: ValidatedStrategy) -> dict[str, object]:
         "build": {"python": platform.python_version(), "numba": numba.__version__,
                   "llvmlite": list(binding.llvm_version_info), "compiler": "titan-numba-bridge/2"},
     }
+    calls = set().union(*(handler.context_calls for handler in strategy.handlers))
+    payload.update({
+        "object_schema_major": module.OBJECT_SCHEMA_MAJOR,
+        "object_schema_minor": module.PAYLOAD_MINOR,
+        "object_schema_hash": list(module.OBJECT_SCHEMA_HASH),
+        "object_identity_version": 1,
+        "requires_fee": "fee" in calls,
+        "object_requirements": _object_requirements(strategy, module),
+    })
+    return payload
 
 
 def emit_objects(strategy: ValidatedStrategy, work_dir: Path, cpu_baseline: str) -> list[dict[str, str]]:

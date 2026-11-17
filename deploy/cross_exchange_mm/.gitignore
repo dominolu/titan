@@ -1,0 +1,6 @@
+runtime.toml
+artifacts/
+secrets/*
+!secrets/.gitkeep
+checkpoints/
+logs/

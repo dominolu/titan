@@ -7,7 +7,7 @@ use crate::TitanDepthView;
 pub const HOST_DEPTH_LEVELS: usize = 100;
 
 /// Versioned event payload for HOST_DEPTH_100, deliberately separate from the
-/// frozen V13 context/item layouts. One payload accompanies every Depth callback.
+/// frozen compiled strategy context/item layouts. One payload accompanies every Depth callback.
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 #[repr(C)]

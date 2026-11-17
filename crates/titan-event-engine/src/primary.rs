@@ -9,6 +9,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use titan_core_types::LockUnpoisoned;
 
 use crossbeam_queue::ArrayQueue;
 use titan_core_types::{EventHandler, EventQos, EventView};
@@ -327,7 +328,7 @@ impl PrimaryAsyncLane {
                     .expect("an unbound worker cannot fail binding"),
             ));
         }
-        *lane.join.lock().unwrap_or_else(|p| p.into_inner()) = Some(join);
+        *lane.join.lock_unpoisoned() = Some(join);
         Ok(lane)
     }
 
@@ -349,7 +350,7 @@ impl PrimaryAsyncLane {
         let Some((qos, _)) = self.routes.get(&descriptor.id) else {
             return;
         };
-        let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
+        let _admission = self.admission.lock_unpoisoned();
         let Ok(mut barrier_guard) = self.barrier.try_lock() else {
             self.invalidate(0, FaultKind::SubscriberBackpressure);
             return;
@@ -412,10 +413,7 @@ impl PrimaryAsyncLane {
                     return;
                 }
                 let event = self.make_admitted_event(descriptor, header, payload);
-                self.latest
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .insert(key, event);
+                self.latest.lock_unpoisoned().insert(key, event);
                 self.after_enqueue();
             }
             EventQos::BestEffort => {}
@@ -441,9 +439,8 @@ impl PrimaryAsyncLane {
     }
 
     fn after_enqueue(&self) {
-        self.health.set_channel_depth(
-            self.queue.len() + self.latest.lock().unwrap_or_else(|p| p.into_inner()).len(),
-        );
+        self.health
+            .set_channel_depth(self.queue.len() + self.latest.lock_unpoisoned().len());
         self.wake();
     }
 
@@ -462,7 +459,7 @@ impl PrimaryAsyncLane {
 
     fn pop_event(&self) -> Option<PrimaryEvent> {
         let event = self.queue.pop().or_else(|| self.pending.pop()).or_else(|| {
-            let mut latest = self.latest.lock().unwrap_or_else(|p| p.into_inner());
+            let mut latest = self.latest.lock_unpoisoned();
             let key = latest
                 .iter()
                 .min_by_key(|(_, event)| event.admitted_sequence)
@@ -470,9 +467,8 @@ impl PrimaryAsyncLane {
             latest.remove(&key)
         });
         self.health.set_pending_depth(self.pending.len());
-        self.health.set_channel_depth(
-            self.queue.len() + self.latest.lock().unwrap_or_else(|p| p.into_inner()).len(),
-        );
+        self.health
+            .set_channel_depth(self.queue.len() + self.latest.lock_unpoisoned().len());
         event
     }
 
@@ -537,11 +533,7 @@ impl PrimaryAsyncLane {
                         std::hint::spin_loop();
                         if !self.queue.is_empty()
                             || !self.pending.is_empty()
-                            || !self
-                                .latest
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .is_empty()
+                            || !self.latest.lock_unpoisoned().is_empty()
                             || !self.control.is_empty()
                         {
                             ready = true;
@@ -566,10 +558,7 @@ impl PrimaryAsyncLane {
     fn release_queued_events(&self) {
         while self.queue.pop().is_some() {}
         while self.pending.pop().is_some() {}
-        self.latest
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
+        self.latest.lock_unpoisoned().clear();
         self.health.set_channel_depth(0);
         self.health.set_pending_depth(0);
     }
@@ -578,7 +567,7 @@ impl PrimaryAsyncLane {
         self.accepting.store(false, Ordering::Release);
         self.stopping.store(true, Ordering::Release);
         self.wake();
-        let mut join_slot = self.join.lock().unwrap_or_else(|p| p.into_inner());
+        let mut join_slot = self.join.lock_unpoisoned();
         if let Some(join) = join_slot.as_ref() {
             while !join.is_finished() {
                 if Instant::now() >= deadline {
@@ -593,16 +582,8 @@ impl PrimaryAsyncLane {
         drop(join_slot);
         while self.queue.pop().is_some() {}
         while self.pending.pop().is_some() {}
-        self.latest
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        if let Some(mut barrier) = self
-            .barrier
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
+        self.latest.lock_unpoisoned().clear();
+        if let Some(mut barrier) = self.barrier.lock_unpoisoned().take() {
             self.release_barrier_budget(&mut barrier, true);
         }
         self.barrier_deadline_ns.store(0, Ordering::Release);
@@ -634,7 +615,7 @@ impl PrimaryAsyncLane {
         &self,
         request: SnapshotBarrierRequest,
     ) -> Result<SnapshotBarrierId, EngineError> {
-        let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
+        let _admission = self.admission.lock_unpoisoned();
         let now = Instant::now();
         if request.source_ids.is_empty()
             || request.deadline <= now
@@ -644,16 +625,12 @@ impl PrimaryAsyncLane {
         }
         if !self.queue.is_empty()
             || !self.pending.is_empty()
-            || !self
-                .latest
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_empty()
+            || !self.latest.lock_unpoisoned().is_empty()
             || self.health.dispatched_sequence() != self.health.committed_sequence()
         {
             return Err(EngineError::RecoveryNotQuiescent(self.token));
         }
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.barrier.lock_unpoisoned();
         if guard.is_some() {
             return Err(EngineError::SnapshotBarrierActive);
         }
@@ -686,7 +663,7 @@ impl PrimaryAsyncLane {
     }
 
     fn add_snapshot(&self, id: SnapshotBarrierId, event: PrimaryEvent) -> Result<(), EngineError> {
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.barrier.lock_unpoisoned();
         let barrier = guard
             .as_mut()
             .ok_or(EngineError::UnknownSnapshotBarrier(id.0))?;
@@ -717,8 +694,8 @@ impl PrimaryAsyncLane {
         id: SnapshotBarrierId,
         boundaries: &[StreamBoundary],
     ) -> Result<u64, EngineError> {
-        let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let _admission = self.admission.lock_unpoisoned();
+        let mut guard = self.barrier.lock_unpoisoned();
         let barrier = guard
             .as_mut()
             .ok_or(EngineError::UnknownSnapshotBarrier(id.0))?;
@@ -790,8 +767,8 @@ impl PrimaryAsyncLane {
         id: SnapshotBarrierId,
         committed_sequence: u64,
     ) -> Result<(), EngineError> {
-        let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let _admission = self.admission.lock_unpoisoned();
+        let mut guard = self.barrier.lock_unpoisoned();
         let barrier = guard
             .as_mut()
             .ok_or(EngineError::UnknownSnapshotBarrier(id.0))?;
@@ -820,8 +797,8 @@ impl PrimaryAsyncLane {
     }
 
     fn abort_barrier(&self, id: SnapshotBarrierId) -> Result<(), EngineError> {
-        let _admission = self.admission.lock().unwrap_or_else(|p| p.into_inner());
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let _admission = self.admission.lock_unpoisoned();
+        let mut guard = self.barrier.lock_unpoisoned();
         let barrier = guard
             .as_ref()
             .ok_or(EngineError::UnknownSnapshotBarrier(id.0))?;
@@ -840,8 +817,7 @@ impl PrimaryAsyncLane {
 
     fn barrier_snapshot(&self) -> Option<SnapshotBarrierSnapshot> {
         self.barrier
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_unpoisoned()
             .as_ref()
             .map(|barrier| SnapshotBarrierSnapshot {
                 id: barrier.id,
@@ -882,7 +858,7 @@ impl PrimaryAsyncLane {
         if now_ns < self.barrier_deadline_ns.load(Ordering::Acquire) {
             return;
         }
-        let mut guard = self.barrier.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.barrier.lock_unpoisoned();
         let expired = guard.as_ref().is_some_and(|barrier| {
             matches!(
                 barrier.state,
@@ -958,11 +934,7 @@ impl PrimaryAsyncLaneHandle {
         id: SnapshotBarrierId,
         request: PublishRequest<'_>,
     ) -> Result<(), EngineError> {
-        let _admission = self
-            .lane
-            .admission
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _admission = self.lane.admission.lock_unpoisoned();
         let descriptor = self
             .shared
             .descriptor(request.event_type, request.schema_version)
@@ -971,7 +943,7 @@ impl PrimaryAsyncLaneHandle {
             return Err(EngineError::InvalidEvent);
         }
         {
-            let guard = self.lane.barrier.lock().unwrap_or_else(|p| p.into_inner());
+            let guard = self.lane.barrier.lock_unpoisoned();
             let barrier = guard
                 .as_ref()
                 .ok_or(EngineError::UnknownSnapshotBarrier(id.0))?;

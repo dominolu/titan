@@ -16,6 +16,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use titan_core_types::LockUnpoisoned;
 
 const SCHEMA: i64 = 1;
 const MAX_PAYLOAD: usize = 32 * 1024 * 1024;
@@ -178,7 +179,7 @@ fn checked_payload(bytes: &[u8]) -> LocalResult<StrategyRecoveryPoint> {
         || point.generation > MAX_GENERATION
         || !point.native_snapshot().checksum_valid()
         || (!legacy_orders
-            && crate::runtime_v13::orders_list_checksum(&point.orders_list)
+            && crate::native_runtime::orders_list_checksum(&point.orders_list)
                 != point.orders_list_checksum)
         || point.recovery.as_ref().is_some_and(|baseline| {
             !baseline.integrity_valid(
@@ -378,10 +379,10 @@ impl SqliteRecoveryStore {
             let _completion=completion;
             let mut db = writer_db;
             while let Ok(item) = receiver.recv() {
-                let failed = shared.0.lock().unwrap_or_else(|p| p.into_inner()).failed;
+                let failed = shared.0.lock_unpoisoned().failed;
                 let result = if failed { Err(storage_error("checkpoint_writer_failed")) }
                     else { commit_point(&mut db, &item) };
-                let mut p = shared.0.lock().unwrap_or_else(|p| p.into_inner());
+                let mut p = shared.0.lock_unpoisoned();
                 match &result {
                     Ok(()) => p.committed = item.token.sequence,
                     Err(_) => {
@@ -393,7 +394,7 @@ impl SqliteRecoveryStore {
                 drop(p);
                 if let Err(error)=result {tracing::error!(reason_code=%error.reason_code, "SQLite recovery commit failed");}
             }
-            let mut p = shared.0.lock().unwrap_or_else(|p| p.into_inner());
+            let mut p = shared.0.lock_unpoisoned();
             p.stopped = true;
             shared.1.notify_all();
         }).map_err(|_| storage_error("checkpoint_writer_start_failed"))?;
@@ -419,7 +420,7 @@ impl SqliteRecoveryStore {
     }
 
     fn lease(&self, no: RuntimeStrategyNo) -> LocalResult<()> {
-        let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
+        let mut leases = self.leases.lock_unpoisoned();
         if leases.contains_key(&no.0) {
             return Ok(());
         }
@@ -469,7 +470,7 @@ impl SqliteRecoveryStore {
         no: RuntimeStrategyNo,
         sha: &str,
     ) -> LocalResult<RecoveryPointRef> {
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         let id: Option<String> = sql(db
             .query_row(
                 "SELECT id FROM recovery_points WHERE strategy_no=?1 AND sha256=?2",
@@ -487,15 +488,15 @@ impl SqliteRecoveryStore {
         Ok(reference)
     }
     pub fn head_reference(&self, no: RuntimeStrategyNo) -> LocalResult<Option<RecoveryPointRef>> {
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         head_reference(&db, &self.store_id, no)
     }
     pub fn payload(&self, reference: &RecoveryPointRef) -> LocalResult<Vec<u8>> {
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         read_point(&db, &self.store_id, reference).map(|(bytes, _)| bytes)
     }
     pub fn inspect(&self) -> LocalResult<serde_json::Value> {
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         let integrity: String = sql(db.query_row("PRAGMA integrity_check", [], |r| r.get(0)))?;
         if integrity != "ok" {
             return Err(storage_error("recovery_integrity_failed"));
@@ -565,7 +566,7 @@ impl SqliteRecoveryStore {
             return Err(storage_error("recovery_generation_floor_invalid"));
         }
         self.lease(no)?;
-        let mut db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut db = self.db.lock_unpoisoned();
         let tx = sql(db.transaction_with_behavior(TransactionBehavior::Immediate))?;
         sql(tx.execute("INSERT INTO strategy_generations VALUES(?1,?2,?3) ON CONFLICT(strategy_no) DO UPDATE SET generation=max(generation,excluded.generation),owner_session=excluded.owner_session",params![no.0,generation_floor,self.session]))?;
         sql(tx.execute(
@@ -592,7 +593,7 @@ impl SqliteRecoveryStore {
         // This independent transaction cannot roll back with a failed payload import.
         self.import_generation(point.strategy.runtime_strategy_no, generation_floor)?;
         let sha = recovery_payload_sha256(bytes);
-        let mut db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut db = self.db.lock_unpoisoned();
         let tx = sql(db.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let existing: Option<(String, u64)> = sql(tx.query_row("SELECT record_id,generation_floor FROM migration_receipts WHERE strategy_no=?1 AND sha256=?2",
             params![point.strategy.runtime_strategy_no.0, sha], |r| Ok((r.get(0)?,r.get(1)?))).optional())?;
@@ -645,7 +646,7 @@ impl SqliteRecoveryStore {
             .unwrap_or(Path::new("."));
         let temporary = tempfile::NamedTempFile::new_in(parent)
             .map_err(|_| storage_error("recovery_backup_target_unavailable"))?;
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         let mut target = sql(Connection::open(temporary.path()))?;
         {
             let backup = sql(rusqlite::backup::Backup::new(&db, &mut target))?;
@@ -674,7 +675,7 @@ impl SqliteRecoveryStore {
         }
         self.lease(no)?;
         self.flush(Instant::now() + Duration::from_secs(5))?;
-        let mut db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut db = self.db.lock_unpoisoned();
         let tx = sql(db.transaction_with_behavior(TransactionBehavior::Immediate))?;
         sql(tx.execute("DELETE FROM recovery_commits WHERE record_id IN (SELECT id FROM recovery_points WHERE strategy_no=?1 AND id NOT IN (SELECT record_id FROM recovery_heads) AND id NOT IN (SELECT record_id FROM recovery_pins) AND id NOT IN (SELECT record_id FROM migration_receipts) AND id NOT IN (SELECT id FROM recovery_points WHERE strategy_no=?1 ORDER BY rowid DESC LIMIT ?2))",params![no.0,retain as u64]))?;
         let removed = sql(tx.execute("DELETE FROM recovery_points WHERE strategy_no=?1 AND id NOT IN (SELECT record_id FROM recovery_heads) AND id NOT IN (SELECT record_id FROM recovery_pins) AND id NOT IN (SELECT record_id FROM migration_receipts) AND id NOT IN (SELECT record_id FROM recovery_commits) AND id NOT IN (SELECT id FROM recovery_points WHERE strategy_no=?1 ORDER BY rowid DESC LIMIT ?2)",params![no.0,retain as u64]))?;
@@ -809,13 +810,13 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         reference.map(|r| self.load_reference(&r)).transpose()
     }
     fn load_reference(&self, reference: &RecoveryPointRef) -> LocalResult<StrategyRecoveryPoint> {
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         read_point(&db, &self.store_id, reference).map(|(_, p)| p)
     }
     fn reserve_generation(&self, no: RuntimeStrategyNo, minimum: u64) -> LocalResult<u64> {
         self.check_health()?;
         self.lease(no)?;
-        let mut db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut db = self.db.lock_unpoisoned();
         let tx = sql(db.transaction_with_behavior(TransactionBehavior::Immediate))?;
         let allowed: bool = sql(tx.query_row(
             "SELECT activation_allowed FROM storage_meta",
@@ -879,14 +880,13 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         }
         if !self
             .leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .lock_unpoisoned()
             .contains_key(&point.strategy.runtime_strategy_no.0)
         {
             return Err(storage_error("recovery_namespace_not_owned"));
         }
-        let sender = self.sender.lock().unwrap_or_else(|p| p.into_inner());
-        let mut p = self.progress.0.lock().unwrap_or_else(|p| p.into_inner());
+        let sender = self.sender.lock_unpoisoned();
+        let mut p = self.progress.0.lock_unpoisoned();
         let sequence = p
             .submitted
             .checked_add(1)
@@ -911,7 +911,7 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         if token.session != self.session {
             return Err(storage_error("checkpoint_token_session_changed"));
         }
-        let mut p = self.progress.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut p = self.progress.0.lock_unpoisoned();
         if token.sequence > p.submitted {
             return Err(storage_error("checkpoint_token_invalid"));
         }
@@ -940,12 +940,7 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         }
     }
     fn flush(&self, deadline: Instant) -> LocalResult<()> {
-        let sequence = self
-            .progress
-            .0
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .submitted;
+        let sequence = self.progress.0.lock_unpoisoned().submitted;
         self.flush_through(
             &RecoverySubmitToken {
                 session: self.session.clone(),
@@ -958,7 +953,7 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         if operation.is_empty() || operation.len() > 256 {
             return Err(storage_error("recovery_pin_invalid"));
         }
-        let mut db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let mut db = self.db.lock_unpoisoned();
         let tx = sql(db.transaction_with_behavior(TransactionBehavior::Immediate))?;
         read_point(&tx, &self.store_id, reference)?;
         let count: i64 = sql(tx.query_row("SELECT count(*) FROM recovery_pins", [], |r| r.get(0)))?;
@@ -980,7 +975,7 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         if reference.store_id != self.store_id {
             return Err(storage_error("checkpoint_store_changed"));
         }
-        let db = self.db.lock().unwrap_or_else(|p| p.into_inner());
+        let db = self.db.lock_unpoisoned();
         sql(db.execute(
             "DELETE FROM recovery_pins WHERE record_id=?1 AND operation_id=?2",
             params![reference.record_id, operation],
@@ -998,22 +993,19 @@ impl StrategyRecoveryStore for SqliteRecoveryStore {
         }
     }
     fn close(&self, deadline: Instant) -> LocalResult<()> {
-        self.sender.lock().unwrap_or_else(|p| p.into_inner()).take();
+        self.sender.lock_unpoisoned().take();
         while !self.writer_finished.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
                 return Err(storage_error("recovery_close_deadline_exceeded"));
             }
             thread::park_timeout(Duration::from_millis(1));
         }
-        if let Some(writer) = self.writer.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(writer) = self.writer.lock_unpoisoned().take() {
             writer
                 .join()
                 .map_err(|_| storage_error("checkpoint_writer_failed"))?;
         }
-        self.leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        self.leases.lock_unpoisoned().clear();
         if self.writer_failed.load(Ordering::Acquire) || self.fail_closed.load(Ordering::Acquire) {
             return Err(storage_error("checkpoint_writer_failed"));
         }
@@ -1057,7 +1049,7 @@ mod tests {
             event_committed_sequence: u64::MAX,
             compiled_strategy_digest: [1; 32],
             binding_digest: [2; 32],
-            abi_version: STRATEGY_ABI_V13,
+            abi_version: STRATEGY_ABI,
             state_schema_version: 1,
             state_schema_hash: [3; 32],
             state_alignment: 8,
@@ -1068,7 +1060,7 @@ mod tests {
             checksum: [0; 32],
             recovery: None,
         };
-        point.checksum = crate::v13::snapshot_checksum(&point.native_snapshot());
+        point.checksum = crate::strategy::snapshot_checksum(&point.native_snapshot());
         point
     }
     fn store(root: &Path) -> Arc<SqliteRecoveryStore> {
@@ -1477,7 +1469,7 @@ mod tests {
         let generation = a.reserve_generation(RuntimeStrategyNo(77), 0).unwrap();
         let mut large = point(generation, 1);
         large.state_bytes = vec![255; 600000].into();
-        large.checksum = crate::v13::snapshot_checksum(&large.native_snapshot());
+        large.checksum = crate::strategy::snapshot_checksum(&large.native_snapshot());
         assert_eq!(
             a.submit_token(large).unwrap_err().reason_code.as_ref(),
             "recovery_runtime_payload_budget"
@@ -1498,10 +1490,10 @@ mod tests {
             strategy_key: "budget".into(),
             runtime_strategy_no: RuntimeStrategyNo(77),
             strategy_file: StrategyFileRef {
-                loader_type: "native-v13".into(),
+                loader_type: "native".into(),
                 uri: "file:///pinned.titan".into(),
                 expected_digest: [1; 32],
-                signature_ref: None,
+                parameters_digest: None,
             },
             markets: Arc::from([]),
             accounts: Arc::from([]),
@@ -1620,7 +1612,7 @@ mod tests {
                     _ => 500000,
                 };
                 p.state_bytes = vec![255; size].into();
-                p.checksum = crate::v13::snapshot_checksum(&p.native_snapshot());
+                p.checksum = crate::strategy::snapshot_checksum(&p.native_snapshot());
                 sizes.push(serde_json::to_vec(&p).unwrap().len());
                 let start = Instant::now();
                 let token = a.submit_token(p).unwrap();
@@ -1704,7 +1696,7 @@ mod tests {
         db.pragma_update(None, "max_page_count", pages).unwrap();
         let mut large = point(generation, 1);
         large.state_bytes = vec![1; 65536].into();
-        large.checksum = crate::v13::snapshot_checksum(&large.native_snapshot());
+        large.checksum = crate::strategy::snapshot_checksum(&large.native_snapshot());
         let submission = Submission {
             token: RecoverySubmitToken {
                 session: a.session.clone(),

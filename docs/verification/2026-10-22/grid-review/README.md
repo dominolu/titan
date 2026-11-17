@@ -28,7 +28,7 @@
 | 原策略功能遗漏 | 中性库存约束和创建时资金换算后固定数量未被原样表达 | 增加 `neutral_mode=inventory_only`、`size_mode=allocated_fixed_qty`，后者在创建盘口按 `资金×杠杆/格数/价格` 换算后冻结；动态 allocated 仍是另一模式 |
 | 最小名义金额 | 将最高价对应的最小数量乘最低价，错误拒绝有效动态金额配置 | 按实际价量关系验证；必要时遍历商值区间，有明确计算预算，不扫描巨大价格区间 |
 
-实现入口：[策略](../../../../strategies/grid/strategy.py)、[使用说明](../../../../strategies/grid/README.md)、[源策略兼容参数](../../../../strategies/grid/parameters.gate_arb.json)、[业务回归](../../../../python/titan-strategy-sdk/tests/test_grid.py)、[原生 ABI 回归](../../../../python/titan-strategy-sdk/tests/test_grid_native.py)。
+实现入口：[策略](../../../../strategies/grid/strategy.py)、[使用说明](../../../../strategies/grid.md)、[源策略兼容参数](../../../../strategies/grid/parameters.gate_arb.json)、[业务回归](../../../../python/titan-strategy-sdk/tests/test_grid.py)、[原生 ABI 回归](../../../../python/titan-strategy-sdk/tests/test_grid_native.py)。
 
 恢复能力使用既有 Recover 回调的 payload，长度单位为字节，内容为连续只读订单视图；未改 ABI 结构或放宽指纹检查。编译器要求显式能力和 Recover 回调，旧宿主拒绝未知能力。负载长度不合法、在错误回调中访问等情况有原生测试。账户事实重建和对账仍由 Rust 平台完成。
 

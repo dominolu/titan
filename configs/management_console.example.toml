@@ -24,6 +24,8 @@ accounts = []
 environments = ["backtest"]
 
 [node]
+# Enable only on a build node whose operators may execute uploaded strategy source.
+allow_strategy_uploads = false
 id = "build"
 listen = "127.0.0.1:8041"
 token_env = "TITAN_CONSOLE_BUILD_TOKEN"

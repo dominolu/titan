@@ -5,7 +5,8 @@
 //!
 //! 统一规范：
 //! - 所有 symbol 统一使用交易所原生字符串（如 `BTCUSDT`、`BTC-USDT-SWAP`、`BTC`）；
-//! - 所有价格/数量统一使用 `f64`（精度问题由 connector 内部按交易所规则处理）；
+//! - 价格/数量的观测值使用 `f64`（精度问题由 connector 内部按交易所规则处理）；
+//!   权威单位使用 `DecimalUnit` 的 `*_exact` 字段，准入/风控/策略换算不得依赖 `f64`；
 //! - 订单 ID 统一使用 `String`；
 //! - 时间戳统一使用毫秒（i64）；
 //! - 状态/方向/类型使用本模块定义的枚举，无法映射时落入 `Unknown` 变体。
@@ -13,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 pub use titan_account_service::AccountLedgerRecord;
+use titan_domain_types::DecimalUnit;
 
 /// Venue-controlled position layout, independent of whether positions are empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,17 +304,56 @@ impl ApiMarginType {
     }
 }
 
+/// Native quantity dimension of one `lot_size` step.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuantityDimension {
+    /// One native quantity step is a base-currency amount (spot-like or linear base sizing).
+    #[default]
+    NativeQuantity,
+    /// One native quantity step is a contract count; `contract_size` is the base-currency value
+    /// of one contract (for example OKX `ctVal`).
+    Contract,
+}
+
 /// 统一合约/标的元数据。
+///
+/// The `*_exact` fields are the authoritative values: they are parsed from the venue's own decimal
+/// strings (or integers) and never routed through `f64`. The legacy `f64` fields remain for
+/// observation/display only — admission arithmetic, risk and strategy units must use the exact
+/// values and [`InstrumentInfo::base_delta_per_lot`]. A field the venue does not publish stays
+/// `None`; it is never approximated as zero.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentInfo {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
+    /// Observation value only. Do not use for units.
     pub tick_size: f64,
+    /// Observation value only. Do not use for units.
     pub lot_size: f64,
+    /// Observation value only. Do not use for units.
     pub min_qty: f64,
+    /// Observation value only. Do not use for units.
     pub contract_size: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick_size_exact: Option<DecimalUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot_size_exact: Option<DecimalUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_qty_exact: Option<DecimalUnit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_size_exact: Option<DecimalUnit>,
+    /// Minimum order notional in the instrument's quote currency, when published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_notional_quote: Option<DecimalUnit>,
+    #[serde(default)]
+    pub quantity_dimension: QuantityDimension,
+    /// The host supplied these constants because the venue has no published metadata. Synthetic
+    /// instruments must not enter multi-leg admission without an explicit audit decision.
+    #[serde(default)]
+    pub synthetic: bool,
     pub margin_asset: String,
     /// 价格精度（小数位）。
     pub price_precision: u32,
@@ -320,6 +361,16 @@ pub struct InstrumentInfo {
     pub qty_precision: u32,
     /// 是否可交易。
     pub tradable: bool,
+}
+
+impl InstrumentInfo {
+    /// Base-currency delta of one native quantity step: `lot_size * contract_size`.
+    ///
+    /// `None` means the venue did not publish enough exact metadata; callers must refuse rather
+    /// than substitute the observation `f64` values.
+    pub fn base_delta_per_lot(&self) -> Option<DecimalUnit> {
+        self.lot_size_exact?.checked_mul(self.contract_size_exact?)
+    }
 }
 
 /// 统一行情快照。

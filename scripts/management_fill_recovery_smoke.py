@@ -225,8 +225,8 @@ def main():
     else:
         assert args.expected_strategy_sha256 == package["strategy_file_sha256"]
         validate_parameters(manifest["parameters"])
-    validation = subprocess.run([str(binary), "strategy", "validate", str(artifact), "--require-signature",
-        "--trusted-key", "acceptance=" + manifest["public_key"], "--json"], capture_output=True, text=True, check=True)
+    validation = subprocess.run([str(binary), "strategy", "validate", str(artifact), "--json"],
+        capture_output=True, text=True, check=True)
     (root / "native-validation.json").write_text(validation.stdout)
     checkpoint = root / "node/checkpoints/simulation-candidate04-gate-1/77/runtime.db"
     safe_recovery = args.scenario in ("private-recovery", "missing-fill-recovery", "missing-history-incomplete", "missing-history-conflict", "private-history-fee-conflict")
@@ -254,7 +254,7 @@ def main():
     instrument = {"native_symbol": SYMBOL, "asset_id": 1, "price_tick": unit(1, 1), "quantity_lot": unit(1, 4)}
     runtime = {"schema_version": 1, "managed_by_console": True,
         "account_service": {"secret_root": str(secret), "startup_timeout_ms": 30000, "recording_environment": "simulation"},
-        "strategy_service": {"trusted_ed25519_keys": {"acceptance": manifest["public_key"]}},
+        "strategy_service": {},
         "market_sources": [{"source_key": "gate-market", "connector_type": "gate-crossex", "connector_config": cfg,
                             "instruments": [instrument], "enabled": True, "definition_version": 1}],
         "accounts": [{"account_key": "gate", "account_id": 1, "connector_type": "gate-crossex-account",
@@ -263,7 +263,7 @@ def main():
             "currencies": [{"native_currency": "USDT", "currency_id": 1, "amount_unit": unit(1, 8)}],
             "enabled": True, "definition_version": 1}],
         "strategies": [{"strategy_key": "grid", "runtime_strategy_no": 77,
-            "strategy_file": {"loader_type": "native-v13", "uri": "file://unused.titan", "expected_digest": [1] * 32},
+            "strategy_file": {"loader_type": "native", "uri": "file://unused.titan", "expected_digest": [1] * 32},
             "markets": [{"local_market_no": 0, "local_asset_no": 0, "source_key": "gate-market", "asset_id": 1, "data_mode": "tick"}],
             "accounts": [{"local_account_no": 0, "account_key": "gate", "tradable_assets": [{"local_asset_no": 0, "asset_id": 1}]}],
             "risk_scope": "simulation-100-usdt", "runtime": {"async_lane_capacity": 256, "critical_reserve": 32,

@@ -2,12 +2,11 @@ schema_version = 1
 
 [strategy_service]
 allowed_strategy_roots = ["artifacts"]
-allow_unsigned_strategies = true
 
 [[strategies]]
 strategy_key = "event_counter"
 strategy_id = 701
-package = { loader_type = "native-v13", uri = "file://artifacts/event_counter.titan", expected_digest = [169, 215, 167, 218, 177, 26, 206, 227, 116, 251, 150, 161, 77, 102, 54, 195, 101, 125, 179, 158, 21, 116, 233, 20, 155, 92, 48, 137, 206, 134, 234, 224] }
+package = { loader_type = "native", uri = "file://artifacts/event_counter.titan", expected_digest = [169, 215, 167, 218, 177, 26, 206, 227, 116, 251, 150, 161, 77, 102, 54, 195, 101, 125, 179, 158, 21, 116, 233, 20, 155, 92, 48, 137, 206, 134, 234, 224] }
 markets = []
 accounts = []
 risk_scope = "unused"

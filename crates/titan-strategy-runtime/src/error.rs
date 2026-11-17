@@ -5,7 +5,6 @@ pub enum StrategyErrorKind {
     InvalidDefinition,
     PackageNotFound,
     DigestMismatch,
-    SignatureInvalid,
     ParameterInvalid,
     UnsupportedCapability,
     AbiMismatch,

@@ -6787,6 +6787,7 @@ dependencies = [
  "semver 1.0.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "titan-core-types",
  "titan-domain-types",
@@ -6822,7 +6823,6 @@ name = "titan-strategy-runtime"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
- "ed25519-dalek",
  "libc",
  "libloading",
  "rusqlite",

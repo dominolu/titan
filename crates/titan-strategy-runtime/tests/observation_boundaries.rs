@@ -1,7 +1,6 @@
-//! Explicit, non-live tests against an original signed grid strategy.
+//! Explicit, non-live tests against an original grid strategy artifact.
 //! Run by verify_observation_recovery_compat.py on the build server.
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -82,36 +81,21 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let path = PathBuf::from(std::env::var("TITAN_TEST_PREVIOUS_STRATEGY_FILE").unwrap());
-        let key = std::env::var("TITAN_TEST_PREVIOUS_PUBLIC_KEY").unwrap();
-        let key: Vec<u8> = (0..key.len())
-            .step_by(2)
-            .map(|offset| u8::from_str_radix(&key[offset..offset + 2], 16).unwrap())
-            .collect();
-        let key: [u8; 32] = key.try_into().unwrap();
-        let keys = BTreeMap::from([(Arc::from("acceptance"), key)]);
         let root = tempfile::tempdir().unwrap();
-        let inspect = NativeStrategyLoaderV13::new(
-            root.path().into(),
-            V13TrustPolicy {
-                require_signature: true,
-                ed25519_keys: BTreeMap::from([("acceptance".into(), key)]),
-            },
-        )
-        .inspect(&path)
-        .unwrap();
+        let inspect = NativeStrategyLoader::new(root.path().into())
+            .inspect(&path)
+            .unwrap();
         let file = StrategyFileRef {
-            loader_type: Arc::from("native-v13"),
+            loader_type: Arc::from("native"),
             uri: Arc::from(format!("file://{}", path.display())),
             expected_digest: inspect.compiled_strategy_digest,
-            signature_ref: None,
+            parameters_digest: None,
         };
-        let loader = NativeV13LoaderFactory
+        let loader = NativeLoaderFactory
             .create(StrategyLoaderContext {
                 allowed_strategy_roots: Arc::from([Arc::from(
                     path.parent().unwrap().to_str().unwrap(),
                 )]),
-                require_signature: true,
-                ed25519_keys: keys,
             })
             .unwrap();
         let compiled = loader
@@ -147,7 +131,7 @@ impl Harness {
             entered: entered_tx,
             release: Mutex::new(release_rx),
         });
-        let runtime = NativeV13RuntimeFactory
+        let runtime = NativeRuntimeFactory
             .create(
                 &definition,
                 compiled.clone(),
@@ -181,16 +165,18 @@ impl Harness {
                         }]),
                     }]),
                     execution: Arc::from([]),
+                    accounts_service: None,
                     state_snapshot_sink: store.clone(),
                     clock: clock.clone(),
                     metrics: Arc::new(Metrics),
                     resources: scope.handle(),
                     activation: Arc::new(StrategyActivationGate::default()),
+                    object_table: None,
                 },
             )
             .unwrap();
         runtime
-            .seed_public_state(StrategyPublicStateSeedV13 {
+            .seed_public_state(StrategyPublicStateSeed {
                 accounts: Arc::from([TitanAccountView {
                     state: 4,
                     account_epoch: 1,

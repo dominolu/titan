@@ -1,0 +1,739 @@
+//! Rust-owned compiled_strategy contracts, native descriptor generation and publication.
+use super::*;
+use crate::observation::{BusinessObservationDefinition, compile_business_observation};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::io::Write;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NumbaMetadata {
+    pub protocol_version: u32,
+    pub abi_version: u32,
+    pub abi_fingerprint: [u8; 32],
+    #[serde(alias = "strategy_id")]
+    pub strategy_type: String,
+    #[serde(alias = "strategy_version")]
+    pub source_version: String,
+    pub callbacks: Vec<String>,
+    pub callback_mask: u64,
+    #[serde(alias = "state_schema_version")]
+    pub recovery_state_schema_version: u32,
+    #[serde(alias = "state_schema_hash")]
+    pub recovery_state_schema_hash: [u8; 32],
+    pub state_len: usize,
+    pub state_alignment: u32,
+    pub initial_state: Vec<u8>,
+    #[serde(alias = "state_schema")]
+    pub recovery_state_schema: serde_json::Value,
+    #[serde(default)]
+    pub business_observation: Option<BusinessObservationDefinition>,
+    pub parameter_schema: serde_json::Value,
+    pub subscriptions: Vec<NumbaSubscription>,
+    pub capabilities: Vec<String>,
+    pub build: serde_json::Value,
+    /// V14 object-context facts. `None` for compiled strategy artifacts; all or nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_schema_major: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_schema_minor: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_schema_hash: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_identity_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_fee: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_requirements: Vec<NumbaObjectRequirement>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NumbaObjectRequirement {
+    pub domain: u32,
+    pub major: u16,
+    pub min_minor: u16,
+    pub min_payload_len: u64,
+    pub min_count: u32,
+    pub required_fields: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NumbaSubscription {
+    pub event: String,
+    pub handler: String,
+    pub schema_version: u32,
+    pub qos: String,
+}
+
+pub fn compiler_host_target() -> &'static str {
+    host_target_triple()
+}
+
+pub fn validate_compile_target(target: &str, cpu: &str) -> Result<(), LoadError> {
+    // The Numba PIC emitter and linker currently implement Linux ELF only.
+    if target != host_target_triple() || !target.ends_with("-linux-gnu") {
+        return Err(LoadError::Contract(
+            "compiler requires its native Linux ELF target",
+        ));
+    }
+    let valid = if target.starts_with("x86_64-") {
+        matches!(cpu, "generic" | "x86-64" | "x86-64-v2")
+    } else {
+        matches!(cpu, "generic" | "armv8-a")
+    };
+    if !valid {
+        return Err(LoadError::Contract("unsupported compiler CPU baseline"));
+    }
+    Ok(())
+}
+
+/// Stable JSON for source-schema and parameter identity, independent of map insertion order.
+pub fn compiler_json(value: &serde_json::Value) -> Vec<u8> {
+    fn sorted(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .collect::<BTreeMap<_, _>>()
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), sorted(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.iter().map(sorted).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    // serde_json::Value contains no non-finite numbers or unsupported values.
+    serde_json::to_vec(&sorted(value)).expect("JSON value serializes")
+}
+fn json_cbor(value: &serde_json::Value) -> Result<CborValue, LoadError> {
+    Ok(match value {
+        serde_json::Value::Null => CborValue::Null,
+        serde_json::Value::Bool(value) => CborValue::Bool(*value),
+        serde_json::Value::String(value) => CborValue::Text(value.clone()),
+        serde_json::Value::Array(values) => {
+            CborValue::Array(values.iter().map(json_cbor).collect::<Result<_, _>>()?)
+        }
+        serde_json::Value::Object(values) => CborValue::Map(
+            values
+                .iter()
+                .map(|(key, value)| Ok((CborValue::Text(key.clone()), json_cbor(value)?)))
+                .collect::<Result<_, LoadError>>()?,
+        ),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_u64() {
+                CborValue::Integer(value.into())
+            } else if let Some(value) = value.as_i64() {
+                CborValue::Integer(value.into())
+            } else {
+                CborValue::Float(
+                    value
+                        .as_f64()
+                        .ok_or(LoadError::Contract("invalid JSON number"))?,
+                )
+            }
+        }
+    })
+}
+fn cbor_map(values: impl IntoIterator<Item = (&'static str, CborValue)>) -> CborValue {
+    CborValue::Map(
+        values
+            .into_iter()
+            .map(|(key, value)| (CborValue::Text(key.into()), value))
+            .collect(),
+    )
+}
+
+impl NumbaMetadata {
+    pub fn validate(&self) -> Result<(), LoadError> {
+        if !matches!(self.protocol_version, 1 | 2)
+            || self.abi_version != STRATEGY_ABI
+            || self.abi_fingerprint != ABI_FINGERPRINT
+        {
+            return Err(LoadError::Contract("Numba bridge ABI/protocol mismatch"));
+        }
+        let id = self.strategy_type.as_bytes();
+        if id.is_empty()
+            || id.len() > 64
+            || !id[0].is_ascii_lowercase()
+            || !id
+                .iter()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+            || semver::Version::parse(&self.source_version).is_err()
+        {
+            return Err(LoadError::Contract("invalid strategy identity"));
+        }
+        if self.recovery_state_schema_version == 0
+            || self.state_len == 0
+            || self.state_len > 65_536
+            || self.initial_state.len() != self.state_len
+            || !self.state_alignment.is_power_of_two()
+            || self.state_alignment > 8
+            || !self.state_len.is_multiple_of(self.state_alignment as usize)
+        {
+            return Err(LoadError::Contract("invalid compiler state layout"));
+        }
+        RecoveryStateIdentity {
+            version: self.recovery_state_schema_version,
+            hash: self.recovery_state_schema_hash,
+            byte_len: self.state_len,
+            alignment: self.state_alignment,
+        }
+        .validate_description(&self.recovery_state_schema)?;
+        if let Some(observation) = &self.business_observation {
+            compile_business_observation(
+                observation,
+                &self.recovery_state_schema,
+                RecoveryStateIdentity {
+                    version: self.recovery_state_schema_version,
+                    hash: self.recovery_state_schema_hash,
+                    byte_len: self.state_len,
+                    alignment: self.state_alignment,
+                },
+            )?;
+        }
+        let mut mask = 0;
+        for callback in &self.callbacks {
+            let index = CALLBACK_NAMES
+                .iter()
+                .position(|name| *name == callback)
+                .ok_or(LoadError::Contract("unknown bridge callback"))?;
+            if mask & (1 << index) != 0 {
+                return Err(LoadError::Contract("duplicate bridge callback"));
+            }
+            mask |= 1 << index;
+        }
+        if mask == 0 || mask != self.callback_mask {
+            return Err(LoadError::Contract("bridge callback mask mismatch"));
+        }
+        for sub in &self.subscriptions {
+            let event = EventKind::from_manifest_name(&sub.event)?;
+            if matches!(
+                event,
+                EventKind::Start | EventKind::Stop | EventKind::Recover
+            ) || mask & (1 << event.index()) == 0
+            {
+                return Err(LoadError::Contract("subscription lacks native callback"));
+            }
+        }
+        for (index, name) in CALLBACK_NAMES.iter().enumerate() {
+            if mask & (1 << index) != 0
+                && !matches!(*name, "on_start" | "on_stop" | "on_recover")
+                && !self.subscriptions.iter().any(|s| s.handler == *name)
+            {
+                return Err(LoadError::Contract("callback lacks subscription"));
+            }
+        }
+        match (
+            self.object_schema_major,
+            self.object_schema_minor,
+            self.object_schema_hash,
+        ) {
+            (None, None, None) => {
+                if self.object_identity_version.is_some()
+                    || self.requires_fee.is_some()
+                    || !self.object_requirements.is_empty()
+                {
+                    return Err(LoadError::Contract(
+                        "object requirements lack a schema descriptor",
+                    ));
+                }
+            }
+            (Some(major), Some(minor), Some(_)) => {
+                if major != crate::OBJECT_SCHEMA_MAJOR || minor == 0 {
+                    return Err(LoadError::Contract("unsupported object schema version"));
+                }
+                for requirement in &self.object_requirements {
+                    if requirement.major != major
+                        || requirement.min_minor == 0
+                        || requirement.min_minor > minor
+                        || requirement.min_payload_len == 0
+                        || requirement.min_count == 0
+                    {
+                        return Err(LoadError::Contract("invalid object requirement"));
+                    }
+                }
+            }
+            _ => {
+                return Err(LoadError::Contract("incomplete object schema descriptor"));
+            }
+        }
+        Ok(())
+    }
+
+    /// CBOR manifest entries for the V14 object context; empty for compiled strategy artifacts.
+    fn object_manifest_fields(&self) -> Result<Vec<(CborValue, CborValue)>, LoadError> {
+        let (Some(major), Some(minor), Some(hash)) = (
+            self.object_schema_major,
+            self.object_schema_minor,
+            self.object_schema_hash,
+        ) else {
+            return Ok(Vec::new());
+        };
+        let mut fields = vec![
+            (
+                CborValue::Text("object_schema_major".into()),
+                CborValue::Integer(i128::from(major)),
+            ),
+            (
+                CborValue::Text("object_schema_minor".into()),
+                CborValue::Integer(i128::from(minor)),
+            ),
+            (
+                CborValue::Text("object_schema_hash".into()),
+                CborValue::Bytes(hash.to_vec()),
+            ),
+            (
+                CborValue::Text("object_identity_version".into()),
+                CborValue::Integer(i128::from(self.object_identity_version.unwrap_or(1))),
+            ),
+            (
+                CborValue::Text("requires_fee".into()),
+                CborValue::Bool(self.requires_fee.unwrap_or(false)),
+            ),
+        ];
+        if !self.object_requirements.is_empty() {
+            fields.push((
+                CborValue::Text("object_requirements".into()),
+                CborValue::Array(
+                    self.object_requirements
+                        .iter()
+                        .map(|requirement| {
+                            cbor_map([
+                                ("domain", CborValue::Integer(i128::from(requirement.domain))),
+                                ("major", CborValue::Integer(i128::from(requirement.major))),
+                                (
+                                    "min_minor",
+                                    CborValue::Integer(i128::from(requirement.min_minor)),
+                                ),
+                                (
+                                    "min_payload_len",
+                                    CborValue::Integer(requirement.min_payload_len as i128),
+                                ),
+                                (
+                                    "min_count",
+                                    CborValue::Integer(i128::from(requirement.min_count)),
+                                ),
+                                (
+                                    "required_fields",
+                                    CborValue::Integer(requirement.required_fields as i128),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        Ok(fields)
+    }
+
+    pub fn descriptor_source(&self) -> Result<String, LoadError> {
+        self.validate()?;
+        let bytes = |values: &[u8]| {
+            values
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let callbacks=self.callbacks.iter().map(|name|format!(
+            "extern int32_t titan_numba_impl_{name}(int32_t *, void **, void *);\nTITAN_EXPORT int32_t titan_strategy_{name}(void *context) {{\n  int32_t result = -1; void *exception = 0;\n  int32_t status = titan_numba_impl_{name}(&result, &exception, context);\n  return status == 0 ? result : -1;\n}}"
+        )).collect::<Vec<_>>().join("\n");
+        Ok(format!(
+            r#"
+#include <stdint.h>
+#define TITAN_EXPORT __attribute__((visibility("default")))
+struct NativeStrategyDescriptor {{
+  uint32_t struct_size; uint32_t abi_version; uint8_t abi_fingerprint[32];
+  uint32_t recovery_state_schema_version; uint32_t state_alignment; uint64_t state_len;
+  uint8_t recovery_state_schema_hash[32]; uint64_t callback_mask;
+}};
+static const struct NativeStrategyDescriptor DESCRIPTOR = {{
+  sizeof(struct NativeStrategyDescriptor), 14, {{{fingerprint}}},
+  {version}, {alignment}, {len}, {{{hash}}}, {mask}ULL
+}};
+TITAN_EXPORT uint32_t titan_strategy_abi_version(void) {{ return 14; }}
+TITAN_EXPORT const struct NativeStrategyDescriptor *titan_strategy_descriptor(void) {{ return &DESCRIPTOR; }}
+{callbacks}
+"#,
+            fingerprint = bytes(&ABI_FINGERPRINT),
+            version = self.recovery_state_schema_version,
+            alignment = self.state_alignment,
+            len = self.state_len,
+            hash = bytes(&self.recovery_state_schema_hash),
+            mask = self.callback_mask
+        ))
+    }
+}
+
+pub struct StrategyCompileOutput<'a> {
+    pub metadata: &'a NumbaMetadata,
+    pub library: &'a [u8],
+    pub source_digest: [u8; 32],
+    pub parameters_digest: [u8; 32],
+    pub target_triple: &'a str,
+    pub cpu_baseline: &'a str,
+    pub bundle: bool,
+    pub output: &'a Path,
+}
+pub struct CompiledStrategy {
+    pub paths: Vec<PathBuf>,
+    pub manifest: ArtifactMetadata,
+}
+
+/// Publication is staged on the destination filesystem. A pair's manifest is committed last;
+/// failure rolls back prior files. Bundle replacement is one rename.
+pub fn write_compiled_strategy(
+    input: StrategyCompileOutput<'_>,
+) -> Result<CompiledStrategy, LoadError> {
+    let meta = input.metadata;
+    meta.validate()?;
+    validate_compile_target(input.target_triple, input.cpu_baseline)?;
+    let base = input.output;
+    let stem = if matches!(
+        base.extension().and_then(|v| v.to_str()),
+        Some("so" | "titan" | "cbor")
+    ) {
+        base.file_stem()
+    } else {
+        base.file_name()
+    }
+    .and_then(|v| v.to_str())
+    .ok_or(LoadError::Contract("invalid compiled_strategy output name"))?;
+    if stem.is_empty() || stem == "." || stem == ".." || stem.contains(['/', '\\']) {
+        return Err(LoadError::Contract("unsafe compiled_strategy output name"));
+    }
+    let library_name = format!("{stem}.so");
+    let manifest_name = format!("{stem}.manifest.cbor");
+    let native_library_sha256: [u8; 32] = Sha256::digest(input.library).into();
+    let mut value = cbor_map([
+        ("strategy_format_version", CborValue::Integer(2)),
+        ("strategy_type", CborValue::Text(meta.strategy_type.clone())),
+        (
+            "source_version",
+            CborValue::Text(meta.source_version.clone()),
+        ),
+        ("abi_version", CborValue::Integer(14)),
+        (
+            "abi_fingerprint",
+            CborValue::Bytes(ABI_FINGERPRINT.to_vec()),
+        ),
+        ("target_triple", CborValue::Text(input.target_triple.into())),
+        ("cpu_baseline", CborValue::Text(input.cpu_baseline.into())),
+        ("native_library", CborValue::Text(library_name.clone())),
+        (
+            "callback_mask",
+            CborValue::Integer(meta.callback_mask.into()),
+        ),
+        (
+            "recovery_state_schema_version",
+            CborValue::Integer(meta.recovery_state_schema_version.into()),
+        ),
+        (
+            "recovery_state_schema_hash",
+            CborValue::Bytes(meta.recovery_state_schema_hash.to_vec()),
+        ),
+        ("state_len", CborValue::Integer(meta.state_len as i128)),
+        (
+            "state_alignment",
+            CborValue::Integer(meta.state_alignment.into()),
+        ),
+        (
+            "initial_state",
+            CborValue::Bytes(meta.initial_state.clone()),
+        ),
+        (
+            "recovery_state_schema",
+            json_cbor(&meta.recovery_state_schema)?,
+        ),
+        (
+            "business_observation",
+            json_cbor(
+                &serde_json::to_value(&meta.business_observation)
+                    .map_err(|_| LoadError::Contract("invalid business observation"))?,
+            )?,
+        ),
+        ("parameter_schema", json_cbor(&meta.parameter_schema)?),
+        (
+            "subscriptions",
+            json_cbor(
+                &serde_json::to_value(&meta.subscriptions).expect("subscriptions serialize"),
+            )?,
+        ),
+        (
+            "capabilities",
+            json_cbor(&serde_json::to_value(&meta.capabilities).expect("capabilities serialize"))?,
+        ),
+        (
+            "source_digest",
+            CborValue::Bytes(input.source_digest.to_vec()),
+        ),
+        (
+            "parameters_digest",
+            CborValue::Bytes(input.parameters_digest.to_vec()),
+        ),
+        ("build", json_cbor(&meta.build)?),
+        (
+            "native_library_sha256",
+            CborValue::Bytes(native_library_sha256.to_vec()),
+        ),
+    ]);
+    if let CborValue::Map(entries) = &mut value {
+        entries.extend(meta.object_manifest_fields()?);
+    }
+    let canonical = canonical_cbor(&value)?;
+    let compiled_strategy_digest = Sha256::digest(&canonical).into();
+    // Reuse the runtime's contract checks before any destination is touched.
+    let parsed = parse_manifest(&value, compiled_strategy_digest)?;
+    let parent = base
+        .parent()
+        .filter(|v| !v.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".titan-compiled_strategy-")
+        .tempdir_in(parent)?;
+    let manifest_bytes = canonical_cbor(&value)?;
+    let names = if input.bundle {
+        let name = base.with_extension("titan").file_name().unwrap().to_owned();
+        let file = fs::File::create(staging.path().join(&name))?;
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default())
+            .unix_permissions(0o444);
+        let mut entries = [
+            (library_name.as_str(), input.library),
+            (manifest_name.as_str(), manifest_bytes.as_slice()),
+        ];
+        entries.sort_by_key(|entry| entry.0);
+        for (name, data) in entries {
+            archive
+                .start_file(name, options)
+                .map_err(|_| LoadError::Bundle("cannot write bundle entry"))?;
+            archive.write_all(data)?;
+        }
+        archive
+            .finish()
+            .map_err(|_| LoadError::Bundle("cannot finish bundle"))?
+            .sync_all()?;
+        vec![PathBuf::from(name)]
+    } else {
+        fs::write(staging.path().join(&library_name), input.library)?;
+        fs::write(staging.path().join(&manifest_name), manifest_bytes)?;
+        vec![PathBuf::from(&library_name), PathBuf::from(&manifest_name)]
+    };
+    let inspect_path = staging
+        .path()
+        .join(if input.bundle { &names[0] } else { &names[1] });
+    NativeStrategyLoader::new(staging.path().join("cache")).inspect(&inspect_path)?;
+    // Refuse directories and symlinks before moving either member of a pair.
+    for name in &names {
+        match fs::symlink_metadata(parent.join(name)) {
+            Ok(info) if !info.file_type().is_file() => {
+                return Err(LoadError::Contract(
+                    "compiled_strategy destination is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        fs::File::open(staging.path().join(name))?.sync_all()?;
+    }
+    let mut backups = Vec::new();
+    let mut published = Vec::new();
+    let publication = (|| -> std::io::Result<()> {
+        for (index, name) in names.iter().enumerate() {
+            let destination = parent.join(name);
+            if destination.exists() {
+                let backup = staging.path().join(format!("backup-{index}"));
+                fs::hard_link(&destination, &backup)?;
+                backups.push((backup, destination.clone()));
+            }
+            fs::rename(staging.path().join(name), &destination)?;
+            published.push(destination);
+        }
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        for path in published.iter().rev() {
+            let _ = fs::remove_file(path);
+        }
+        let mut rollback_error = None;
+        for (backup, path) in backups.iter().rev() {
+            if let Err(restore) = fs::rename(backup, path) {
+                rollback_error = Some(restore);
+            }
+        }
+        if let Some(restore) = rollback_error {
+            let recovery = staging.keep();
+            return Err(std::io::Error::other(format!("compiled_strategy publication failed: {error}; rollback failed: {restore}; retained backups in {}", recovery.display())).into());
+        }
+        return Err(error.into());
+    }
+    Ok(CompiledStrategy {
+        paths: published,
+        manifest: parsed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn metadata() -> NumbaMetadata {
+        let schema = serde_json::json!({"itemsize":8,"alignment":8,"endian":"little","fields":[]});
+        let mut hashed = schema.clone();
+        hashed["schema_version"] = 1.into();
+        NumbaMetadata {
+            protocol_version: 1,
+            abi_version: STRATEGY_ABI,
+            abi_fingerprint: ABI_FINGERPRINT,
+            strategy_type: "sample".into(),
+            source_version: "1.0.0".into(),
+            callbacks: vec!["on_tick".into()],
+            callback_mask: 2,
+            recovery_state_schema_version: 1,
+            recovery_state_schema_hash: Sha256::digest(compiler_json(&hashed)).into(),
+            state_len: 8,
+            state_alignment: 8,
+            initial_state: vec![0; 8],
+            recovery_state_schema: schema,
+            business_observation: None,
+            parameter_schema: serde_json::json!({"type":"object"}),
+            subscriptions: vec![NumbaSubscription {
+                event: "bbo".into(),
+                handler: "on_tick".into(),
+                schema_version: 1,
+                qos: "latest".into(),
+            }],
+            capabilities: vec!["market_data".into()],
+            build: serde_json::json!({"compiler":"unit-test"}),
+            object_schema_major: None,
+            object_schema_minor: None,
+            object_schema_hash: None,
+            object_identity_version: None,
+            requires_fee: None,
+            object_requirements: Vec::new(),
+        }
+    }
+    fn build<'a>(
+        metadata: &'a NumbaMetadata,
+        output: &'a Path,
+        bundle: bool,
+    ) -> StrategyCompileOutput<'a> {
+        StrategyCompileOutput {
+            metadata,
+            library: b"unit-test native bytes",
+            source_digest: [1; 32],
+            parameters_digest: [2; 32],
+            target_triple: host_target_triple(),
+            cpu_baseline: "generic",
+            bundle,
+            output,
+        }
+    }
+    #[test]
+    fn pair_and_bundle_are_reproducible_and_pass_runtime_validation() {
+        let root = tempfile::tempdir().unwrap();
+        let meta = metadata();
+        let pair = root.path().join("pair/sample");
+        let bundle = root.path().join("bundle/sample.titan");
+        let pair = write_compiled_strategy(build(&meta, &pair, false)).unwrap();
+        let first = write_compiled_strategy(build(&meta, &bundle, true)).unwrap();
+        assert_eq!(
+            pair.manifest.compiled_strategy_digest,
+            first.manifest.compiled_strategy_digest
+        );
+        let bytes = fs::read(&bundle).unwrap();
+        write_compiled_strategy(build(&meta, &bundle, true)).unwrap();
+        assert_eq!(fs::read(&bundle).unwrap(), bytes);
+        let loader = NativeStrategyLoader::new(root.path().join("cache"));
+        loader.inspect(&bundle).unwrap();
+        loader.inspect(&pair.paths[1]).unwrap();
+        // A manifest whose native bytes no longer match the recorded digest is rejected.
+        fs::write(&pair.paths[0], b"corrupt").unwrap();
+        assert!(loader.inspect(&pair.paths[1]).is_err());
+    }
+    #[test]
+    fn malformed_bridge_and_failed_pair_publication_preserve_previous_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let mut meta = metadata();
+        let output = root.path().join("sample");
+        let old_library = root.path().join("sample.so");
+        fs::write(&old_library, b"previous").unwrap();
+        fs::create_dir(root.path().join("sample.manifest.cbor")).unwrap();
+        assert!(write_compiled_strategy(build(&meta, &output, false)).is_err());
+        assert_eq!(fs::read(old_library).unwrap(), b"previous");
+        meta.callback_mask |= 1 << 63;
+        assert!(meta.validate().is_err());
+        meta = metadata();
+        meta.recovery_state_schema_hash[0] ^= 1;
+        assert!(meta.validate().is_err());
+        meta = metadata();
+        meta.callbacks = vec!["../../injection".into()];
+        assert!(meta.descriptor_source().is_err());
+        meta = metadata();
+        meta.abi_fingerprint[0] ^= 1;
+        assert!(meta.validate().is_err());
+    }
+    #[test]
+    fn native_library_sha256_is_checked_by_rust() {
+        let root = tempfile::tempdir().unwrap();
+        let meta = metadata();
+        let output = root.path().join("sample");
+        let compiled_strategy = write_compiled_strategy(build(&meta, &output, false)).unwrap();
+        fs::write(&compiled_strategy.paths[0], b"corrupt").unwrap();
+        assert!(
+            NativeStrategyLoader::new(root.path().join("cache"))
+                .inspect(&compiled_strategy.paths[1])
+                .is_err()
+        );
+        assert!(validate_compile_target("wrong-target", "generic").is_err());
+        assert!(validate_compile_target(host_target_triple(), "native").is_err());
+    }
+
+    #[test]
+    fn object_manifest_fields_are_complete_or_absent() {
+        let mut value = metadata();
+        assert!(value.object_manifest_fields().unwrap().is_empty());
+        value.object_schema_major = Some(crate::OBJECT_SCHEMA_MAJOR);
+        value.object_schema_minor = Some(crate::OBJECT_SCHEMA_MINOR);
+        value.object_requirements = vec![NumbaObjectRequirement {
+            domain: crate::OBJECT_DOMAIN_SYMBOL,
+            major: crate::OBJECT_SCHEMA_MAJOR,
+            min_minor: crate::OBJECT_SCHEMA_MINOR,
+            min_payload_len: 152,
+            min_count: 1,
+            required_fields: 0xF0F,
+        }];
+        assert!(value.validate().is_err(), "schema hash is still missing");
+        value.object_schema_hash = Some([7; 32]);
+        value.validate().expect("complete descriptor");
+        let fields = value.object_manifest_fields().unwrap();
+        let keys: Vec<_> = fields
+            .iter()
+            .map(|(key, _)| match key {
+                CborValue::Text(text) => text.clone(),
+                _ => panic!("object manifest keys are text"),
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "object_schema_major",
+                "object_schema_minor",
+                "object_schema_hash",
+                "object_identity_version",
+                "requires_fee",
+                "object_requirements"
+            ]
+        );
+        // Requirements without a descriptor are refused.
+        let mut orphan = metadata();
+        orphan.requires_fee = Some(true);
+        assert!(orphan.validate().is_err());
+    }
+}

@@ -2883,9 +2883,9 @@ fn core_runtime_owns_only_the_event_engine() {
 }
 
 #[test]
-fn v13_adapter_explicitly_advertises_legacy_capabilities() {
+fn adapter_explicitly_advertises_legacy_capabilities() {
     let engine = EventEngine::new(test_config()).unwrap();
-    let legacy = V13EventControlAdapter::new(engine.handle());
+    let legacy = EventControlAdapter::new(engine.handle());
     assert_eq!(legacy.api_version(), ApiVersion::new(1, 0));
     assert_eq!(legacy.api_capabilities(), EventApiCapabilities::default());
 }

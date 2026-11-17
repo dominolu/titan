@@ -5,6 +5,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use titan_core_types::{ComponentIdentity, EventPublisher, ResourceScope};
 
@@ -44,6 +45,7 @@ pub struct AccountServiceCore {
     mutation: Mutex<()>,
     binding_pins: titan_core_types::BindingPins<AccountHandle>,
     recording_guard: RwLock<Option<RecordingGuard>>,
+    execution_owners: Arc<crate::execution_ownership::ExecutionOwners>,
 }
 
 impl AccountServiceCore {
@@ -68,16 +70,14 @@ impl AccountServiceCore {
             mutation: Mutex::new(()),
             binding_pins: Default::default(),
             recording_guard: Default::default(),
+            execution_owners: Default::default(),
         })
     }
     pub fn register_factory(&self, f: Arc<dyn AccountConnectorFactory>) -> LocalResult<()> {
         self.factories.register(f)
     }
     pub fn set_recording_guard(&self, guard: Arc<dyn Fn() -> bool + Send + Sync>) {
-        *self
-            .recording_guard
-            .write()
-            .unwrap_or_else(|p| p.into_inner()) = Some(guard);
+        *self.recording_guard.write_unpoisoned() = Some(guard);
     }
     pub fn ledger_page(
         &self,
@@ -94,7 +94,7 @@ impl AccountServiceCore {
             .ledger_page(from_ms, to_ms, page, limit))
     }
     pub fn activate(&self, identity: ComponentIdentity, publisher: EventPublisher) {
-        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Some(RuntimeBindings {
+        *self.runtime.write_unpoisoned() = Some(RuntimeBindings {
             identity,
             publisher,
         });
@@ -112,17 +112,14 @@ impl AccountServiceCore {
     }
     fn next_operation(&self, state: OperationState, detail: impl Into<Arc<str>>) -> OperationId {
         let id = OperationId(self.next_operation_id.fetch_add(1, Ordering::Relaxed));
-        self.operations
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
+        self.operations.write_unpoisoned().insert(
+            id,
+            AccountOperationSnapshot {
                 id,
-                AccountOperationSnapshot {
-                    id,
-                    state,
-                    detail: detail.into(),
-                },
-            );
+                state,
+                detail: detail.into(),
+            },
+        );
         id
     }
     fn build_entry(
@@ -132,7 +129,7 @@ impl AccountServiceCore {
         publisher_open: bool,
     ) -> LocalResult<Arc<AccountEntry>> {
         let factory = self.factories.get(&d.connector_type)?;
-        let runtime = self.runtime.read().unwrap_or_else(|p| p.into_inner());
+        let runtime = self.runtime.read_unpoisoned();
         let runtime = runtime.as_ref().ok_or_else(|| {
             AccountError::new(
                 AccountErrorKind::RuntimeNotActive,
@@ -236,7 +233,7 @@ impl AccountServiceCore {
                 failures.push(x.to_string());
             }
         }
-        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.runtime.write_unpoisoned() = None;
         if failures.is_empty() {
             Ok(())
         } else {
@@ -251,7 +248,7 @@ impl AccountServiceCore {
 impl AccountAdminService for AccountServiceCore {
     fn create(&self, d: AccountDefinition) -> LocalResult<AccountHandle> {
         self.ensure_accepting()?;
-        let _g = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = self.mutation.lock_unpoisoned();
         self.registry.validate_insert(
             &d,
             self.config.max_accounts,
@@ -332,7 +329,7 @@ impl AccountAdminService for AccountServiceCore {
     }
     fn remove(&self, h: AccountHandle) -> LocalResult<OperationId> {
         self.ensure_accepting()?;
-        let _g = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = self.mutation.lock_unpoisoned();
         if self.binding_pins.is_pinned(h) {
             return Err(AccountError::new(
                 AccountErrorKind::ConnectorRejected,
@@ -355,7 +352,7 @@ impl AccountAdminService for AccountServiceCore {
     }
     fn replace(&self, h: AccountHandle, d: AccountDefinition) -> LocalResult<AccountHandle> {
         self.ensure_accepting()?;
-        let _g = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = self.mutation.lock_unpoisoned();
         if self.binding_pins.is_pinned(h) {
             return Err(AccountError::new(
                 AccountErrorKind::ConnectorRejected,
@@ -443,8 +440,7 @@ impl AccountAdminService for AccountServiceCore {
     }
     fn operation(&self, id: OperationId) -> AccountOperationSnapshot {
         self.operations
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(&id)
             .cloned()
             .unwrap_or(AccountOperationSnapshot {
@@ -456,6 +452,32 @@ impl AccountAdminService for AccountServiceCore {
 }
 
 impl AccountService for AccountServiceCore {
+    fn execution_bindings(&self, account: AccountHandle) -> LocalResult<ExecutionBindings> {
+        let entry = self.registry.get(account)?;
+        Ok((
+            entry.definition.instruments.clone(),
+            entry.definition.currencies.clone(),
+        ))
+    }
+
+    fn claim_execution(
+        &self,
+        accounts: &[AccountHandle],
+        owner: (u32, u64),
+        exclusive: bool,
+    ) -> LocalResult<AccountExecutionLease> {
+        let _guard = self.mutation.lock_unpoisoned();
+        for account in accounts {
+            self.registry.get(*account)?;
+        }
+        self.execution_owners
+            .claim(
+                &accounts.iter().map(|a| a.account_id.0).collect::<Vec<_>>(),
+                owner,
+                exclusive,
+            )
+            .map_err(|reason| AccountError::new(AccountErrorKind::NotReady, reason))
+    }
     fn execution_evidence(
         &self,
         account: AccountHandle,
@@ -470,12 +492,15 @@ impl AccountService for AccountServiceCore {
         }
     }
     fn pin_binding(&self, handle: AccountHandle) -> LocalResult<titan_core_types::BindingLease> {
-        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self.mutation.lock_unpoisoned();
         self.registry.get(handle)?;
         Ok(self.binding_pins.pin(handle))
     }
     fn resolve(&self, k: &str) -> LocalResult<AccountHandle> {
         self.registry.resolve(k)
+    }
+    fn definition(&self, account: AccountHandle) -> LocalResult<AccountDefinition> {
+        Ok(self.registry.get(account)?.definition.clone())
     }
     fn order_evidence(
         &self,
@@ -551,10 +576,7 @@ impl AccountService for AccountServiceCore {
         let entry = self.require_ready(h)?;
         Ok(Arc::new(AccountConnectorExecution::new(
             entry.connector.clone(),
-            self.recording_guard
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
+            self.recording_guard.read_unpoisoned().clone(),
         )))
     }
 }

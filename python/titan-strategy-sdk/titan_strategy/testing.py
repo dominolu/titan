@@ -12,8 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import abi_v13
-from .context_v13 import _DEPTH_BATCH_DTYPE
+from . import abi
+
+_abi = abi
+from .context import _DEPTH_BATCH_DTYPE
 from .types import EventKind
 
 
@@ -36,7 +38,7 @@ def validate_tests(cases):
         raise ValueError("TESTS exceed the 8 MiB scene budget")
     names = set()
     for case in cases:
-        if not isinstance(case, dict) or set(case) - {"name", "state", "steps", "expect"}:
+        if not isinstance(case, dict) or set(case) - {"name", "state", "steps", "expect", "objects"}:
             raise ValueError("invalid TESTS scene fields")
         name = case.get("name")
         if not isinstance(name, str) or not name or name in names:
@@ -52,7 +54,7 @@ def validate_tests(cases):
         for step in steps:
             if not isinstance(step, dict) or set(step) - {
                 "callback", "now_ns", "state", "views", "depth_batch", "recovery_orders",
-                "flags", "status", "expect",
+                "flags", "status", "expect", "object_status",
             }:
                 raise ValueError("invalid TESTS step fields")
             callback = step.get("callback")
@@ -103,7 +105,7 @@ def _assert(values, expected):
                 raise AssertionError(f"{path}: expected {op} {target!r}, got {actual!r}")
 
 
-_VIEW_DTYPES = {name: getattr(abi_v13, dtype + "_dtype") for name, dtype in (
+_VIEW_DTYPES = {name: getattr(abi, dtype + "_dtype") for name, dtype in (
     ("ticks", "tick"), ("depth", "depth"), ("fills", "fill"),
     ("order_events", "order_event"), ("cancel_events", "cancel_event"),
     ("position_events", "position_event"), ("balance_events", "balance_event"),
@@ -127,8 +129,118 @@ def _rows(dtype, rows):
     return result
 
 
-def run_native_tests(strategy, library_path: Path, cases):
+_OBJECT_DOMAIN_MAX = {"symbols": 64, "accounts": 16, "currencies": 128, "pairs": 16, "fees": 16}
+
+
+def _fill_records(dtype, rows):
+    result = np.zeros(len(rows), dtype=dtype)
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError("object payload rows must be dicts")
+        for key, value in row.items():
+            if key not in dtype.names:
+                raise ValueError(f"unknown object payload field {key!r}")
+            if isinstance(value, dict):
+                for nested_key, nested_value in value.items():
+                    if nested_key not in dtype[key].names:
+                        raise ValueError(f"unknown nested object field {key}.{nested_key}")
+                    result[i][key][nested_key] = nested_value
+            else:
+                result[i][key] = value
+    return result
+
+
+def objects(*, symbols=(), accounts=(), currencies=(), pairs=(), fees=(), status=None):
+    """Declare the object table for one TESTS scene.
+
+    The returned description is JSON-compatible; the harness turns it into payload buffers plus a
+    reference array and keeps them alive for the duration of the native callback. Object ids follow
+    the ABI conventions: symbol/account use their local numbers, currency uses its position in the
+    currency list, pair its position, status is 0, fee its account number.
+    """
+    for name, rows in (("symbols", symbols), ("accounts", accounts), ("currencies", currencies),
+                       ("pairs", pairs), ("fees", fees)):
+        if not isinstance(rows, (list, tuple)) or len(rows) > _OBJECT_DOMAIN_MAX[name]:
+            raise ValueError(f"objects.{name} must be a list of at most {_OBJECT_DOMAIN_MAX[name]} rows")
+    return {
+        "symbols": [dict(row) for row in symbols],
+        "accounts": [dict(row) for row in accounts],
+        "currencies": [dict(row) for row in currencies],
+        "pairs": [dict(row) for row in pairs],
+        "fees": [dict(row) for row in fees],
+        "status": dict(status or {}),
+    }
+
+
+def _build_object_table(description):
+    """Materialize payloads + `TitanObjectRef[]`; returns (refs, buffers, status)."""
+    
+
+    if not isinstance(description, dict):
+        raise ValueError("objects must be an `objects(...)` description")
+    unknown = set(description) - {"symbols", "accounts", "currencies", "pairs", "fees", "status"}
+    if unknown:
+        raise ValueError(f"unknown objects keys {sorted(unknown)}")
+    payloads = {
+        "symbols": _fill_records(abi.symbol_payload_dtype, description.get("symbols", [])),
+        "accounts": _fill_records(abi.account_payload_dtype, description.get("accounts", [])),
+        "currencies": _fill_records(abi.currency_payload_dtype, description.get("currencies", [])),
+        "pairs": _fill_records(abi.pair_payload_dtype, description.get("pairs", [])),
+        "fees": _fill_records(abi.fee_payload_dtype, description.get("fees", [])),
+    }
+    status = np.zeros(1, dtype=abi.status_payload_dtype)
+    for key, value in description.get("status", {}).items():
+        if key not in status.dtype.names:
+            raise ValueError(f"unknown status field {key!r}")
+        status[0][key] = value
+    entries = []
+
+    def add(domain, object_id, flags, array, index):
+        entries.append((domain, int(object_id), flags, array, index))
+
+    for index in range(len(payloads["symbols"])):
+        add(abi.DOMAIN_SYMBOL, payloads["symbols"][index]["local_asset_no"], 1,
+            payloads["symbols"], index)
+    for index in range(len(payloads["accounts"])):
+        add(abi.DOMAIN_ACCOUNT, payloads["accounts"][index]["local_account_no"], 1,
+            payloads["accounts"], index)
+    for index in range(len(payloads["currencies"])):
+        add(abi.DOMAIN_CURRENCY, index, 1, payloads["currencies"], index)
+    for index in range(len(payloads["pairs"])):
+        add(abi.DOMAIN_PAIR, index, 1, payloads["pairs"], index)
+    add(abi.DOMAIN_STATUS, 0, 1 | 2, status, 0)
+    fee_refs = []
+    seen_accounts = set()
+    for index in range(len(payloads["fees"])):
+        row = payloads["fees"][index]
+        account_no = int(row["local_account_no"])
+        if account_no in seen_accounts:
+            raise ValueError(f"duplicate fee object for account {account_no}")
+        seen_accounts.add(account_no)
+        valid = int(row["flags"]) & 1 != 0
+        fee_refs.append((account_no, 1 if valid else 0, payloads["fees"], index))
+    fee_refs.sort(key=lambda entry: entry[0])
+    for account_no, flags, array, index in fee_refs:
+        add(abi.DOMAIN_FEE, account_no, flags, array, index)
+    # References must be ordered by (domain, object_id).
+    entries.sort(key=lambda entry: (entry[0], entry[1], entry[4]))
+    refs = np.zeros(len(entries), dtype=abi.object_ref_dtype)
+    for index, (domain, object_id, flags, array, row_index) in enumerate(entries):
+        refs[index]["domain"] = domain
+        refs[index]["object_id"] = object_id
+        refs[index]["flags"] = flags
+        refs[index]["schema_major"] = abi.PAYLOAD_MAJOR
+        refs[index]["schema_minor"] = abi.PAYLOAD_MINOR
+        refs[index]["payload"] = array.ctypes.data + row_index * array.dtype.itemsize
+        refs[index]["payload_len"] = array.dtype.itemsize
+    buffers = dict(payloads)
+    buffers["status"] = status
+    return refs, buffers, status
+
+
+def run_native_tests(strategy, library_path: Path, cases, *, abi=None):
     """Run each scene with fresh initial bytes and synchronous real native callbacks."""
+    abi = abi or _abi
     cases = validate_tests(cases)
     library = ctypes.CDLL(str(library_path))
     reports = []
@@ -136,9 +248,9 @@ def run_native_tests(strategy, library_path: Path, cases):
                                  ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64))
     for case in cases:
         state = np.frombuffer(strategy.initial_state, dtype=strategy.state_layout.dtype).copy()
-        context = np.zeros(1, dtype=abi_v13.runtime_context_dtype)
+        context = np.zeros(1, dtype=abi.runtime_context_dtype)
         row = context[0]
-        row["struct_size"], row["abi_version"] = context.nbytes, 13
+        row["struct_size"], row["abi_version"] = context.nbytes, abi.ABI_VERSION
         row["state_ptr"], row["state_len"] = state.ctypes.data, state.nbytes
         row["state_alignment"] = strategy.state_layout.alignment
         row["state_schema_version"] = strategy.definition.spec.recovery_state_schema_version
@@ -158,6 +270,13 @@ def run_native_tests(strategy, library_path: Path, cases):
         row["submit_order"] = ctypes.cast(submit_callback, ctypes.c_void_p).value
         row["cancel_order"] = ctypes.cast(cancel_callback, ctypes.c_void_p).value
         keepalive = {}
+        object_status = None
+        if case.get("objects"):
+            refs, buffers, object_status = _build_object_table(case["objects"])
+            keepalive["objects"] = refs
+            keepalive["object_payloads"] = buffers
+            row["objects_ptr"], row["objects_len"] = refs.ctypes.data, refs.nbytes
+            row["object_schema_minor"] = abi.PAYLOAD_MINOR
         _set_state(state[0], case.get("state", {}))
         def expect(checks):
             roots = {**{key: state[0][key] for key in state.dtype.names},
@@ -171,6 +290,11 @@ def run_native_tests(strategy, library_path: Path, cases):
                 callback = step["callback"]
                 if callback not in strategy.definition.handlers:
                     raise ValueError(f"undeclared callback {callback}")
+                if object_status is not None and "object_status" in step:
+                    for key, value in step["object_status"].items():
+                        if key not in object_status.dtype.names:
+                            raise ValueError(f"unknown object status field {key!r}")
+                        object_status[0][key] = value
                 row["event_kind"], row["last_error_code"] = _KINDS[callback], 0
                 row["event_schema_version"] = schemas.get(_KINDS[callback], 1)
                 for name, rows in step.get("views", {}).items():
@@ -185,7 +309,7 @@ def run_native_tests(strategy, library_path: Path, cases):
                     keepalive["payload"] = payload
                     row["event_payload_ptr"], row["event_payload_len"] = payload.ctypes.data, payload.nbytes
                 if "recovery_orders" in step:
-                    payload = _rows(abi_v13.active_order_dtype, step["recovery_orders"])
+                    payload = _rows(abi.active_order_dtype, step["recovery_orders"])
                     keepalive["payload"] = payload
                     row["event_payload_ptr"], row["event_payload_len"] = payload.ctypes.data, payload.nbytes
                 function = getattr(library, "titan_strategy_" + callback)

@@ -1,8 +1,16 @@
 # Titan 可复用工程经验
 
+日常管理使用 `titan_cli` 的 strategy/account/research/config 与交互 help；`titan serve` 承担后台角色，原 console/本机工具保留兼容。本机自动启动只认显式配置、服务身份与既有管理库，禁止远端失败降级或丢库重建。journal 区分未知、终态和已核对的准入拒绝；数据阶段用 expected_resources 绑定最终冻结快照。数据库向导只存引用，PostgreSQL 仅历史且校验固定 target，候选不冒充生效。[本轮非实盘验收](../verification/2026-11-03/cli-simplification/README.md)。
+
+管理 CLI 统一使用 v2 Cookie/CSRF 客户端；每进程认证时成功登录须清除失败计数，不能让合法批量命令消耗失败密码额度。Operation 遇 unknown 保留原键与回执，只读找回，不自动重发；事实导出钉住来源、运行代次、过滤和上界，服务端授权与筛选先于分页。本轮非实盘门禁与限制见[管理 CLI 验收](../verification/2026-11-02/managed-cli/README.md)。
+
+账户管理与策略源码入口：账户档案属于管理目录，不能替代账户事实或自动授予连接、交易权限。构建节点的源码上传默认关闭，显式启用后仍只存储不可变源码；执行由已有校验/编译 Operation 完成。实盘与回测入口共享策略及版本身份，不复制两套目录。新增入口复用会话、CSRF、节点/环境/角色校验及审计，账户编辑使用乐观版本校验；[验证记录](../verification/2026-11-02/management-directory/README.md)包含本轮范围与限制。
+
+模拟预览使用独立只读视图，只匹配明确标记为示例的策略。合成曲线、收益、订单和状态不得写成真实引擎结果或账户事实，也不接入操作提交入口；真实记录保留独立切换。边界与本轮验证见[模拟展示记录](../verification/2026-11-02/management-simulation/README.md)。
+
 公开历史与验证摘要已按[仓库隐私约定](../repository_privacy.md)脱敏。原始证据保存在私有档案；历史摘要、签名和测试数量只标识原始快照，不证明脱敏后的文件或后续修改通过验证。真实主机地址与个人路径不能重新写回公开文件。
 
-更新日期：2026-10-31。来源：系统重构、恢复与账户模型修复、策略编译链向 Rust 的迁移、网格策略验收及管理平台实现与审查。
+更新日期：2026-11-13。来源：系统重构、恢复与账户模型修复、策略编译链向 Rust 的迁移、网格策略验收及管理平台实现与审查。
 
 本文件记录后续开发应复用的设计原则和排障方法。执行环境以根目录 [AGENTS.md](../../AGENTS.md) 为准；涉及实现细节时核对当前代码。下方报告中的版本、路径和测试数量仅属于当次验证，不代表后续修改已经验收。
 
@@ -84,7 +92,7 @@
 
 - [Rust 编译链迁移及完整远端验证，2026-10-21](../verification/2026-10-21/native-compiler/README.md)：当次 Rust 453 项通过、12 项忽略；doctest 2 项通过、1 项忽略；Python SDK 30 项和报告 4 项通过，Clippy `-D warnings` 通过。未执行实盘验证。
 - [恢复、账户及 review 修复验证，2026-10-13](../verification/2026-10-13/review-fixes/README.md)。
-- [系统重构清单](../system_refactor_checklist.md)、[V13 实施状态](../strategy_abi_v13_implementation_status.md)、[Python SDK 边界及用法](../../python/titan-strategy-sdk/README.md)。
+- [系统重构清单](../system_refactor_checklist.md)、[策略观测协议](../strategy_observation_protocol.md)、[Python SDK 边界及用法](../../python/titan-strategy-sdk/README.md)。
 
 后续仅沉淀已确认、可复用的结论；设计边界变化时同时更新本文件、相关入口文档和验证证据。不要在记忆中记录密钥、账户凭据或把一次性远端工作目录当作默认路径。发现历史结论过期时明确修订，避免追加互相矛盾的规则。
 
@@ -387,3 +395,112 @@
 - [本轮精简验收](../verification/2026-10-31/refactor-simplification/README.md)：R01–R09 完成，生产实现净减少 338 行；titan-build 上 734 Rust、2 doctest、155 SDK、5 报告测试及前端门禁通过，759 项输入在验收前后一致；26 Rust/1 doctest ignored 未开启。SDK 数量包含用户原有未提交跨所策略回归。本轮没有真实账户访问或部署。
 - [Review 修复及最终提交验收](../verification/2026-10-31/refactor-simplification-review-fixes/README.md)：整合 e31594fd，修复版本投影顺序与真实时间测试竞态；心跳采用 Tokio 单调时钟，测试显式推进并阻止自动跳时。精确暂存树通过 736 Rust、2 doctest、120 SDK、5 报告测试与全部前端门禁、10 次心跳回归；759 输入前后一致。120 SDK 不含用户未提交的 35 项跨所测试。
 - 用 Git tree/TarInfo 打包源码时不能让默认零时间戳误导已有 Cargo 缓存；物化时设置当前时间戳，或隔离构建缓存。源码摘要一致只证明输入字节身份，不能证明缓存实际重新编译了新代码；本轮上游 TLS 独立进程回归暴露此问题，刷新源码 mtime 后重新编译并完整重跑通过。
+
+## 26. cross_exchange_mm 阶段 A 与双绑定执行准入
+
+- 策略声明 `BUSINESS_FAULT_DRAIN` 后，SDK 静态校验才允许 handler 返回计算业务码；未声明的策略仍只接受字面量 `0/-1..-4`，不能为此放宽全部策略。宿主把 `1..=65535` 当作锁存业务故障并进入 `Stopping`，负数按平台硬故障失败关闭。
+- 业务故障回调里不能整批丢弃命令：只应丢弃非 reduce-only 的新风险提交，保留同回调暂存的撤单与 reduce-only 并继续走校验提交；否则故障时撤单丢失、在途风险无人处理。在线宿主与 `offline_v13` 必须同规则。
+- 公开业务观测字段的 `kind` 必须与状态字段符号一致（`int64` 源不能声明 `uint64`），否则 Rust 观测校验拒绝整个定义；这类修正不改变状态布局，不需要提升恢复 schema。
+- 受控执行的行情年龄必须按资产分别记录。单一 `last_bbo_ns` 会让做市腿的新鲜行情证明对冲腿也新鲜；改为按 `local_asset_no` 保存后，估值包络按请求资产取自己的时间戳。
+- 双绑定执行包络与旧单市场 `ExecutionLimits` 互斥（`execution_binding_ambiguous`）；lot 比例用十进制 coefficient/scale 做整数约分（`LotRatio::exact`），非整数比例拒绝，不用浮点近似。定义加载期校验形状，运行时创建期再用 manifest 能力校验 `MULTI_VENUE_EXECUTION`。
+- 提交用途复用请求保留字节（`reserved[0]`），ABI 布局不变；未配置多绑定包络的旧路径只能校验"是已知值"并按声明式信息处理，不授予任何放宽，否则等于凭空扩大实盘准入面。用途只有在绑定角色可复核时才有准入意义。
+- "成交先于持仓"的合法对冲必须由平台自己的证明放行，而不是删掉 `validate_opening`：条件是（a）没有仍缺独立成交事件的填充，（b）提交指向 hedge 腿，（c）它缩小已证明的未对冲敞口（`maker_expected × 整数比例 + hedge_expected`，方向正确且不超量）。超量、反向与未声明用途继续失败关闭。
+- 做市报价的 hedge 义务从**派单**那一刻就存在，不是从成交那刻：预占必须在 maker 单可成交之前完成，否则撤单竞态窗口里必然出现"已成交但无对冲额度"。撤单永远不是释放条件；终态且不再有待补独立成交才是。
+- 预占结算必须幂等（按累计成交量而不是增量），因为对账扫描会在每次回调后重放同一事实；用增量会在第二次扫描重复扣减或静默失败。
+- 恢复不能从空账本开始：按非终态、非 reduce-only 的恢复订单重建预占，使账本成为事实的纯函数。未持久化的额度（如救援消耗）在重启时只能 fail-closed（按已用尽处理），不能按 0 处理，否则等于重启即退款。
+- 预占必须**两条腿同方向记账**：只让 maker 报价占用，会在"报价已释放、对冲单在途"和"进程重启"两个时刻掉到真实义务之下。maker 腿按比例、hedge 腿按自身手数占用同一份预算，交接时才不会塌陷；恢复时两类订单都要重建。
+- 保证金投影是**逐账户**的：`available_units` 只对本账户本货币有效，跨所盈余不得抵扣缺口；余额缺失/为零/为负必须拒绝而不是当作零需求；保证金率必须显式配置，缺省即猜。
+- 崩溃矩阵要用**真实进程终止**而不是状态模拟（`current_exe()` + `--ignored --exact` + ready 文件 + kill），并在停机后从持久化事实重建账本、断言预算精确等于义务。
+- 保证金投影只有在**派单前**被调用才有意义；只交付投影函数而不接准入，等于没有任何抵押门禁。接线时把「已预占 own 名义 + 本次名义」一起投影，否则连续报价会各自通过、累计越界。
+- 多绑定实例创建期必须有账户服务：缺 `(instrument, currency)` 单位就拒绝创建，不能退化成"没有抵押证明也能跑"。旧单市场路径把该列表留空并直接跳过检查，保持行为不变。
+- 受控管理路径拥有执行包络：运行配置自带 `execution_limits`/`multi_binding` 必须被拒绝，否则配置文件可以绕过管理侧的风险上限。
+- **策略产物不可字节复现**：同一源码、同一 titan 二进制连续编译两次，bundle sha256、`compiled_strategy_digest` 与 `native_library_sha256` 都不同（Numba/LLVM 产物含非确定性内容）；只有 `source_digest` 与 `parameters_digest` 稳定。因此"冻结产物"只能冻结某一次构建的实际字节并记录工具链身份，不能用"重新编译应得相同摘要"作为校验；发布包的重复构建校验对这个策略不可用。
+- [阶段 A 验收](../verification/2026-11-11/cross-exchange-mm-phase-a/README.md) 与 [B4 验收](../verification/2026-11-11/cross-exchange-mm-b4-command-purpose/README.md)：titan-build 上 fmt、Clippy `-D warnings`、Rust 130 项、CLI 108 项、SDK 161 项、内嵌 3 个原生场景、编译与 validate 全部通过；平台双绑定矩阵 B8（多腿受控配置）、B7 与管理侧整体验收仍待实现，未做任何实盘访问。
+
+## 27. 标的单位单一来源与 ABI 布局双向校验（2026-11-13）
+
+- 单位算术收敛到 `titan_strategy_runtime::validate_instrument_units`：`base_delta_per_lot` 一律由
+  `quantity_lot × contract_multiplier` 派生，配置里的同名字段只是**待校验候选**；市场/账户/多绑定腿
+  任一处不一致都以稳定原因码拒绝，不再逐处各写一份比例。`titan instruments verify`、`core-run` 与
+  Python preflight 共用该结论；preflight 删除本地比例推导，避免"配置通过、运行按另一套单位"。
+- 市场绑定必须有 `contract_multiplier`，且配置对象启用 `deny_unknown_fields`：历史上示例配置里的
+  `contract_multiplier` 会被静默丢弃，导致手填单位与真实基数无关。缺失/未知字段必须启动失败，不设
+  静默默认。
+- `DecimalUnit` 的反序列化必须走 `new()`（拒绝 0、scale>18、未知字段，并归一化尾零），否则单位可
+  非法、身份摘要不可复现；bincode 解码路径仍可能绕过构造器，使用点需再次校验。
+- ABI 指纹原来是单向门禁（Python 算、Rust 比常量）。现以 `fixtures/abi_v13_descriptor.json` 作为两侧
+  共同基准：Python 断言其等于 `canonical_abi_descriptor()`，Rust 断言其哈希等于 `V13_ABI_FINGERPRINT`
+  且每个 struct 的大小/字段偏移与真实布局一致。等宽类型替换（`i64`→`u64`）仍不在覆盖范围，留给
+  schema/codegen。
+- 单位身份变化必须 fail-closed：V14 的 `ObjectTable` 摘要要先于 `binding_digest` 二次混合、恢复期按
+  同一顺序重建比较；本阶段不改 ABI，已编译产物指纹保持 `7864d0be…50ed`。
+- 离线恢复必须复用在线语义：`OfflineV13Adapter::recover` 恢复校验快照、只在策略声明
+  `RECOVERY_ORDER_RESULTS` 时暴露恢复订单 payload、按在线顺序完成 reconcile 边界并要求代次递增。
+  恢复期命令门是关闭的，策略在 `on_recover` 下单会表现为回调失败（-2→-4），宿主必须失败关闭并把
+  适配器标记为不可继续，不能当作"恢复带告警"。
+- 产物字节不可复现（Numba/LLVM），但 `parameters_digest` 稳定。部署可选 pin 该摘要：
+  `StrategyFileRef.parameters_digest` 与 manifest 不一致时以 `parameters_digest_mismatch` 拒绝激活，
+  `titan strategy build --runtime` 自动注入；缺省保持旧部署兼容，不替代 artifact digest/signature。
+- 市场快照应携带冻结的绑定单位（tick/lot/乘数/最小量/报价币），调用方不必回读配置；快照不等于
+  交易所原生元数据。原生元数据走 `InstrumentInfo` 的 `*_exact` 字段：只用交易所自己的字符串/
+  整数解析（含科学计数 `1e-7`），`f64` 仅观测；不可得字段为 `None`，不得用 0 或猜值代替。
+  OKX 是合约张数（`ctVal` 为每张基础币），Gate CrossEx REST 是基础币且规则里的 `contract_size`
+  是遗留展示字段不得用于换算，Hyperliquid 官方不发布 tick。
+- 离线输入不得联网取元数据：trace 自 `schema_version=2` 起必须内嵌 `metadata` 快照，加载期校验其
+  自身 digest、覆盖初始行情的每个资产、并与配置绑定逐项核对；缺快照/摘要不符/资产缺失一律拒绝，
+  不做事后补全。快照 digest 用“排序后的 instrument 数组 + 字母序键 + 缺失即 null”的规范 JSON 计算，
+  以便跨语言复现（Python 与 Rust 已交叉核对）。
+- 共享编译服务器的外部负载会让原生 describe 偶发超过产品 60 秒期限；测试只对该类**环境性**超时
+  重试，并串行化同一测试二进制内的编译，不能把超时当产品缺陷掩盖、也不要放宽产品期限。
+- ABI V14 root 采用“V13 前缀 + 48B 尾部”冻结布局：root 与 32B object ref 进指纹；payload 按
+  `(domain, schema_major, schema_minor)` 独立版本化，同 major 只允许末尾追加，不进出指纹。
+  新增 payload 字段必须同时升 minor 与 `payload_len`；跨语言一致性依靠 schema 描述/哈希，而不是
+  加载期相等检查。
+- ObjectTable 在创建期完成全部 checked 派生：`base_delta_per_lot`、`min_qty_lots`、
+  `min_notional_tick_lots`、pair 的整数 lot 比与有理 tick 比、最小可对冲量；synthetic、inverse、
+  未知币种、缺最小量/最小金额一律拒绝实例。admission 身份摘要只覆盖参与准入算术的字段，
+  fee/status/审计字段变化不得改变恢复身份；status 是唯一可变对象，只能经 `&mut` 单写者写入。
+  payload arena 用 `Box<[u64]>` 保证 8 字节对齐，构建后不再扩容。
+- 对象门禁分两层：artifact/load 层只能用宿主编译期常量比较 schema/长度/字段位图（此时还没有表），
+  instance/create 层才逐 ref 证明数量、major、minor/payload_len 与字段存在性；缺表时绝不能放行，
+  也不能把"artifact 能加载"当成"对象可用"。
+- `object_context` 能力名必须同时出现在 Python `Capability`、原生能力位、运行时能力位、manifest 名字
+  解析与 `manifest_v13` 映射五处；少一处会表现为能力被吞或部署拒绝，这是 V14 切换的固定同步清单。
+- V14 的 Python 侧先复用 V13 视图 dtype，仅在根尾部追加 48B，并把 object ref 加入 ABI dtype 集合；
+  payload dtype 只进 `OBJECT_PAYLOADS`，不进 ABI 指纹。Rust 用常量 `V14_ABI_FINGERPRINT` 与
+  `fixtures/abi_v14_descriptor.json` 对齐，另用 `fixtures/object_schema_v14.json` 做 payload 描述符
+  的逐字节双向校验；任一侧单独改布局都会在构建期失败。
+- 对象 accessor 只在回调内做只读扫描：refs 数组的长度必须先 select 成 guard 后的值再 pack 成
+  shape（分支内赋值不会传播到 shape，会静默得到空数组）；必须校验 ref 的 valid/major/minor 与
+  payload_len，必需对象缺失返回零记录并写 `last_error_code=-2`，fee 缺失是合法状态、不得置错。
+- 能力协商要双向：策略使用对象 accessor 必须声明 `OBJECT_CONTEXT`；V14 之前的老宿主即使认识该
+  能力名也必须显式拒绝（`object_context_abi_mismatch`），否则会执行读取对象表的产物导致越界。
+- TESTS 场景的对象表由 `testing.objects(...)` 声明，harness 物化 payload 数组 + 排序后的 refs 并
+  keepalive；fee 以账户号寻址且 `valid=0` 合法。V13 harness 遇到 objects 必须直接报错，不能静默
+  忽略——否则场景作者会以为对象已生效。
+- 元数据快照的身份键是 `(source_key, native_symbol)`，不是 `asset_no`：配置里的 `asset_id` 与离线
+  trace 的 `asset_no` 是两套编号，按 asset_no 查配置会错配。对象表适配器据此查找，pair 准入还要求
+  两侧 symbol 非 synthetic，因此没有权威快照的 pair 必须被拒绝。
+- 验证：fmt/check/Clippy `-D warnings` 通过，全量 Rust、doctest、SDK、preflight 与 CLI 集成测试通过；
+  全部非实盘、未联网交易所元数据。
+
+## 28. V14 切换与离线回放的工程教训（2026-11-14）
+
+- **ABI 切换必须同批**：常量/指纹/loader/descriptor/manifest/运行时 root/编译器/SDK 任何一侧单独切换都会
+  让另一侧越界读取。本轮把 12 处 `V13_*` 常量集中在 `STRATEGY_ABI`/`ABI_FINGERPRINT`，V13 常量只保留给
+  负例与历史断言，避免“半切换”可编译却危险。
+- **测试二进制只能有一个 `#[global_allocator]`**：新增热路径分配探针时直接在另一个模块再定义一个会导致
+  编译失败。正确做法是把计数分配器抽到 crate 级 `test_allocations` 模块，所有探针共用同一计数器。
+- **离线路径与在线路径的差异要单独验证**：同一个 `ObjectTable` 在原生 harness 中可正常读取，但命令行
+  离线回放在 `on_start` 返回 0 之后仍得到 `-2`；逐步写入未使用字段的标记法只能证明“函数执行完了”，
+  不能证明策略视图读取一致。离线回放已由用户决策降级为已知限制，重新启用前需要专门比对离线视图与
+  payload 字节。
+- **删除退役模块要连带清理守卫脚本**：删掉 `hftbacktest::strategy` 后，`check_single_runtime.sh` 仍钉死
+  V13 路径与过窄的 legacy 正则（会把文档字符串当遗留符号），必须同步改为“V13 前缀 + V14 root 恰好两个
+  定义”。新建的 `check_no_retired_hftbacktest_strategy.sh` 用限定 grep 防止模块复活。
+- **策略参数守卫要按用途分类**：`*_tick_lots`、`spread_ticks`、`max_slippage_ticks` 是业务量纲，合法；
+  只有合约乘数、tick/lot 大小、最小金额、费率、腿间比、报价单位才属于交易所事实。`check_strategy_no_exchange_facts.py`
+  按名称黑名单实现，显式文件全量扫描、仓库模式只看参数块。
+- **验证**：fmt/check/Clippy `-D warnings` 通过，957 Rust、2 doctest、185 SDK、CLI 集成测试与三个守卫脚本通过；
+  全部非实盘、未联网交易所元数据。证据见[V14 状态](../verification/2026-11-13/symbol-units-p0/STATUS.md)，
+  剩余阻断为签名密钥（产物重签）与交易所授权（在线元数据拉取）。

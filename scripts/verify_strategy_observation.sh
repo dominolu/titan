@@ -10,9 +10,11 @@ cd "$repo"
 out=${1:?provide an evidence directory}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-: "${CARGO_TARGET_DIR:=$repo/target}"
+# One target directory for every verification on this host (see scripts/build_env.sh).
+source scripts/build_env.sh
+titan_build_env quiet
 : "${TITAN_VERIFY_PYTHON:=python3}"
-export CARGO_TARGET_DIR CARGO_NET_OFFLINE=true
+export CARGO_NET_OFFLINE=true
 export TITAN_STRATEGY_PYTHON="$TITAN_VERIFY_PYTHON" TITAN_REPORT_PYTHON="$TITAN_VERIFY_PYTHON"
 export TITAN_STRATEGY_SDK="$repo/python/titan-strategy-sdk" TITAN_REPORTING_PATH="$repo/python/titan-reporting"
 export TITAN_TEST_BINARY="$CARGO_TARGET_DIR/debug/titan"
@@ -38,7 +40,7 @@ if [[ -n "${TITAN_PREVIOUS_OBSERVATION_FIXTURE:-}" ]]; then
   run recovery-compat "$TITAN_VERIFY_PYTHON" scripts/verify_observation_recovery_compat.py --repo "$repo" --fixture "$TITAN_PREVIOUS_OBSERVATION_FIXTURE" --output "$out/recovery-compat.json"
 fi
 run cli-build cargo build --locked -p titan-cli --bin titan
-run history-build cargo rustc --locked -p hftbacktest --example v13_grid_history -- -C opt-level=2
+run history-build cargo rustc --locked -p hftbacktest --example grid_history -- -C opt-level=2
 run sdk-tests "$TITAN_VERIFY_PYTHON" -m unittest discover -s python/titan-strategy-sdk/tests -v
 run reporting-tests "$TITAN_VERIFY_PYTHON" -m unittest discover -s python/titan-reporting/tests -v
 run dto-export "$TITAN_TEST_BINARY" console export-types --output web/console/src/generated
@@ -52,6 +54,6 @@ run web-cache node scripts/management_web_cache_test.mjs
 run run-view node scripts/management_run_view_test.mjs
 run strategy-view node scripts/management_research_view_test.mjs
 run loopback-grid "$TITAN_VERIFY_PYTHON" scripts/management_control_smoke.py --repo "$repo" --binary "$TITAN_TEST_BINARY" --output "$out/loopback" --browser
-sha256sum "$TITAN_TEST_BINARY" "$CARGO_TARGET_DIR/debug/examples/v13_grid_history" Cargo.lock web/console/pnpm-lock.yaml web/console/src/generated/management.ts > "$out/build-sha256.txt"
+sha256sum "$TITAN_TEST_BINARY" "$CARGO_TARGET_DIR/debug/examples/grid_history" Cargo.lock web/console/pnpm-lock.yaml web/console/src/generated/management.ts > "$out/build-sha256.txt"
 { rustc --version; cargo --version; node --version; pnpm --version; "$TITAN_VERIFY_PYTHON" --version; } > "$out/toolchain.txt"
 printf 'Strategy observation verification passed. No real accounts were used.\n'

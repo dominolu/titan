@@ -6,6 +6,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use titan_core_types::{LockUnpoisoned, ReadUnpoisoned, WriteUnpoisoned};
 
 use titan_core_types::{ComponentIdentity, EventPublisher, ResourceScope};
 
@@ -76,7 +77,7 @@ impl MarketServiceCore {
                 "empty connector type",
             ));
         }
-        let mut factories = self.factories.write().unwrap_or_else(|p| p.into_inner());
+        let mut factories = self.factories.write_unpoisoned();
         if factories.contains_key(&connector_type) {
             return Err(MarketError::new(
                 MarketErrorKind::AlreadyExists,
@@ -88,7 +89,7 @@ impl MarketServiceCore {
     }
 
     pub fn activate(&self, identity: ComponentIdentity, publisher: EventPublisher) {
-        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = Some(RuntimeBindings {
+        *self.runtime.write_unpoisoned() = Some(RuntimeBindings {
             identity,
             publisher,
         });
@@ -108,17 +109,14 @@ impl MarketServiceCore {
 
     fn next_operation(&self, state: OperationState, detail: impl Into<Arc<str>>) -> OperationId {
         let id = OperationId(self.next_operation_id.fetch_add(1, Ordering::Relaxed));
-        self.operations
-            .write()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(
+        self.operations.write_unpoisoned().insert(
+            id,
+            MarketOperationSnapshot {
                 id,
-                MarketOperationSnapshot {
-                    id,
-                    state,
-                    detail: detail.into(),
-                },
-            );
+                state,
+                detail: detail.into(),
+            },
+        );
         id
     }
 
@@ -130,8 +128,7 @@ impl MarketServiceCore {
     ) -> LocalResult<Arc<ConnectorEntry>> {
         let factory = self
             .factories
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(&definition.connector_type)
             .cloned()
             .ok_or_else(|| {
@@ -140,7 +137,7 @@ impl MarketServiceCore {
                     format!("factory {} is not registered", definition.connector_type),
                 )
             })?;
-        let runtime = self.runtime.read().unwrap_or_else(|p| p.into_inner());
+        let runtime = self.runtime.read_unpoisoned();
         let runtime = runtime.as_ref().ok_or_else(|| {
             MarketError::new(MarketErrorKind::RuntimeNotActive, "service has not started")
         })?;
@@ -225,7 +222,7 @@ impl MarketServiceCore {
                 failures.push(error.to_string());
             }
         }
-        *self.runtime.write().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.runtime.write_unpoisoned() = None;
         if failures.is_empty() {
             Ok(())
         } else {
@@ -240,7 +237,7 @@ impl MarketServiceCore {
 impl MarketAdminService for MarketServiceCore {
     fn create(&self, definition: MarketSourceDefinition) -> LocalResult<MarketSourceHandle> {
         self.ensure_accepting()?;
-        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self.mutation.lock_unpoisoned();
         self.registry.validate_insert(
             &definition,
             self.config.max_sources,
@@ -313,7 +310,7 @@ impl MarketAdminService for MarketServiceCore {
 
     fn remove(&self, source: MarketSourceHandle) -> LocalResult<OperationId> {
         self.ensure_accepting()?;
-        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self.mutation.lock_unpoisoned();
         if self.binding_pins.is_pinned(source) {
             return Err(MarketError::new(
                 MarketErrorKind::ConnectorRejected,
@@ -343,7 +340,7 @@ impl MarketAdminService for MarketServiceCore {
         definition: MarketSourceDefinition,
     ) -> LocalResult<MarketSourceHandle> {
         self.ensure_accepting()?;
-        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self.mutation.lock_unpoisoned();
         if self.binding_pins.is_pinned(source) {
             return Err(MarketError::new(
                 MarketErrorKind::ConnectorRejected,
@@ -404,8 +401,7 @@ impl MarketAdminService for MarketServiceCore {
     }
     fn operation(&self, id: OperationId) -> MarketOperationSnapshot {
         self.operations
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
+            .read_unpoisoned()
             .get(&id)
             .cloned()
             .unwrap_or(MarketOperationSnapshot {
@@ -424,12 +420,15 @@ impl MarketService for MarketServiceCore {
         &self,
         handle: MarketSourceHandle,
     ) -> LocalResult<titan_core_types::BindingLease> {
-        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self.mutation.lock_unpoisoned();
         self.registry.get(handle)?;
         Ok(self.binding_pins.pin(handle))
     }
     fn resolve(&self, source_key: &str) -> LocalResult<MarketSourceHandle> {
         self.registry.resolve(source_key)
+    }
+    fn definition(&self, source: MarketSourceHandle) -> LocalResult<MarketSourceDefinition> {
+        Ok(self.registry.get(source)?.definition.clone())
     }
     fn subscribe(
         &self,

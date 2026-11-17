@@ -3,10 +3,16 @@
 pub mod columnar;
 mod facts;
 mod objects;
+// Frozen / not enabled: the PostgreSQL projection is kept for the external-backend
+// contract tests and `routing.rs`, but no CLI path constructs it (see
+// `titan-cli/.../cli_database.rs`). Physical deletion would drag `StorageProfile`,
+// routing, `StorageControl` and the external tests into the same change.
 mod postgres_projection;
 mod profile;
 mod routing;
 mod run;
+// Frozen / not enabled: the S3 object backend is reachable only through an
+// explicitly configured `StorageProfile`, which the CLI never builds.
 mod s3;
 mod snapshot;
 pub use facts::*;

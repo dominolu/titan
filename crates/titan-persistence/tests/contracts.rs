@@ -31,11 +31,140 @@ fn request(run: &str) -> HistoryRequest {
             strategy_id: None,
             run_id: Some(run.into()),
             kind: None,
+            from_ns: None,
+            to_ns: None,
+            run_generation: None,
         },
         cursor: None,
         limit: 2,
         newest_first: false,
     }
+}
+
+#[test]
+fn history_time_range_filters_before_pagination_and_binds_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = SqliteFactArchive::open(dir.path().join("history.db")).unwrap();
+    let records: Vec<_> = [-20, 10, 20, 30, 40, 50]
+        .into_iter()
+        .enumerate()
+        .map(|(index, time)| {
+            let mut record = fact("run-a", index as u64 + 1);
+            // Filtering uses receipt time even when the exchange timestamp differs.
+            record.received_at_ns = time;
+            record
+        })
+        .collect();
+    archive.append(&records).unwrap();
+    for newest_first in [false, true] {
+        let archive =
+            SqliteFactArchive::open(dir.path().join(format!("history-{newest_first}.db"))).unwrap();
+        archive.append(&records).unwrap();
+        let mut req = request("run-a");
+        req.newest_first = newest_first;
+        req.limit = 1;
+        req.filter.from_ns = Some(10);
+        req.filter.to_ns = Some(30);
+        let first = archive.query().page(&req).unwrap();
+        assert_eq!(first.items.len(), 1);
+        assert_eq!(
+            first.items[0].fact.received_at_ns,
+            if newest_first { 30 } else { 10 }
+        );
+        assert_eq!(first.upper_row, "4");
+        let mut appended = fact("run-a", if newest_first { 8 } else { 7 });
+        appended.received_at_ns = 25;
+        archive.append(&[appended]).unwrap();
+        let cursor = first.next_cursor.unwrap();
+        req.cursor = Some(cursor.clone());
+        req.filter.from_ns = Some(11);
+        assert!(
+            archive
+                .query()
+                .page(&req)
+                .unwrap_err()
+                .to_string()
+                .contains("cursor_scope_changed")
+        );
+        req.filter.from_ns = Some(10);
+        req.filter.to_ns = Some(31);
+        assert!(archive.query().page(&req).is_err());
+        req.filter.to_ns = Some(30);
+        let mut times = vec![first.items[0].fact.received_at_ns];
+        loop {
+            let page = archive.query().page(&req).unwrap();
+            times.extend(page.items.iter().map(|record| record.fact.received_at_ns));
+            req.cursor = page.next_cursor;
+            if req.cursor.is_none() {
+                break;
+            }
+        }
+        let expected = if newest_first {
+            vec![30, 20, 10]
+        } else {
+            vec![10, 20, 30]
+        };
+        assert_eq!(times, expected);
+    }
+    let mut req = request("run-a");
+    req.filter.from_ns = Some(30);
+    req.filter.to_ns = Some(10);
+    assert!(archive.query().page(&req).is_err());
+    req.filter.from_ns = Some(-20);
+    req.filter.to_ns = Some(-20);
+    let page = archive.query().page(&req).unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].fact.received_at_ns, -20);
+}
+
+#[test]
+fn generation_filter_matches_only_proven_facts_and_binds_legacy_cursor_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = SqliteFactArchive::open(dir.path().join("history.db")).unwrap();
+    let records: Vec<_> = [Some("1"), Some("2"), None, Some("1"), Some("2")]
+        .into_iter()
+        .enumerate()
+        .map(|(index, generation)| {
+            let mut record = fact("run-a", index as u64 + 1);
+            record.scope.run_generation = generation.map(str::to_owned);
+            record
+        })
+        .collect();
+    archive.append(&records).unwrap();
+    let mut req = request("run-a");
+    req.limit = 1;
+    let legacy = archive.query().page(&req).unwrap();
+    let old_filter = json!({"environment":"backtest","account":"account-a","strategy_id":null,"run_id":"run-a","kind":null});
+    // Match the pre-extension struct's serialization order, not Value's key ordering.
+    let old_bytes = br#"{"environment":"backtest","account":"account-a","strategy_id":null,"run_id":"run-a","kind":null}"#;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(old_bytes).unwrap(),
+        old_filter
+    );
+    assert_eq!(
+        legacy.next_cursor.as_ref().unwrap().filter_sha256,
+        sha256(old_bytes)
+    );
+    req.cursor = legacy.next_cursor;
+    assert_eq!(archive.query().page(&req).unwrap().items[0].row_id, "2");
+    req.cursor = None;
+    req.filter.run_generation = Some("1".into());
+    let page = archive.query().page(&req).unwrap();
+    assert_eq!(page.items[0].row_id, "1");
+    assert_eq!(page.upper_row, "4");
+    req.cursor = page.next_cursor;
+    let second = archive.query().page(&req).unwrap();
+    assert_eq!(second.items[0].row_id, "4");
+    assert!(second.next_cursor.is_none());
+    req.filter.run_generation = Some("2".into());
+    assert!(
+        archive
+            .query()
+            .page(&req)
+            .unwrap_err()
+            .to_string()
+            .contains("cursor_scope_changed")
+    );
 }
 
 #[test]
@@ -283,10 +412,10 @@ fn original_bundle_bytes_publish_last_and_registration_retries_without_engine_wo
     let dir = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let bytes = legacy_bundle(dir.path());
-    let r = commit_result_bundle(dir.path(), storage.path(), &bytes).unwrap();
+    let r = commit_result_bundle(dir.path(), storage.path(), &bytes, None).unwrap();
     assert_eq!(fs::read(dir.path().join("manifest.json")).unwrap(), bytes);
     assert_eq!(
-        commit_result_bundle(dir.path(), storage.path(), &bytes).unwrap(),
+        commit_result_bundle(dir.path(), storage.path(), &bytes, None).unwrap(),
         r
     );
     let store = LocalObjectStore::new(storage.path().join("objects")).unwrap();
@@ -298,18 +427,43 @@ fn original_bundle_bytes_publish_last_and_registration_retries_without_engine_wo
         commit_result_bundle(
             dir.path(),
             storage.path(),
-            &serde_json::to_vec(&changed).unwrap()
+            &serde_json::to_vec(&changed).unwrap(),
+            None
         )
         .is_err()
     );
 }
+#[test]
+fn bundle_from_another_strategy_abi_never_publishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let bytes = legacy_bundle(dir.path());
+    let host = "11".repeat(32);
+    let other = "22".repeat(32);
+
+    let mut recorded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    recorded["abi_fingerprint"] = serde_json::json!(other);
+    let recorded = serde_json::to_vec(&recorded).unwrap();
+    let error = commit_result_bundle(dir.path(), storage.path(), &recorded, Some(&host))
+        .expect_err("a bundle from another ABI must not be archived");
+    assert!(error.to_string().contains("bundle_abi_mismatch"), "{error}");
+    assert!(!dir.path().join("manifest.json").exists());
+    assert!(!dir.path().join("manifest.pending.json").exists());
+
+    let mut matching: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    matching["abi_fingerprint"] = serde_json::json!(host);
+    let matching = serde_json::to_vec(&matching).unwrap();
+    commit_result_bundle(dir.path(), storage.path(), &matching, Some(&host))
+        .expect("the host's own ABI identity is accepted");
+}
+
 #[test]
 fn incomplete_tampered_and_escaping_bundle_never_publishes_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let bytes = legacy_bundle(dir.path());
     fs::write(dir.path().join("result.json"), b"changed").unwrap();
-    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes).is_err());
+    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes, None).is_err());
     assert!(!dir.path().join("manifest.json").exists());
     let manifest = PublishedManifest {
         schema_version: 1,
@@ -365,7 +519,7 @@ fn catalog_failure_retains_original_proof_for_registration_without_rerunning_eng
     ResultCatalog::open(&storage.path().join("catalog.db")).unwrap();
     let db = rusqlite::Connection::open(storage.path().join("catalog.db")).unwrap();
     db.execute_batch("CREATE TRIGGER fail_registration BEFORE INSERT ON object_catalog BEGIN SELECT RAISE(ABORT,'injected'); END;").unwrap();
-    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes).is_err());
+    assert!(commit_result_bundle(dir.path(), storage.path(), &bytes, None).is_err());
     assert!(!dir.path().join("manifest.json").exists());
     assert_eq!(
         fs::read(dir.path().join("manifest.pending.json")).unwrap(),
@@ -373,7 +527,7 @@ fn catalog_failure_retains_original_proof_for_registration_without_rerunning_eng
     );
     db.execute_batch("DROP TRIGGER fail_registration").unwrap();
     let proof = fs::read(dir.path().join("manifest.pending.json")).unwrap();
-    commit_result_bundle(dir.path(), storage.path(), &proof).unwrap();
+    commit_result_bundle(dir.path(), storage.path(), &proof, None).unwrap();
     assert_eq!(fs::read(dir.path().join("manifest.json")).unwrap(), bytes);
 }
 #[test]

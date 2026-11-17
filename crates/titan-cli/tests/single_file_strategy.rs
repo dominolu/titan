@@ -39,7 +39,7 @@ fn rehash_manifest(path: &Path, mut value: Value) {
     value.as_object_mut().unwrap().remove("release_id");
     value["release_id"] = json!(format!(
         "{:x}",
-        Sha256::digest(titan_strategy_runtime::compiler_json_v13(&value))
+        Sha256::digest(titan_strategy_runtime::compiler_json(&value))
     ));
     fs::write(path.join("release.json"), value.to_string()).unwrap();
 }
@@ -96,20 +96,20 @@ fn defaults_discovery_native_scenes_and_legacy_flags_work_without_sidecars() {
 #[test]
 fn parameter_overrides_are_typed_normalized_and_fail_before_replacing_output() {
     let dir = tempfile::tempdir().unwrap();
-    source(dir.path(), "v13_smoke");
+    source(dir.path(), "smoke");
     let compiled = ok(invoke(
         dir.path(),
         &[
             "strategy",
             "compile",
-            "v13_smoke.py",
+            "smoke.py",
             "--set",
             "initial_counter=7",
             "--json",
         ],
     ));
     assert_eq!(compiled["normalized_parameters"]["initial_counter"], 7);
-    let output = dir.path().join("build/strategies/v13_smoke.titan");
+    let output = dir.path().join("build/strategies/smoke.titan");
     let before = fs::read(&output).unwrap();
     for value in [
         "initial_counter=true",
@@ -119,14 +119,7 @@ fn parameter_overrides_are_typed_normalized_and_fail_before_replacing_output() {
     ] {
         let result = invoke(
             dir.path(),
-            &[
-                "strategy",
-                "compile",
-                "v13_smoke.py",
-                "--set",
-                value,
-                "--json",
-            ],
+            &["strategy", "compile", "smoke.py", "--set", value, "--json"],
         );
         assert!(!result.status.success());
         assert_eq!(fs::read(&output).unwrap(), before);
@@ -138,7 +131,7 @@ fn parameter_overrides_are_typed_normalized_and_fail_before_replacing_output() {
             "strategy",
             "compile",
             "--strategy",
-            "v13_smoke.py",
+            "smoke.py",
             "--parameters",
             "override.json",
             "--set",
@@ -150,7 +143,7 @@ fn parameter_overrides_are_typed_normalized_and_fail_before_replacing_output() {
         compiled["compiled_strategy_digest"],
         explicit["compiled_strategy_digest"]
     );
-    let path = dir.path().join("v13_smoke.py");
+    let path = dir.path().join("smoke.py");
     fs::write(
         &path,
         fs::read_to_string(&path)
@@ -163,7 +156,7 @@ fn parameter_overrides_are_typed_normalized_and_fail_before_replacing_output() {
         &[
             "strategy",
             "compile",
-            "v13_smoke.py",
+            "smoke.py",
             "--set",
             "initial_counter=7",
             "--json",
@@ -541,56 +534,21 @@ fn releases_publish_idempotently_and_reject_tampering_without_python() {
 }
 
 #[test]
-fn signed_release_requires_explicit_trust_and_test_requires_declared_scenes() {
+fn release_verification_rejects_forged_source_and_test_requires_declared_scenes() {
     let dir = tempfile::tempdir().unwrap();
     source(dir.path(), "event_counter");
-    fs::write(
-        dir.path().join("key"),
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
-    )
-    .unwrap();
     let built = ok(invoke(
         dir.path(),
-        &[
-            "strategy",
-            "build",
-            "event_counter.py",
-            "--signing-key",
-            "key",
-            "--key-id",
-            "test",
-            "--json",
-        ],
+        &["strategy", "build", "event_counter.py", "--json"],
     ));
     let release = built["release"].as_str().unwrap();
-    assert!(
-        !invoke(
-            dir.path(),
-            &[
-                "strategy",
-                "verify-release",
-                release,
-                "--require-signature",
-                "--json"
-            ]
-        )
-        .status
-        .success()
-    );
     let verified = ok(invoke(
         dir.path(),
-        &[
-            "strategy",
-            "verify-release",
-            release,
-            "--require-signature",
-            "--trusted-key",
-            "test=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-            "--json",
-        ],
+        &["strategy", "verify-release", release, "--json"],
     ));
     assert_eq!(verified["valid"], true);
-    // Rehashing an unsigned release index cannot forge source identity protected by the native signature.
+    // Rehashing a release index cannot forge source identity: the artifact still carries the
+    // compiled source identity and the native digest.
     {
         use sha2::{Digest, Sha256};
         let manifest_path = Path::new(release).join("release.json");
@@ -604,22 +562,14 @@ fn signed_release_requires_explicit_trust_and_test_requires_declared_scenes() {
         manifest.as_object_mut().unwrap().remove("release_id");
         let id = format!(
             "{:x}",
-            Sha256::digest(titan_strategy_runtime::compiler_json_v13(&manifest))
+            Sha256::digest(titan_strategy_runtime::compiler_json(&manifest))
         );
         manifest["release_id"] = json!(id);
         fs::write(manifest_path, manifest.to_string()).unwrap();
         assert!(
             !invoke(
                 dir.path(),
-                &[
-                    "strategy",
-                    "verify-release",
-                    release,
-                    "--require-signature",
-                    "--trusted-key",
-                    "test=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
-                    "--json"
-                ]
+                &["strategy", "verify-release", release, "--json"]
             )
             .status
             .success()

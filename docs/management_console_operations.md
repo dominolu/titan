@@ -7,8 +7,8 @@
 以下命令只能在 `titan-build` 的隔离验证目录执行。先核对版本、目录和未提交修改。Rust 产物和 Web 资源必须配套发布：生成的 TS 文件包含该 Rust 可执行文件的 SHA-256，页面登录时校验协议和程序身份。
 
 ```sh
-cargo build --locked -p titan-cli --bin titan
-cargo rustc --locked -p hftbacktest --example v13_grid_history -- -C opt-level=2
+cargo build --locked -p titan-cli --bins
+cargo rustc --locked -p hftbacktest --example grid_history -- -C opt-level=2
 target/debug/titan console export-types --output web/console/src/generated
 cd web/console
 pnpm install --frozen-lockfile
@@ -18,7 +18,7 @@ pnpm build
 
 使用 `CARGO_TARGET_DIR` 时相应替换产物路径。构建服务器如需镜像，将注册表覆盖写入隔离目录的 Cargo 配置，保留仓库已有配置；不能在本地安装依赖或构建。PureAdmin 上游身份见 [UPSTREAM](../web/console/UPSTREAM.md)，保留 MIT 许可。
 
-发布包包含原样的 `titan`、历史回放程序、`web/console/dist`、Python SDK/报告组件和对应依赖清单。记录文件摘要、工具链、Cargo.lock 和 pnpm-lock.yaml 身份；打包后再次修改或 strip `titan` 会使页面身份校验失败，应重新导出契约并构建页面。
+发布包包含原样的 `titan`、`titan_cli`、历史回放程序、`web/console/dist`、Python SDK/报告组件和对应依赖清单。记录文件摘要、工具链、Cargo.lock 和 pnpm-lock.yaml 身份；打包后再次修改或 strip `titan` 会使页面身份校验失败，应重新导出契约并构建页面。
 
 ## 配置与启动
 
@@ -27,13 +27,21 @@ pnpm build
 通过 `titan console password-hash` 从标准输入读取密码，生成 Argon2 哈希；不把明文密码放入参数、仓库或审计记录。节点令牌使用不少于 32 字符的随机值，通过配置中的环境变量引用提供。页面会话使用 HttpOnly Cookie，写请求同时校验 Origin 与 CSRF。用户必须显式配置节点、账户、环境和角色；空账户列表不允许访问任何真实账户。
 
 ```sh
-titan console node --config /private/console.toml
-titan console manager --config /private/console.toml
+titan serve node --config /private/console.toml
+titan serve manager --config /private/console.toml
 ```
 
 N 只绑定 loopback。跨主机访问经已认证的 SSH 隧道或 TLS 代理。开发页面只允许 loopback HTTP；生产配置使用 HTTPS origin 和 `secure_cookie=true`。管理端可以只含 `[manager]`，节点只含 `[node]`，密钥和实盘配置保留在所属节点。
 
-CLI 经同一管理 API 提交固定请求：
+## 账户资料与策略源码
+
+“账户管理”包含账户资料目录，以及原有的“风险与账户事实”。添加、编辑或停用资料只修改管理数据库中的账户档案，不连接交易所、不变更实际账户权限、不停止现有实例。凭据字段仅接受 `secret://env/NAME` 引用，实际凭据继续由所属节点的 SecretProvider 管理。余额、持仓、连接与风险状态仍以原有账户事实为准。资料编辑提交 `expected_revision`，过期版本拒绝覆盖；读写继续检查用户、节点、环境、角色及 CSRF。
+
+“策略管理”分为“实盘策略”和“策略回测”两个入口，共用策略身份、参数与编译版本。实盘入口提供部署与运行管理，回测入口提供历史数据与报告。账户档案和策略源码登记均不触发交易实例启动。
+
+允许源码上传的构建节点须显式设置 `node.allow_strategy_uploads=true`，默认关闭。仅有该节点 `backtest` 权限的 operator 可以登记单个 UTF-8 `.py` 文件，最多 256 KiB；不接收目录、压缩包或客户端指定路径。源码按摘要在节点私有工作目录中不可变保存，重复上传幂等，变更源码新增预设版本；重启后恢复目录并校验源文件摘要。上传只存储源码，主动校验与编译才经过既有 Operation/worker 流程执行 Python。节点管理员应只向有权在该构建环境执行策略源码的人员授予 operator 和上传能力。源文件不会通过公共资源/SSE 正文返回。
+
+CLI 的命名连接、账户与策略查询、参数冻结、Operation 跟踪、部署/运行控制及持续观测见[管理 CLI 手册与覆盖表](managed_cli.md)。低层兼容入口仍可经同一管理 API 提交固定请求：
 
 ```sh
 titan console request --url https://console.example --username operator \
@@ -119,13 +127,13 @@ worker 的 Unix IPC 目录为 `0700`、socket 为 `0600`，请求还绑定令牌
 
 `scripts/management_observation_smoke.py --browser` 在编译服务器验证模拟账户事实的端到端转发、权限、过期、告警和日志。`scripts/management_live_readonly.py` 仅用于已授权实盘节点，使用已验证二进制执行 90 秒只读验收；它以只读方式读取该节点既有账户后端，凭据及完整快照不离开节点，最终输出脱敏证据。脚本包含固定的账户 ID 1 与目标品种保护，不应挪到编译服务器执行真实账户验证。
 
-## M3 签名部署与交易控制
+## M3 产物部署与交易控制
 
 实盘 N 在同一节点协议上接收 Deploy、Start、Pause、Resume、Stop 和 Recover。A 与 N 均须显式启用 `live_control=true`，用户须具有目标节点、live 环境、账户的 operator 权限。编译节点保持交易能力关闭；只读用户继续使用同一 REST/SSE 查询。
 
-配置一个稳定的 `node.bindings.<id>.account_identity`，同一真实账户在各节点必须使用同一个规范身份；它参与 A 的账户/品种占用和订单命名空间占用。该字段须满足资源 ID 规则。N 的 `artifact_sources.<build-node>` 指向已认证的构建节点协议，填写 endpoint、token_env 和 backtest 环境；不能提供任意下载 URL。编译节点配置 `signing_key` 和 `signing_key_id`，私钥仅保留在编译服务器。实盘 runtime 的 `strategy_service.trusted_ed25519_keys` 登记公钥，并声明 `managed_by_console=true`；直接 core-run 会拒绝此配置。
+配置一个稳定的 `node.bindings.<id>.account_identity`，同一真实账户在各节点必须使用同一个规范身份；它参与 A 的账户/品种占用和订单命名空间占用。该字段须满足资源 ID 规则。N 的 `artifact_sources.<build-node>` 指向已认证的构建节点协议，填写 endpoint、token_env 和 backtest 环境；不能提供任意下载 URL。实盘 runtime 须声明 `managed_by_console=true`；直接 core-run 会拒绝此配置。
 
-部署固定签名制品、运行配置摘要和静态绑定。N 复用 E 的原生加载器校验签名、摘要、ABI、目标和通用 CPU 配置，通过暂存和原子发布落地。配置漂移后须重新部署。运行时不依赖 Python；恢复不重新编译策略。制品页显示不可变部署，启动确认显示账户、品种、敞口上限、价格保护、期限和制品中的停止方式。
+部署固定签名制品、运行配置摘要和静态绑定。N 复用 E 的原生加载器校验摘要、ABI、目标和通用 CPU 配置，通过暂存和原子发布落地。配置漂移后须重新部署。运行时不依赖 Python；恢复不重新编译策略。制品页显示不可变部署，启动确认显示账户、品种、敞口上限、价格保护、期限和制品中的停止方式。
 
 本期受控配置采用单账户、单品种、local account/asset 0 的原生策略。平台按精确 tick/lot/合约乘数转换报价金额上限，E 同时约束总持仓、旧挂单剩余量和同批新增委托；对冲腿按绝对量分别计入，旧挂单按各自限价保守计价。下单须具有新鲜 BBO 和价格偏离证明；意图先持久化并 flush，再复查期限后派单。减少风险的委托仍受价格保护。账户以 ObserveAll 接收全部事实，关闭账户时使用 LeaveOpen，不代替其他所有者撤单。
 
@@ -135,7 +143,7 @@ Recover 必须显式引用 N 登记的 checkpoint 文件 SHA256 和旧运行代�
 
 控制回执超时先查询同一 E operation。只读回执查询不会补执行动作；缺少 E 的调用前/后证据时保留 unknown。A/N 重启通过 owner token、PID/启动身份和固定 socket 重新查询原 worker，不能重新启动它。恢复未成功时保留旧账户占用，只有明确的“从未尝试激活”证据可释放失败 Start 的占用。
 
-编译服务器先运行 `scripts/management_control_smoke.py`（loopback 模拟交易所、实际签名制品/A/N/E）和 `--browser` 页面验收。真实账户验收脚本 `scripts/management_live_control.py` 仅在指定实盘节点运行，要求编译服务器的冻结 release 和 SHA256；内置 gate/ID 1/BTC、100 USDT、50 bps、120 秒、最小数量及前后残留核对。它不是长期策略入口。实盘部署完成后关闭本轮 A/N，不注册自动重启交易服务。
+编译服务器先运行 `scripts/management_control_smoke.py`（loopback 模拟交易所、实际编译制品/A/N/E）和 `--browser` 页面验收。真实账户验收脚本 `scripts/management_live_control.py` 仅在指定实盘节点运行，要求编译服务器的冻结 release 和 SHA256；内置 gate/ID 1/BTC、100 USDT、50 bps、120 秒、最小数量及前后残留核对。它不是长期策略入口。实盘部署完成后关闭本轮 A/N，不注册自动重启交易服务。
 
 ## 历史与对象后端（M3）
 
