@@ -9,7 +9,6 @@ mod binancefuturescm;
 mod binancefuturesum;
 mod bybit;
 mod error;
-mod file;
 mod hyperliquid;
 mod pipeline;
 mod throttler;
