@@ -687,6 +687,13 @@ fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
     engine.stop().unwrap();
 }
 
+/// How long a test waits for the engine to call a handler.
+///
+/// The wait bounds a scheduling delay, not a property under test: the handler blocks on a channel
+/// and is woken by the test, so a loaded CI runner can take longer than a second to run it while
+/// the behaviour being checked (coalescing per routing key) is unaffected.
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[test]
 fn primary_latest_is_coalesced_independently_per_routing_key() {
     let engine = EventEngine::new(test_config()).unwrap();
@@ -732,7 +739,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
     };
     publish(1, b"first");
     assert_eq!(
-        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"first"
     );
     publish(1, b"queued");
@@ -742,15 +749,15 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         release_tx.send(()).unwrap();
     }
     assert_eq!(
-        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"queued"
     );
     assert_eq!(
-        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-one"
     );
     assert_eq!(
-        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-two"
     );
     assert!(handle.unregister_primary_async_lane(lane.token()));
