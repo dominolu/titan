@@ -738,20 +738,14 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         handle.try_publish(request).unwrap();
     };
     publish(1, b"first");
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"first"
-    );
+    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"first");
     publish(1, b"queued");
     publish(1, b"latest-one");
     publish(2, b"latest-two");
     for _ in 0..4 {
         release_tx.send(()).unwrap();
     }
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"queued"
-    );
+    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"queued");
     assert_eq!(
         entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-one"
