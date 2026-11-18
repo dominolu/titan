@@ -919,7 +919,28 @@ impl BinanceFeed {
             last_funding_emit_ns: 0,
             queued_depth: VecDeque::new(),
         };
-        feed.open_initial().await?;
+        // A venue that refuses the first request (its throttling ban) is waited out here: returning
+        // the error would take the process down and restart straight back into the same ban.
+        loop {
+            match feed.open_initial().await {
+                Ok(()) => break,
+                Err(error) => {
+                    if *feed.cancel.borrow() {
+                        return Err(error);
+                    }
+                    let delay = error
+                        .downcast_ref::<VenueBanned>()
+                        .map_or(std::time::Duration::from_secs(5), ban_delay);
+                    tracing::warn!(
+                        symbol = %feed.market.symbol,
+                        wait_ms = delay.as_millis() as u64,
+                        %error,
+                        "opening the feed failed; waiting"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
         feed.oi_timer = interval_at(
             Instant::now() + std::time::Duration::from_millis(u64::from(feed.settings.oi_poll_ms)),
             std::time::Duration::from_millis(u64::from(feed.settings.oi_poll_ms)),
@@ -958,9 +979,12 @@ impl BinanceFeed {
     )> {
         let (public_url, market_url) = self.websocket_urls()?;
         let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+        // Binance sends a ping every three minutes on its futures streams, so a timeout shorter
+        // than that keeps every quiet market reconnecting; the spot adapter already waits 30s and
+        // the futures ones 300s, which is the same margin applied here.
         let heartbeat = Heartbeat {
-            check_interval: std::time::Duration::from_secs(20),
-            timeout: std::time::Duration::from_secs(60),
+            check_interval: std::time::Duration::from_secs(10),
+            timeout: std::time::Duration::from_secs(300),
         };
         let mut connections = Vec::new();
         for (url, depth) in market_url
@@ -1059,6 +1083,33 @@ struct DepthRequest {
     market: MarketConfig,
 }
 
+/// The venue refused the request itself rather than failing it: Binance answers 418 or 429 with the
+/// IP-throttling ban it applies to a client that asks too often, and the ban lasts minutes.
+///
+/// Retrying into a ban extends it, so this is reported as itself and the caller waits it out.
+#[derive(Debug)]
+struct VenueBanned {
+    status: u16,
+    retry_after: Option<u64>,
+}
+
+impl std::fmt::Display for VenueBanned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "venue refused the request: HTTP {}", self.status)?;
+        if let Some(seconds) = self.retry_after {
+            write!(f, ", retry after {seconds}s")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for VenueBanned {}
+
+/// How long to wait after the venue refused a request: the delay it asked for, or a minute.
+fn ban_delay(ban: &VenueBanned) -> std::time::Duration {
+    std::time::Duration::from_secs(ban.retry_after.unwrap_or(60).max(5))
+}
+
 impl DepthRequest {
     async fn fetch(self) -> anyhow::Result<(SnapshotMessage, u64)> {
         let DepthRequest {
@@ -1075,17 +1126,26 @@ impl DepthRequest {
             101..=500 => 500,
             _ => 1000,
         };
-        let response: Value = client
+        let response = client
             .get(endpoint)
             .query(&[
                 ("symbol", market.symbol.as_str()),
                 ("limit", &limit.to_string()),
             ])
             .send()
-            .await?
-            .error_for_status()?
-            .json()
             .await?;
+        if matches!(response.status().as_u16(), 418 | 429) {
+            return Err(VenueBanned {
+                status: response.status().as_u16(),
+                retry_after: response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok()),
+            }
+            .into());
+        }
+        let response: Value = response.error_for_status()?.json().await?;
         let seq = response
             .get("lastUpdateId")
             .and_then(Value::as_u64)
@@ -1153,11 +1213,22 @@ impl BinanceFeed {
                     self.pending.push_back(FeedMessage::Snapshot(snapshot));
                     return;
                 }
-                Err(_) => {
+                Err(error) => {
                     if *self.cancel.borrow() {
                         return;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    // A ban is waited out: retrying into it extends it and keeps the market down,
+                    // which is how the recorder turned one throttled request into a restart loop.
+                    let delay = error
+                        .downcast_ref::<VenueBanned>()
+                        .map_or(std::time::Duration::from_secs(1), ban_delay);
+                    tracing::warn!(
+                        symbol = %self.market.symbol,
+                        wait_ms = delay.as_millis() as u64,
+                        %error,
+                        "resynchronizing; waiting"
+                    );
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
@@ -1928,6 +1999,12 @@ struct GapSummary {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // The transport reports what a connection does through `tracing`; without a subscriber those
+    // reports go nowhere, which is how a stream that kept being refused stayed invisible.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .try_init();
     match run(Args::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err((code, message)) => {
@@ -2614,19 +2691,23 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                     MarketFeed::Binance(Box::new(
                         BinanceFeed::connect(market.clone(), settings.clone(), cancel)
                             .await
-                            .map_err(|_| "could not initialize market feed".to_owned())?,
+                            .map_err(|error| {
+                                format!("could not initialize {venue_key} feed: {error}")
+                            })?,
                     ))
                 }
                 key if key.starts_with("bybit") => MarketFeed::Bybit(
                     BybitFeed::connect(market.clone(), settings.validation_interval_ms, cancel)
                         .await
-                        .map_err(|_| "could not initialize market feed".to_owned())?,
+                        .map_err(|error| {
+                            format!("could not initialize {venue_key} feed: {error}")
+                        })?,
                 ),
-                key if key.starts_with("okx") => MarketFeed::Okx(
-                    OkxFeed::connect(market.clone(), cancel)
-                        .await
-                        .map_err(|_| "could not initialize market feed".to_owned())?,
-                ),
+                key if key.starts_with("okx") => {
+                    MarketFeed::Okx(OkxFeed::connect(market.clone(), cancel).await.map_err(
+                        |error| format!("could not initialize {venue_key} feed: {error}"),
+                    )?)
+                }
                 key if key.starts_with("hyperliquid") => {
                     if market.feed_mode != collector::book::FeedMode::Snapshot {
                         return Err("Hyperliquid l2Book requires snapshot feed mode".to_owned());
@@ -2634,7 +2715,9 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                     MarketFeed::Hyperliquid(
                         HyperliquidFeed::connect(market, cancel)
                             .await
-                            .map_err(|_| "could not initialize market feed".to_owned())?,
+                            .map_err(|error| {
+                                format!("could not initialize {venue_key} feed: {error}")
+                            })?,
                     )
                 }
                 _ => return Err("unsupported market venue".to_owned()),

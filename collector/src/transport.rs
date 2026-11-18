@@ -28,7 +28,7 @@ use tokio_tungstenite::{
         Bytes, Message, Utf8Bytes, client::IntoClientRequest, protocol::WebSocketConfig,
     },
 };
-use tracing::{error, warn};
+use tracing::warn;
 
 /// How often a market stream is checked, and how long it may go without a ping.
 #[derive(Clone, Copy)]
@@ -109,11 +109,14 @@ fn reconnect_delay(error_count: &mut usize, connected_for: Duration) -> Duration
     if connected_for > Duration::from_secs(30) {
         *error_count = 0;
     }
-    if *error_count > 3 {
-        Duration::from_secs(1)
-    } else {
-        Duration::ZERO
+    if *error_count <= 3 {
+        return Duration::ZERO;
     }
+    // A connection that keeps failing is waited out with a growing delay: reconnecting every
+    // second into a venue that is refusing the client (a throttling ban) keeps the refusal going
+    // and, for a recorder, keeps the whole market down.
+    let step = (*error_count - 4).min(6) as u32;
+    Duration::from_secs(1u64 << step.min(6)).min(Duration::from_secs(60))
 }
 
 async fn connect(
@@ -198,8 +201,16 @@ pub async fn keep_connection(target: WsTarget, ws_tx: Sender<(DateTime<Utc>, Utf
     loop {
         let connect_time = Instant::now();
         if let Err(error) = connect(&target, ws_tx.clone()).await {
-            error!(?error, "websocket error");
             let delay = reconnect_delay(&mut error_count, connect_time.elapsed());
+            // Why the connection ended and how long it held, with the wait before the next
+            // attempt: a client reconnecting in a loop had no line saying so anywhere.
+            warn!(
+                url = %target.url,
+                lived_ms = connect_time.elapsed().as_millis() as u64,
+                retry_in_ms = delay.as_millis() as u64,
+                %error,
+                "reconnecting"
+            );
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
@@ -270,14 +281,26 @@ mod tests {
     #[test]
     fn reconnect_delay_preserves_failure_and_reset_boundaries() {
         let mut count = 0;
-        for failure in 1..=24 {
-            let expected = if failure > 3 {
-                Duration::from_secs(1)
-            } else {
-                Duration::ZERO
-            };
-            assert_eq!(reconnect_delay(&mut count, Duration::ZERO), expected);
-            assert_eq!(count, failure);
+        // The first three failures retry at once; after them the delay doubles up to a minute.
+        for (failure, expected) in [
+            (1, 0u64),
+            (2, 0),
+            (3, 0),
+            (4, 1),
+            (5, 2),
+            (6, 4),
+            (7, 8),
+            (8, 16),
+            (9, 32),
+            (10, 60),
+            (11, 60),
+        ] {
+            assert_eq!(
+                reconnect_delay(&mut count, Duration::ZERO),
+                Duration::from_secs(expected),
+                "failure {failure}"
+            );
+            assert_eq!(count, failure as usize);
         }
         // Exactly 30s is still a short failure, including the fourth failure.
         count = 3;
