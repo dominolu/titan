@@ -1,0 +1,9 @@
+[package]
+name = "titan-l2-book"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "L2 order book reconstruction shared by the live strategy runtime and the market data recorder"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
