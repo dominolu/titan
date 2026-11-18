@@ -21,7 +21,7 @@ use tokio::{
     time::{Instant, interval_at},
 };
 
-use collector::transport::{self, Heartbeat, WsTarget};
+use collector::transport::{self, Heartbeat, VenueBanned, WsTarget};
 
 /// One decoded text frame as the transport hands it over.
 type FrameText = tokio_tungstenite::tungstenite::Utf8Bytes;
@@ -928,9 +928,8 @@ impl BinanceFeed {
                     if *feed.cancel.borrow() {
                         return Err(error);
                     }
-                    let delay = error
-                        .downcast_ref::<VenueBanned>()
-                        .map_or(std::time::Duration::from_secs(5), ban_delay);
+                    let delay =
+                        transport::ban_delay(&error).unwrap_or(std::time::Duration::from_secs(5));
                     tracing::warn!(
                         symbol = %feed.market.symbol,
                         wait_ms = delay.as_millis() as u64,
@@ -1083,33 +1082,6 @@ struct DepthRequest {
     market: MarketConfig,
 }
 
-/// The venue refused the request itself rather than failing it: Binance answers 418 or 429 with the
-/// IP-throttling ban it applies to a client that asks too often, and the ban lasts minutes.
-///
-/// Retrying into a ban extends it, so this is reported as itself and the caller waits it out.
-#[derive(Debug)]
-struct VenueBanned {
-    status: u16,
-    retry_after: Option<u64>,
-}
-
-impl std::fmt::Display for VenueBanned {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "venue refused the request: HTTP {}", self.status)?;
-        if let Some(seconds) = self.retry_after {
-            write!(f, ", retry after {seconds}s")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for VenueBanned {}
-
-/// How long to wait after the venue refused a request: the delay it asked for, or a minute.
-fn ban_delay(ban: &VenueBanned) -> std::time::Duration {
-    std::time::Duration::from_secs(ban.retry_after.unwrap_or(60).max(5))
-}
-
 impl DepthRequest {
     async fn fetch(self) -> anyhow::Result<(SnapshotMessage, u64)> {
         let DepthRequest {
@@ -1134,16 +1106,14 @@ impl DepthRequest {
             ])
             .send()
             .await?;
-        if matches!(response.status().as_u16(), 418 | 429) {
-            return Err(VenueBanned {
-                status: response.status().as_u16(),
-                retry_after: response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok()),
-            }
-            .into());
+        if let Some(ban) = VenueBanned::from_response(
+            response.status().as_u16(),
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+        ) {
+            return Err(ban.into());
         }
         let response: Value = response.error_for_status()?.json().await?;
         let seq = response
@@ -1219,9 +1189,8 @@ impl BinanceFeed {
                     }
                     // A ban is waited out: retrying into it extends it and keeps the market down,
                     // which is how the recorder turned one throttled request into a restart loop.
-                    let delay = error
-                        .downcast_ref::<VenueBanned>()
-                        .map_or(std::time::Duration::from_secs(1), ban_delay);
+                    let delay =
+                        transport::ban_delay(&error).unwrap_or(std::time::Duration::from_secs(1));
                     tracing::warn!(
                         symbol = %self.market.symbol,
                         wait_ms = delay.as_millis() as u64,

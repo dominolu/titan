@@ -30,6 +30,55 @@ use tokio_tungstenite::{
 };
 use tracing::warn;
 
+/// The venue refused the request itself rather than failing it.
+///
+/// Binance answers 418 or 429 with the IP throttling ban it applies to a client that asks too
+/// often, and the ban lasts minutes; Bybit and OKX use 429 for the same purpose. Retrying into a
+/// ban extends it, so a refused request is reported as itself and the caller waits it out.
+#[derive(Debug, Clone)]
+pub struct VenueBanned {
+    pub status: u16,
+    /// Seconds the venue asked to be left alone for (`Retry-After`), when it said.
+    pub retry_after: Option<u64>,
+}
+
+impl VenueBanned {
+    /// Whether a status is the venue refusing the client rather than failing the request.
+    pub fn is_refusal(status: u16) -> bool {
+        matches!(status, 418 | 429 | 503)
+    }
+
+    /// How long to wait before asking again: the venue's own answer, or a minute.
+    pub fn delay(&self) -> Duration {
+        Duration::from_secs(self.retry_after.unwrap_or(60).max(5))
+    }
+
+    /// The ban a response reports, when it is one.
+    pub fn from_response(status: u16, retry_after: Option<&str>) -> Option<Self> {
+        Self::is_refusal(status).then(|| Self {
+            status,
+            retry_after: retry_after.and_then(|value| value.trim().parse::<u64>().ok()),
+        })
+    }
+}
+
+impl std::fmt::Display for VenueBanned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "venue refused the request: HTTP {}", self.status)?;
+        if let Some(seconds) = self.retry_after {
+            write!(f, ", retry after {seconds}s")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for VenueBanned {}
+
+/// How long to wait after the venue refused a request: the delay it asked for, or a minute.
+pub fn ban_delay(error: &anyhow::Error) -> Option<Duration> {
+    error.downcast_ref::<VenueBanned>().map(VenueBanned::delay)
+}
+
 /// How often a market stream is checked, and how long it may go without a ping.
 #[derive(Clone, Copy)]
 pub struct Heartbeat {
@@ -201,7 +250,10 @@ pub async fn keep_connection(target: WsTarget, ws_tx: Sender<(DateTime<Utc>, Utf
     loop {
         let connect_time = Instant::now();
         if let Err(error) = connect(&target, ws_tx.clone()).await {
-            let delay = reconnect_delay(&mut error_count, connect_time.elapsed());
+            // A refusal is the venue asking to be left alone for a while, which no backoff curve
+            // guesses better than the venue itself does.
+            let delay = ban_delay(&error)
+                .unwrap_or_else(|| reconnect_delay(&mut error_count, connect_time.elapsed()));
             // Why the connection ended and how long it held, with the wait before the next
             // attempt: a client reconnecting in a loop had no line saying so anywhere.
             warn!(
@@ -276,6 +328,35 @@ mod tests {
             }
         })
         .await
+    }
+
+    #[test]
+    fn a_refusal_carries_its_own_wait() {
+        // 418 and 429 are the venue refusing the client; 503 is it asking to come back later.
+        for status in [418u16, 429, 503] {
+            assert!(VenueBanned::is_refusal(status), "{status}");
+        }
+        for status in [200u16, 400, 401, 404, 500] {
+            assert!(!VenueBanned::is_refusal(status), "{status}");
+        }
+        let ban = VenueBanned::from_response(429, Some("42")).expect("a refusal");
+        assert_eq!(ban.status, 429);
+        assert_eq!(ban.delay(), Duration::from_secs(42));
+        // Without a Retry-After the wait is a minute; a value below the floor is raised to it.
+        assert_eq!(
+            VenueBanned::from_response(418, None).unwrap().delay(),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            VenueBanned::from_response(418, Some("1")).unwrap().delay(),
+            Duration::from_secs(5)
+        );
+        assert!(VenueBanned::from_response(200, Some("5")).is_none());
+        // A refusal reaches a caller as itself, so it can wait rather than retry.
+        let error: anyhow::Error = VenueBanned::from_response(429, Some("7")).unwrap().into();
+        assert_eq!(ban_delay(&error), Some(Duration::from_secs(7)));
+        let plain = anyhow::anyhow!("connection reset");
+        assert_eq!(ban_delay(&plain), None);
     }
 
     #[test]
