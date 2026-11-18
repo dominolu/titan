@@ -936,6 +936,9 @@ impl BinanceFeed {
                         %error,
                         "opening the feed failed; waiting"
                     );
+                    // Whatever this attempt opened is closed before the next one: a retry must not
+                    // add a transport to the ones already running.
+                    feed.stop_connections();
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -1052,15 +1055,28 @@ impl BinanceFeed {
         )
     }
 
+    /// The snapshot first, then the subscriptions: a refused request must not leave connections
+    /// behind, and the retry loop around this calls it again. Building them in the other order
+    /// leaked two transports per attempt, which is what turned a refusal into a client hammering
+    /// the venue.
     async fn open_initial(&mut self) -> anyhow::Result<()> {
+        let (snapshot, seq) = self.fetch_snapshot().await?;
         let (frames, connections) = self.open_connections().await?;
+        self.stop_connections();
         self.frames = frames;
         self.connections = connections;
-        let (snapshot, seq) = self.fetch_snapshot().await?;
         self.previous_seq = seq;
         self.last_exch_ns = snapshot.exch_ts_ns;
         self.pending.push_back(FeedMessage::Snapshot(snapshot));
         Ok(())
+    }
+
+    /// Stops every transport this feed opened, so a reconnect replaces them rather than adding to
+    /// them.
+    fn stop_connections(&mut self) {
+        for connection in self.connections.drain(..) {
+            connection.abort();
+        }
     }
 
     async fn fetch_snapshot(&self) -> anyhow::Result<(SnapshotMessage, u64)> {
@@ -1157,9 +1173,7 @@ impl BinanceFeed {
             .await
             {
                 Ok((snapshot, seq, frames, connections)) => {
-                    for connection in self.connections.drain(..) {
-                        connection.abort();
-                    }
+                    self.stop_connections();
                     self.frames = frames;
                     self.connections = connections;
                     let end_local = now_ns();
