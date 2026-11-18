@@ -14,17 +14,28 @@ use collector::book::{
     recover_segment, run_market,
 };
 use collector::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
-use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{
-    net::TcpStream,
     sync::watch,
     time::{Instant, interval_at},
 };
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
-type BinanceSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+use collector::transport::{self, Heartbeat, WsTarget};
+
+/// One decoded text frame as the transport hands it over.
+type FrameText = tokio_tungstenite::tungstenite::Utf8Bytes;
+
+/// Frames a connection may queue for its recorder before the transport backs the socket up.
+const CONNECTION_FRAMES: usize = 8192;
+
+/// One Binance stream as its connection delivers it: depth on one subscription, trades, mark price
+/// and liquidations on another. The tag is what the feed dispatches on, since the transport only
+/// knows text frames.
+enum BinanceStream {
+    Depth(FrameText),
+    Market(FrameText),
+}
 
 enum MarketFeed {
     Binance(Box<BinanceFeed>),
@@ -45,12 +56,18 @@ impl Feed for MarketFeed {
 }
 
 struct OkxFeed {
-    socket: BinanceSocket,
+    /// Frames from the transport, which owns the connection and its reconnection.
+    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
+    /// Kept alive so the transport stops when this feed does.
+    _connection: tokio::task::JoinHandle<()>,
     market: MarketConfig,
     cancel: watch::Receiver<bool>,
     pending: VecDeque<FeedMessage>,
     previous_seq: Option<u64>,
-    reconnect_pending: bool,
+    /// The transport reconnected: the next frame starts a fresh stream.
+    reconnected: bool,
+    /// Waiting for the snapshot that restarts a stream after a sequence break.
+    awaiting_snapshot: bool,
 }
 
 impl OkxFeed {
@@ -63,7 +80,6 @@ impl OkxFeed {
         {
             anyhow::bail!("OKX symbol must be an instrument id");
         }
-        let (mut socket, _) = connect_async("wss://ws.okx.com:8443/ws/v5/public").await?;
         let mut args = vec![
             serde_json::json!({"channel":"books","instId":market.symbol}),
             serde_json::json!({"channel":"trades","instId":market.symbol}),
@@ -80,20 +96,27 @@ impl OkxFeed {
                 serde_json::json!({"channel":"liquidation-orders","instType":inst_type}),
             ]);
         }
-        socket
-            .send(Message::Text(
-                serde_json::json!({"op":"subscribe","args":args})
-                    .to_string()
-                    .into(),
-            ))
-            .await?;
+        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+        let target = WsTarget::new(
+            "wss://ws.okx.com:8443/ws/v5/public".to_owned(),
+            Heartbeat {
+                check_interval: std::time::Duration::from_secs(5),
+                timeout: std::time::Duration::from_secs(30),
+            },
+        )
+        .subscribing(vec![
+            serde_json::json!({"op":"subscribe","args":args}).to_string(),
+        ]);
+        let connection = tokio::spawn(transport::keep_connection(target, tx));
         Ok(Self {
-            socket,
+            frames,
+            _connection: connection,
             market,
             cancel,
             pending: VecDeque::new(),
             previous_seq: None,
-            reconnect_pending: false,
+            reconnected: false,
+            awaiting_snapshot: false,
         })
     }
 
@@ -158,8 +181,10 @@ impl OkxFeed {
                         next_seq: seq,
                         detail: "OKX sequence discontinuity".into(),
                     }));
+                    // The stream restarts from the next snapshot the venue sends; reconnection is
+                    // the transport's business, not a reason to drop this connection here.
                     self.previous_seq = None;
-                    self.reconnect_pending = true;
+                    self.awaiting_snapshot = true;
                     return self.pending.pop_front();
                 }
                 let mut changes =
@@ -292,42 +317,31 @@ impl Feed for OkxFeed {
             if *self.cancel.borrow() {
                 return None;
             }
-            if self.reconnect_pending {
-                self.reconnect_pending = false;
-                let start = now_ns();
-                loop {
-                    if *self.cancel.borrow() {
-                        return None;
-                    }
-                    match Self::connect(self.market.clone(), self.cancel.clone()).await {
-                        Ok(replacement) => {
-                            self.socket = replacement.socket;
-                            self.previous_seq = None;
-                            self.pending.push_back(FeedMessage::Gap(GapMessage {
-                                start_local_ns: start,
-                                start_exch_ns: start,
-                                end_local_ns: now_ns(),
-                                end_exch_ns: now_ns(),
-                                reason: GapReason::Disconnect,
-                                last_seq: 0,
-                                next_seq: 0,
-                                detail: "OKX websocket reconnected".into(),
-                            }));
-                            break;
-                        }
-                        Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-                    }
-                }
+            if self.reconnected {
+                self.reconnected = false;
+                self.previous_seq = None;
+                let now = now_ns();
+                self.pending.push_back(FeedMessage::Gap(GapMessage {
+                    start_local_ns: now,
+                    start_exch_ns: now,
+                    end_local_ns: now,
+                    end_exch_ns: now,
+                    reason: GapReason::Disconnect,
+                    last_seq: 0,
+                    next_seq: 0,
+                    detail: "OKX websocket reconnected".into(),
+                }));
                 continue;
             }
             tokio::select! {
                 changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                message = self.socket.next() => match message {
-                    Some(Ok(Message::Text(text))) if text.as_str() == "ping" => { let _ = self.socket.send(Message::Text("pong".into())).await; },
-                    Some(Ok(Message::Text(text))) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
-                    Some(Ok(Message::Ping(payload))) => { let _ = self.socket.send(Message::Pong(payload)).await; },
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => self.reconnect_pending = true,
-                    Some(Ok(_)) => {}
+                frame = self.frames.recv() => match frame {
+                    // OKX answers the application-level "ping" frame itself.
+                    Some((_, text)) if text.as_str() == "ping" => {}
+                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
+                    None => {
+                        self.reconnected = true;
+                    }
                 }
             }
         }
@@ -335,7 +349,9 @@ impl Feed for OkxFeed {
 }
 
 struct BybitFeed {
-    socket: BinanceSocket,
+    /// Frames from the transport, which owns the connection and its reconnection.
+    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
+    _connection: tokio::task::JoinHandle<()>,
     client: reqwest::Client,
     market: MarketConfig,
     validation_interval_ms: u32,
@@ -343,7 +359,9 @@ struct BybitFeed {
     pending: VecDeque<FeedMessage>,
     cancel: watch::Receiver<bool>,
     previous_seq: Option<u64>,
-    reconnect_pending: bool,
+    /// Waiting for the snapshot that restarts a stream after a sequence break.
+    awaiting_snapshot: bool,
+    reconnected: bool,
 }
 
 impl BybitFeed {
@@ -360,7 +378,6 @@ impl BybitFeed {
             _ => 500,
         };
         let endpoint = format!("wss://stream.bybit.com/v5/public/{category}");
-        let (mut socket, _) = connect_async(endpoint).await?;
         let mut args = vec![
             format!("orderbook.{depth}.{}", market.symbol),
             format!("publicTrade.{}", market.symbol),
@@ -369,16 +386,22 @@ impl BybitFeed {
             args.push(format!("tickers.{}", market.symbol));
             args.push(format!("allLiquidation.{}", market.symbol));
         }
-        socket
-            .send(Message::Text(
-                serde_json::json!({"op":"subscribe","args":args})
-                    .to_string()
-                    .into(),
-            ))
-            .await?;
+        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+        let target = WsTarget::new(
+            endpoint,
+            Heartbeat {
+                check_interval: std::time::Duration::from_secs(20),
+                timeout: std::time::Duration::from_secs(60),
+            },
+        )
+        .subscribing(vec![
+            serde_json::json!({"op":"subscribe","args":args}).to_string(),
+        ]);
+        let connection = tokio::spawn(transport::keep_connection(target, tx));
         let interval_ms = validation_interval_ms.max(1);
         Ok(Self {
-            socket,
+            frames,
+            _connection: connection,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 .build()?,
@@ -391,7 +414,8 @@ impl BybitFeed {
             pending: VecDeque::new(),
             cancel,
             previous_seq: None,
-            reconnect_pending: false,
+            awaiting_snapshot: false,
+            reconnected: false,
         })
     }
 
@@ -467,7 +491,7 @@ impl BybitFeed {
                     detail: "Bybit update id discontinuity; awaiting snapshot".into(),
                 }));
                 self.previous_seq = None;
-                self.reconnect_pending = true;
+                self.awaiting_snapshot = true;
                 return self.pending.pop_front();
             }
             self.previous_seq = Some(update);
@@ -585,42 +609,20 @@ impl Feed for BybitFeed {
             if *self.cancel.borrow() {
                 return None;
             }
-            if self.reconnect_pending {
-                self.reconnect_pending = false;
-                let start_local_ns = now_ns();
-                let start_exch_ns = start_local_ns;
-                loop {
-                    if *self.cancel.borrow() {
-                        return None;
-                    }
-                    match Self::connect(
-                        self.market.clone(),
-                        self.validation_interval_ms,
-                        self.cancel.clone(),
-                    )
-                    .await
-                    {
-                        Ok(mut replacement) => {
-                            self.socket = replacement.socket;
-                            self.client = replacement.client;
-                            self.rest_timer = replacement.rest_timer;
-                            self.previous_seq = None;
-                            self.pending.push_back(FeedMessage::Gap(GapMessage {
-                                start_local_ns,
-                                start_exch_ns,
-                                end_local_ns: now_ns(),
-                                end_exch_ns: now_ns(),
-                                reason: GapReason::Disconnect,
-                                last_seq: 0,
-                                next_seq: 0,
-                                detail: "Bybit websocket reconnected".into(),
-                            }));
-                            self.pending.append(&mut replacement.pending);
-                            break;
-                        }
-                        Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-                    }
-                }
+            if self.reconnected {
+                self.reconnected = false;
+                self.previous_seq = None;
+                let now = now_ns();
+                self.pending.push_back(FeedMessage::Gap(GapMessage {
+                    start_local_ns: now,
+                    start_exch_ns: now,
+                    end_local_ns: now,
+                    end_exch_ns: now,
+                    reason: GapReason::Disconnect,
+                    last_seq: 0,
+                    next_seq: 0,
+                    detail: "Bybit websocket reconnected".into(),
+                }));
                 continue;
             }
             tokio::select! {
@@ -635,11 +637,10 @@ impl Feed for BybitFeed {
                     });
                     return Some(FeedMessage::RestSnapshot(snapshot));
                 }
-                message = self.socket.next() => match message {
-                    Some(Ok(Message::Text(text))) => if let Some(value) = self.parse(text.as_str()).await { return Some(value); },
-                    Some(Ok(Message::Ping(payload))) => { let _ = self.socket.send(Message::Pong(payload)).await; },
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => { self.reconnect_pending = true; },
-                    Some(Ok(_)) => {}
+                frame = self.frames.recv() => match frame {
+                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()).await { return Some(value); },
+                    // The transport is reconnecting; the next frame starts a fresh stream.
+                    None => self.reconnected = true,
                 }
             }
         }
@@ -689,37 +690,48 @@ fn parse_bybit_rest_snapshot(
 }
 
 struct HyperliquidFeed {
-    socket: BinanceSocket,
+    /// Frames from the transport, which owns the connection and its reconnection.
+    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
+    _connection: tokio::task::JoinHandle<()>,
     market: MarketConfig,
     cancel: watch::Receiver<bool>,
     pending: VecDeque<FeedMessage>,
     last_funding: Option<String>,
-    reconnect_pending: bool,
+    reconnected: bool,
 }
 
 impl HyperliquidFeed {
     async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
-        let (mut socket, _) = connect_async("wss://api.hyperliquid.xyz/ws").await?;
+        // Hyperliquid takes one subscription message per channel; the transport sends them all
+        // once the connection is open, and again after a reconnect.
+        let mut messages = Vec::new();
         for subscription in [
             serde_json::json!({"type":"l2Book","coin":market.symbol}),
             serde_json::json!({"type":"trades","coin":market.symbol}),
             serde_json::json!({"type":"activeAssetCtx","coin":market.symbol}),
         ] {
-            socket
-                .send(Message::Text(
-                    serde_json::json!({"method":"subscribe","subscription":subscription})
-                        .to_string()
-                        .into(),
-                ))
-                .await?;
+            messages.push(
+                serde_json::json!({"method":"subscribe","subscription":subscription}).to_string(),
+            );
         }
+        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+        let target = WsTarget::new(
+            "wss://api.hyperliquid.xyz/ws".to_owned(),
+            Heartbeat {
+                check_interval: std::time::Duration::from_secs(10),
+                timeout: std::time::Duration::from_secs(60),
+            },
+        )
+        .subscribing(messages);
+        let connection = tokio::spawn(transport::keep_connection(target, tx));
         Ok(Self {
-            socket,
+            frames,
+            _connection: connection,
             market,
             cancel,
             pending: VecDeque::new(),
             last_funding: None,
-            reconnect_pending: false,
+            reconnected: false,
         })
     }
 
@@ -818,41 +830,26 @@ impl Feed for HyperliquidFeed {
             if *self.cancel.borrow() {
                 return None;
             }
-            if self.reconnect_pending {
-                self.reconnect_pending = false;
-                let start_local_ns = now_ns();
-                loop {
-                    if *self.cancel.borrow() {
-                        return None;
-                    }
-                    match Self::connect(self.market.clone(), self.cancel.clone()).await {
-                        Ok(mut replacement) => {
-                            self.socket = replacement.socket;
-                            self.pending.push_back(FeedMessage::Gap(GapMessage {
-                                start_local_ns,
-                                start_exch_ns: start_local_ns,
-                                end_local_ns: now_ns(),
-                                end_exch_ns: now_ns(),
-                                reason: GapReason::Disconnect,
-                                last_seq: 0,
-                                next_seq: 0,
-                                detail: "Hyperliquid websocket reconnected".into(),
-                            }));
-                            self.pending.append(&mut replacement.pending);
-                            break;
-                        }
-                        Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
-                    }
-                }
+            if self.reconnected {
+                self.reconnected = false;
+                let now = now_ns();
+                self.pending.push_back(FeedMessage::Gap(GapMessage {
+                    start_local_ns: now,
+                    start_exch_ns: now,
+                    end_local_ns: now,
+                    end_exch_ns: now,
+                    reason: GapReason::Disconnect,
+                    last_seq: 0,
+                    next_seq: 0,
+                    detail: "Hyperliquid websocket reconnected".into(),
+                }));
                 continue;
             }
             tokio::select! {
                 changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                message = self.socket.next() => match message {
-                    Some(Ok(Message::Text(text))) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
-                    Some(Ok(Message::Ping(payload))) => { let _ = self.socket.send(Message::Pong(payload)).await; },
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => { self.reconnect_pending = true; },
-                    Some(Ok(_)) => {}
+                frame = self.frames.recv() => match frame {
+                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
+                    None => self.reconnected = true,
                 }
             }
         }
@@ -860,8 +857,10 @@ impl Feed for HyperliquidFeed {
 }
 
 struct BinanceFeed {
-    socket: Option<BinanceSocket>,
-    market_socket: Option<BinanceSocket>,
+    /// Both subscriptions, tagged by the stream that delivered them.
+    frames: tokio::sync::mpsc::Receiver<BinanceStream>,
+    /// The two transports, kept so the feed stops them when it goes.
+    connections: Vec<tokio::task::JoinHandle<()>>,
     client: reqwest::Client,
     market: MarketConfig,
     settings: RecorderSettings,
@@ -894,8 +893,11 @@ impl BinanceFeed {
             .build()?;
         let validation_interval_ms = settings.validation_interval_ms.max(1);
         let mut feed = Self {
-            socket: None,
-            market_socket: None,
+            frames: {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            },
+            connections: Vec::new(),
             client,
             market,
             settings,
@@ -946,6 +948,48 @@ impl BinanceFeed {
         }
     }
 
+    /// Opens both subscriptions on the transport, tagging each frame with the stream that
+    /// delivered it.
+    async fn open_connections(
+        &self,
+    ) -> anyhow::Result<(
+        tokio::sync::mpsc::Receiver<BinanceStream>,
+        Vec<tokio::task::JoinHandle<()>>,
+    )> {
+        let (public_url, market_url) = self.websocket_urls()?;
+        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+        let heartbeat = Heartbeat {
+            check_interval: std::time::Duration::from_secs(20),
+            timeout: std::time::Duration::from_secs(60),
+        };
+        let mut connections = Vec::new();
+        for (url, depth) in market_url
+            .into_iter()
+            .map(|url| (url, false))
+            .chain(std::iter::once((public_url, true)))
+        {
+            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
+            connections.push(tokio::spawn(transport::keep_connection(
+                WsTarget::new(url, heartbeat),
+                stream_tx,
+            )));
+            let forward = tx.clone();
+            connections.push(tokio::spawn(async move {
+                while let Some((_, text)) = stream_rx.recv().await {
+                    let framed = if depth {
+                        BinanceStream::Depth(text)
+                    } else {
+                        BinanceStream::Market(text)
+                    };
+                    if forward.send(framed).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        Ok((frames, connections))
+    }
+
     fn websocket_urls(&self) -> anyhow::Result<(String, Option<String>)> {
         if !self
             .market
@@ -985,19 +1029,10 @@ impl BinanceFeed {
         )
     }
 
-    async fn connect_market_socket(&self) -> anyhow::Result<Option<BinanceSocket>> {
-        let (_, market_url) = self.websocket_urls()?;
-        match market_url {
-            Some(url) => Ok(Some(connect_async(url).await?.0)),
-            None => Ok(None),
-        }
-    }
-
     async fn open_initial(&mut self) -> anyhow::Result<()> {
-        let (public_url, _) = self.websocket_urls()?;
-        let socket = connect_async(public_url).await?.0;
-        self.socket = Some(socket);
-        self.market_socket = self.connect_market_socket().await?;
+        let (frames, connections) = self.open_connections().await?;
+        self.frames = frames;
+        self.connections = connections;
         let (snapshot, seq) = self.fetch_snapshot().await?;
         self.previous_seq = seq;
         self.last_exch_ns = snapshot.exch_ts_ns;
@@ -1085,17 +1120,18 @@ impl BinanceFeed {
                 return;
             }
             match async {
-                let (public_url, _) = self.websocket_urls()?;
-                let socket = connect_async(public_url).await?.0;
-                self.socket = Some(socket);
-                if self.market_socket.is_none() {
-                    self.market_socket = self.connect_market_socket().await?;
-                }
-                self.fetch_snapshot().await
+                let (snapshot, seq) = self.fetch_snapshot().await?;
+                let (frames, connections) = self.open_connections().await?;
+                Ok::<_, anyhow::Error>((snapshot, seq, frames, connections))
             }
             .await
             {
-                Ok((snapshot, seq)) => {
+                Ok((snapshot, seq, frames, connections)) => {
+                    for connection in self.connections.drain(..) {
+                        connection.abort();
+                    }
+                    self.frames = frames;
+                    self.connections = connections;
                     let end_local = now_ns();
                     let end_exch = snapshot.exch_ts_ns.max(old_exch);
                     self.previous_seq = seq;
@@ -1325,92 +1361,35 @@ impl BinanceFeed {
 impl BinanceFeed {
     /// One REST validation snapshot, with the socket read while it is in flight.
     ///
-    /// The snapshot used to be awaited inside the `select!`: the socket was not read for the whole
-    /// request, so the local book fell behind, and because the snapshot's `lastUpdateId` is ahead
-    /// of what the recorder had processed, almost every comparison came back `stale`. Here the
-    /// request runs beside socket reads; the depth frames that arrive meanwhile are queued with
-    /// the snapshot, and the recorder pumps them into its alignment log before comparing.
+    /// One REST validation snapshot while both subscriptions keep being read by the transport.
+    ///
+    /// The request borrows nothing from the feed, so the streams keep delivering; every depth frame
+    /// that crossed the wire meanwhile is queued for the recorder when the request returns and is
+    /// handed over with the snapshot, which is what lets it align the two.
     async fn sample_snapshot(&mut self) -> FeedMessage {
-        let DepthRequest {
-            client,
-            endpoint,
-            market,
-        } = match self.urls() {
+        let request = match self.urls() {
             Ok((endpoint, _, _)) => DepthRequest {
                 client: self.client.clone(),
                 endpoint,
                 market: self.market.clone(),
             },
-            Err(_) => {
-                return FeedMessage::RestSnapshotQueued(
-                    SnapshotMessage {
-                        exch_ts_ns: now_ns(),
-                        local_ts_ns: now_ns(),
-                        bids: Vec::new(),
-                        asks: Vec::new(),
-                        last_seq: None,
-                    },
-                    Vec::new(),
-                );
-            }
+            Err(_) => return FeedMessage::RestSnapshotQueued(empty_snapshot(), Vec::new()),
         };
-        // The request owns its inputs, so the socket can be read while it is in flight.
-        let mut request = Box::pin(
-            DepthRequest {
-                client,
-                endpoint,
-                market,
-            }
-            .fetch(),
-        );
-        let mut frames: Vec<String> = Vec::new();
-        let failure;
-        loop {
-            let Some(socket) = self.socket.as_mut() else {
-                failure = true;
-                break;
-            };
-            let step = tokio::select! {
-                result = &mut request => Some(result.map(|(snapshot, _)| snapshot)),
-                message = socket.next() => match message {
-                    Some(Ok(Message::Text(text))) => {
-                        frames.push(text.to_string());
-                        None
-                    }
-                    _ => {
-                        failure = true;
-                        break;
-                    }
-                },
-            };
-            if let Some(result) = step {
-                match result {
-                    Ok(snapshot) => {
-                        for text in frames {
-                            self.absorb_queued(&text);
-                        }
-                        let queued = self.queued_depth.drain(..).collect();
-                        return FeedMessage::RestSnapshotQueued(snapshot, queued);
-                    }
-                    Err(_) => {
-                        failure = true;
-                        break;
-                    }
+        let fetched = request.fetch().await;
+        // Whatever the subscriptions delivered while the request was in flight.
+        while let Ok(frame) = self.frames.try_recv() {
+            match frame {
+                BinanceStream::Depth(text) | BinanceStream::Market(text) => {
+                    self.absorb_queued(text.as_str());
                 }
             }
         }
-        if failure {
-            self.socket = None;
-        }
-        let snapshot = SnapshotMessage {
-            exch_ts_ns: now_ns(),
-            local_ts_ns: now_ns(),
-            bids: Vec::new(),
-            asks: Vec::new(),
-            last_seq: None,
-        };
         let queued = self.queued_depth.drain(..).collect();
-        FeedMessage::RestSnapshotQueued(snapshot, queued)
+        match fetched {
+            Ok((snapshot, _)) => FeedMessage::RestSnapshotQueued(snapshot, queued),
+            // The sample is reported as `stale`: it carries no sequence.
+            Err(_) => FeedMessage::RestSnapshotQueued(empty_snapshot(), queued),
+        }
     }
 }
 
@@ -1423,11 +1402,6 @@ impl Feed for BinanceFeed {
             if *self.cancel.borrow() {
                 return None;
             }
-            let reconnect_market = self.is_usdm() && self.market_socket.is_none();
-            let Some(socket) = self.socket.as_mut() else {
-                self.resynchronize(GapReason::Disconnect).await;
-                return self.pending.pop_front();
-            };
             tokio::select! {
                 changed = self.cancel.changed() => {
                     if changed.is_err() || *self.cancel.borrow() { return None; }
@@ -1436,58 +1410,36 @@ impl Feed for BinanceFeed {
                     if let Some(message) = self.poll_open_interest().await { return Some(message); }
                 }
                 _ = self.rest_timer.tick(), if self.settings.validation_interval_ms > 0 => {
-                    // The snapshot is fetched while the socket keeps being read, so the depth
-                    // messages that overtake it are handed over with it (see `sample_snapshot`).
                     let shot = self.sample_snapshot().await;
                     return Some(shot);
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if reconnect_market => {
-                    self.market_socket = self.connect_market_socket().await.ok().flatten();
-                }
-                message = async {
-                    self.market_socket
-                        .as_mut()
-                        .expect("market socket guarded by select")
-                        .next()
-                        .await
-                }, if self.market_socket.is_some() => {
-                    match message {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
-                        }
-                        Some(Ok(Message::Ping(payload))) => {
-                            if let Some(socket) = self.market_socket.as_mut()
-                                && socket.send(Message::Pong(payload)).await.is_err()
-                            {
-                                self.market_socket = None;
-                            }
-                        }
-                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
-                            self.market_socket = None;
-                        }
-                        Some(Ok(_)) => {}
+                frame = self.frames.recv() => match frame {
+                    Some(BinanceStream::Depth(text)) => {
+                        if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
                     }
-                }
-                message = socket.next() => {
-                    match message {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
-                        }
-                        Some(Ok(Message::Ping(payload))) => {
-                            if let Some(socket) = self.socket.as_mut()
-                                && socket.send(Message::Pong(payload)).await.is_err()
-                            {
-                                self.socket = None;
-                            }
-                        }
-                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
-                            self.socket = None;
-                        }
-                        Some(Ok(_)) => {}
+                    Some(BinanceStream::Market(text)) => {
+                        if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
+                    }
+                    // Both transports are reconnecting; the gap is reported once they are back.
+                    None => {
+                        self.resynchronize(GapReason::Disconnect).await;
+                        return self.pending.pop_front();
                     }
                 }
             }
         }
+    }
+}
+
+/// A snapshot placeholder for a request that failed: it carries no sequence, so the recorder
+/// reports the sample as `stale` rather than judging it.
+fn empty_snapshot() -> SnapshotMessage {
+    SnapshotMessage {
+        exch_ts_ns: now_ns(),
+        local_ts_ns: now_ns(),
+        bids: Vec::new(),
+        asks: Vec::new(),
+        last_seq: None,
     }
 }
 

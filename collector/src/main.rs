@@ -4,7 +4,6 @@ use tokio::{self, select, signal};
 use tracing::info;
 
 mod binance;
-mod binance_transport;
 mod binancefuturescm;
 mod binancefuturesum;
 mod bybit;

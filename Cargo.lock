@@ -2427,6 +2427,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
+ "titan-l2-book",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "toml",
@@ -6781,6 +6782,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "titan-l2-book"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "titan-market-service"
 version = "0.1.0"
 dependencies = [
@@ -6836,6 +6844,7 @@ dependencies = [
  "titan-core-types",
  "titan-domain-types",
  "titan-event-engine",
+ "titan-l2-book",
  "titan-market-service",
  "tokio",
  "tracing",

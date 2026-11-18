@@ -1,3 +1,13 @@
+//! A websocket market stream, kept open.
+//!
+//! Reading, pings, heartbeats, reconnection and the reasons a connection ends are the same for
+//! every venue; only the URL and how its frames are read differ. This module owns the former, so a
+//! venue's `keep_connection` is a URL and a heartbeat, and its message handling starts once a frame
+//! is already decoded text.
+//!
+//! Frames are delivered as `(received_at, text)` on a bounded channel: the reader never blocks on
+//! the handler, and a handler that falls behind backs the socket up rather than losing frames.
+
 use std::{
     io,
     io::ErrorKind,
@@ -13,31 +23,83 @@ use tokio::{
     time::{Instant as HeartbeatInstant, interval},
 };
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Bytes, Message, Utf8Bytes, client::IntoClientRequest},
+    connect_async_with_config,
+    tungstenite::{
+        Bytes, Message, Utf8Bytes, client::IntoClientRequest, protocol::WebSocketConfig,
+    },
 };
 use tracing::{error, warn};
 
+/// How often a market stream is checked, and how long it may go without a ping.
 #[derive(Clone, Copy)]
-pub(crate) struct Heartbeat {
-    pub(crate) check_interval: Duration,
-    pub(crate) timeout: Duration,
+pub struct Heartbeat {
+    pub check_interval: Duration,
+    pub timeout: Duration,
 }
 
-fn stream_url(endpoint: &str, streams: &[String], symbols: &[String]) -> String {
-    let mut url = format!("{endpoint}?streams=");
-    let mut first = true;
-    for symbol in symbols {
-        let symbol = symbol.to_lowercase();
-        for stream in streams {
-            if !first {
-                url.push('/');
-            }
-            first = false;
-            url.push_str(&stream.replace("$symbol", &symbol));
+/// What a stream connection accepts and buffers.
+///
+/// Set explicitly rather than left to the library, so that a size is a decision: a frame past the
+/// limit ends the connection with a logged error instead of growing memory, and a bounded write
+/// buffer makes a peer that stops reading visible as `WriteBufferFull`.
+#[derive(Clone, Copy)]
+pub struct WsConfig {
+    pub max_message_size: usize,
+    pub max_frame_size: usize,
+    pub max_write_buffer: usize,
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            // A depth frame carries every level a window changed: a few kilobytes at BTC's pace.
+            max_message_size: 8 << 20,
+            max_frame_size: 2 << 20,
+            // Streams are read-only apart from pongs; a few frames is all the buffer needs.
+            max_write_buffer: 1 << 20,
         }
     }
-    url
+}
+
+impl WsConfig {
+    fn websocket_config(&self) -> WebSocketConfig {
+        WebSocketConfig::default()
+            .max_message_size(Some(self.max_message_size))
+            .max_frame_size(Some(self.max_frame_size))
+            .max_write_buffer_size(self.max_write_buffer)
+    }
+}
+
+/// A stream to keep open: where, how often it is checked, and what it accepts.
+#[derive(Clone)]
+pub struct WsTarget {
+    pub url: String,
+    pub heartbeat: Heartbeat,
+    pub config: WsConfig,
+    /// Messages sent once the connection is open.
+    ///
+    /// A venue that subscribes over the connection (Bybit, OKX, Hyperliquid send an `op` request)
+    /// names them here; one that subscribes in the URL (Binance) leaves this empty. Either way the
+    /// subscription is part of the connection, so a reconnect subscribes again without the broker
+    /// handling it.
+    pub subscribe: Vec<String>,
+}
+
+impl WsTarget {
+    pub fn new(url: String, heartbeat: Heartbeat) -> Self {
+        Self {
+            url,
+            heartbeat,
+            config: WsConfig::default(),
+            subscribe: Vec::new(),
+        }
+    }
+
+    /// Adds the messages this connection sends once it is open.
+    pub fn subscribing(mut self, messages: Vec<String>) -> Self {
+        self.subscribe = messages;
+        self
+    }
 }
 
 // Preserve the effective policy: the fourth short failure starts a one-second
@@ -55,13 +117,19 @@ fn reconnect_delay(error_count: &mut usize, connected_for: Duration) -> Duration
 }
 
 async fn connect(
-    url: &str,
+    target: &WsTarget,
     ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
-    heartbeat: Heartbeat,
 ) -> Result<(), anyhow::Error> {
-    let request = url.into_client_request()?;
-    let (ws_stream, _) = connect_async(request).await?;
+    let request = target.url.as_str().into_client_request()?;
+    let (ws_stream, _) =
+        connect_async_with_config(request, Some(target.config.websocket_config()), false).await?;
+    let heartbeat = target.heartbeat;
     let (mut write, mut read) = ws_stream.split();
+    // A venue that subscribes over the connection gets its requests now that it is open; they go
+    // before the read loop so the first frames already belong to a subscription.
+    for message in &target.subscribe {
+        write.send(Message::Text(message.as_str().into())).await?;
+    }
     let (tx, mut rx) = unbounded_channel::<Bytes>();
 
     tokio::spawn(async move {
@@ -125,18 +193,11 @@ async fn connect(
     Ok(())
 }
 
-pub(crate) async fn keep_connection(
-    endpoint: &str,
-    heartbeat: Heartbeat,
-    streams: Vec<String>,
-    symbols: Vec<String>,
-    ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
-) {
-    let url = stream_url(endpoint, &streams, &symbols);
+pub async fn keep_connection(target: WsTarget, ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>) {
     let mut error_count = 0;
     loop {
         let connect_time = Instant::now();
-        if let Err(error) = connect(&url, ws_tx.clone(), heartbeat).await {
+        if let Err(error) = connect(&target, ws_tx.clone()).await {
             error!(?error, "websocket error");
             let delay = reconnect_delay(&mut error_count, connect_time.elapsed());
             if !delay.is_zero() {
@@ -151,7 +212,6 @@ pub(crate) async fn keep_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::AbortOnDrop;
     use std::{future::Future, task::Poll};
     use tokio::{net::TcpListener, sync::mpsc::channel, time::advance};
     use tokio_tungstenite::accept_async;
@@ -160,6 +220,30 @@ mod tests {
         check_interval: Duration::from_millis(20),
         timeout: Duration::from_millis(500),
     };
+
+    /// Aborts the task it holds when dropped, so a test cannot leak a connection.
+    struct AbortOnDropGuard<T>(tokio::task::JoinHandle<T>);
+
+    impl<T> AbortOnDropGuard<T> {
+        fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+            Self(handle)
+        }
+    }
+
+    impl<T> Drop for AbortOnDropGuard<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    fn target(url: &str) -> WsTarget {
+        WsTarget {
+            url: url.to_owned(),
+            heartbeat: HEARTBEAT,
+            config: WsConfig::default(),
+            subscribe: Vec::new(),
+        }
+    }
 
     // Keep this task runnable while socket I/O is pending, so Tokio cannot
     // auto-advance the paused clock. Only explicit advance() calls move time.
@@ -181,24 +265,6 @@ mod tests {
             }
         })
         .await
-    }
-
-    #[test]
-    fn stream_url_preserves_symbol_and_stream_order() {
-        let streams = vec!["$symbol@trade".into(), "$symbol@depth@0ms".into()];
-        let symbols = vec!["BTCUSDT".into(), "EthUsdt".into()];
-        assert_eq!(
-            stream_url("wss://fstream.binance.com/stream", &streams, &symbols),
-            "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth@0ms/ethusdt@trade/ethusdt@depth@0ms"
-        );
-        assert_eq!(
-            stream_url("ws://localhost/stream", &[], &symbols),
-            "ws://localhost/stream?streams="
-        );
-        assert_eq!(
-            stream_url("ws://localhost/stream", &streams, &[]),
-            "ws://localhost/stream?streams="
-        );
     }
 
     #[test]
@@ -244,8 +310,8 @@ mod tests {
             let url = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, mut rx) = channel(8);
             let mut client =
-                AbortOnDrop(tokio::spawn(
-                    async move { connect(&url, tx, HEARTBEAT).await },
+                AbortOnDropGuard::new(tokio::spawn(
+                    async move { connect(&target(&url), tx).await },
                 ));
             let (tcp, _) = listener.accept().await.unwrap();
             let mut server = accept_async(tcp).await.unwrap();
@@ -291,8 +357,8 @@ mod tests {
             let url = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, mut rx) = channel(8);
             let mut client =
-                AbortOnDrop(tokio::spawn(
-                    async move { connect(&url, tx, HEARTBEAT).await },
+                AbortOnDropGuard::new(tokio::spawn(
+                    async move { connect(&target(&url), tx).await },
                 ));
             let (tcp, _) = listener.accept().await.unwrap();
             let mut server = accept_async(tcp).await.unwrap();
@@ -349,15 +415,8 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, rx) = channel(8);
-            let mut client = AbortOnDrop(tokio::spawn(async move {
-                keep_connection(
-                    &endpoint,
-                    HEARTBEAT,
-                    vec!["$symbol@trade".into()],
-                    vec!["BTCUSDT".into()],
-                    tx,
-                )
-                .await;
+            let mut client = AbortOnDropGuard::new(tokio::spawn(async move {
+                keep_connection(target(&endpoint), tx).await;
             }));
             for attempt in 0..2 {
                 let (tcp, _) = listener.accept().await.unwrap();
