@@ -1,3 +1,13 @@
+//! A websocket market stream, kept open.
+//!
+//! Reading, pings, heartbeats, reconnection and the reasons a connection ends are the same for
+//! every venue; only the URL and how its frames are read differ. This module owns the former, so a
+//! venue's `keep_connection` is a URL and a heartbeat, and its message handling starts once a frame
+//! is already decoded text.
+//!
+//! Frames are delivered as `(received_at, text)` on a bounded channel: the reader never blocks on
+//! the handler, and a handler that falls behind backs the socket up rather than losing frames.
+
 use std::{
     io,
     io::ErrorKind,
@@ -13,31 +23,132 @@ use tokio::{
     time::{Instant as HeartbeatInstant, interval},
 };
 use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Bytes, Message, Utf8Bytes, client::IntoClientRequest},
+    connect_async_with_config,
+    tungstenite::{
+        Bytes, Message, Utf8Bytes, client::IntoClientRequest, protocol::WebSocketConfig,
+    },
 };
-use tracing::{error, warn};
+use tracing::warn;
 
-#[derive(Clone, Copy)]
-pub(crate) struct Heartbeat {
-    pub(crate) check_interval: Duration,
-    pub(crate) timeout: Duration,
+/// The venue refused the request itself rather than failing it.
+///
+/// Binance answers 418 or 429 with the IP throttling ban it applies to a client that asks too
+/// often, and the ban lasts minutes; Bybit and OKX use 429 for the same purpose. Retrying into a
+/// ban extends it, so a refused request is reported as itself and the caller waits it out.
+#[derive(Debug, Clone)]
+pub struct VenueBanned {
+    pub status: u16,
+    /// Seconds the venue asked to be left alone for (`Retry-After`), when it said.
+    pub retry_after: Option<u64>,
 }
 
-fn stream_url(endpoint: &str, streams: &[String], symbols: &[String]) -> String {
-    let mut url = format!("{endpoint}?streams=");
-    let mut first = true;
-    for symbol in symbols {
-        let symbol = symbol.to_lowercase();
-        for stream in streams {
-            if !first {
-                url.push('/');
-            }
-            first = false;
-            url.push_str(&stream.replace("$symbol", &symbol));
+impl VenueBanned {
+    /// Whether a status is the venue refusing the client rather than failing the request.
+    pub fn is_refusal(status: u16) -> bool {
+        matches!(status, 418 | 429 | 503)
+    }
+
+    /// How long to wait before asking again: the venue's own answer, or a minute.
+    pub fn delay(&self) -> Duration {
+        Duration::from_secs(self.retry_after.unwrap_or(60).max(5))
+    }
+
+    /// The ban a response reports, when it is one.
+    pub fn from_response(status: u16, retry_after: Option<&str>) -> Option<Self> {
+        Self::is_refusal(status).then(|| Self {
+            status,
+            retry_after: retry_after.and_then(|value| value.trim().parse::<u64>().ok()),
+        })
+    }
+}
+
+impl std::fmt::Display for VenueBanned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "venue refused the request: HTTP {}", self.status)?;
+        if let Some(seconds) = self.retry_after {
+            write!(f, ", retry after {seconds}s")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for VenueBanned {}
+
+/// How long to wait after the venue refused a request: the delay it asked for, or a minute.
+pub fn ban_delay(error: &anyhow::Error) -> Option<Duration> {
+    error.downcast_ref::<VenueBanned>().map(VenueBanned::delay)
+}
+
+/// How often a market stream is checked, and how long it may go without a ping.
+#[derive(Clone, Copy)]
+pub struct Heartbeat {
+    pub check_interval: Duration,
+    pub timeout: Duration,
+}
+
+/// What a stream connection accepts and buffers.
+///
+/// Set explicitly rather than left to the library, so that a size is a decision: a frame past the
+/// limit ends the connection with a logged error instead of growing memory, and a bounded write
+/// buffer makes a peer that stops reading visible as `WriteBufferFull`.
+#[derive(Clone, Copy)]
+pub struct WsConfig {
+    pub max_message_size: usize,
+    pub max_frame_size: usize,
+    pub max_write_buffer: usize,
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            // A depth frame carries every level a window changed: a few kilobytes at BTC's pace.
+            max_message_size: 8 << 20,
+            max_frame_size: 2 << 20,
+            // Streams are read-only apart from pongs; a few frames is all the buffer needs.
+            max_write_buffer: 1 << 20,
         }
     }
-    url
+}
+
+impl WsConfig {
+    fn websocket_config(&self) -> WebSocketConfig {
+        WebSocketConfig::default()
+            .max_message_size(Some(self.max_message_size))
+            .max_frame_size(Some(self.max_frame_size))
+            .max_write_buffer_size(self.max_write_buffer)
+    }
+}
+
+/// A stream to keep open: where, how often it is checked, and what it accepts.
+#[derive(Clone)]
+pub struct WsTarget {
+    pub url: String,
+    pub heartbeat: Heartbeat,
+    pub config: WsConfig,
+    /// Messages sent once the connection is open.
+    ///
+    /// A venue that subscribes over the connection (Bybit, OKX, Hyperliquid send an `op` request)
+    /// names them here; one that subscribes in the URL (Binance) leaves this empty. Either way the
+    /// subscription is part of the connection, so a reconnect subscribes again without the broker
+    /// handling it.
+    pub subscribe: Vec<String>,
+}
+
+impl WsTarget {
+    pub fn new(url: String, heartbeat: Heartbeat) -> Self {
+        Self {
+            url,
+            heartbeat,
+            config: WsConfig::default(),
+            subscribe: Vec::new(),
+        }
+    }
+
+    /// Adds the messages this connection sends once it is open.
+    pub fn subscribing(mut self, messages: Vec<String>) -> Self {
+        self.subscribe = messages;
+        self
+    }
 }
 
 // Preserve the effective policy: the fourth short failure starts a one-second
@@ -47,21 +158,30 @@ fn reconnect_delay(error_count: &mut usize, connected_for: Duration) -> Duration
     if connected_for > Duration::from_secs(30) {
         *error_count = 0;
     }
-    if *error_count > 3 {
-        Duration::from_secs(1)
-    } else {
-        Duration::ZERO
+    if *error_count <= 3 {
+        return Duration::ZERO;
     }
+    // A connection that keeps failing is waited out with a growing delay: reconnecting every
+    // second into a venue that is refusing the client (a throttling ban) keeps the refusal going
+    // and, for a recorder, keeps the whole market down.
+    let step = (*error_count - 4).min(6) as u32;
+    Duration::from_secs(1u64 << step.min(6)).min(Duration::from_secs(60))
 }
 
 async fn connect(
-    url: &str,
+    target: &WsTarget,
     ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
-    heartbeat: Heartbeat,
 ) -> Result<(), anyhow::Error> {
-    let request = url.into_client_request()?;
-    let (ws_stream, _) = connect_async(request).await?;
+    let request = target.url.as_str().into_client_request()?;
+    let (ws_stream, _) =
+        connect_async_with_config(request, Some(target.config.websocket_config()), false).await?;
+    let heartbeat = target.heartbeat;
     let (mut write, mut read) = ws_stream.split();
+    // A venue that subscribes over the connection gets its requests now that it is open; they go
+    // before the read loop so the first frames already belong to a subscription.
+    for message in &target.subscribe {
+        write.send(Message::Text(message.as_str().into())).await?;
+    }
     let (tx, mut rx) = unbounded_channel::<Bytes>();
 
     tokio::spawn(async move {
@@ -125,20 +245,24 @@ async fn connect(
     Ok(())
 }
 
-pub(crate) async fn keep_connection(
-    endpoint: &str,
-    heartbeat: Heartbeat,
-    streams: Vec<String>,
-    symbols: Vec<String>,
-    ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
-) {
-    let url = stream_url(endpoint, &streams, &symbols);
+pub async fn keep_connection(target: WsTarget, ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>) {
     let mut error_count = 0;
     loop {
         let connect_time = Instant::now();
-        if let Err(error) = connect(&url, ws_tx.clone(), heartbeat).await {
-            error!(?error, "websocket error");
-            let delay = reconnect_delay(&mut error_count, connect_time.elapsed());
+        if let Err(error) = connect(&target, ws_tx.clone()).await {
+            // A refusal is the venue asking to be left alone for a while, which no backoff curve
+            // guesses better than the venue itself does.
+            let delay = ban_delay(&error)
+                .unwrap_or_else(|| reconnect_delay(&mut error_count, connect_time.elapsed()));
+            // Why the connection ended and how long it held, with the wait before the next
+            // attempt: a client reconnecting in a loop had no line saying so anywhere.
+            warn!(
+                url = %target.url,
+                lived_ms = connect_time.elapsed().as_millis() as u64,
+                retry_in_ms = delay.as_millis() as u64,
+                %error,
+                "reconnecting"
+            );
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
@@ -151,7 +275,6 @@ pub(crate) async fn keep_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::AbortOnDrop;
     use std::{future::Future, task::Poll};
     use tokio::{net::TcpListener, sync::mpsc::channel, time::advance};
     use tokio_tungstenite::accept_async;
@@ -160,6 +283,30 @@ mod tests {
         check_interval: Duration::from_millis(20),
         timeout: Duration::from_millis(500),
     };
+
+    /// Aborts the task it holds when dropped, so a test cannot leak a connection.
+    struct AbortOnDropGuard<T>(tokio::task::JoinHandle<T>);
+
+    impl<T> AbortOnDropGuard<T> {
+        fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+            Self(handle)
+        }
+    }
+
+    impl<T> Drop for AbortOnDropGuard<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    fn target(url: &str) -> WsTarget {
+        WsTarget {
+            url: url.to_owned(),
+            heartbeat: HEARTBEAT,
+            config: WsConfig::default(),
+            subscribe: Vec::new(),
+        }
+    }
 
     // Keep this task runnable while socket I/O is pending, so Tokio cannot
     // auto-advance the paused clock. Only explicit advance() calls move time.
@@ -184,34 +331,57 @@ mod tests {
     }
 
     #[test]
-    fn stream_url_preserves_symbol_and_stream_order() {
-        let streams = vec!["$symbol@trade".into(), "$symbol@depth@0ms".into()];
-        let symbols = vec!["BTCUSDT".into(), "EthUsdt".into()];
+    fn a_refusal_carries_its_own_wait() {
+        // 418 and 429 are the venue refusing the client; 503 is it asking to come back later.
+        for status in [418u16, 429, 503] {
+            assert!(VenueBanned::is_refusal(status), "{status}");
+        }
+        for status in [200u16, 400, 401, 404, 500] {
+            assert!(!VenueBanned::is_refusal(status), "{status}");
+        }
+        let ban = VenueBanned::from_response(429, Some("42")).expect("a refusal");
+        assert_eq!(ban.status, 429);
+        assert_eq!(ban.delay(), Duration::from_secs(42));
+        // Without a Retry-After the wait is a minute; a value below the floor is raised to it.
         assert_eq!(
-            stream_url("wss://fstream.binance.com/stream", &streams, &symbols),
-            "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth@0ms/ethusdt@trade/ethusdt@depth@0ms"
+            VenueBanned::from_response(418, None).unwrap().delay(),
+            Duration::from_secs(60)
         );
         assert_eq!(
-            stream_url("ws://localhost/stream", &[], &symbols),
-            "ws://localhost/stream?streams="
+            VenueBanned::from_response(418, Some("1")).unwrap().delay(),
+            Duration::from_secs(5)
         );
-        assert_eq!(
-            stream_url("ws://localhost/stream", &streams, &[]),
-            "ws://localhost/stream?streams="
-        );
+        assert!(VenueBanned::from_response(200, Some("5")).is_none());
+        // A refusal reaches a caller as itself, so it can wait rather than retry.
+        let error: anyhow::Error = VenueBanned::from_response(429, Some("7")).unwrap().into();
+        assert_eq!(ban_delay(&error), Some(Duration::from_secs(7)));
+        let plain = anyhow::anyhow!("connection reset");
+        assert_eq!(ban_delay(&plain), None);
     }
 
     #[test]
     fn reconnect_delay_preserves_failure_and_reset_boundaries() {
         let mut count = 0;
-        for failure in 1..=24 {
-            let expected = if failure > 3 {
-                Duration::from_secs(1)
-            } else {
-                Duration::ZERO
-            };
-            assert_eq!(reconnect_delay(&mut count, Duration::ZERO), expected);
-            assert_eq!(count, failure);
+        // The first three failures retry at once; after them the delay doubles up to a minute.
+        for (failure, expected) in [
+            (1, 0u64),
+            (2, 0),
+            (3, 0),
+            (4, 1),
+            (5, 2),
+            (6, 4),
+            (7, 8),
+            (8, 16),
+            (9, 32),
+            (10, 60),
+            (11, 60),
+        ] {
+            assert_eq!(
+                reconnect_delay(&mut count, Duration::ZERO),
+                Duration::from_secs(expected),
+                "failure {failure}"
+            );
+            assert_eq!(count, failure as usize);
         }
         // Exactly 30s is still a short failure, including the fourth failure.
         count = 3;
@@ -244,8 +414,8 @@ mod tests {
             let url = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, mut rx) = channel(8);
             let mut client =
-                AbortOnDrop(tokio::spawn(
-                    async move { connect(&url, tx, HEARTBEAT).await },
+                AbortOnDropGuard::new(tokio::spawn(
+                    async move { connect(&target(&url), tx).await },
                 ));
             let (tcp, _) = listener.accept().await.unwrap();
             let mut server = accept_async(tcp).await.unwrap();
@@ -291,8 +461,8 @@ mod tests {
             let url = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, mut rx) = channel(8);
             let mut client =
-                AbortOnDrop(tokio::spawn(
-                    async move { connect(&url, tx, HEARTBEAT).await },
+                AbortOnDropGuard::new(tokio::spawn(
+                    async move { connect(&target(&url), tx).await },
                 ));
             let (tcp, _) = listener.accept().await.unwrap();
             let mut server = accept_async(tcp).await.unwrap();
@@ -349,15 +519,8 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("ws://{}/stream", listener.local_addr().unwrap());
             let (tx, rx) = channel(8);
-            let mut client = AbortOnDrop(tokio::spawn(async move {
-                keep_connection(
-                    &endpoint,
-                    HEARTBEAT,
-                    vec!["$symbol@trade".into()],
-                    vec!["BTCUSDT".into()],
-                    tx,
-                )
-                .await;
+            let mut client = AbortOnDropGuard::new(tokio::spawn(async move {
+                keep_connection(target(&endpoint), tx).await;
             }));
             for attempt in 0..2 {
                 let (tcp, _) = listener.accept().await.unwrap();

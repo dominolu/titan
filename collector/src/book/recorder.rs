@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use titan_l2_book::HostDepthBook;
+
 use crate::file::{AuxRecord, MarketEventWriter, TradeRecord};
 use serde::Deserialize;
 
@@ -51,6 +53,9 @@ pub enum FeedMessage {
     Trade(TradeRecord),
     Aux(AuxRecord),
     RestSnapshot(SnapshotMessage),
+    /// A REST snapshot and the depth messages the feed took while it was in flight, in order:
+    /// the validator pumps them so the snapshot can be aligned (see `RestShadowValidator::pump`).
+    RestSnapshotQueued(SnapshotMessage, Vec<DepthMessage>),
     Gap(GapMessage),
 }
 
@@ -288,8 +293,21 @@ pub struct ClosedSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RestShadowStatus {
+    /// The replay reached the recorder's sequence and the two windows agree.
     Match,
+    /// The replay reached the recorder's sequence and the two windows differ.
     Mismatch,
+    /// A snapshot ahead of the log (the messages that close the gap had not arrived yet); the
+    /// recorder pumps them in and compares again.
+    Unaimed,
+    /// The log carried the snapshot forward over at least one delta, but stopped short of the
+    /// recorder's sequence. The replay is continuous over every sequence it covers, which is what
+    /// the sample says; the windows are not compared, being of different instants.
+    Coherent,
+    /// No logged delta carries the snapshot forward: a delta is missing between the snapshot and
+    /// the oldest message kept. The sample is not judged.
+    Unaligned,
+    /// The snapshot itself is unusable (no sequence, another session, empty levels).
     Stale,
 }
 
@@ -299,6 +317,8 @@ pub struct RestShadowReport {
     pub differing_levels: usize,
     pub snapshot_seq: u64,
     pub current_seq: u64,
+    /// The newest sequence the replay reached: equal to `current_seq` when the two were compared.
+    pub reached_seq: u64,
     pub session_epoch: u32,
 }
 
@@ -324,27 +344,60 @@ impl RestShadowValidator {
         })
     }
 
-    pub fn push(&mut self, session_epoch: u32, message: DepthMessage) -> Result<(), BookError> {
+    /// Adds one normalized delta to the log.
+    ///
+    /// A break in the log is not a recorder fault: the feed owns the sequence checks that stop or
+    /// resynchronize the recording, and this log only has to answer what it can align. So the log
+    /// starts over from a message that does not follow the last one, and no caller is given an
+    /// error to propagate (failing the recording over a skipped frame stopped the whole process).
+    pub fn push(&mut self, session_epoch: u32, message: DepthMessage) {
         if session_epoch != self.session_epoch {
             self.session_epoch = session_epoch;
             self.last_seq = None;
             self.deltas.clear();
         }
-        if let Some(last) = self.last_seq
-            && message.first_prev_seq != Some(last)
-        {
-            return Err(BookError::InvalidField("REST shadow sequence gap"));
-        }
+        // The message stays in the log even when it does not follow the last one: the entries
+        // before the break can still carry a snapshot forward, and only a replay that crosses the
+        // break cannot be judged. Clearing the log here discarded every sample until a pump.
         self.last_seq = Some(message.last_seq);
         self.deltas.push_back(message);
         while self.deltas.len() > self.capacity {
             self.deltas.pop_front();
         }
-        Ok(())
     }
 
     pub fn last_seq(&self) -> Option<u64> {
         self.last_seq
+    }
+
+    /// Records a message the socket delivered while a snapshot was in flight. It goes in even when
+    /// it does not follow the last message: a replay stops at the break it crosses, and the entries
+    /// on either side stay available to the samples that can use them.
+    pub fn push_live(&mut self, session_epoch: u32, message: DepthMessage) {
+        self.push(session_epoch, message);
+    }
+
+    /// Takes the messages the feed has already queued into the log, in their order.
+    ///
+    /// This is what makes a REST snapshot comparable: the recorder asks for one every
+    /// `validation_interval_ms` and waits for the answer while the socket keeps delivering, so
+    /// the snapshot's `lastUpdateId` is ahead of what this log had seen and every comparison
+    /// ended `stale`. Pumping the queue after the snapshot returns closes that gap; the
+    /// messages are kept, so the next snapshot replays across them too.
+    pub fn pump(
+        &mut self,
+        session_epoch: u32,
+        incoming: &mut std::collections::VecDeque<DepthMessage>,
+    ) {
+        if incoming.is_empty() {
+            return;
+        }
+        self.session_epoch = session_epoch;
+        self.last_seq = None;
+        self.deltas.clear();
+        for message in incoming.drain(..) {
+            self.push_live(session_epoch, message);
+        }
     }
 
     pub fn compare(
@@ -368,29 +421,50 @@ impl RestShadowValidator {
             differing_levels: 0,
             snapshot_seq,
             current_seq,
+            reached_seq: snapshot_seq,
             session_epoch,
         };
-        if session_epoch != self.session_epoch || snapshot_seq > current_seq {
+        if session_epoch != self.session_epoch {
             return Ok(stale());
         }
+        let report =
+            |status: RestShadowStatus, differing_levels: usize, reached: u64| RestShadowReport {
+                status,
+                differing_levels,
+                snapshot_seq,
+                current_seq,
+                reached_seq: reached,
+                session_epoch,
+            };
+        // A snapshot past the newest logged message has messages on their way; that is not yet a
+        // question about the book.
+        if snapshot_seq > current_seq {
+            return Ok(report(RestShadowStatus::Unaimed, 0, snapshot_seq));
+        }
+        // The sample is the REST snapshot replayed by the logged deltas. A delta carries the
+        // snapshot forward when its range ends past it; the first such delta bridges it even when
+        // its range began before it (Binance's `lastUpdateId` sits inside `[U, u]`). The replay
+        // runs to `current_seq` when the log reaches that far. Only the replay decides whether the
+        // sample can be judged: it used to have to arrive exactly at `current_seq`, so a single
+        // missing message made the sample undecided.
         let mut bids: BTreeMap<_, _> = snapshot.0.iter().map(|l| (l.tick, l.qty)).collect();
         let mut asks: BTreeMap<_, _> = snapshot.1.iter().map(|l| (l.tick, l.qty)).collect();
         let mut cursor = snapshot_seq;
-        let mut started = false;
+        let mut reached = snapshot_seq;
+        let mut applied = 0usize;
+        let mut bridged = false;
         for delta in self.deltas.iter().filter(|d| d.last_seq > snapshot_seq) {
-            if !started {
-                // Binance's REST lastUpdateId may fall inside a diff event's
-                // [U, u] range. That event contains the state transition from
-                // snapshot_seq + 1 through u, so apply it as the bridge.
-                let next_seq = snapshot_seq.saturating_add(1);
-                let covered = delta.first_seq.is_some_and(|first| first <= next_seq)
-                    && delta.last_seq >= next_seq;
-                if !covered {
-                    return Ok(stale());
+            if !bridged {
+                let carries = delta
+                    .first_seq
+                    .is_none_or(|first| first <= snapshot_seq.saturating_add(1));
+                if !carries {
+                    break;
                 }
-                started = true;
-            } else if delta.first_prev_seq != Some(cursor) {
-                return Ok(stale());
+                bridged = true;
+            } else if delta.first_prev_seq.is_some_and(|prev| prev != cursor) {
+                // A gap in the log: what was replayed so far is continuous, nothing after it is.
+                break;
             }
             for change in &delta.changes {
                 let book = if change.side == Side::Bid {
@@ -405,9 +479,21 @@ impl RestShadowValidator {
                 }
             }
             cursor = delta.last_seq;
+            reached = cursor;
+            applied += 1;
+            if cursor >= current_seq {
+                break;
+            }
         }
-        if cursor != current_seq || (snapshot_seq < current_seq && !started) {
-            return Ok(stale());
+        if !bridged || applied == 0 {
+            // Nothing logged carries the snapshot forward: the sample is not judged.
+            return Ok(report(RestShadowStatus::Unaligned, 0, reached));
+        }
+        if reached < current_seq {
+            // The replay is continuous over every sequence it covers, but it stopped short of the
+            // recorder's sequence: the two windows are of different instants, so they are not
+            // compared, and the sample stands as what it says.
+            return Ok(report(RestShadowStatus::Coherent, 0, reached));
         }
         let projected_bids = top_levels(&bids, Side::Bid, depth);
         let projected_asks = top_levels(&asks, Side::Ask, depth);
@@ -415,17 +501,15 @@ impl RestShadowValidator {
         let expected_asks = current.1.iter().copied().take(depth).collect::<Vec<_>>();
         let differing_levels = level_diff_count(&projected_bids, &expected_bids)
             + level_diff_count(&projected_asks, &expected_asks);
-        Ok(RestShadowReport {
-            status: if differing_levels == 0 {
+        Ok(report(
+            if differing_levels == 0 {
                 RestShadowStatus::Match
             } else {
                 RestShadowStatus::Mismatch
             },
             differing_levels,
-            snapshot_seq,
-            current_seq,
-            session_epoch,
-        })
+            reached,
+        ))
     }
 }
 
@@ -626,6 +710,10 @@ pub async fn run_market<F: Feed>(
         .transpose()?;
     let mut initialized = false;
     let mut last_times = (0, 0);
+    // Depth messages a REST snapshot captured while it was in flight, written to the validator's
+    // log as they are processed (see `RestShadowValidator::push_live`).
+    let mut queued_depth: std::collections::VecDeque<DepthMessage> =
+        std::collections::VecDeque::new();
     let idle_duration = std::time::Duration::from_millis(u64::from(meta.grid_ms));
     let mut idle =
         tokio::time::interval_at(tokio::time::Instant::now() + idle_duration, idle_duration);
@@ -662,6 +750,22 @@ pub async fn run_market<F: Feed>(
             }
         };
         let closed = match message {
+            FeedMessage::RestSnapshot(snapshot) => {
+                // A feed that does not queue what overtook its snapshot: there is nothing to pump,
+                // and the snapshot is compared against the log as it stands.
+                queued_depth.clear();
+                if rest_shadow.is_some() {
+                    event_writer.write_rest_validation(
+                        root,
+                        venue,
+                        instrument,
+                        &meta.symbol,
+                        snapshot.exch_ts_ns,
+                        &serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": "stale", "differing_levels": 0, "snapshot_seq": snapshot.last_seq, "current_seq": rest_shadow.as_ref().and_then(RestShadowValidator::last_seq), "session_epoch": meta.session_epoch}),
+                    )?;
+                }
+                Vec::new()
+            }
             FeedMessage::Gap(gap) => {
                 if let Some(block) = aggregator.flush(&meta)? {
                     append_block(&mut writer, block, &mut last_times)?;
@@ -704,24 +808,47 @@ pub async fn run_market<F: Feed>(
                 event_writer.write_aux(root, venue, instrument, &meta.symbol, &aux)?;
                 Vec::new()
             }
-            FeedMessage::RestSnapshot(snapshot) => {
+            FeedMessage::RestSnapshotQueued(snapshot, carried) => {
+                // The messages a REST snapshot captured while in flight: pumped into the log to
+                // align this comparison, then kept in order for the depth messages that follow.
+                let mut carried: std::collections::VecDeque<DepthMessage> =
+                    carried.into_iter().collect();
+                queued_depth = carried.clone();
                 let status_event = if let (Some(validator), Some(snapshot_seq)) =
                     (rest_shadow.as_ref(), snapshot.last_seq)
                 {
                     let (bids, asks) = recorder.window();
-                    let report = validator.compare(
+                    let depth = usize::from(meta.depth_requested.min(meta.depth_available));
+                    let mut report = validator.compare(
                         meta.session_epoch,
                         snapshot_seq,
                         (&snapshot.bids, &snapshot.asks),
                         (&bids, &asks),
-                        usize::from(meta.depth_requested.min(meta.depth_available)),
+                        depth,
                     )?;
+                    if report.status == RestShadowStatus::Unaimed
+                        && let Some(validator) = rest_shadow.as_mut()
+                    {
+                        // The messages that close the gap left the socket while the snapshot was
+                        // in flight; the feed queued them for exactly this comparison.
+                        validator.pump(meta.session_epoch, &mut carried);
+                        report = validator.compare(
+                            meta.session_epoch,
+                            snapshot_seq,
+                            (&snapshot.bids, &snapshot.asks),
+                            (&bids, &asks),
+                            depth,
+                        )?;
+                    }
                     let status = match report.status {
                         RestShadowStatus::Match => "match",
                         RestShadowStatus::Mismatch => "mismatch",
                         RestShadowStatus::Stale => "stale",
+                        RestShadowStatus::Unaimed => "unaimed",
+                        RestShadowStatus::Coherent => "coherent",
+                        RestShadowStatus::Unaligned => "unaligned",
                     };
-                    serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": status, "differing_levels": report.differing_levels, "snapshot_seq": report.snapshot_seq, "current_seq": report.current_seq, "session_epoch": report.session_epoch})
+                    serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": status, "differing_levels": report.differing_levels, "snapshot_seq": report.snapshot_seq, "current_seq": report.current_seq, "reached_seq": report.reached_seq, "session_epoch": report.session_epoch})
                 } else {
                     serde_json::json!({"exch_ts_ns": snapshot.exch_ts_ns, "local_ts_ns": snapshot.local_ts_ns, "status": "stale", "differing_levels": 0, "snapshot_seq": snapshot.last_seq, "current_seq": rest_shadow.as_ref().and_then(RestShadowValidator::last_seq), "session_epoch": meta.session_epoch})
                 };
@@ -751,7 +878,12 @@ pub async fn run_market<F: Feed>(
             }
             FeedMessage::Depth(depth) => {
                 if let Some(validator) = rest_shadow.as_mut() {
-                    validator.push(meta.session_epoch, depth.clone())?;
+                    // The messages a REST snapshot captured while in flight are history to the
+                    // log; the snapshot itself was aligned across them, so they go in first.
+                    for pending in queued_depth.drain(..) {
+                        validator.push_live(meta.session_epoch, pending);
+                    }
+                    validator.push(meta.session_epoch, depth.clone());
                 }
                 initialized = true;
                 recorder.apply(depth)?
@@ -1068,8 +1200,9 @@ fn append_block(
 /// or leaving the Top-N window are represented as ordinary net changes.
 pub struct MarketRecorder {
     meta: MarketMeta,
-    bids: BTreeMap<i64, u64>,
-    asks: BTreeMap<i64, u64>,
+    /// The window's levels, maintained by the reconstruction the live runtime also uses: merging,
+    /// sequence order and the snapshot's coverage rule are one implementation, not two.
+    book: HostDepthBook,
     previous_window: Option<(Vec<Level>, Vec<Level>)>,
     current_slot: Option<i64>,
     last_closed_slot: Option<i64>,
@@ -1081,6 +1214,8 @@ pub struct MarketRecorder {
     slot_late_events: u32,
     last_clamped_exch_ts: Option<i64>,
     last_seq: Option<u64>,
+    /// The stream epoch the shared book is applying: a snapshot starts a new one.
+    book_epoch: u64,
 }
 
 impl MarketRecorder {
@@ -1096,9 +1231,11 @@ impl MarketRecorder {
             return Err(BookError::InvalidField("market metadata"));
         }
         Ok(Self {
+            book: HostDepthBook::with_levels(
+                usize::from(meta.depth_requested.min(meta.depth_available)).max(1),
+                true,
+            ),
             meta,
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
             previous_window: None,
             current_slot: None,
             last_closed_slot: None,
@@ -1110,6 +1247,7 @@ impl MarketRecorder {
             slot_late_events: 0,
             last_clamped_exch_ts: None,
             last_seq: None,
+            book_epoch: 0,
         })
     }
 
@@ -1121,8 +1259,13 @@ impl MarketRecorder {
     ) -> Result<(), BookError> {
         validate_levels(bids, Side::Bid)?;
         validate_levels(asks, Side::Ask)?;
-        self.bids = bids.iter().map(|l| (l.tick, l.qty)).collect();
-        self.asks = asks.iter().map(|l| (l.tick, l.qty)).collect();
+        // The epoch follows the message's stream: a snapshot starts a new one.
+        self.book_epoch = self.book_epoch.saturating_add(1);
+        let bids: Vec<(i64, i64)> = bids.iter().map(|l| (l.tick, l.qty as i64)).collect();
+        let asks: Vec<(i64, i64)> = asks.iter().map(|l| (l.tick, l.qty as i64)).collect();
+        self.book
+            .apply_snapshot(self.book_epoch, seq.unwrap_or_default(), &bids, &asks)
+            .map_err(BookError::InvalidField)?;
         self.previous_window = Some(self.window());
         self.last_seq = seq;
         Ok(())
@@ -1137,6 +1280,14 @@ impl MarketRecorder {
         }
         if let Some(previous) = self.last_seq {
             if message.first_prev_seq != Some(previous) {
+                // The two sequences are the whole diagnosis: the book's position and the message's
+                // predecessor decide whether this is a skip, a replay, or a stale reader.
+                eprintln!(
+                    "sequence gap: book at {previous}, message [{}..{}] predecessor {:?}",
+                    message.first_seq.unwrap_or_default(),
+                    message.last_seq,
+                    message.first_prev_seq
+                );
                 return Err(BookError::InvalidField("sequence gap"));
             }
             if message.last_seq <= previous {
@@ -1176,7 +1327,7 @@ impl MarketRecorder {
         if self.slot_first_prev.is_none() {
             self.slot_first_prev = prev_seq;
         }
-        self.apply_changes(&message.changes);
+        self.apply_changes(&message.changes)?;
         self.slot_exch_ts = clamped.max(slot.saturating_mul(grid_ns));
         self.slot_local_ts = message.local_ts_ns;
         self.slot_last_seq = message.last_seq;
@@ -1223,8 +1374,26 @@ impl MarketRecorder {
         if late {
             self.slot_late_events = self.slot_late_events.saturating_add(1);
         }
-        self.bids = message.bids.iter().map(|l| (l.tick, l.qty)).collect();
-        self.asks = message.asks.iter().map(|l| (l.tick, l.qty)).collect();
+        // A snapshot feed replaces the book outright, as its own stream epoch.
+        self.book_epoch = self.book_epoch.saturating_add(1);
+        let bids: Vec<(i64, i64)> = message
+            .bids
+            .iter()
+            .map(|l| (l.tick, l.qty as i64))
+            .collect();
+        let asks: Vec<(i64, i64)> = message
+            .asks
+            .iter()
+            .map(|l| (l.tick, l.qty as i64))
+            .collect();
+        self.book
+            .apply_snapshot(
+                self.book_epoch,
+                message.last_seq.unwrap_or_default(),
+                &bids,
+                &asks,
+            )
+            .map_err(BookError::InvalidField)?;
         if self.previous_window.is_none() {
             self.previous_window = Some(self.window());
         }
@@ -1250,18 +1419,23 @@ impl MarketRecorder {
 
     pub fn window(&self) -> (Vec<Level>, Vec<Level>) {
         let n = self.meta.depth_requested.min(self.meta.depth_available) as usize;
-        let bids = self
-            .bids
+        let (all_bids, all_asks) = self.book.retained();
+        let bids = all_bids
             .iter()
             .rev()
             .take(n)
-            .map(|(&tick, &qty)| Level { tick, qty })
+            .map(|(&tick, &qty)| Level {
+                tick,
+                qty: qty as u64,
+            })
             .collect();
-        let asks = self
-            .asks
+        let asks = all_asks
             .iter()
             .take(n)
-            .map(|(&tick, &qty)| Level { tick, qty })
+            .map(|(&tick, &qty)| Level {
+                tick,
+                qty: qty as u64,
+            })
             .collect();
         (bids, asks)
     }
@@ -1299,18 +1473,22 @@ impl MarketRecorder {
         }))
     }
 
-    fn apply_changes(&mut self, changes: &[Change]) {
-        for change in changes {
-            let book = match change.side {
-                Side::Bid => &mut self.bids,
-                Side::Ask => &mut self.asks,
-            };
-            if change.qty == 0 {
-                book.remove(&change.tick);
-            } else {
-                book.insert(change.tick, change.qty);
-            }
-        }
+    fn apply_changes(&mut self, changes: &[Change]) -> Result<(), BookError> {
+        let items: Vec<(u8, i64, i64)> = changes
+            .iter()
+            .map(|change| {
+                let side = match change.side {
+                    Side::Bid => 1,
+                    Side::Ask => 2,
+                };
+                (side, change.tick, change.qty as i64)
+            })
+            .collect();
+        let last = self.slot_last_seq;
+        self.book
+            .apply_changes(self.book_epoch, last, last, &items)
+            .map(|_| ())
+            .map_err(BookError::InvalidField)
     }
 }
 
@@ -1374,6 +1552,140 @@ mod tests {
             depth_requested: 2,
             depth_available: 2,
             session_epoch: 1,
+        }
+    }
+
+    /// The stored form is a block snapshot plus one net diff per closed slot. This replays that
+    /// form independently of the recorder's own book and checks every slot: what a reader
+    /// reconstructs has to be exactly the window the recorder held when the slot closed.
+    #[test]
+    fn snapshot_plus_slot_diffs_rebuild_every_window() {
+        let mut market = meta();
+        market.block_duration_ms = 1000;
+        market.depth_requested = 5;
+        market.depth_available = 5;
+        let mut recorder = MarketRecorder::new(market.clone()).unwrap();
+        let snapshot_bids = vec![
+            Level { tick: 100, qty: 10 },
+            Level { tick: 99, qty: 20 },
+            Level { tick: 98, qty: 30 },
+        ];
+        let snapshot_asks = vec![Level { tick: 101, qty: 11 }, Level { tick: 102, qty: 21 }];
+        recorder
+            .install_snapshot(&snapshot_bids, &snapshot_asks, Some(1))
+            .unwrap();
+        // Windows the recorder holds after each slot closes, collected as slots are produced.
+        let mut closed: Vec<ClosedSlot> = Vec::new();
+        let mut expected: Vec<(i64, Vec<Level>, Vec<Level>)> = Vec::new();
+        let mut previous = 1u64;
+        // Ten slots of traffic: adds, changes and removals on both sides.
+        type SlotScript = (i64, Vec<(Side, i64, u64)>);
+        let script: Vec<SlotScript> = vec![
+            (0, vec![(Side::Bid, 100, 12)]),
+            (1, vec![(Side::Ask, 101, 13), (Side::Ask, 103, 33)]),
+            (2, vec![(Side::Bid, 97, 40)]),
+            (3, vec![(Side::Ask, 103, 0)]),
+            (4, vec![(Side::Bid, 98, 0), (Side::Bid, 96, 50)]),
+            (5, vec![(Side::Bid, 100, 15)]),
+            (6, vec![(Side::Ask, 104, 60)]),
+            (7, vec![(Side::Bid, 95, 70), (Side::Bid, 97, 0)]),
+            (8, vec![(Side::Ask, 102, 25)]),
+            (9, vec![(Side::Ask, 105, 80)]),
+        ];
+        for (local, (slot_index, changes)) in script.iter().enumerate() {
+            let message = DepthMessage {
+                exch_ts_ns: (slot_index + 1) * 100_000_000,
+                local_ts_ns: local as i64,
+                first_prev_seq: Some(previous),
+                first_seq: Some(previous + 1),
+                last_seq: previous + 1,
+                changes: changes
+                    .iter()
+                    .map(|(side, tick, qty)| Change {
+                        side: *side,
+                        tick: *tick,
+                        qty: *qty,
+                    })
+                    .collect(),
+            };
+            previous = message.last_seq;
+            let produced = recorder.apply(message).unwrap();
+            for slot in produced {
+                expected.push((
+                    slot.slot,
+                    slot.snapshot_bids.clone(),
+                    slot.snapshot_asks.clone(),
+                ));
+                closed.push(slot);
+            }
+        }
+        if let Some(slot) = recorder.flush_open_slot().unwrap() {
+            expected.push((
+                slot.slot,
+                slot.snapshot_bids.clone(),
+                slot.snapshot_asks.clone(),
+            ));
+            closed.push(slot);
+        }
+        assert_eq!(closed.len(), expected.len());
+
+        // `snapshot_bids`/`snapshot_asks` of a closed slot are the window as it stood *before* that
+        // slot's changes: that is the block-start snapshot the writer stores. Applying a slot's diff
+        // therefore has to arrive at the next slot's window, and the last diff at the final state.
+        let mut bids: BTreeMap<i64, u64> = closed[0]
+            .snapshot_bids
+            .iter()
+            .map(|l| (l.tick, l.qty))
+            .collect();
+        let mut asks: BTreeMap<i64, u64> = closed[0]
+            .snapshot_asks
+            .iter()
+            .map(|l| (l.tick, l.qty))
+            .collect();
+        let final_window = recorder.window();
+        for (index, slot) in closed.iter().enumerate() {
+            for change in &slot.changes {
+                let book = if change.side == Side::Bid {
+                    &mut bids
+                } else {
+                    &mut asks
+                };
+                if change.qty == 0 {
+                    book.remove(&change.tick);
+                } else {
+                    book.insert(change.tick, change.qty);
+                }
+            }
+            let rebuilt_bids: Vec<Level> = bids
+                .iter()
+                .rev()
+                .take(5)
+                .map(|(tick, qty)| Level {
+                    tick: *tick,
+                    qty: *qty,
+                })
+                .collect();
+            let rebuilt_asks: Vec<Level> = asks
+                .iter()
+                .take(5)
+                .map(|(tick, qty)| Level {
+                    tick: *tick,
+                    qty: *qty,
+                })
+                .collect();
+            // After this slot's diff: the next slot's starting window, or the final one.
+            let (want_bids, want_asks) = match closed.get(index + 1) {
+                Some(next) => (next.snapshot_bids.clone(), next.snapshot_asks.clone()),
+                None => (final_window.0.clone(), final_window.1.clone()),
+            };
+            assert_eq!(
+                rebuilt_bids, want_bids,
+                "bids after slot {index} do not rebuild the next window"
+            );
+            assert_eq!(
+                rebuilt_asks, want_asks,
+                "asks after slot {index} do not rebuild the next window"
+            );
         }
     }
 
@@ -1636,42 +1948,38 @@ depth_available = 1000
     }
 
     #[test]
-    fn rest_shadow_replays_deltas_and_marks_unaligned_snapshots_stale() {
+    fn rest_shadow_replays_deltas_and_marks_unaligned_snapshots_stale_or_unaimed() {
         let mut shadow = RestShadowValidator::new(8, 2).unwrap();
-        shadow
-            .push(
-                2,
-                DepthMessage {
-                    exch_ts_ns: 1,
-                    local_ts_ns: 2,
-                    first_prev_seq: Some(10),
-                    first_seq: Some(11),
-                    last_seq: 11,
-                    changes: vec![Change {
-                        side: Side::Bid,
-                        tick: 100,
-                        qty: 2,
-                    }],
-                },
-            )
-            .unwrap();
-        shadow
-            .push(
-                2,
-                DepthMessage {
-                    exch_ts_ns: 3,
-                    local_ts_ns: 4,
-                    first_prev_seq: Some(11),
-                    first_seq: Some(12),
-                    last_seq: 12,
-                    changes: vec![Change {
-                        side: Side::Ask,
-                        tick: 101,
-                        qty: 3,
-                    }],
-                },
-            )
-            .unwrap();
+        shadow.push(
+            2,
+            DepthMessage {
+                exch_ts_ns: 1,
+                local_ts_ns: 2,
+                first_prev_seq: Some(10),
+                first_seq: Some(11),
+                last_seq: 11,
+                changes: vec![Change {
+                    side: Side::Bid,
+                    tick: 100,
+                    qty: 2,
+                }],
+            },
+        );
+        shadow.push(
+            2,
+            DepthMessage {
+                exch_ts_ns: 3,
+                local_ts_ns: 4,
+                first_prev_seq: Some(11),
+                first_seq: Some(12),
+                last_seq: 12,
+                changes: vec![Change {
+                    side: Side::Ask,
+                    tick: 101,
+                    qty: 3,
+                }],
+            },
+        );
         let report = shadow
             .compare(
                 2,
@@ -1688,6 +1996,23 @@ depth_available = 1000
             )
             .unwrap();
         assert_eq!(report.status, RestShadowStatus::Match);
+        // A snapshot past the newest logged message is not a verdict: it is not aligned yet.
+        let ahead = shadow
+            .compare(
+                2,
+                20,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 2 }],
+                    &[Level { tick: 101, qty: 3 }],
+                ),
+                1,
+            )
+            .unwrap();
+        assert_eq!(ahead.status, RestShadowStatus::Unaimed);
         let stale = shadow
             .compare(
                 2,
@@ -1703,7 +2028,8 @@ depth_available = 1000
                 1,
             )
             .unwrap();
-        assert_eq!(stale.status, RestShadowStatus::Stale);
+        // Nothing in the log carries a snapshot at 9 forward: it is not judged.
+        assert_eq!(stale.status, RestShadowStatus::Unaligned);
         let mismatch = shadow
             .compare(
                 2,
@@ -1726,40 +2052,36 @@ depth_available = 1000
     #[test]
     fn rest_shadow_accepts_snapshot_inside_first_delta_sequence_range() {
         let mut shadow = RestShadowValidator::new(8, 2).unwrap();
-        shadow
-            .push(
-                2,
-                DepthMessage {
-                    exch_ts_ns: 1,
-                    local_ts_ns: 2,
-                    first_prev_seq: Some(10),
-                    first_seq: Some(11),
-                    last_seq: 13,
-                    changes: vec![Change {
-                        side: Side::Bid,
-                        tick: 100,
-                        qty: 2,
-                    }],
-                },
-            )
-            .unwrap();
-        shadow
-            .push(
-                2,
-                DepthMessage {
-                    exch_ts_ns: 3,
-                    local_ts_ns: 4,
-                    first_prev_seq: Some(13),
-                    first_seq: Some(14),
-                    last_seq: 14,
-                    changes: vec![Change {
-                        side: Side::Ask,
-                        tick: 101,
-                        qty: 3,
-                    }],
-                },
-            )
-            .unwrap();
+        shadow.push(
+            2,
+            DepthMessage {
+                exch_ts_ns: 1,
+                local_ts_ns: 2,
+                first_prev_seq: Some(10),
+                first_seq: Some(11),
+                last_seq: 13,
+                changes: vec![Change {
+                    side: Side::Bid,
+                    tick: 100,
+                    qty: 2,
+                }],
+            },
+        );
+        shadow.push(
+            2,
+            DepthMessage {
+                exch_ts_ns: 3,
+                local_ts_ns: 4,
+                first_prev_seq: Some(13),
+                first_seq: Some(14),
+                last_seq: 14,
+                changes: vec![Change {
+                    side: Side::Ask,
+                    tick: 101,
+                    qty: 3,
+                }],
+            },
+        );
 
         let report = shadow
             .compare(
@@ -1777,6 +2099,170 @@ depth_available = 1000
             )
             .unwrap();
 
+        assert_eq!(report.status, RestShadowStatus::Match);
+    }
+
+    fn shadow_message(
+        first_prev: Option<u64>,
+        first: u64,
+        last: u64,
+        side: Side,
+        tick: i64,
+        qty: u64,
+    ) -> DepthMessage {
+        DepthMessage {
+            exch_ts_ns: 1,
+            local_ts_ns: 2,
+            first_prev_seq: first_prev,
+            first_seq: Some(first),
+            last_seq: last,
+            changes: vec![Change { side, tick, qty }],
+        }
+    }
+
+    #[test]
+    fn rest_shadow_pump_aligns_a_snapshot_taken_while_the_socket_kept_flowing() {
+        // A book with bids at 100 and asks at 101; the snapshot was taken at sequence 13 and the
+        // socket went on to 16 while it was in flight.
+        let mut shadow = RestShadowValidator::new(16, 2).unwrap();
+        let mut queued = std::collections::VecDeque::from(vec![
+            shadow_message(Some(12), 13, 13, Side::Ask, 101, 4),
+            shadow_message(Some(13), 14, 14, Side::Bid, 100, 5),
+            shadow_message(Some(14), 15, 15, Side::Ask, 101, 6),
+            shadow_message(Some(15), 16, 16, Side::Bid, 100, 7),
+        ]);
+        let snapshot = (
+            vec![Level { tick: 100, qty: 1 }],
+            vec![Level { tick: 101, qty: 1 }],
+        );
+        // The recorder's window at sequence 16: bids 100 at 7, asks 101 at 6.
+        let recorder_window = (
+            vec![Level { tick: 100, qty: 7 }],
+            vec![Level { tick: 101, qty: 6 }],
+        );
+        // Nothing logged yet: the snapshot cannot be aligned, so it is no verdict at all.
+        let before = shadow
+            .compare(
+                2,
+                13,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(before.status, RestShadowStatus::Unaligned);
+        shadow.pump(2, &mut queued);
+        assert!(queued.is_empty());
+        assert_eq!(shadow.last_seq(), Some(16));
+        // Aligned on 14..=16, the snapshot replays to exactly the recorder's window.
+        let after = shadow
+            .compare(
+                2,
+                13,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(after.status, RestShadowStatus::Match);
+        // A snapshot past everything queued is not aligned yet.
+        let ahead = shadow
+            .compare(
+                2,
+                17,
+                (&snapshot.0, &snapshot.1),
+                (&recorder_window.0, &recorder_window.1),
+                1,
+            )
+            .unwrap();
+        assert_eq!(ahead.status, RestShadowStatus::Unaimed);
+    }
+
+    #[test]
+    fn rest_shadow_live_push_starts_a_session_without_a_predecessor() {
+        let mut shadow = RestShadowValidator::new(8, 2).unwrap();
+        shadow.push_live(2, shadow_message(Some(10), 11, 11, Side::Bid, 100, 2));
+        assert_eq!(shadow.last_seq(), Some(11));
+        // A message that does not continue the log restarts it; the alignment says so.
+        shadow.push_live(2, shadow_message(Some(99), 100, 100, Side::Bid, 100, 3));
+        assert_eq!(shadow.last_seq(), Some(100));
+        let report = shadow
+            .compare(
+                2,
+                50,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 3 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                1,
+            )
+            .unwrap();
+        // Nothing logged carries a snapshot at 50 forward: the sample is not judged.
+        assert_eq!(report.status, RestShadowStatus::Unaligned);
+    }
+
+    #[test]
+    fn rest_shadow_judges_a_replay_that_stops_short_as_coherent() {
+        // The log holds 14..=15; the recorder has already seen 20, after a break. The replay
+        // carries the snapshot over two deltas but not to the recorder's sequence, so continuity
+        // is what the sample says, not equality of two windows taken at different instants.
+        let mut shadow = RestShadowValidator::new(16, 2).unwrap();
+        for message in [
+            shadow_message(Some(13), 14, 14, Side::Bid, 100, 5),
+            shadow_message(Some(14), 15, 15, Side::Ask, 101, 6),
+            shadow_message(Some(19), 20, 20, Side::Bid, 100, 9),
+        ] {
+            shadow.push_live(2, message);
+        }
+        let report = shadow
+            .compare(
+                2,
+                13,
+                (
+                    &[Level { tick: 100, qty: 1 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 9 }],
+                    &[Level { tick: 101, qty: 6 }],
+                ),
+                1,
+            )
+            .unwrap();
+        assert_eq!(report.status, RestShadowStatus::Coherent);
+        assert_eq!(report.snapshot_seq, 13);
+        assert_eq!(report.reached_seq, 15);
+    }
+
+    #[test]
+    fn rest_shadow_log_break_does_not_fail_the_recorder() {
+        // A frame the feed skipped leaves the log out of sequence; it restarts from the next
+        // message instead of failing. It used to return an error, which stopped the recording.
+        let mut shadow = RestShadowValidator::new(8, 2).unwrap();
+        shadow.push(2, shadow_message(Some(10), 11, 11, Side::Bid, 100, 2));
+        // Sequences 12..=40 never arrived: the log keeps 11 and takes 41.
+        shadow.push(2, shadow_message(Some(40), 41, 41, Side::Bid, 100, 3));
+        assert_eq!(shadow.last_seq(), Some(41));
+        // A snapshot at 41 is carried by 41 itself; the earlier entry does not spoil it.
+        let report = shadow
+            .compare(
+                2,
+                40,
+                (
+                    &[Level { tick: 100, qty: 3 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                (
+                    &[Level { tick: 100, qty: 3 }],
+                    &[Level { tick: 101, qty: 1 }],
+                ),
+                1,
+            )
+            .unwrap();
         assert_eq!(report.status, RestShadowStatus::Match);
     }
 

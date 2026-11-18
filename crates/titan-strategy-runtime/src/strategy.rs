@@ -317,19 +317,9 @@ view!(TitanBarView {
     close_ticks: i64,
     volume_lots: i64
 });
-view!(TitanDepthView {
-    asset_no: u32,
-    level: u32,
-    exchange_ts_ns: i64,
-    receive_ts_ns: i64,
-    price_ticks: i64,
-    qty_lots: i64,
-    source_sequence: u64,
-    side: u8,
-    action: u8,
-    is_snapshot: u8,
-    reserved: [u8; 5]
-});
+// The depth view is defined with the book that fills it, in `titan-l2-book`; the layout is the
+// same one the ABI fingerprint covers, so it is re-exported rather than defined twice.
+pub use titan_l2_book::TitanDepthView;
 view!(TitanFillView {
     order_id: u64,
     asset_no: u32,

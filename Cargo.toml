@@ -10,6 +10,7 @@ members = [
   "crates/titan-market-service",
   "crates/titan-account-service",
   "crates/titan-strategy-runtime",
+  "crates/titan-l2-book",
   "crates/titan-cli",
   "collector",
   "connector"]

@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 
-use crate::binance_transport::{self, Heartbeat};
+use crate::binance::stream_url;
+use collector::transport::{self, Heartbeat, WsTarget};
 
 pub async fn fetch_depth_snapshot(symbol: &str) -> Result<String, reqwest::Error> {
     reqwest::Client::new()
@@ -23,14 +24,14 @@ pub async fn keep_connection(
     symbols: Vec<String>,
     ws_tx: Sender<(DateTime<Utc>, Utf8Bytes)>,
 ) {
-    binance_transport::keep_connection(
-        "wss://dstream.binance.com/stream",
-        Heartbeat {
-            check_interval: Duration::from_secs(10),
-            timeout: Duration::from_secs(300),
-        },
-        streams,
-        symbols,
+    transport::keep_connection(
+        WsTarget::new(
+            stream_url("wss://dstream.binance.com/stream", &streams, &symbols),
+            Heartbeat {
+                check_interval: Duration::from_secs(15),
+                timeout: Duration::from_secs(300),
+            },
+        ),
         ws_tx,
     )
     .await;

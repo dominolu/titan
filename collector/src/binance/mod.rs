@@ -3,6 +3,7 @@ mod http;
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+pub(crate) use http::stream_url;
 pub use http::{fetch_depth_snapshot, keep_connection};
 use tokio::sync::mpsc::channel;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
