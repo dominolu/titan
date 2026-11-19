@@ -766,14 +766,11 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             }),
         )
         .unwrap();
-    let publish = |key, payload| {
+    let mut delivers = 0usize;
+    let mut deliver = |key, payload: &'static [u8]| {
         let mut request = PublishRequest::new("primary-latest", 1, payload);
         request.routing_key = key;
         handle.try_publish(request).unwrap();
-    };
-    let mut delivers = 0usize;
-    let mut deliver = |key, payload: &[u8]| {
-        publish(key, payload);
         delivers += 1;
         // A release only follows the call it was meant to release: the handler said it is parked
         // before the test released it, and reports a completed delivery afterwards.

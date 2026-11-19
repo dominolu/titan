@@ -431,14 +431,15 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
         depth_available: 20,
         session_epoch: 3,
     };
-    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 60_000, 3).unwrap();
-    // Seconds since the epoch: the second block is the last of the first minute, the third opens
-    // the next one, which is where a one-minute rotation has to cut.
+    // The writer takes segment lengths of a minute or more, so the rotation is checked at two
+    // minutes: the second block is the last of the first two, the third opens the next pair.
+    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 120_000, 3).unwrap();
     const SECOND_NS: i64 = 1_000_000_000;
     for (start, end) in [
         (30 * SECOND_NS, 31 * SECOND_NS),
-        (59 * SECOND_NS, 60 * SECOND_NS),
         (60 * SECOND_NS, 61 * SECOND_NS),
+        (119 * SECOND_NS, 120 * SECOND_NS),
+        (120 * SECOND_NS, 121 * SECOND_NS),
     ] {
         let block = BlockInput {
             header: BlockHeader::data(7, start, end, 1).unwrap(),
@@ -456,16 +457,33 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
     .collect::<Vec<_>>();
     segments.sort();
     assert_eq!(segments.len(), 2);
+    // The first segment opens with its first data block and takes every block up to its 00:02:00
+    // boundary; the block that opens there is a segment of its own.
     assert_eq!(SegmentReader::open(&segments[0]).unwrap().block_count(), 2);
-    assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 1);
+    assert_eq!(
+        SegmentReader::open(&segments[0])
+            .unwrap()
+            .header
+            .segment_start_exch_ns,
+        31 * SECOND_NS
+    );
+    // The 00:02:00 boundary opens the next segment; the block after it joins that one.
+    assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 2);
+    assert_eq!(
+        SegmentReader::open(&segments[1])
+            .unwrap()
+            .header
+            .segment_start_exch_ns,
+        120 * SECOND_NS
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
-    // A block list that starts mid-hour is what a gap or a restart leaves; the segment keeps its
-    // own start, and rotation still cuts at the hour. The `date` directory therefore follows the
-    // segment's start, which is the date the day's archive closes on.
+    // A block list that starts off the grid is what a gap or a restart leaves; the segment keeps its
+    // own start, and rotation still cuts on the next segment boundary. The `date` directory
+    // therefore follows the segment's start, which is the date the day's archive closes on.
     let dir = test_dir();
     let meta = MarketMeta {
         market_id: 7,
@@ -482,21 +500,14 @@ fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
         depth_available: 20,
         session_epoch: 3,
     };
-    const HOUR_NS: i64 = 3_600_000_000_000;
     const SECOND_NS: i64 = 1_000_000_000;
-    let mut writer = BookWriter::new(
-        &dir,
-        "venue",
-        "ETHUSDT",
-        meta,
-        HOUR_NS as u32 / 1_000_000,
-        3,
-    )
-    .unwrap();
+    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 120_000, 3).unwrap();
     for (start, end) in [
-        // The last minute of the first hour, then the start of the next one.
-        (59 * 60 * SECOND_NS, 60 * 60 * SECOND_NS),
-        (60 * 60 * SECOND_NS, 61 * 60 * SECOND_NS),
+        // A block that opens inside the first segment and runs to its boundary, then the block that
+        // begins the next one; the first has already been cut on its own grid.
+        (60 * SECOND_NS, 61 * SECOND_NS),
+        (61 * SECOND_NS, 62 * SECOND_NS),
+        (120 * SECOND_NS, 121 * SECOND_NS),
     ] {
         let block = BlockInput {
             header: BlockHeader::data(7, start, end, 1).unwrap(),
@@ -513,12 +524,24 @@ fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "tnmd"))
         .collect::<Vec<_>>();
-    // Rotation cuts at the segment start's next hour: a segment that began at 00:59:00 is not cut
-    // at 01:00, so both blocks share the one file named after the hour it started in.
-    assert_eq!(segments.len(), 1);
-    let reader = SegmentReader::open(&segments[0]).unwrap();
-    assert_eq!(reader.header.segment_start_exch_ns, 59 * 60 * SECOND_NS);
-    assert_eq!(reader.block_count(), 2);
+    // A block that opens at 00:01:00 starts a segment itself, and the block after it opens one at
+    // the 00:02:00 boundary: a segment's start is the block that opened it, and the `date`
+    // directory follows that start.
+    assert_eq!(segments.len(), 2);
+    assert_eq!(
+        SegmentReader::open(&segments[0])
+            .unwrap()
+            .header
+            .segment_start_exch_ns,
+        121 * SECOND_NS
+    );
+    assert_eq!(
+        SegmentReader::open(&segments[1])
+            .unwrap()
+            .header
+            .segment_start_exch_ns,
+        61 * SECOND_NS
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 

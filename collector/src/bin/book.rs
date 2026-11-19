@@ -1462,6 +1462,10 @@ impl BinanceFeed {
 }
 
 impl Feed for BinanceFeed {
+    fn queues_rest_snapshots(&self) -> bool {
+        true
+    }
+
     async fn next(&mut self) -> Option<FeedMessage> {
         if let Some(message) = self.pending.pop_front() {
             return Some(message);
