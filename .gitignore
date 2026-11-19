@@ -31,6 +31,8 @@ backtest_reports/
 .titan/
 /internal-docs/
 *.npz
+# Small, reviewed vectors a test reads; recorded data is what the rule above keeps out.
+!/scripts/analysis/tests/fixtures/*.npz
 *.db
 *.csv
 *.log
