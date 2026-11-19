@@ -1,0 +1,15 @@
+[package]
+name = "tnmd-decoder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Read-only offline survey of Titan book segments (TMR1/TMB1): per segment, per price level, per slot aggregated bid/ask depth samples for liquidation, absorption and book-imbalance research."
+
+[[bin]]
+name = "tnmd-decoder"
+path = "src/main.rs"
+
+[dependencies]
+zstd = "0.13"
+
+[workspace]
