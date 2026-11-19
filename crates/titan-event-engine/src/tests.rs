@@ -702,9 +702,11 @@ struct ParkedHandler {
 impl EventHandler for ParkedHandler {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         let payload: Vec<u8> = event.payload.to_vec();
-        self.parked.fetch_add(1, Ordering::Release);
-        // The test releases one call at a time and waits for `parked` first, so at most one
-        // wake-up is outstanding: no call can take another's release.
+        // Counted before waiting, so the test reads "this call is parked" and nothing else.
+        self.parked.fetch_add(1, Ordering::AcqRel);
+        // The test publishes its events one at a time and waits for `parked` before releasing, so
+        // at most one call is parked and at most one wake-up is outstanding: no call can take
+        // another's release.
         //
         // A missing release is a bug in the test under construction, and the panic is the diagnosis
         // a developer needs. Only the engine's own reports need care: a panic here is caught by the
@@ -772,10 +774,16 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         request.routing_key = key;
         handle.try_publish(request).unwrap();
         delivers += 1;
-        // A release only follows the call it was meant to release: the handler said it is parked
-        // before the test released it, and reports a completed delivery afterwards.
+        // A release only follows the call it was meant to release: the handler announced it is
+        // parked before the test releases it, and reports a completed delivery afterwards. One
+        // event is published per step, so the n-th step waits for the n-th call and releases only
+        // that one.
         wait_until(|| parked.load(Ordering::Acquire) == delivers);
-        release_tx.send(()).unwrap();
+        // `bounded(1)` with one call parked at a time: the send is what wakes it, and a full or
+        // closed channel means the handler is not where the test believes it is.
+        release_tx
+            .send(())
+            .expect("the parked call is still waiting for its release");
         assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), payload);
     };
     deliver(1, b"first");
