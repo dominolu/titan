@@ -1,11 +1,56 @@
 #!/bin/sh
 set -eu
+# Reviews what this push would publish, not the repository's whole history.
+#
+# stdin carries one line per ref: `<local-ref> <local-sha> <remote-ref> <remote-sha>`. The remote
+# sha is what the remote already has; an all-zero sha means the remote does not have the ref yet.
+# Each ref therefore yields the commits this push adds, and only those are reviewed. A commit that
+# is already published is history like the rest: reviewing it here again stopped every push of
+# every branch over findings that were merged long ago, which is what the history migration
+# exists for, not what a push can fix.
+#
+# The full-history review still runs in CI, and this script reads the complete range in one go.
 task_root=$(git rev-parse --show-toplevel)
-set -- --root "$task_root" --history
+zero=0000000000000000000000000000000000000000
+ranges=
 while read -r task_ref task_sha task_remote_ref task_remote_sha; do
     case "$task_sha" in
-        0000000000000000000000000000000000000000) continue ;;
+        "$zero") continue ;;
     esac
-    set -- "$@" --revision "$task_sha"
+    if [ "$task_remote_sha" != "$zero" ] && git cat-file -e "$task_remote_sha^{commit}" 2>/dev/null; then
+        range="$task_remote_sha..$task_sha"
+    else
+        # A ref the remote does not have: what this push adds is what no remote holds. Naming the
+        # refs explicitly (`--branches --tags --remotes`, as rev-list spells them) is what says
+        # that; the checker splits a range on whitespace, so each stays a revision argument.
+        range="$task_sha --not --branches --tags --remotes"
+    fi
+    ranges="$ranges
+$range"
 done
-exec python3 "$task_root/scripts/check_repository_privacy.py" "$@"
+if [ -z "$ranges" ]; then
+    exit 0
+fi
+# One `--revision` per line, and a line is one range: the checker splits it into revision
+# arguments, so `<remote-sha>..<local-sha>` and `<sha> --not --branches --tags --remotes` both
+# read correctly. A
+# POSIX shell cannot build an argument list of unknown length portably, so the one place that has
+# to is this Python step.
+exec python3 -c '
+import importlib.util
+import sys
+from pathlib import Path
+
+argv = sys.argv[1:]
+root = Path(argv[argv.index("--root") + 1])
+ranges = [line for line in argv[-1].splitlines() if line.strip()]
+spec = importlib.util.spec_from_file_location(
+    "check_repository_privacy", root / "scripts" / "check_repository_privacy.py"
+)
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+argv = argv[:-1]
+for value in ranges:
+    argv.extend(["--revision", value])
+sys.exit(guard.main(argv))
+' --root "$task_root" --history "$ranges"
