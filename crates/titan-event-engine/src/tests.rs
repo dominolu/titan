@@ -687,6 +687,31 @@ fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
     engine.stop().unwrap();
 }
 
+/// A handler that parks until released, reporting only once it is parked.
+///
+/// `BlockingHandler` reports before it waits, so a test that releases on the report can be racing
+/// the wait: the wake-up may be taken by an earlier or later call. Reporting from inside the wait
+/// makes the report mean the call is parked, which is what lets a test release one call at a time.
+struct ParkedHandler {
+    entered: Sender<Vec<u8>>,
+    release: Receiver<()>,
+}
+
+impl EventHandler for ParkedHandler {
+    fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
+        let payload: Vec<u8> = event.payload.to_vec();
+        // A test releases one call at a time, so at most one wake-up is outstanding and a
+        // single slot cannot let a later call take an earlier one's wake-up.
+        self.release
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the test releases every parked call");
+        self.entered
+            .send(payload)
+            .expect("test receiver remains alive");
+        Ok(())
+    }
+}
+
 /// How long a test waits for the engine to call a handler.
 ///
 /// The wait bounds a scheduling delay, not a property under test: the handler blocks on a channel
@@ -708,7 +733,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         .unwrap();
     engine.start().unwrap();
     let (entered_tx, entered_rx) = bounded(8);
-    let (release_tx, release_rx) = bounded(8);
+    let (release_tx, release_rx) = bounded(1);
     let lane = handle
         .register_primary_async_lane(
             &[PrimarySubscriptionSpec {
@@ -726,7 +751,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
                 idle_sleep: Duration::from_millis(1),
                 ..PrimaryAsyncLaneConfig::default()
             },
-            Arc::new(BlockingHandler {
+            Arc::new(ParkedHandler {
                 entered: entered_tx,
                 release: release_rx,
             }),
@@ -737,29 +762,31 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         request.routing_key = key;
         handle.try_publish(request).unwrap();
     };
+    // The handler parks before reporting, so a release always wakes the call the test just
+    // published for: publication order is the delivery order, and "latest-one" cannot replace
+    // "queued" before "queued" has been delivered.
     publish(1, b"first");
+    release_tx.send(()).unwrap();
     assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"first");
-    // The handler blocks while the lane is busy, so each publish lands in the latest slot for its
-    // key and is delivered once the handler is released. Releasing one handler at a time keeps the
-    // delivery order the order of publication: sending every release up front lets a later publish
-    // overwrite a key's slot before the handler has been called for the earlier one.
+
     publish(1, b"queued");
-    publish(1, b"latest-one");
-    publish(2, b"latest-two");
     release_tx.send(()).unwrap();
     assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"queued");
+
+    publish(1, b"latest-one");
     release_tx.send(()).unwrap();
     assert_eq!(
         entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-one"
     );
+
+    publish(2, b"latest-two");
     release_tx.send(()).unwrap();
     assert_eq!(
         entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-two"
     );
-    // The handler blocked on "first" is still waiting for its own release.
-    release_tx.send(()).unwrap();
+
     assert!(handle.unregister_primary_async_lane(lane.token()));
     engine.stop().unwrap();
 }

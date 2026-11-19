@@ -17,13 +17,13 @@ jobs:
     # docs/verification, plus addresses and personal directories in older documents). Clearing them
     # is a migration of its own; blocking merges on it only stops unrelated work, so the job keeps
     # running and publishing its report while the migration is pending.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       # Content disclosure review only. No project compilation, lint or tests.
       - name: Review repository content
+        continue-on-error: true
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
