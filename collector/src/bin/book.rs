@@ -1413,13 +1413,20 @@ impl BinanceFeed {
 }
 
 impl BinanceFeed {
-    /// One REST validation snapshot, with the socket read while it is in flight.
+    /// Handles one tagged frame: the depth subscription's frames first, then the market one's.
+    async fn deliver_frame(&mut self, frame: BinanceStream) -> Option<FeedMessage> {
+        match frame {
+            BinanceStream::Depth(text) | BinanceStream::Market(text) => {
+                self.handle_text(text.as_str()).await
+            }
+        }
+    }
+
+    /// One REST validation snapshot, with the socket read for as long as the request runs.
     ///
-    /// One REST validation snapshot while both subscriptions keep being read by the transport.
-    ///
-    /// The request borrows nothing from the feed, so the streams keep delivering; every depth frame
-    /// that crossed the wire meanwhile is queued for the recorder when the request returns and is
-    /// handed over with the snapshot, which is what lets it align the two.
+    /// Taken into the feed before the snapshot is handed over: the frames are queued by delivery
+    /// order between the two calls, so nothing that arrived while the request was in flight can be
+    /// taken by `next()` afterwards and dropped.
     async fn sample_snapshot(&mut self) -> FeedMessage {
         let request = match self.urls() {
             Ok((endpoint, _, _)) => DepthRequest {
@@ -1427,10 +1434,17 @@ impl BinanceFeed {
                 endpoint,
                 market: self.market.clone(),
             },
-            Err(_) => return FeedMessage::RestSnapshotQueued(empty_snapshot(), Vec::new()),
+            Err(_) => {
+                return self.snapshot_taken(Err(anyhow::anyhow!("unsupported Binance venue")));
+            }
         };
         let fetched = request.fetch().await;
-        // Whatever the subscriptions delivered while the request was in flight.
+        self.snapshot_taken(fetched)
+    }
+
+    /// Ends a sample: takes the frames that crossed the wire while the request ran, then hands the
+    /// snapshot and the depth frames among them to the recorder.
+    fn snapshot_taken(&mut self, fetched: anyhow::Result<(SnapshotMessage, u64)>) -> FeedMessage {
         while let Ok(frame) = self.frames.try_recv() {
             match frame {
                 BinanceStream::Depth(text) | BinanceStream::Market(text) => {
@@ -1456,6 +1470,21 @@ impl Feed for BinanceFeed {
             if *self.cancel.borrow() {
                 return None;
             }
+            // Frames taken while a snapshot was in flight are already queued here, ahead of
+            // anything the socket delivers next: read them before the socket is asked again.
+            match self.frames.try_recv() {
+                Ok(frame) => {
+                    if let Some(message) = self.deliver_frame(frame).await {
+                        return Some(message);
+                    }
+                    continue;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.resynchronize(GapReason::Disconnect).await;
+                    return self.pending.pop_front();
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
             tokio::select! {
                 changed = self.cancel.changed() => {
                     if changed.is_err() || *self.cancel.borrow() { return None; }
@@ -1468,11 +1497,8 @@ impl Feed for BinanceFeed {
                     return Some(shot);
                 }
                 frame = self.frames.recv() => match frame {
-                    Some(BinanceStream::Depth(text)) => {
-                        if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
-                    }
-                    Some(BinanceStream::Market(text)) => {
-                        if let Some(message) = self.handle_text(text.as_str()).await { return Some(message); }
+                    Some(frame) => {
+                        if let Some(message) = self.deliver_frame(frame).await { return Some(message); }
                     }
                     // Both transports are reconnecting; the gap is reported once they are back.
                     None => {
@@ -1933,6 +1959,7 @@ struct MarketQualitySummary {
     depth_recorded: u16,
     block_diff_mismatches: usize,
     rest_samples_compared: Option<u64>,
+    rest_samples_unjudged: Option<u64>,
     rest_mismatches: Option<u64>,
     precision_rejects: Option<u64>,
     precision_reject_ratio: Option<f64>,
@@ -2337,6 +2364,14 @@ fn build_quality_markets(
             if event.rest_stale_samples > 0 {
                 warnings.push("rest_shadow_stale_sample".into());
             }
+            // Samples that could not be judged (`unaimed`, `unaligned`, `coherent`) count towards
+            // the minimum above through the recorder's own records, but they are not comparisons:
+            // the quality report says how many there were, and does not treat them as bad data. A
+            // day whose samples were nearly all unjudged therefore shows up as a low compared
+            // count, which is the warning the minimum exists for.
+            if event.rest_samples_unjudged > 0 {
+                warnings.push("rest_shadow_unjudged_samples".into());
+            }
             if is_contract && event.aux_oi_samples == 0 {
                 failures.push("open_interest_missing_for_day".into());
             }
@@ -2405,6 +2440,7 @@ fn build_quality_markets(
                 depth_recorded: first.depth_requested.min(first.depth_available),
                 block_diff_mismatches,
                 rest_samples_compared: Some(event.rest_samples_compared),
+                rest_samples_unjudged: Some(event.rest_samples_unjudged),
                 rest_mismatches: Some(event.rest_mismatches),
                 precision_rejects: Some(precision_rejects),
                 precision_reject_ratio: Some(if slot_count == 0 {

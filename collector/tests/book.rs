@@ -432,10 +432,13 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
         session_epoch: 3,
     };
     let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 60_000, 3).unwrap();
+    // Seconds since the epoch: the second block is the last of the first minute, the third opens
+    // the next one, which is where a one-minute rotation has to cut.
+    const SECOND_NS: i64 = 1_000_000_000;
     for (start, end) in [
-        (30_000_000_000i64, 31_000_000_000i64),
-        (59_000_000_000, 59_500_000_000),
-        (60_000_000_000, 61_000_000_000),
+        (30 * SECOND_NS, 31 * SECOND_NS),
+        (59 * SECOND_NS, 60 * SECOND_NS),
+        (60 * SECOND_NS, 61 * SECOND_NS),
     ] {
         let block = BlockInput {
             header: BlockHeader::data(7, start, end, 1).unwrap(),
@@ -455,6 +458,67 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
     assert_eq!(segments.len(), 2);
     assert_eq!(SegmentReader::open(&segments[0]).unwrap().block_count(), 2);
     assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 1);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
+    // A block list that starts mid-hour is what a gap or a restart leaves; the segment keeps its
+    // own start, and rotation still cuts at the hour. The `date` directory therefore follows the
+    // segment's start, which is the date the day's archive closes on.
+    let dir = test_dir();
+    let meta = MarketMeta {
+        market_id: 7,
+        venue_id: 2,
+        symbol: "ETHUSDT".into(),
+        feed_mode: FeedMode::Diff,
+        tick_units: 1,
+        price_decimals: 2,
+        qty_step_units: 1,
+        qty_decimals: 3,
+        grid_ms: 100,
+        block_duration_ms: 60_000,
+        depth_requested: 20,
+        depth_available: 20,
+        session_epoch: 3,
+    };
+    const HOUR_NS: i64 = 3_600_000_000_000;
+    const SECOND_NS: i64 = 1_000_000_000;
+    let mut writer = BookWriter::new(
+        &dir,
+        "venue",
+        "ETHUSDT",
+        meta,
+        HOUR_NS as u32 / 1_000_000,
+        3,
+    )
+    .unwrap();
+    for (start, end) in [
+        // The last minute of the first hour, then the start of the next one.
+        (59 * 60 * SECOND_NS, 60 * 60 * SECOND_NS),
+        (60 * 60 * SECOND_NS, 61 * 60 * SECOND_NS),
+    ] {
+        let block = BlockInput {
+            header: BlockHeader::data(7, start, end, 1).unwrap(),
+            payload: vec![1, 2, 3],
+        };
+        writer.append(&block).unwrap();
+    }
+    writer
+        .finish(61 * 60 * SECOND_NS, 61 * 60 * SECOND_NS)
+        .unwrap();
+    let directory = dir.join("book/venue=venue/instrument=ETHUSDT/symbol=ETHUSDT/date=1970-01-01");
+    let segments = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tnmd"))
+        .collect::<Vec<_>>();
+    // Rotation cuts at the segment start's next hour: a segment that began at 00:59:00 is not cut
+    // at 01:00, so both blocks share the one file named after the hour it started in.
+    assert_eq!(segments.len(), 1);
+    let reader = SegmentReader::open(&segments[0]).unwrap();
+    assert_eq!(reader.header.segment_start_exch_ns, 59 * 60 * SECOND_NS);
+    assert_eq!(reader.block_count(), 2);
     fs::remove_dir_all(dir).unwrap();
 }
 

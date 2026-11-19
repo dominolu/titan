@@ -6,12 +6,16 @@
 //! price window around the trade, so a later step can rebuild book imbalance, large
 //! resting orders and the depth a trade absorbed.
 //!
-//! Slots are indexed by their wall-clock position inside the segment's own hour. The
-//! recorder writes block starts on a UTC grid but returns `block_end_exch_ns` (which the
-//! closing of a block never moves), so a block's records run one block duration past its
-//! header's start. The segment's hour is the hour of the day grid that an interior block
-//! (a block whose header start is on the day grid) starts in; the output directory is
-//! named after that hour's date, so a caller can place each file in wall-clock time.
+//! Slots are indexed by their wall-clock position inside one hour of the day grid. The
+//! hour is the one the recording's block chain runs through: a block starts where the
+//! previous block ended, a segment's first block at the segment's own start, and so a
+//! segment that began mid-hour (a gap, a restart) is read as from its first whole hour,
+//! its head treated the same way a late record is. The slot grid itself is the exchange
+//! clock's (the same clock the recorder writes both block ends and record times in), so
+//! the slot an exchange time falls in is `time / grid`, with no local lag in it.
+//!
+//! The output directory is named after the hour's date, so a caller can place each file
+//! in wall-clock time.
 //!
 //! Output, under `<out>/instrument=<instrument>/day=<YYYY-MM-DD>/`:
 //!
@@ -74,6 +78,9 @@ fn read_segment_header(b: &[u8]) -> Result<SegmentHeader, String> {
     })
 }
 
+/// A block's two sides: (price tick, quantity steps) per level, best first on each.
+type Snapshot = (Vec<(i64, i64)>, Vec<(i64, i64)>);
+
 struct DataBlock<'a> {
     start_exch_ns: i64,
     base_tick: i64,
@@ -95,7 +102,7 @@ impl<'a> DataBlock<'a> {
     }
 
     /// Snapshot levels (price tick, quantity steps) the block starts from.
-    fn snapshot(&self) -> Result<(Vec<(i64, i64)>, Vec<(i64, i64)>), String> {
+    fn snapshot(&self) -> Result<Snapshot, String> {
         let p = self.payload;
         let snap = self.rel(self.snapshot_off);
         let records = self.rel(self.records_off);
@@ -127,18 +134,12 @@ impl<'a> DataBlock<'a> {
         }
         Ok((bids, asks))
     }
-
-    /// Time (exchange ns) of record `i`.
-    fn record_time(&self, i: usize) -> i64 {
-        let p = self.payload;
-        let n = self.n_records as usize;
-        let records = self.rel(self.records_off);
-        let time_start = records + (n + 1) * 4 + n * 12;
-        self.start_exch_ns + i64::from(get_u16(p, time_start + i * 2)) * 1_000_000
-    }
 }
 
-fn decode_block<'s>(b: &'s [u8], scratch: &'s mut Vec<u8>) -> Result<Option<DataBlock<'s>>, String> {
+fn decode_block<'s>(
+    b: &'s [u8],
+    scratch: &'s mut Vec<u8>,
+) -> Result<Option<DataBlock<'s>>, String> {
     if b.len() < BLOCK_HEADER_LEN || &b[..4] != b"TMB1" {
         return Err("not a TMB1 block".into());
     }
@@ -154,9 +155,10 @@ fn decode_block<'s>(b: &'s [u8], scratch: &'s mut Vec<u8>) -> Result<Option<Data
     let compressed = block_flags & BLOCK_FLAG_ZSTD != 0;
     let payload: &[u8] = if compressed {
         scratch.clear();
-        let mut d = zstd::stream::read::Decoder::new(std::io::Cursor::new(&b[BLOCK_HEADER_LEN..len]))
-            .map_err(|e| e.to_string())?
-            .single_frame();
+        let mut d =
+            zstd::stream::read::Decoder::new(std::io::Cursor::new(&b[BLOCK_HEADER_LEN..len]))
+                .map_err(|e| e.to_string())?
+                .single_frame();
         d.read_to_end(scratch).map_err(|e| e.to_string())?;
         &scratch[..]
     } else {
@@ -182,10 +184,10 @@ fn decode_block<'s>(b: &'s [u8], scratch: &'s mut Vec<u8>) -> Result<Option<Data
 struct Slots<'x> {
     lo: i64,
     hi: i64,
-    slot_base_ns: i64,
     grid_ns: i64,
-    span_ns: i64,
-    went_back: bool,
+    /// The hour's first boundary: slot `i` covers `[hour_start_ns + i * grid_ns,
+    /// hour_start_ns + (i + 1) * grid_ns)`.
+    hour_start_ns: i64,
     marks: Vec<u8>,
     bid: &'x mut [i32],
     ask: &'x mut [i32],
@@ -218,8 +220,8 @@ impl<'x> Slots<'x> {
     }
 }
 
-/// Applies one data block: the snapshot, then each record's changes, closing the slot the
-/// record belongs to (the book state at that slot's close, as the recorder defines it).
+/// Applies one data block: the snapshot, then each record's changes, and places the book each
+/// record leaves behind on the slot it reads.
 #[inline(never)]
 fn apply_block(
     block: &DataBlock<'_>,
@@ -246,8 +248,18 @@ fn apply_block(
     let side_start = val_start + change_count * 2;
     let side_len = change_count.div_ceil(8);
     let escape_start = align8(side_start + side_len);
-    if escape_start != block.rel(block.escapes_off) || escape_start + block.n_escapes as usize * 4 > p.len() {
+    // The section layout the recorder writes, checked before a single offset is used: snapshot,
+    // then records, changes and escapes in that order, each where its column widths put it.
+    if !(block.rel(block.snapshot_off) <= records
+        && records <= changes_off
+        && changes_off <= block.rel(block.escapes_off))
+        || escape_start != block.rel(block.escapes_off)
+        || escape_start + block.n_escapes as usize * 4 > p.len()
+    {
         return Err("escape bounds".into());
+    }
+    if change_count == 0 {
+        return Err("changes without escape section".into());
     }
     // Changes as three flat columns (tick, quantity steps, ask flag), decoded once.
     let mut col_tick: Vec<i64> = Vec::with_capacity(change_count);
@@ -261,9 +273,9 @@ fn apply_block(
             if escape_i >= block.n_escapes as usize {
                 return Err("escape count".into());
             }
-            let v = get_u32(p, escape_start + escape_i * 4) as i64;
+            let v = get_u32(p, escape_start + escape_i * 4);
             escape_i += 1;
-            v
+            v as i64
         } else {
             i64::from(encoded)
         };
@@ -287,12 +299,13 @@ fn apply_block(
     }
     let lo = slots.lo;
     let span = (slots.hi - lo) as u64;
-    // A record's changes bring the book to the state of the slot before its time, so that slot is
-    // settled right after it (the recorder writes one record per slot it settles). Slots a block
-    // skipped keep no record and stay empty.
-    let span_ns_end = slots.span_ns;
+    // Each record is the book as one slot left it, stamped with that state's exchange time: the
+    // recorder writes one record per slot it settles, and settles a slot at the first message past
+    // its end. The record's own time therefore reads the slot the book was in; a record stamped
+    // exactly on a boundary is the state just before it, which is the slot that ended there.
+    let hour_start_ns = slots.hour_start_ns;
     let grid_ns = slots.grid_ns;
-    let mut last_closed: Option<usize> = None;
+    let last_slot = slots.marks.len() as i64;
     let mut previous_time: Option<u16> = None;
     for i in 0..n {
         let delta_ms = get_u16(p, time_start + i * 2);
@@ -310,43 +323,55 @@ fn apply_block(
             }
         }
         let at = block.start_exch_ns + i64::from(delta_ms) * 1_000_000;
-        let rel = at - slots.slot_base_ns;
-        if rel < 0 {
+        // Before this hour (a segment that started mid-hour) or past its end: no slot here holds it.
+        // Such a record still advanced the book, so dropping the placement does not drop the state.
+        if at < hour_start_ns || at >= hour_start_ns + last_slot * grid_ns {
             continue;
         }
-        let idx = (rel / slots.grid_ns) as usize;
-        // A time at or past the hour's end is past its last slot (one comparison, in integer ns).
-        // A slot's time is after its boundary; the record that is the book at the hour's end
-        // settles the hour's last slot, and its own boundary is the hour's first slot of the next.
-        if rel + grid_ns - span_ns_end >= 0 {
+        let raw = (at - hour_start_ns) / grid_ns;
+        // A record stamped exactly on a slot boundary is the book the slot before it closed with;
+        // any other record is the book of the slot it falls in.
+        let slot = if (at - hour_start_ns) % grid_ns == 0 {
+            raw - 1
+        } else {
+            raw
+        };
+        let Ok(slot) = usize::try_from(slot) else {
             continue;
+        };
+        let Some(target) = slot_below(&slots.marks, slot) else {
+            continue;
+        };
+        let row_off = target * slots.width;
+
+        // `(tick - lo) as u64` wraps for ticks below the window, so one comparison bounds both sides.
+        for (&tick, &qty) in bids.iter() {
+            if (tick - lo) as u64 <= span {
+                slots.bid[row_off + (tick - lo) as usize] = qty.clamp(0, i32::MAX as i64) as i32;
+            }
         }
-        // The first record of a block settles the slot whose time it is; any later record settles
-        // the slot before its own, every slot being the state a record stamped at its time shows.
-        let settle_idx = idx.wrapping_sub(1);
-        let target = slot_below(&slots.marks, settle_idx);
-        if let Some(target) = target {
-            if last_closed.is_some() && slots.went_back {
-                // A segment starting off the grid: its earlier block already closed the slot.
-                continue;
+        for (&tick, &qty) in asks.iter() {
+            if (tick - lo) as u64 <= span {
+                slots.ask[row_off + (tick - lo) as usize] = qty.clamp(0, i32::MAX as i64) as i32;
             }
-            let row_off = target * slots.width;
-            // `(tick - lo) as u64` wraps for ticks below the window, so one comparison bounds both sides.
-            for (&tick, &qty) in bids.iter() {
-                if (tick - lo) as u64 <= span {
-                    slots.bid[row_off + (tick - lo) as usize] = qty.clamp(0, i32::MAX as i64) as i32;
-                }
-            }
-            for (&tick, &qty) in asks.iter() {
-                if (tick - lo) as u64 <= span {
-                    slots.ask[row_off + (tick - lo) as usize] = qty.clamp(0, i32::MAX as i64) as i32;
-                }
-            }
-            slots.close(target, at);
-            last_closed = Some(target);
         }
+        slots.close(target, at);
     }
     Ok(())
+}
+
+/// The hour of the day grid a segment's slots belong to.
+///
+/// The recorder cuts its slots on the exchange clock (`slot = exch_ns / grid`), and so does this
+/// reader: record times are exchange times, and the exchange clock is the one the venue stamps. A
+/// recorder whose local clock lags the venue's by a few seconds still stamps slots at the same
+/// exchange-clock instants, so no local offset belongs in the comparison.
+///
+/// The hour is the one the segment starts in. A segment opened exactly on a boundary starts there;
+/// one opened off it (a gap or a restart mid-hour) starts midday, and the records before the next
+/// whole hour are left out, the way a late record is.
+fn segment_hour(segment_start_exch_ns: i64) -> i64 {
+    segment_start_exch_ns - segment_start_exch_ns.rem_euclid(HOUR_NS)
 }
 
 /// Whether `idx` is one of `n` slots, answered by a mark table built with `n` writes: no
@@ -375,7 +400,6 @@ struct Args {
     segment: PathBuf,
     out: PathBuf,
     instrument: String,
-    day_start_ns: i64,
     window_half_ticks: i64,
     center_ticks: i64,
 }
@@ -384,7 +408,6 @@ fn parse_args() -> Result<Args, String> {
     let mut segment = None;
     let mut out = None;
     let mut instrument = None;
-    let mut day_start_ns = None;
     let mut half = 3000i64;
     let mut center = 0i64;
     let mut it = std::env::args().skip(1);
@@ -394,11 +417,16 @@ fn parse_args() -> Result<Args, String> {
             "--segment" => segment = Some(PathBuf::from(take("--segment")?)),
             "--out" => out = Some(PathBuf::from(take("--out")?)),
             "--instrument" => instrument = Some(take("--instrument")?),
-            "--day-start-ns" => {
-                day_start_ns = Some(take("--day-start-ns")?.parse::<i64>().map_err(|e| e.to_string())?)
+            "--window-half-ticks" => {
+                half = take("--window-half-ticks")?
+                    .parse::<i64>()
+                    .map_err(|e| e.to_string())?
             }
-            "--window-half-ticks" => half = take("--window-half-ticks")?.parse::<i64>().map_err(|e| e.to_string())?,
-            "--center-ticks" => center = take("--center-ticks")?.parse::<i64>().map_err(|e| e.to_string())?,
+            "--center-ticks" => {
+                center = take("--center-ticks")?
+                    .parse::<i64>()
+                    .map_err(|e| e.to_string())?
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -406,7 +434,6 @@ fn parse_args() -> Result<Args, String> {
         segment: segment.ok_or("--segment is required")?,
         out: out.ok_or("--out is required")?,
         instrument: instrument.ok_or("--instrument is required")?,
-        day_start_ns: day_start_ns.ok_or("--day-start-ns is required (UTC midnight at or before the segment)")?,
         window_half_ticks: half,
         center_ticks: center,
     })
@@ -427,26 +454,6 @@ fn block_offsets(bytes: &[u8]) -> Vec<(usize, usize)> {
     out
 }
 
-/// The grid block start a block belongs to: the previous block's `block_end_exch_ns` (set when it
-/// closed, not moved when it closed late), or for a segment's first block the segment's start.
-fn carried_start(bytes: &[u8], blocks: &[(usize, usize)], off: usize) -> i64 {
-    if blocks.first().map(|(o, _)| *o) == Some(off) {
-        return get_i64(bytes, 24);
-    }
-    let prev = blocks
-        .iter()
-        .map(|(o, _)| *o)
-        .filter(|o| *o < off)
-        .max()
-        .unwrap_or(off);
-    let end = get_i64(bytes, prev + 40);
-    if end > 0 {
-        end
-    } else {
-        get_i64(bytes, off + 24)
-    }
-}
-
 fn main() -> Result<(), String> {
     let args = parse_args()?;
     let bytes = fs::read(&args.segment).map_err(|e| format!("read segment: {e}"))?;
@@ -457,41 +464,9 @@ fn main() -> Result<(), String> {
     }
     let blocks = block_offsets(&bytes);
 
-    // Interior blocks (whose start the recorder put on the day grid) fix the segment's hour:
-    // the block start that carried the hour, plus the slot index of its first record.
+    // The hour the segment's slots belong to, and the grid boundary their indices start from.
+    let hour_start_ns = segment_hour(get_i64(&bytes, 24));
     let mut scratch: Vec<u8> = Vec::new();
-    let mut interior: Option<(i64, i64)> = None;
-    for (off, len) in &blocks {
-        let block = match decode_block(&bytes[*off..*off + *len], &mut scratch)? {
-            Some(b) => b,
-            None => continue,
-        };
-        if block.n_records == 0 {
-            continue;
-        }
-        // The recording's block starts (the grid the slots are cut on) are the previous block's end,
-        // which a block header keeps even though its close never moves it: a segment starting off
-        // the grid is read from its second block on.
-        let first_slot = block.record_time(0) - args.day_start_ns;
-        let on_grid = first_slot - first_slot.rem_euclid(grid_ns);
-        let carried = carried_start(&bytes, &blocks, *off);
-        if on_grid.checked_sub(carried - args.day_start_ns).is_some() {
-            interior = Some((carried, first_slot));
-            break;
-        }
-    }
-    // The segment's hour: the hour the recording's block grid starts in (the block's
-    // `start_exch_ns`, which the recorder puts at the hour's boundary whenever it can), and where
-    // that hour's slot indices begin: the first slot the interior block settles.
-    let (hour_start_ns, slot_base_ns) = match interior {
-        Some((block_start, _first_slot)) => {
-            let hour_start = block_start - block_start.rem_euclid(HOUR_NS);
-            // The slots run from the block start, one per 100 ms (the recorder's block start is its
-            // timer's and does not move once a block has opened).
-            (hour_start, block_start)
-        }
-        None => (args.day_start_ns, args.day_start_ns),
-    };
     // The window's centre: the mid of the first snapshot (or a given tick).
     let mut center = args.center_ticks;
     if center == 0 {
@@ -526,7 +501,6 @@ fn main() -> Result<(), String> {
     let mut live_bids: HashMap<i64, i64> = HashMap::new();
     let mut live_asks: HashMap<i64, i64> = HashMap::new();
     let mut stats = BlockStats::default();
-    let mut last_block_at = i64::MIN;
     let mut first_ts = i64::MAX;
     let mut last_ts = i64::MIN;
     for (off, len) in &blocks {
@@ -547,14 +521,11 @@ fn main() -> Result<(), String> {
                 }
                 first_ts = first_ts.min(block.start_exch_ns);
                 last_ts = last_ts.max(block.start_exch_ns);
-                let carried = carried_start(&bytes, &blocks, *off);
                 let mut slots = Slots {
                     lo,
                     hi,
-                    slot_base_ns,
                     grid_ns,
-                    span_ns: n_slots as i64 * grid_ns,
-                    went_back: carried.checked_sub(last_block_at).is_some(),
+                    hour_start_ns,
                     marks: slot_marks(n_slots),
                     bid: &mut bid,
                     ask: &mut ask,
@@ -567,7 +538,6 @@ fn main() -> Result<(), String> {
                     stats.block_errors += 1;
                     eprintln!("block at {off}: {e}");
                 }
-                last_block_at = carried;
             }
             Ok(None) => stats.gap_blocks += 1,
             Err(e) => {
@@ -583,7 +553,8 @@ fn main() -> Result<(), String> {
         .join(format!("day={}", utc_date(hour_start_ns)));
     fs::create_dir_all(&day_dir).map_err(|e| e.to_string())?;
     if std::env::var_os("TNMD_WRITE_DEPTH").is_some() {
-        write_depth(&day_dir.join("depth"), &bid, &ask, width, n_slots).map_err(|e| e.to_string())?;
+        write_depth(&day_dir.join("depth"), &bid, &ask, width, n_slots)
+            .map_err(|e| e.to_string())?;
     }
     write_i64(&day_dir.join("mids"), &mids).map_err(|e| e.to_string())?;
     write_i64(&day_dir.join("quote_units"), &quotes).map_err(|e| e.to_string())?;
@@ -603,7 +574,6 @@ fn main() -> Result<(), String> {
             "  \"feed_mode\": {},\n",
             "  \"depth_available\": {},\n",
             "  \"hour_start_ns\": {},\n",
-            "  \"slot_base_ns\": {},\n",
             "  \"center_tick\": {},\n",
             "  \"lo_tick\": {},\n",
             "  \"hi_tick\": {},\n",
@@ -631,7 +601,6 @@ fn main() -> Result<(), String> {
         header.feed_mode,
         header.depth_available,
         hour_start_ns,
-        slot_base_ns,
         center,
         lo,
         hi,
@@ -659,7 +628,13 @@ struct BlockStats {
     out_of_window_blocks: usize,
 }
 
-fn write_depth(path: &Path, bid: &[i32], ask: &[i32], width: usize, slots: usize) -> std::io::Result<()> {
+fn write_depth(
+    path: &Path,
+    bid: &[i32],
+    ask: &[i32],
+    width: usize,
+    slots: usize,
+) -> std::io::Result<()> {
     let mut f = std::io::BufWriter::with_capacity(1 << 20, File::create(path)?);
     let mut row = Vec::with_capacity(width * 8);
     for s in 0..slots {
@@ -701,4 +676,260 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOUR: i64 = HOUR_NS;
+    const GRID_NS: i64 = 100_000_000;
+    /// A record's stamp is in milliseconds since its block opened.
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Change {
+        tick: i64,
+        bid: bool,
+        qty: i64,
+    }
+
+    /// Builds a data block in the recorder's layout: snapshot levels (`bid: true` for bids, deepest
+    /// first) and one row of changes per record, each record stamped `time_ms` after the block.
+    fn block(
+        start_ns: i64,
+        snapshot: &[(i64, bool, i64)],
+        records: &[(i64, Vec<Change>)],
+    ) -> Vec<u8> {
+        let base_tick = snapshot
+            .iter()
+            .map(|(tick, _, _)| *tick)
+            .next()
+            .unwrap_or(1000);
+        let mut bids: Vec<(i64, i64)> = snapshot
+            .iter()
+            .filter(|(_, bid, _)| *bid)
+            .map(|(tick, _, qty)| (*tick, *qty))
+            .collect();
+        let mut asks: Vec<(i64, i64)> = snapshot
+            .iter()
+            .filter(|(_, bid, _)| !*bid)
+            .map(|(tick, _, qty)| (*tick, *qty))
+            .collect();
+        bids.sort_by(|a, b| b.0.cmp(&a.0));
+        asks.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut payload = Vec::new();
+        let align8 = |v: &mut Vec<u8>| {
+            while !v.len().is_multiple_of(8) {
+                v.push(0);
+            }
+        };
+        let rel = |tick: i64| (tick - base_tick + TICK_BIAS) as u16;
+        for (tick, _) in &bids {
+            payload.extend_from_slice(&rel(*tick).to_le_bytes());
+        }
+        align8(&mut payload);
+        for (tick, _) in &asks {
+            payload.extend_from_slice(&rel(*tick).to_le_bytes());
+        }
+        align8(&mut payload);
+        for (_, qty) in &bids {
+            payload.extend_from_slice(&(*qty as u32).to_le_bytes());
+        }
+        align8(&mut payload);
+        for (_, qty) in &asks {
+            payload.extend_from_slice(&(*qty as u32).to_le_bytes());
+        }
+        align8(&mut payload);
+        let records_off = BLOCK_HEADER_LEN + payload.len();
+        let mut changes: Vec<(Change, u16)> = Vec::new();
+        let mut ptrs = vec![0u32];
+        for (_, row) in records {
+            for change in row {
+                let mut sorted = row.clone();
+                sorted.sort_by_key(|c| (!c.bid, c.tick));
+                assert_eq!(&sorted, row, "a record's changes are written bids first");
+                let encoded = if change.qty > u16::MAX as i64 {
+                    u16::MAX
+                } else {
+                    change.qty as u16
+                };
+                changes.push((*change, encoded));
+            }
+            ptrs.push(changes.len() as u32);
+        }
+        for ptr in &ptrs {
+            payload.extend_from_slice(&ptr.to_le_bytes());
+        }
+        for _ in records {
+            payload.extend_from_slice(&0i32.to_le_bytes());
+        }
+        for _ in records {
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for _ in records {
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+        for (time, _) in records {
+            payload.extend_from_slice(&(*time as u16).to_le_bytes());
+        }
+        for _ in records {
+            payload.extend_from_slice(&1u16.to_le_bytes());
+        }
+        align8(&mut payload);
+        let changes_off = BLOCK_HEADER_LEN + payload.len();
+        for (change, _) in &changes {
+            payload.extend_from_slice(&rel(change.tick).to_le_bytes());
+        }
+        for (_, encoded) in &changes {
+            payload.extend_from_slice(&encoded.to_le_bytes());
+        }
+        for (i, (change, _)) in changes.iter().enumerate() {
+            if i % 8 == 0 {
+                payload.push(0);
+            }
+            if !change.bid {
+                let last = payload.len() - 1;
+                payload[last] |= 1 << (i % 8);
+            }
+        }
+        align8(&mut payload);
+        let escapes_off = BLOCK_HEADER_LEN + payload.len();
+        let escapes: Vec<u32> = changes
+            .iter()
+            .filter(|(_, encoded)| *encoded == u16::MAX)
+            .map(|(change, _)| change.qty as u32)
+            .collect();
+        for escape in &escapes {
+            payload.extend_from_slice(&escape.to_le_bytes());
+        }
+        align8(&mut payload);
+
+        let mut out = vec![0u8; BLOCK_HEADER_LEN];
+        out[0..4].copy_from_slice(b"TMB1");
+        out[4] = 0;
+        out[5] = 0;
+        out[8..12].copy_from_slice(&((BLOCK_HEADER_LEN + payload.len()) as u32).to_le_bytes());
+        out[24..32].copy_from_slice(&start_ns.to_le_bytes());
+        out[40..48].copy_from_slice(&start_ns.to_le_bytes());
+        out[48..56].copy_from_slice(&base_tick.to_le_bytes());
+        out[64..66].copy_from_slice(&(records.len() as u16).to_le_bytes());
+        out[66..68].copy_from_slice(&(records.len() as u16).to_le_bytes());
+        out[68..72].copy_from_slice(&(changes.len() as u32).to_le_bytes());
+        out[72..76].copy_from_slice(&(escapes.len() as u32).to_le_bytes());
+        out[76..78].copy_from_slice(&(bids.len() as u16).to_le_bytes());
+        out[78..80].copy_from_slice(&(asks.len() as u16).to_le_bytes());
+        out[80..84].copy_from_slice(&(BLOCK_HEADER_LEN as u32).to_le_bytes());
+        out[84..88].copy_from_slice(&(records_off as u32).to_le_bytes());
+        out[88..92].copy_from_slice(&(changes_off as u32).to_le_bytes());
+        out[92..96].copy_from_slice(&(escapes_off as u32).to_le_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    /// The slot index a record stamped `at_ms` (milliseconds since the hour's start) lands in,
+    /// exactly as `apply_block` places it: a boundary stamp belongs to the slot before it, and the
+    /// hour's own end is the next hour's, not this one's.
+    fn book_at(at_ms: i64) -> Option<usize> {
+        let at = at_ms * 1_000_000;
+        let last_slot = HOUR_NS / GRID_NS;
+        if at < 0 || at >= last_slot * GRID_NS {
+            return None;
+        }
+        let raw = at / GRID_NS;
+        let slot = if at % GRID_NS == 0 { raw - 1 } else { raw };
+        usize::try_from(slot).ok()
+    }
+
+    #[test]
+    fn escaped_quantities_from_the_recorder_are_what_they_claim() {
+        // Escapes are the change rows the recorder's output carries outside the u16 range: it
+        // writes each as a whole 32-bit quantity, including the zero that removes a level. A reader
+        // that only took values at or above 65535, as the format document reads, would reject real
+        // blocks; this one takes whatever the column holds, zero meaning a removal as elsewhere.
+        let bytes = block(
+            0,
+            &[(1000, true, 5), (1001, false, 6), (1002, false, 4)],
+            &[
+                (
+                    50,
+                    vec![Change {
+                        tick: 1001,
+                        bid: false,
+                        qty: 0,
+                    }],
+                ),
+                (
+                    60,
+                    vec![Change {
+                        tick: 1002,
+                        bid: false,
+                        qty: 70_000,
+                    }],
+                ),
+            ],
+        );
+        let mut scratch = Vec::new();
+        let decoded = decode_block(&bytes, &mut scratch).unwrap().unwrap();
+        let escapes_off = decoded.escapes_off as usize - BLOCK_HEADER_LEN;
+        let escapes: Vec<u32> = (0..2)
+            .map(|i| {
+                u32::from_le_bytes(
+                    decoded.payload[escapes_off + i * 4..][..4]
+                        .try_into()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        // The column runs bids first, then asks: the ask removal's escape comes before the ask
+        // quantity's.
+        assert_eq!(escapes, vec![70_000, 0]);
+    }
+
+    #[test]
+    fn records_land_in_the_slot_their_exchange_time_reads() {
+        // A block opened inside the hour rather than on its grid, 3540 s in. The placement rule is
+        // checked against stamps directly: the block's record column spans about 65 s, so a record
+        // cannot carry a stamp all the way to the hour's end.
+        const BLOCK_OPEN_MS: i64 = 3_540_000;
+        let at = |relative_ms: i64| book_at(BLOCK_OPEN_MS + relative_ms);
+        // Just inside the slot at 3540.0 s, and exactly on the next boundary: a record stamped on
+        // a boundary is the state the slot before it ended with.
+        assert_eq!(at(50), Some(35_400));
+        assert_eq!(at(99), Some(35_400));
+        assert_eq!(
+            at(100),
+            Some(35_400),
+            "a boundary record is the slot before"
+        );
+        // A fraction of a second in, and the last state the hour holds.
+        assert_eq!(at(250), Some(35_402));
+        assert_eq!(at(59_950), Some(35_999));
+        // The hour ends at 3600.0 s: a stamp there is the first state the hour does not hold, so
+        // the file keeps no slot for it. A stamp in the next hour is not this hour's either, and
+        // one before the hour's start belongs to no slot of it.
+        assert_eq!(at(60_000), None);
+        assert_eq!(at(60_100), None);
+    }
+
+    #[test]
+    fn a_segment_started_mid_hour_places_its_first_whole_slot() {
+        // A segment opened at 08:24:10. A record is placed by the hour its own stamp falls in: the
+        // block's first state, at 08:59:00, belongs to that first hour (slot 614), and the states
+        // it writes a minute later are past the hour's end, which this file does not hold.
+        let start = HOUR + (24 * 60 + 10) * 1_000_000;
+        let placed =
+            |milliseconds: i64| book_at((start + milliseconds * 1_000_000 - HOUR) / 1_000_000);
+        assert_eq!(placed(60_000), Some(614), "08:59:00");
+        // A second earlier is the slot before it.
+        assert_eq!(placed(59_000), Some(604), "08:58:59");
+        assert_eq!(placed(59 * 60_000 + 59_900), None, "08:59:59.900");
+    }
+
+    #[test]
+    fn a_segment_opened_on_the_boundary_names_its_own_hour() {
+        assert_eq!(segment_hour(0), 0);
+        assert_eq!(segment_hour(HOUR - 1), 0);
+        assert_eq!(segment_hour(HOUR), HOUR);
+        assert_eq!(segment_hour(2 * HOUR + 1), 2 * HOUR);
+    }
 }

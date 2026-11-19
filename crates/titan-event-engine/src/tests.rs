@@ -690,20 +690,27 @@ fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
 /// A handler that parks until released, reporting only once it is parked.
 ///
 /// `BlockingHandler` reports before it waits, so a test that releases on the report can be racing
-/// the wait: the wake-up may be taken by an earlier or later call. Reporting from inside the wait
-/// makes the report mean the call is parked, which is what lets a test release one call at a time.
+/// the wait: the wake-up may be taken by an earlier or later call. This one makes the wait
+/// observable instead — it sets `parked` before blocking and the test waits for that — and reports
+/// only after the release, so each report names a call that has completed.
 struct ParkedHandler {
     entered: Sender<Vec<u8>>,
     release: Receiver<()>,
+    parked: Arc<AtomicUsize>,
 }
 
 impl EventHandler for ParkedHandler {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         let payload: Vec<u8> = event.payload.to_vec();
-        // A test releases one call at a time, so at most one wake-up is outstanding and a
-        // single slot cannot let a later call take an earlier one's wake-up.
+        self.parked.fetch_add(1, Ordering::Release);
+        // The test releases one call at a time and waits for `parked` first, so at most one
+        // wake-up is outstanding: no call can take another's release.
+        //
+        // A missing release is a bug in the test under construction, and the panic is the diagnosis
+        // a developer needs. Only the engine's own reports need care: a panic here is caught by the
+        // engine and stops the lane, so it surfaces as the test's receive timing out.
         self.release
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(HANDLER_TIMEOUT)
             .expect("the test releases every parked call");
         self.entered
             .send(payload)
@@ -734,6 +741,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
     engine.start().unwrap();
     let (entered_tx, entered_rx) = bounded(8);
     let (release_tx, release_rx) = bounded(1);
+    let parked = Arc::new(AtomicUsize::new(0));
     let lane = handle
         .register_primary_async_lane(
             &[PrimarySubscriptionSpec {
@@ -754,6 +762,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             Arc::new(ParkedHandler {
                 entered: entered_tx,
                 release: release_rx,
+                parked: parked.clone(),
             }),
         )
         .unwrap();
@@ -762,30 +771,20 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         request.routing_key = key;
         handle.try_publish(request).unwrap();
     };
-    // The handler parks before reporting, so a release always wakes the call the test just
-    // published for: publication order is the delivery order, and "latest-one" cannot replace
-    // "queued" before "queued" has been delivered.
-    publish(1, b"first");
-    release_tx.send(()).unwrap();
-    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"first");
-
-    publish(1, b"queued");
-    release_tx.send(()).unwrap();
-    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"queued");
-
-    publish(1, b"latest-one");
-    release_tx.send(()).unwrap();
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"latest-one"
-    );
-
-    publish(2, b"latest-two");
-    release_tx.send(()).unwrap();
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"latest-two"
-    );
+    let mut delivers = 0usize;
+    let mut deliver = |key, payload: &[u8]| {
+        publish(key, payload);
+        delivers += 1;
+        // A release only follows the call it was meant to release: the handler said it is parked
+        // before the test released it, and reports a completed delivery afterwards.
+        wait_until(|| parked.load(Ordering::Acquire) == delivers);
+        release_tx.send(()).unwrap();
+        assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), payload);
+    };
+    deliver(1, b"first");
+    deliver(1, b"queued");
+    deliver(1, b"latest-one");
+    deliver(2, b"latest-two");
 
     assert!(handle.unregister_primary_async_lane(lane.token()));
     engine.stop().unwrap();

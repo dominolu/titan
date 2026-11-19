@@ -17,7 +17,8 @@ directly and is what the NumPy side uses for its tests. Two phases:
 Python then aggregates shards into hourly panels and event tables.
 
 Nothing here is a Titan strategy or platform component; it is offline research tooling
-for one recording set (see README.md next to this file for the case-specific facts).
+for one recording set. ``extract``/``detect`` need ``lmstat``, a separate Rust program that is
+not part of this repository: point ``LMSTAT_BIN`` (or the ``binary`` argument) at a build of it.
 """
 
 from __future__ import annotations
@@ -47,8 +48,8 @@ def lmstat_bin(explicit: str | None = None) -> str:
     path = explicit or os.environ.get("LMSTAT_BIN") or DEFAULT_BIN
     if not os.path.exists(path):
         raise SystemExit(
-            f"lmstat binary not found at {path}; build it on the compile server "
-            f"(scripts/verify.sh cargo build --release --manifest-path {LMSTAT_DIR}/Cargo.toml)"
+            f"lmstat binary not found at {path}; build it on the compile server and pass its "
+            f"path (or set LMSTAT_BIN): the source is not kept in this repository"
         )
     return path
 

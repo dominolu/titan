@@ -2,7 +2,7 @@
 
 Status: **implemented and verified on the build server; live public-market pilot passed**.
 This summary covers the recorder change that makes the writer match the block
-aggregation described in [the v1 format design](../../market_data_recording_design.md)
+aggregation described in [the v1 format design](../../../market_data_recording_design.md)
 §12.5. No raw logs, host details, or exchange response dumps are included.
 
 ## Change

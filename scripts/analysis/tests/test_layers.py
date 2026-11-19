@@ -1,8 +1,12 @@
 """Tests for the reference mechanics re-implemented on the NumPy side.
 
-``tests/`` holds a fixture taken from the Rust decoder on one real segment
-(``kat.npz``): the CSR row pointers and record times of its first block, the first
-book state, and the Fenwick layer tables the reference builds for that many rows.
+The checks call the modules themselves, not stand-ins for them: a regression in ``lm_common``
+has to fail a test.
+
+``fixtures/`` holds a vector taken from the Rust decoder on one real segment (``kat.npz``): the
+CSR row pointers and record times of its first block, the first book state, and the Fenwick layer
+tables the reference builds for that many rows. The slot and escape rules of the decoder itself
+are unit-tested where the decoding happens, in ``tnmd_decoder/src/main.rs``.
 
 Run locally (no build needed):  python3 -m unittest scripts/analysis/tests/test_layers.py
 """
@@ -17,38 +21,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import lmstats  # noqa: E402
+import lm_common  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 
-def cross_profit(events: list[tuple[float, float]]) -> float:
-    """``shared/crossing.ts`` ``crossProfit``: two-aggressor trades with their sizes."""
-    x = 0.0
-    q = 0.0
-    for p, v in events:
-        x += p * v
-        q += v
-    return x / q if q > 0 else 0.0
-
-
-def absorption_credit(times_ms: np.ndarray, usd: np.ndarray, window_ms: int = 10) -> np.ndarray:
-    """``shared/absorption.ts`` ``#take``: every fill keeps the largest window (same side and price,
-    time at or after its own minus the window, itself included) it ever belonged to."""
-    n = len(times_ms)
-    credit = np.zeros(n)
-    for i in range(n):
-        lo = i
-        while lo > 0 and times_ms[lo - 1] >= times_ms[i] - window_ms:
-            lo -= 1
-        s = float(usd[lo : i + 1].sum())
-        credit[lo : i + 1] = np.maximum(credit[lo : i + 1], s)
-    return credit
-
-
 def start_anchored_sums(times_ms: np.ndarray, usd: np.ndarray, window_ms: int = 10) -> list[float]:
-    """``#take``'s window sums for the automatic threshold: a window opens at a fill and takes the
-    fills up to its opening plus the window; the next fill after that opens the next one."""
+    """``#take``'s window sums for the automatic threshold (``lm_common`` cites the rule but has no
+    function for it): a window opens at a fill and takes the fills up to its opening plus the
+    window; the next fill after that opens the next one."""
     out = []
     i = 0
     while i < len(times_ms):
@@ -61,28 +42,15 @@ def start_anchored_sums(times_ms: np.ndarray, usd: np.ndarray, window_ms: int = 
     return out
 
 
-def lt_weight(bp: float, half_life_bp: float) -> float:
-    """``shared/lt-sample.ts`` ``ltWeight``."""
-    return 2.0 ** (-max(0.0, bp) / half_life_bp)
-
-
 def auto_threshold(minutes: list[dict], k: float) -> float | None:
-    """``autoThreshold``: mean + k SD over every window sum recorded in the minutes."""
+    """``autoThreshold``: mean + k SD over every window sum recorded in the minutes. Also not in
+    ``lm_common``; the rule is what ``lm_common``'s constants describe."""
     n = sum(m["n"] for m in minutes)
     if not n:
         return None
     mean = sum(m["n"] * m["mean"] for m in minutes) / n
     m2 = sum(m["m2"] + m["n"] * (m["mean"] - mean) ** 2 for m in minutes)
     return mean + k * (m2 / n) ** 0.5
-
-
-def size_bucket(usd: float) -> int:
-    """``sizeBucket`` over ``SIZE_EDGES``: the last edge it reaches (0 under 25K)."""
-    bucket = 0
-    for i, edge in enumerate([0, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 5_000_000]):
-        if i and usd >= edge:
-            bucket = i
-    return bucket
 
 
 class LadderWindowTest(unittest.TestCase):
@@ -107,7 +75,8 @@ class AbsorptionWindowTest(unittest.TestCase):
     def test_credit_is_the_largest_window_a_fill_belongs_to(self):
         times = np.array([0, 3, 7, 13, 20], dtype=np.int64)
         usd = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
-        credit = absorption_credit(times, usd)
+        # One price and side: every fill is in the same group.
+        credit = lm_common.rolling_target_credits(times, usd, np.zeros(5, dtype=np.int64))
         # Each fill keeps the largest window it ever belonged to, not the one it would see at its own
         # arrival: fill 0 is in the 60 USD window [0, 7], fill 1 in the 90 USD window [3, 13].
         self.assertEqual(credit[0], 60.0)
@@ -115,8 +84,18 @@ class AbsorptionWindowTest(unittest.TestCase):
         self.assertEqual(credit[2], 90.0)
         self.assertEqual(credit[3], 90.0)
         self.assertEqual(credit[4], 90.0)
-        # Fill 3 at 13 ms: itself and fill 2 at 7 ms (90 USD); fill 4 at 20 ms: itself and fill 3.
-        self.assertEqual(credit[4], 90.0)
+
+    def test_credit_restarts_at_the_next_group(self):
+        # The fill at index 2 is the first of another price (or side): it may not credit a window
+        # that reaches back into the previous group.
+        times = np.array([0, 3, 7, 9, 20], dtype=np.int64)
+        usd = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        credit = lm_common.rolling_target_credits(times, usd, np.array([0, 0, 1, 1, 1], dtype=np.int64))
+        self.assertEqual(credit[0], 30.0)  # fills 0 and 1 within 10 ms of fill 1
+        self.assertEqual(credit[1], 30.0)
+        self.assertEqual(credit[2], 70.0)  # fills 2 and 3
+        self.assertEqual(credit[3], 70.0)
+        self.assertEqual(credit[4], 50.0)  # alone
 
     def test_start_anchored_sums(self):
         times = np.array([0, 5, 11, 12, 30], dtype=np.int64)
@@ -133,23 +112,10 @@ class AbsorptionWindowTest(unittest.TestCase):
 
 
 class ReferenceScalarRulesTest(unittest.TestCase):
-    def test_lt_weight_halves_every_half_life(self):
-        self.assertEqual(lt_weight(0, 10), 1.0)
-        self.assertAlmostEqual(lt_weight(10, 10), 0.5)
-        self.assertAlmostEqual(lt_weight(20, 10), 0.25)
-        self.assertEqual(lt_weight(-5, 10), 1.0)
-
     def test_size_buckets(self):
-        self.assertEqual(size_bucket(10_000), 0)
-        self.assertEqual(size_bucket(25_000), 1)
-        self.assertEqual(size_bucket(49_999), 1)
-        self.assertEqual(size_bucket(50_000), 2)
-        self.assertEqual(size_bucket(100_000), 3)
-        self.assertEqual(size_bucket(7_000_000), 7)
-
-    def test_cross_profit(self):
-        self.assertAlmostEqual(cross_profit([(100.0, 1.0), (102.0, 1.0)]), 101.0)
-        self.assertEqual(cross_profit([]), 0.0)
+        # `sizeBucket` over SIZE_EDGES: the last edge a notional reaches (0 under 25K, 7 from 5M).
+        edges = [10_000, 25_000, 49_999, 50_000, 100_000, 7_000_000]
+        self.assertEqual(lm_common.size_bucket(np.array(edges)).tolist(), [0, 1, 1, 2, 3, 7])
 
 
 if __name__ == "__main__":

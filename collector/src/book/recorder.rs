@@ -192,6 +192,10 @@ impl RecorderConfig {
             || !(1..=500).contains(&r.depth_levels)
             || !(5_000..=65_000).contains(&r.block_duration_ms)
             || !(60_000..=86_400_000).contains(&r.segment_duration_ms)
+            // Segments rotate on multiples of this length since the epoch while their `date`
+            // directory follows the segment's start, so a length that does not divide a day puts
+            // two UTC dates inside one hour-of-day boundary and the day's archive would lose it.
+            || !86_400_000u32.is_multiple_of(r.segment_duration_ms)
             || !r.block_duration_ms.is_multiple_of(r.grid_ms)
             || !(1..=19).contains(&r.compression_level)
             || !matches!(r.compression.as_str(), "zstd" | "none")
@@ -1279,6 +1283,14 @@ impl MarketRecorder {
             return Err(BookError::InvalidField("depth snapshot required"));
         }
         if let Some(previous) = self.last_seq {
+            if message.last_seq <= previous && message.first_prev_seq != Some(previous) {
+                // A replay of a message the book already has carries nothing new: its changes are
+                // the state the book reached and then moved past, so applying them now would make
+                // the book disagree with every message after them. The book already holds the
+                // update's sequence at or beyond this message, so this is a duplicate, not a gap.
+                self.slot_late_events = self.slot_late_events.saturating_add(1);
+                return Ok(Vec::new());
+            }
             if message.first_prev_seq != Some(previous) {
                 // The two sequences are the whole diagnosis: the book's position and the message's
                 // predecessor decide whether this is a skip, a replay, or a stale reader.
@@ -1303,6 +1315,11 @@ impl MarketRecorder {
             .current_slot
             .or_else(|| self.last_closed_slot.map(|last| last.saturating_add(1)));
         let slot = minimum_slot.map_or(raw_slot, |minimum| raw_slot.max(minimum));
+        // A message stamped behind the slot the book is in (one the venue delivered late) still
+        // carries a change the book has yet to apply, and the sequence check above has already
+        // shown the message follows the last one applied. It goes into the open slot, and the slot
+        // records that it holds a late message. Dropping it would leave the book behind every
+        // message after it, which is a disagreement with the venue rather than a timestamp.
         let late = slot != raw_slot || clamped != message.exch_ts_ns;
         let mut closed = Vec::new();
         if let Some(current) = self.current_slot
@@ -1314,13 +1331,14 @@ impl MarketRecorder {
         if self.current_slot.is_some_and(|current| slot > current) {
             self.last_closed_slot = self.current_slot;
         }
-        if self.current_slot != Some(slot) {
+        let opened = self.current_slot != Some(slot);
+        if opened {
             self.current_slot = Some(slot);
             self.slot_n_msgs = 0;
             self.slot_first_prev = None;
             self.slot_late_events = 0;
         }
-        if late {
+        if late || opened {
             self.slot_late_events = self.slot_late_events.saturating_add(1);
         }
         let prev_seq = message.first_prev_seq.or(self.last_seq);
@@ -1536,6 +1554,179 @@ fn diff_side(previous: &[Level], current: &[Level], side: Side) -> Vec<Change> {
 mod tests {
     use super::*;
     use crate::book::Ladder;
+
+    /// A feed that yields the messages it was given and then ends.
+    struct Scripted {
+        messages: std::collections::VecDeque<FeedMessage>,
+    }
+
+    impl Feed for Scripted {
+        async fn next(&mut self) -> Option<FeedMessage> {
+            self.messages.pop_front()
+        }
+    }
+
+    /// Reads back the records of every data block the recorder wrote.
+    fn recorded_records(root: &std::path::Path) -> Vec<SlotRecord> {
+        let mut records = Vec::new();
+        let mut directories = vec![root.join("book")];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    directories.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "tnmd") {
+                    let reader = SegmentReader::open(&path).unwrap();
+                    for index in 0..reader.block_count() {
+                        let block = reader.read_block(index).unwrap();
+                        if block.header.kind == crate::book::BlockKind::Data {
+                            records.extend(decode_data_payload(&block).unwrap().records);
+                        }
+                    }
+                }
+            }
+        }
+        records
+    }
+
+    fn settings(root: &std::path::Path) -> RecorderSettings {
+        RecorderSettings {
+            root: root.to_path_buf(),
+            grid_ms: 100,
+            depth_levels: 2,
+            block_duration_ms: 1000,
+            segment_duration_ms: 60_000,
+            compression_level: 1,
+            compression: "none".into(),
+            fsync_interval_blocks: 1,
+            validation_interval_ms: 60_000,
+            rest_validation_log_messages: 64,
+            rest_validation_min_samples: 5,
+            daily_archive: false,
+            daily_archive_prune: false,
+            daily_archive_grace_secs: 10,
+            oi_poll_ms: 60_000,
+        }
+    }
+
+    fn delta(first_prev: u64, last: u64, tick: i64, qty: u64) -> FeedMessage {
+        FeedMessage::Depth(DepthMessage {
+            exch_ts_ns: last as i64 * 100_000_000,
+            local_ts_ns: last as i64 * 100_000_000,
+            first_prev_seq: Some(first_prev),
+            first_seq: Some(first_prev + 1),
+            last_seq: last,
+            changes: vec![Change {
+                side: Side::Bid,
+                tick,
+                qty,
+            }],
+        })
+    }
+
+    #[tokio::test]
+    async fn a_late_frame_is_written_and_the_recorded_book_stays_with_the_stream() {
+        // The transport hands frames over as they arrive, so a frame the venue stamped for an
+        // earlier slot can follow one stamped later while the sequence chain still follows. Here
+        // the late frame carries one further bid quantity at the same price: a reader replaying the
+        // net diffs ends on whichever quantity the last record wrote, which is why order matters.
+        let root = std::env::temp_dir().join(format!("titan-late-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let feed = Scripted {
+            messages: std::collections::VecDeque::from(vec![
+                FeedMessage::Snapshot(SnapshotMessage {
+                    exch_ts_ns: 100_000_000,
+                    local_ts_ns: 100_000_000,
+                    bids: vec![Level { tick: 100, qty: 1 }],
+                    asks: vec![Level { tick: 101, qty: 1 }],
+                    last_seq: Some(10),
+                }),
+                // Sequence 12 follows 11 on 100 ms grid ticks, but the venue stamped it earlier.
+                delta(10, 11, 100, 2),
+                FeedMessage::Depth(DepthMessage {
+                    exch_ts_ns: 150_000_000,
+                    local_ts_ns: 250_000_000,
+                    first_prev_seq: Some(11),
+                    first_seq: Some(12),
+                    last_seq: 12,
+                    changes: vec![Change {
+                        side: Side::Bid,
+                        tick: 100,
+                        qty: 3,
+                    }],
+                }),
+                delta(12, 13, 100, 4),
+            ]),
+        };
+        let mut market = meta();
+        market.depth_requested = 2;
+        market.depth_available = 2;
+        run_market(market, &root, "venue", "spot", &settings(&root), feed)
+            .await
+            .unwrap();
+        let records = recorded_records(&root);
+        let quantities: Vec<u64> = records
+            .iter()
+            .flat_map(|record| record.changes.iter())
+            .filter(|change| change.side == Side::Bid)
+            .map(|change| change.qty)
+            .collect();
+        // The late message's change reached the file ahead of the next one, so a reader replaying
+        // the diffs ends on the state the stream's last message left behind.
+        assert_eq!(
+            quantities,
+            vec![2, 3, 4],
+            "each message is written once, in order"
+        );
+        assert!(records.iter().any(|record| record.late_events > 0));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_update_is_counted_late_and_leaves_the_book_alone() {
+        let mut recorder = MarketRecorder::new(meta()).unwrap();
+        recorder
+            .install_snapshot(
+                &[Level { tick: 100, qty: 1 }],
+                &[Level { tick: 101, qty: 1 }],
+                Some(10),
+            )
+            .unwrap();
+        recorder
+            .apply(DepthMessage {
+                exch_ts_ns: 100_000_000,
+                local_ts_ns: 100_000_000,
+                first_prev_seq: Some(10),
+                first_seq: Some(11),
+                last_seq: 11,
+                changes: vec![Change {
+                    side: Side::Bid,
+                    tick: 100,
+                    qty: 2,
+                }],
+            })
+            .unwrap();
+        // The same update again: the book already stands at 11, and qty 2 would undo nothing, but
+        // an outdated change must still not be applied twice.
+        let nothing = recorder
+            .apply(DepthMessage {
+                exch_ts_ns: 100_000_000,
+                local_ts_ns: 100_000_000,
+                first_prev_seq: Some(10),
+                first_seq: Some(11),
+                last_seq: 11,
+                changes: vec![Change {
+                    side: Side::Bid,
+                    tick: 100,
+                    qty: 9,
+                }],
+            })
+            .unwrap();
+        assert!(nothing.is_empty());
+        assert_eq!(recorder.window().0, vec![Level { tick: 100, qty: 2 }]);
+        let slot = recorder.flush_open_slot().unwrap().unwrap();
+        assert_eq!(slot.late_events, 1);
+    }
 
     fn meta() -> MarketMeta {
         MarketMeta {
@@ -1938,6 +2129,18 @@ depth_available = 1000
         assert_eq!(config.market_meta(&config.markets[0]).grid_ms, 100);
         let invalid = text.replace("block_duration_ms = 60000", "block_duration_ms = 59999");
         assert!(RecorderConfig::parse(&invalid).is_err());
+        // A segment must divide the UTC day: 90 minutes rotates at 01:30, where a segment's start
+        // crosses into the next date.
+        let misaligned = text.replace(
+            "block_duration_ms = 60000",
+            "block_duration_ms = 60000\nsegment_duration_ms = 5400000",
+        );
+        assert!(RecorderConfig::parse(&misaligned).is_err());
+        let aligned = text.replace(
+            "block_duration_ms = 60000",
+            "block_duration_ms = 60000\nsegment_duration_ms = 21600000",
+        );
+        assert!(RecorderConfig::parse(&aligned).is_ok());
     }
 
     #[test]
