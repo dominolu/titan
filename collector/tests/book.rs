@@ -457,25 +457,16 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
     .collect::<Vec<_>>();
     segments.sort();
     assert_eq!(segments.len(), 2);
-    // The first segment opens with its first data block and takes every block up to its 00:02:00
-    // boundary; the block that opens there is a segment of its own.
-    assert_eq!(SegmentReader::open(&segments[0]).unwrap().block_count(), 2);
-    assert_eq!(
-        SegmentReader::open(&segments[0])
-            .unwrap()
-            .header
-            .segment_start_exch_ns,
-        31 * SECOND_NS
-    );
-    // The 00:02:00 boundary opens the next segment; the block after it joins that one.
-    assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 2);
-    assert_eq!(
-        SegmentReader::open(&segments[1])
-            .unwrap()
-            .header
-            .segment_start_exch_ns,
-        120 * SECOND_NS
-    );
+    // The first segment opens with its first data block and takes the blocks up to its 00:02:00
+    // boundary; the block that opens there starts the second, which the block after it joins.
+    let seen: Vec<(i64, usize)> = segments
+        .iter()
+        .map(|path| {
+            let reader = SegmentReader::open(path).unwrap();
+            (reader.header.segment_start_exch_ns, reader.block_count())
+        })
+        .collect();
+    assert_eq!(seen, vec![(31 * SECOND_NS, 2), (120 * SECOND_NS, 2)]);
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -519,29 +510,28 @@ fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
         .finish(61 * 60 * SECOND_NS, 61 * 60 * SECOND_NS)
         .unwrap();
     let directory = dir.join("book/venue=venue/instrument=ETHUSDT/symbol=ETHUSDT/date=1970-01-01");
-    let segments = std::fs::read_dir(&directory)
+    let mut segments = std::fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "tnmd"))
         .collect::<Vec<_>>();
+    // The directory lists in whatever order the filesystem returns, which differs between
+    // platforms; the file names carry each segment's UTC start, so sorting by name orders them.
+    segments.sort();
     // A block that opens at 00:01:00 starts a segment itself, and the block after it opens one at
     // the 00:02:00 boundary: a segment's start is the block that opened it, and the `date`
     // directory follows that start.
     assert_eq!(segments.len(), 2);
-    assert_eq!(
-        SegmentReader::open(&segments[0])
-            .unwrap()
-            .header
-            .segment_start_exch_ns,
-        121 * SECOND_NS
-    );
-    assert_eq!(
-        SegmentReader::open(&segments[1])
-            .unwrap()
-            .header
-            .segment_start_exch_ns,
-        61 * SECOND_NS
-    );
+    let starts: Vec<i64> = segments
+        .iter()
+        .map(|path| {
+            SegmentReader::open(path)
+                .unwrap()
+                .header
+                .segment_start_exch_ns
+        })
+        .collect();
+    assert_eq!(starts, vec![61 * SECOND_NS, 121 * SECOND_NS]);
     fs::remove_dir_all(dir).unwrap();
 }
 
