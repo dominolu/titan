@@ -739,21 +739,27 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
     };
     publish(1, b"first");
     assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"first");
+    // The handler blocks while the lane is busy, so each publish lands in the latest slot for its
+    // key and is delivered once the handler is released. Releasing one handler at a time keeps the
+    // delivery order the order of publication: sending every release up front lets a later publish
+    // overwrite a key's slot before the handler has been called for the earlier one.
     publish(1, b"queued");
     publish(1, b"latest-one");
     publish(2, b"latest-two");
-    for _ in 0..4 {
-        release_tx.send(()).unwrap();
-    }
+    release_tx.send(()).unwrap();
     assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"queued");
+    release_tx.send(()).unwrap();
     assert_eq!(
         entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-one"
     );
+    release_tx.send(()).unwrap();
     assert_eq!(
         entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
         b"latest-two"
     );
+    // The handler blocked on "first" is still waiting for its own release.
+    release_tx.send(()).unwrap();
     assert!(handle.unregister_primary_async_lane(lane.token()));
     engine.stop().unwrap();
 }
