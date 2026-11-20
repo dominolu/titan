@@ -59,7 +59,13 @@ fn test_config() -> EventEngineConfig {
 }
 
 fn wait_until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    wait_until_within(Duration::from_secs(3), condition)
+}
+
+/// `wait_until` with an explicit bound, for a condition bounded by something slower than this
+/// helper's default (a handler that itself waits up to `HANDLER_TIMEOUT`).
+fn wait_until_within(limit: Duration, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + limit;
     while !condition() {
         assert!(Instant::now() < deadline, "condition timed out");
         thread::sleep(Duration::from_millis(1));
@@ -778,7 +784,12 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
         // parked before the test releases it, and reports a completed delivery afterwards. One
         // event is published per step, so the n-th step waits for the n-th call and releases only
         // that one.
-        wait_until(|| parked.load(Ordering::Acquire) == delivers);
+        // The handler may wait `HANDLER_TIMEOUT` for its release, so the test allows the same for
+        // the call to park: a runner that takes seconds to reach the handler must not fail on the
+        // shorter bound the other waits in this file use.
+        wait_until_within(HANDLER_TIMEOUT, || {
+            parked.load(Ordering::Acquire) == delivers
+        });
         // `bounded(1)` with one call parked at a time: the send is what wakes it, and a full or
         // closed channel means the handler is not where the test believes it is.
         release_tx
