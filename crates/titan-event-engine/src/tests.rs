@@ -807,17 +807,17 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             let before = released.load(Ordering::Acquire);
             let parked_now =
                 wait_until_within_opt(DRAIN_INTERVAL, || parked.load(Ordering::Acquire) > before);
-            let progress = lane.progress();
             if !parked_now {
-                // Nothing parked within the interval. The lane is idle only when everything it
-                // admitted has been dispatched and committed; otherwise an event is still on its
-                // way and the loop waits for it again.
-                if progress.committed_sequence == progress.admitted_sequence {
+                // Nothing parked within the interval. The lane is empty when it holds neither a
+                // queued event nor one waiting in the `latest` table: `committed` cannot say so,
+                // because an event `Latest` replaces is never delivered and never committed.
+                let health = lane.health();
+                if health.channel_depth == 0 && health.pending_depth == 0 {
                     return;
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "the lane did not settle: {progress:?}, delivered so far {seen:?}"
+                    "the lane did not settle: {health:?}, delivered so far {seen:?}"
                 );
                 continue;
             }
