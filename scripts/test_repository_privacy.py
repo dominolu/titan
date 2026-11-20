@@ -80,10 +80,40 @@ class PrivacyGuardTests(unittest.TestCase):
             commit = ["-c", "user.name=fixture", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"]
             git("-c", "user.email=" + "author@example.com", *commit)
             published = git("rev-parse", "HEAD").decode().strip()
+            # Published means a remote has it: a commit only this clone knows is new, whatever its
+            # author.
+            git("update-ref", "refs/remotes/origin/main", published)
             command = ["python3", str(Path(guard.__file__).resolve()), "--root", str(root), "--history"]
-            reported = json.loads(subprocess.run(command + ["--revision", published], capture_output=True, text=True).stdout)
+            outcome = subprocess.run(command + ["--revision", published], capture_output=True, text=True)
+            reported = json.loads(outcome.stdout)
             self.assertEqual(reported["reviewed_commits_with_published_identity"], [published])
             self.assertNotIn("author@example.com", json.dumps(reported))
+            # Already public: named, and not a failure of this push.
+            self.assertTrue(reported["passed"])
+            self.assertEqual(outcome.returncode, 0)
+
+    def test_a_new_commit_with_a_personal_author_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL)
+            git("init", "-q")
+            (root / "README.md").write_text("Public summary")
+            git("add", "README.md")
+            common = ["-c", "user.name=fixture", "-c", "core.hooksPath=/dev/null", "commit", "-qm"]
+            git("-c", "user.email=fixture@users.noreply.github.com", *common, "base")
+            base = git("rev-parse", "HEAD").decode().strip()
+            git("update-ref", "refs/remotes/origin/main", base)
+            (root / "README.md").write_text("Public summary, changed")
+            git("add", "README.md")
+            git("-c", "user.email=" + "author@example.com", *common, "personal author")
+            head = git("rev-parse", "HEAD").decode().strip()
+            command = ["python3", str(Path(guard.__file__).resolve()), "--root", str(root), "--history"]
+            outcome = subprocess.run(command + ["--revision", base + ".." + head], capture_output=True, text=True)
+            reported = json.loads(outcome.stdout)
+            self.assertEqual(outcome.returncode, 1)
+            self.assertFalse(reported["passed"])
+            self.assertIn("personal-author-email", {item["kind"] for item in reported["findings"]})
 
     def test_a_revision_may_name_several_arguments(self):
         with tempfile.TemporaryDirectory() as directory:
