@@ -782,6 +782,11 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
                 snapshot_staging_capacity: 4,
                 control_capacity: 2,
                 idle_sleep: Duration::from_millis(1),
+                // The handler parks until the test releases it, and the engine fails a lane whose
+                // handler outruns this budget: the default five milliseconds is shorter than the
+                // test's own waits, and a lane failed that way stops accepting the events the
+                // test is about to publish.
+                max_handler_duration: HANDLER_TIMEOUT,
                 ..PrimaryAsyncLaneConfig::default()
             },
             Arc::new(ParkedHandler {
