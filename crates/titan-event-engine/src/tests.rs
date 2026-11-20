@@ -58,7 +58,7 @@ fn test_config() -> EventEngineConfig {
     config
 }
 
-fn wait_until(mut condition: impl FnMut() -> bool) {
+fn wait_until(condition: impl FnMut() -> bool) {
     wait_until_within(Duration::from_secs(3), condition)
 }
 
