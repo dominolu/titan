@@ -738,6 +738,11 @@ impl EventHandler for ParkedHandler {
     }
 }
 
+/// How long the lane is watched for one more delivery once its last event was published: long
+/// enough for an event already queued to reach the handler, short enough not to hold up a test
+/// that has none.
+const DRAIN_INTERVAL: Duration = Duration::from_millis(250);
+
 /// How long a test waits for the engine to call a handler.
 ///
 /// The wait bounds a scheduling delay, not a property under test: the handler blocks on a channel
@@ -810,7 +815,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             },
         )
     };
-    let seen: Vec<Vec<u8>> = [
+    let mut seen: Vec<Vec<u8>> = [
         deliver(1, b"first"),
         deliver(1, b"queued"),
         deliver(1, b"latest-one"),
@@ -819,6 +824,21 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
     .into_iter()
     .flatten()
     .collect();
+    // A step can leave its event published but not yet delivered: the lane is slower than the
+    // test, so nothing replaces it and it arrives after the step's wait. Waiting again until no
+    // call parks within the bound is what says the lane is empty, and it is why each key's last
+    // event is always among those seen.
+    loop {
+        let before = released.load(Ordering::Acquire);
+        if !wait_until_within_opt(DRAIN_INTERVAL, || parked.load(Ordering::Acquire) > before) {
+            break;
+        }
+        release_tx
+            .send(())
+            .expect("the parked call is still waiting for its release");
+        released.fetch_add(1, Ordering::AcqRel);
+        seen.push(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap());
+    }
 
     // `Latest` may drop an event superseded before delivery, but it never invents, reorders or
     // repeats one: every delivered event is one that was published, the sequence keeps the
