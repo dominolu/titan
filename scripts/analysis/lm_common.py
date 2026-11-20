@@ -23,12 +23,11 @@ Recording facts this module relies on (``docs/market_data_recording_design.md``)
 
 * The book window keeps the top 100 levels per side; deletions of levels pushed out by
   better ones follow from the window rule. The window includes crossing levels.
-* Blocks of 60 s each carry a snapshot plus 100 ms-grid net differences; a slot's record
-  is the book state at the slot's close. The grid is anchored to UTC wall clock, so the
-  slot index of a block equals the wall-clock hour of its start (the recorder's block base
-  time); ``slot_base`` recovers that hour even when the local clock lags the exchange by
-  seconds.
-* Trade and aux files are named by the UTC wall clock too, with no local-lag slack.
+* Blocks of 60 s each carry a snapshot plus 100 ms-grid net differences; a record is the
+  book state a slot left behind, stamped with that state's exchange time. The recorder
+  cuts slots on the exchange clock (``slot = exch_ns / grid``), so a slot's index follows
+  from the exchange time alone; the hour a segment is read in is the hour its start falls in.
+* Trade and aux files are named by the UTC wall clock.
 
 The data kinds are 2026-11 synthetic data (Binance-shaped, liquidations mostly at the
 support around 64,000-67,000 on 2026-11-14/15), so the studies here are analyses of the
@@ -237,7 +236,6 @@ class SegmentInfo:
     lo_tick: int = 0
     width: int = 0
     slots: int = 0
-    day_start_ns: int = 0
 
 
 def extract_book(zip_path: str, out_dir: str, day: str) -> list[str]:
@@ -267,7 +265,7 @@ class HourBook:
     valid: np.ndarray  # bool [slot]
 
 
-def read_hour_book(decoder: str, segment: str, out_dir: str, day_start_ns: int,
+def read_hour_book(decoder: str, segment: str, out_dir: str,
                    half_ticks: int = 3000) -> HourBook:
     """Runs the decoder on one segment; results go to a private directory keyed by the segment name."""
     import shutil
@@ -275,9 +273,10 @@ def read_hour_book(decoder: str, segment: str, out_dir: str, day_start_ns: int,
 
     stage = os.path.join(out_dir, os.path.basename(segment).replace(".tnmd", ""))
     shutil.rmtree(stage, ignore_errors=True)
+    # The decoder takes the hour from the segment itself; there is no day or hour argument to pass.
     subprocess.run(
         [decoder, "--segment", segment, "--out", stage, "--instrument", "book",
-         "--hour-start-ns", str(day_start_ns), "--window-half-ticks", str(half_ticks), "--center-ticks", "0"],
+         "--window-half-ticks", str(half_ticks), "--center-ticks", "0"],
         check=True,
     )
     root = os.path.join(stage, "instrument=book")
@@ -303,16 +302,16 @@ def read_hour_book(decoder: str, segment: str, out_dir: str, day_start_ns: int,
         lo_tick=meta["lo_tick"],
         width=width,
         slots=slots,
-        day_start_ns=day_start_ns,
     )
     mids = np.fromfile(os.path.join(day_dir, "mids"), dtype=np.int64)
     quote = np.fromfile(os.path.join(day_dir, "quote_units"), dtype=np.int64)
     ts = np.fromfile(os.path.join(day_dir, "ts"), dtype=np.int64)
     valid = np.fromfile(os.path.join(day_dir, "valid"), dtype=np.uint8).astype(bool)
     depth = np.memmap(os.path.join(day_dir, "depth"), dtype=np.int32, mode="r", shape=(slots, 2, width))
-    # The grid hour of the slots: the day grid's at most one hour before (and including) the first block.
-    first = int(meta["first_block_exch_ns"])
-    hour_start = first - (first - day_start_ns) % HOUR_NS
+    # `hour_start_ns` is the hour the decoder cut its slots in (the hour the segment started in),
+    # not a value derived from the first block: a segment opened by a gap or a restart starts
+    # mid-hour, and the decoder leaves out its first partial hour.
+    hour_start = int(meta["hour_start_ns"])
     return HourBook(info, hour_start, mids, quote, ts, depth, valid)
 
 

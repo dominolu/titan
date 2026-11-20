@@ -22,12 +22,23 @@ impl Feed for FixtureFeed {
     }
 }
 
+/// A directory no other test in this process shares.
+///
+/// The process id and the clock alone are not enough: tests run in parallel, and two of them can
+/// read the same nanosecond before either creates its directory. The counter makes each call
+/// distinct, so the process's own tests cannot land on each other's directory.
 fn test_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("titan-book-{}-{stamp}", std::process::id()));
+    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "titan-book-{}-{stamp}-{serial}",
+        std::process::id()
+    ));
     fs::create_dir_all(&path).unwrap();
     path
 }
@@ -431,11 +442,15 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
         depth_available: 20,
         session_epoch: 3,
     };
-    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 60_000, 3).unwrap();
+    // The writer takes segment lengths of a minute or more, so the rotation is checked at two
+    // minutes: the second block is the last of the first two, the third opens the next pair.
+    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 120_000, 3).unwrap();
+    const SECOND_NS: i64 = 1_000_000_000;
     for (start, end) in [
-        (30_000_000_000i64, 31_000_000_000i64),
-        (59_000_000_000, 59_500_000_000),
-        (60_000_000_000, 61_000_000_000),
+        (30 * SECOND_NS, 31 * SECOND_NS),
+        (60 * SECOND_NS, 61 * SECOND_NS),
+        (119 * SECOND_NS, 120 * SECOND_NS),
+        (120 * SECOND_NS, 121 * SECOND_NS),
     ] {
         let block = BlockInput {
             header: BlockHeader::data(7, start, end, 1).unwrap(),
@@ -453,8 +468,81 @@ fn book_writer_rotates_on_utc_segment_boundaries() {
     .collect::<Vec<_>>();
     segments.sort();
     assert_eq!(segments.len(), 2);
-    assert_eq!(SegmentReader::open(&segments[0]).unwrap().block_count(), 2);
-    assert_eq!(SegmentReader::open(&segments[1]).unwrap().block_count(), 1);
+    // The first segment opens with its first data block and takes the blocks up to its 00:02:00
+    // boundary; the block that opens there starts the second, which the block after it joins.
+    let seen: Vec<(i64, usize)> = segments
+        .iter()
+        .map(|path| {
+            let reader = SegmentReader::open(path).unwrap();
+            (reader.header.segment_start_exch_ns, reader.block_count())
+        })
+        .collect();
+    assert_eq!(seen, vec![(31 * SECOND_NS, 2), (120 * SECOND_NS, 2)]);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn book_writer_keeps_a_misaligned_first_block_out_of_the_day_directory() {
+    // A block list that starts off the grid is what a gap or a restart leaves; the segment keeps its
+    // own start, and rotation still cuts on the next segment boundary. The `date` directory
+    // therefore follows the segment's start, which is the date the day's archive closes on.
+    let dir = test_dir();
+    let meta = MarketMeta {
+        market_id: 7,
+        venue_id: 2,
+        symbol: "ETHUSDT".into(),
+        feed_mode: FeedMode::Diff,
+        tick_units: 1,
+        price_decimals: 2,
+        qty_step_units: 1,
+        qty_decimals: 3,
+        grid_ms: 100,
+        block_duration_ms: 60_000,
+        depth_requested: 20,
+        depth_available: 20,
+        session_epoch: 3,
+    };
+    const SECOND_NS: i64 = 1_000_000_000;
+    let mut writer = BookWriter::new(&dir, "venue", "ETHUSDT", meta, 120_000, 3).unwrap();
+    for (start, end) in [
+        // A block that opens inside the first segment and runs to its boundary, then the block that
+        // begins the next one; the first has already been cut on its own grid.
+        (60 * SECOND_NS, 61 * SECOND_NS),
+        (61 * SECOND_NS, 62 * SECOND_NS),
+        (120 * SECOND_NS, 121 * SECOND_NS),
+    ] {
+        let block = BlockInput {
+            header: BlockHeader::data(7, start, end, 1).unwrap(),
+            payload: vec![1, 2, 3],
+        };
+        writer.append(&block).unwrap();
+    }
+    writer
+        .finish(61 * 60 * SECOND_NS, 61 * 60 * SECOND_NS)
+        .unwrap();
+    let directory = dir.join("book/venue=venue/instrument=ETHUSDT/symbol=ETHUSDT/date=1970-01-01");
+    let mut segments = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tnmd"))
+        .collect::<Vec<_>>();
+    // The directory lists in whatever order the filesystem returns, which differs between
+    // platforms; the file names carry each segment's UTC start, so sorting by name orders them.
+    segments.sort();
+    // A block that opens at 00:01:00 starts a segment itself, and the block after it opens one at
+    // the 00:02:00 boundary: a segment's start is the block that opened it, and the `date`
+    // directory follows that start.
+    assert_eq!(segments.len(), 2);
+    let starts: Vec<i64> = segments
+        .iter()
+        .map(|path| {
+            SegmentReader::open(path)
+                .unwrap()
+                .header
+                .segment_start_exch_ns
+        })
+        .collect();
+    assert_eq!(starts, vec![61 * SECOND_NS, 121 * SECOND_NS]);
     fs::remove_dir_all(dir).unwrap();
 }
 

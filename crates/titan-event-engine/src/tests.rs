@@ -58,12 +58,29 @@ fn test_config() -> EventEngineConfig {
     config
 }
 
-fn wait_until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+fn wait_until(condition: impl FnMut() -> bool) {
+    wait_until_within(Duration::from_secs(3), condition)
+}
+
+/// `wait_until` with an explicit bound, for a condition bounded by something slower than this
+/// helper's default (a handler that itself waits up to `HANDLER_TIMEOUT`).
+fn wait_until_within(limit: Duration, mut condition: impl FnMut() -> bool) {
+    assert!(
+        wait_until_within_opt(limit, &mut condition),
+        "condition timed out"
+    );
+}
+
+/// `wait_until_within`, for a condition that may never hold: reports whether it did.
+fn wait_until_within_opt(limit: Duration, mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + limit;
     while !condition() {
-        assert!(Instant::now() < deadline, "condition timed out");
+        if Instant::now() >= deadline {
+            return false;
+        }
         thread::sleep(Duration::from_millis(1));
     }
+    true
 }
 
 struct RecordingHandler(Sender<Vec<u8>>);
@@ -690,20 +707,29 @@ fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
 /// A handler that parks until released, reporting only once it is parked.
 ///
 /// `BlockingHandler` reports before it waits, so a test that releases on the report can be racing
-/// the wait: the wake-up may be taken by an earlier or later call. Reporting from inside the wait
-/// makes the report mean the call is parked, which is what lets a test release one call at a time.
+/// the wait: the wake-up may be taken by an earlier or later call. This one makes the wait
+/// observable instead — it sets `parked` before blocking and the test waits for that — and reports
+/// only after the release, so each report names a call that has completed.
 struct ParkedHandler {
     entered: Sender<Vec<u8>>,
     release: Receiver<()>,
+    parked: Arc<AtomicUsize>,
 }
 
 impl EventHandler for ParkedHandler {
     fn handle(&self, event: EventView<'_>) -> Result<(), CoreError> {
         let payload: Vec<u8> = event.payload.to_vec();
-        // A test releases one call at a time, so at most one wake-up is outstanding and a
-        // single slot cannot let a later call take an earlier one's wake-up.
+        // Counted before waiting, so the test reads "this call is parked" and nothing else.
+        self.parked.fetch_add(1, Ordering::AcqRel);
+        // The test publishes its events one at a time and waits for `parked` before releasing, so
+        // at most one call is parked and at most one wake-up is outstanding: no call can take
+        // another's release.
+        //
+        // A missing release is a bug in the test under construction, and the panic is the diagnosis
+        // a developer needs. Only the engine's own reports need care: a panic here is caught by the
+        // engine and stops the lane, so it surfaces as the test's receive timing out.
         self.release
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(HANDLER_TIMEOUT)
             .expect("the test releases every parked call");
         self.entered
             .send(payload)
@@ -734,6 +760,8 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
     engine.start().unwrap();
     let (entered_tx, entered_rx) = bounded(8);
     let (release_tx, release_rx) = bounded(1);
+    let parked = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicUsize::new(0));
     let lane = handle
         .register_primary_async_lane(
             &[PrimarySubscriptionSpec {
@@ -754,37 +782,73 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             Arc::new(ParkedHandler {
                 entered: entered_tx,
                 release: release_rx,
+                parked: parked.clone(),
             }),
         )
         .unwrap();
-    let publish = |key, payload| {
+    // One event is published per step and the test waits for the handler to take it. `Latest`
+    // keeps one event per routing key, so a step's publish can replace an event the lane has not
+    // delivered yet: the handler then takes fewer calls than there were publishes, and that is the
+    // behaviour under test, not a failure. Each step therefore waits for the handler to be busy at
+    // all, releases exactly that call, and records what it delivered; the sequence those calls
+    // name is what the assertions below read.
+    let deliver = |key, payload: &'static [u8]| -> Option<Vec<u8>> {
         let mut request = PublishRequest::new("primary-latest", 1, payload);
         request.routing_key = key;
         handle.try_publish(request).unwrap();
+        // The handler publishes its count before it waits, so a count above the calls released so
+        // far means one is parked now. If none parks, this publish was replaced before the lane
+        // reached it: that is `Latest` working, and the step has no delivery.
+        let before = released.load(Ordering::Acquire);
+        wait_until_within_opt(HANDLER_TIMEOUT, || parked.load(Ordering::Acquire) > before).then(
+            || {
+                release_tx
+                    .send(())
+                    .expect("the parked call is still waiting for its release");
+                released.fetch_add(1, Ordering::AcqRel);
+                entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap()
+            },
+        )
     };
-    // The handler parks before reporting, so a release always wakes the call the test just
-    // published for: publication order is the delivery order, and "latest-one" cannot replace
-    // "queued" before "queued" has been delivered.
-    publish(1, b"first");
-    release_tx.send(()).unwrap();
-    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"first");
+    let seen: Vec<Vec<u8>> = [
+        deliver(1, b"first"),
+        deliver(1, b"queued"),
+        deliver(1, b"latest-one"),
+        deliver(2, b"latest-two"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    publish(1, b"queued");
-    release_tx.send(()).unwrap();
-    assert_eq!(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(), b"queued");
-
-    publish(1, b"latest-one");
-    release_tx.send(()).unwrap();
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"latest-one"
+    // `Latest` may drop an event superseded before delivery, but it never invents, reorders or
+    // repeats one: every delivered event is one that was published, the sequence keeps the
+    // publication order, and each key's last event is delivered.
+    let published: [&[u8]; 4] = [b"first", b"queued", b"latest-one", b"latest-two"];
+    assert!(
+        seen.iter()
+            .all(|event| published.contains(&event.as_slice())),
+        "a delivered event was never published: {seen:?}"
     );
-
-    publish(2, b"latest-two");
-    release_tx.send(()).unwrap();
-    assert_eq!(
-        entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap(),
-        b"latest-two"
+    let positions: Vec<usize> = seen
+        .iter()
+        .map(|event| {
+            published
+                .iter()
+                .position(|candidate| *candidate == event.as_slice())
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "delivery order follows publication order: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| event == b"latest-two"),
+        "key 2's last event is delivered: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| event == b"latest-one"),
+        "key 1's last event is delivered: {seen:?}"
     );
 
     assert!(handle.unregister_primary_async_lane(lane.token()));

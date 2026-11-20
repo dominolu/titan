@@ -116,6 +116,8 @@ pub struct MarketEventIntegrity {
     pub rest_samples_compared: u64,
     pub rest_mismatches: u64,
     pub rest_stale_samples: u64,
+    /// Samples the recorder wrote but could not judge (`unaimed`, `unaligned`, `coherent`).
+    pub rest_samples_unjudged: u64,
     pub late_events: u64,
 }
 
@@ -236,6 +238,15 @@ fn inspect_event_file(
                                 Some("stale") => {
                                     market.rest_samples_compared += 1;
                                     market.rest_stale_samples += 1;
+                                }
+                                // A sample that was not judged: the snapshot's messages were still
+                                // in flight (`unaimed`), no logged delta carries it (`unaligned`),
+                                // or the replay covered only part of the log (`coherent`). The
+                                // recorder counts each one and the design counts unjudgeable
+                                // samples apart from compared ones, so none of them is a
+                                // comparison and none of them is a malformed line.
+                                Some("unaimed" | "unaligned" | "coherent") => {
+                                    market.rest_samples_unjudged += 1;
                                 }
                                 Some("late") => {
                                     market.late_events = market.late_events.saturating_add(
@@ -857,6 +868,45 @@ mod market_event_tests {
             .unwrap();
         assert_eq!(market.late_events, 2);
         assert_eq!(market.rest_samples_compared, 0);
+        assert_eq!(report.invalid_records, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quality_scan_counts_unjudged_samples_apart_from_compared_ones() {
+        let root = root();
+        let mut writer = MarketEventWriter::new();
+        for (index, status) in ["match", "mismatch", "unaimed", "unaligned", "coherent"]
+            .into_iter()
+            .enumerate()
+        {
+            writer
+                .write_rest_validation(
+                    &root,
+                    "binance",
+                    "spot",
+                    "BTCUSDT",
+                    index as i64,
+                    &serde_json::json!({
+                        "exch_ts_ns": index as i64,
+                        "local_ts_ns": index as i64,
+                        "status": status,
+                        "differing_levels": 0
+                    }),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        let report = inspect_market_events(&root, Some("1970-01-01")).unwrap();
+        let market = report
+            .markets
+            .get("venue=binance/instrument=spot/symbol=BTCUSDT")
+            .unwrap();
+        // A comparison is a sample the recorder judged; the three states that are not
+        // judgements are counted where they are, and the line is still a valid record.
+        assert_eq!(market.rest_samples_compared, 2);
+        assert_eq!(market.rest_mismatches, 1);
+        assert_eq!(market.rest_samples_unjudged, 3);
         assert_eq!(report.invalid_records, 0);
         std::fs::remove_dir_all(root).unwrap();
     }

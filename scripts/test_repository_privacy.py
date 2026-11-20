@@ -65,6 +65,42 @@ class PrivacyGuardTests(unittest.TestCase):
             self.assertEqual(outgoing.returncode, 1)
             self.assertTrue(json.loads(outgoing.stdout)["findings"])
 
+    def test_a_published_commit_under_review_is_reported_but_not_refused(self):
+        # A push names the commits it adds. One of them may already be published (the outgoing end
+        # of a repeated push, an already merged branch): its identity is reported so the migration
+        # keeps a list, and its blobs are reviewed like any other, but it does not fail a push for
+        # something that is already public.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args, data=None):
+                return subprocess.check_output(["git", *args], cwd=root, input=data, stderr=subprocess.DEVNULL)
+            git("init", "-q")
+            (root / "README.md").write_text("Public summary")
+            git("add", "README.md")
+            commit = ["-c", "user.name=fixture", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"]
+            git("-c", "user.email=" + "author@example.com", *commit)
+            published = git("rev-parse", "HEAD").decode().strip()
+            command = ["python3", str(Path(guard.__file__).resolve()), "--root", str(root), "--history"]
+            reported = json.loads(subprocess.run(command + ["--revision", published], capture_output=True, text=True).stdout)
+            self.assertEqual(reported["reviewed_commits_with_published_identity"], [published])
+            self.assertNotIn("author@example.com", json.dumps(reported))
+
+    def test_a_revision_may_name_several_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL)
+            git("init", "-q")
+            (root / "README.md").write_text("Public summary")
+            git("add", "README.md")
+            git("-c", "user.name=fixture", "-c", "user.email=fixture@users.noreply.github.com",
+                "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture")
+            head = git("rev-parse", "HEAD").decode().strip()
+            command = ["python3", str(Path(guard.__file__).resolve()), "--root", str(root), "--history"]
+            outcome = subprocess.run(command + ["--revision", head + " --not --branches --tags --remotes"],
+                                     capture_output=True, text=True)
+            self.assertEqual(outcome.returncode, 0, outcome.stdout + outcome.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

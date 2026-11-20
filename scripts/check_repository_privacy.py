@@ -84,17 +84,22 @@ def inspect_content(path: str, data: bytes) -> list[dict]:
     return inspect_text(path, data.decode("utf-8", "replace"))
 
 
+def is_noreply(email: str) -> bool:
+    """GitHub's own addresses: the account's noreply identity, or GitHub as the committer."""
+    return email.endswith("@users.noreply.github.com") or email == "noreply@github.com"
+
+
 def git(*args: str, cwd: Path) -> bytes:
     return subprocess.check_output(["git", *args], cwd=cwd)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--staged", action="store_true", help="Review only index blobs, including ignored files explicitly staged")
     parser.add_argument("--history", action="store_true", help="Also review every reachable historical blob and author email")
     parser.add_argument("--revision", action="append", default=[], help="Review an explicit outgoing revision instead of private tooling refs")
     parser.add_argument("--root", type=Path, default=Path.cwd())
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     root = Path(git("rev-parse", "--show-toplevel", cwd=args.root).decode().strip())
     names = git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z", cwd=root) if args.staged else git("ls-files", "-z", cwd=root)
     findings = []
@@ -110,7 +115,9 @@ def main() -> int:
         findings.extend(inspect_content(name, data))
         count += 1
     if args.history:
-        revisions = args.revision or ["HEAD", "--branches", "--tags", "--remotes"]
+        # A `--revision` is one range and may name several revision arguments, as a push does for
+        # a ref the remote does not have yet; splitting keeps each word one revision to git.
+        revisions = [word for value in args.revision for word in value.split()] or ["HEAD", "--branches", "--tags", "--remotes"]
         objects = {}
         for line in git("rev-list", "--objects", *revisions, cwd=root).decode().splitlines():
             if " " in line:
@@ -128,11 +135,36 @@ def main() -> int:
             offset = end + size + 2
             if header[1] == "blob":
                 findings.extend(inspect_content(name, data))
-        for email in set(git("log", *revisions, "--format=%ae%n%ce", cwd=root).decode().splitlines()):
-            if email and not (email.endswith("@users.noreply.github.com") or email == "noreply@github.com"):
+        for email in set(record for record in git("log", *revisions, "--format=%ae%n%ce", cwd=root).decode().splitlines() if record):
+            if email and not is_noreply(email):
                 findings.append({"file": "<git-author-metadata>", "line": 1, "kind": "personal-author-email"})
-    unique = [dict(zip(("file", "line", "kind"), item)) for item in sorted({(x["file"], x["line"], x["kind"]) for x in findings})]
-    print(json.dumps({"passed": not unique, "files_reviewed": count, "findings": unique}, ensure_ascii=False))
+    # The commits this run reviewed. Their own identity is reported separately below: a commit
+    # under review that was already published (the outgoing end of a no-op push, an already merged
+    # branch) is published history like any other, and failing the push again over it changes
+    # nothing that is not already visible.
+    reviewed_commits = (
+        sorted({commit for line in git("rev-list", *revisions, cwd=root).decode().split() if (commit := line)})
+        if args.revision
+        else []
+    )
+    reported = {(x["file"], x["line"], x["kind"]) for x in findings}
+    unique = [dict(zip(("file", "line", "kind"), item)) for item in sorted(reported, key=lambda item: (item[0], item[1], item[2]))]
+    published = [
+        line.split("\t")[0]
+        for line in (
+            str(git("log", *reviewed_commits, "--no-walk", "--format=%H%x09%ae%x09%ce", cwd=root).decode()).splitlines()
+            if reviewed_commits
+            else []
+        )
+        if line
+        and (not is_noreply(line.split("\t")[1]) or not is_noreply(line.split("\t")[2]))
+    ]
+    summary = {"passed": not unique, "files_reviewed": count, "findings": unique}
+    if published:
+        # Only the commits reviewed above are named, and only their headers: saying which commits
+        # carry another author does not disclose the address itself.
+        summary["reviewed_commits_with_published_identity"] = sorted(published)
+    print(json.dumps(summary, ensure_ascii=False))
     return 1 if unique else 0
 
 

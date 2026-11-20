@@ -166,7 +166,7 @@
 规则：
 
 - 一个 book 段文件只属于一个 `market_id` + 一个 `session_epoch`；epoch 在每个段唯一。
-- book 段默认按 UTC 整点切分；**任何 gap、重同步、writer 重启、epoch/精度变化都立即封段**，新段从切换时刻开始，不要求与整点对齐。
+- book 段默认按 UTC 整点切分：轮转边界取「段起点之后第一个 `segment_duration` 的 epoch 整数倍」，段起点落在整点上时就是下一个整点；**任何 gap、重同步、writer 重启、epoch/精度变化都立即封段**，新段从切换时刻开始，不要求与整点对齐，因此这类段的起点可能落在整点之间。`segment_duration_ms` 必须整除一天的毫秒数（1 h、2 h、6 h 等），避免轮转边界与 `date=` 目录切换落在不同时刻。
 - **gap 控制块固定是新段的第一个块**；不存在“段内中部 gap 块”。
 - 文件名使用 UTC 起始时间；`date` 目录用起始 UTC 日期。
 - `.idx` 只是加速缓存，不是唯一真源；缺失或损坏时扫描 `.tnmd` 重建。
@@ -717,6 +717,7 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
   2. 收到 REST 快照（序号 S）后，用快照重建影子窗口；日志中找覆盖 S 的第一条消息（要求 `prev ≤ S < seq`），按序应用后续消息，直到主盘口当前已处理序号 L（若 S 领先于本地，等待本地处理到 S）。
   3. 在 L 处把影子窗口与主盘口窗口逐档比较；L 是确定存在的共同序号，不需要 REST 序号恰好落在消息边界。
   4. 日志中找不到覆盖 S 的消息、期间跨 gap/epoch、S 早于日志起点或等待超时，丢弃样本并计数。
+- 样本状态写入 `validation/`，每条的 `status` 只有以下几种：`match`、`mismatch`（完成逐档比较）、`stale`（快照本身不可用：无序号、跨 session、空档位）、`unaimed`（快照序号领先本地日志，补齐后仍未对齐）、`unaligned`（日志没有可承接该快照的消息）、`coherent`（重放覆盖到一段连续序号但未到当前序号，只证明连续、不判逐档异同）。`stale` 与 `coherent`/`unaimed`/`unaligned` 都不是“比较完成”：`stale` 计入 `rest_samples_compared` 并单独记 `rest_shadow_stale_sample` 警告（维持既有口径）；后三种不进入 `rest_samples_compared`，单独统计为 `rest_samples_unjudged` 并给出 `rest_shadow_unjudged_samples` 警告，同时因此不计入 `rest_validation_min_samples` 的有效样本数。
 - 影子盘口只保留 REST 覆盖的窗口，不需要为每条消息保存完整状态环；内存由 `rest_validation_log_messages` 与每条 delta 数决定，按市场压测后再定容量。
 - Bybit `u` 逐条递增，适用该流程；**OKX REST 是否带可对齐序号列入待确认项 6**；若无序号，OKX 只做 BBO/单边抽检或跳过，不伪装成逐档对账。
 - 对账只统计**实际完成比较的样本数、通过数、失败数**；不可比样本丢弃并计数，不设“接受率”指标。每日有效样本少于 `rest_validation_min_samples` 时，在质量报告中记为“证据不足”警告，而不是判通过。
