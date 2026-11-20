@@ -345,13 +345,24 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// A directory no other test in this process shares.
+    ///
+    /// The process id and the clock alone are not enough: tests run in parallel, and two of them
+    /// can read the same nanosecond before either creates its directory, so the second one ends
+    /// up writing into the first one's tree and its cleanup fails on a directory that is not
+    /// empty. The counter makes each call distinct.
     fn test_root() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("titan-archive-{}-{stamp}", std::process::id()));
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "titan-archive-{}-{stamp}-{serial}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).unwrap();
         root
     }
