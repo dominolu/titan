@@ -745,6 +745,11 @@ impl EventHandler for ParkedHandler {
 /// the behaviour being checked (coalescing per routing key) is unaffected.
 const HANDLER_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the test watches for one more delivery before asking the lane whether it has any work
+/// left. A short watch is enough: a delivery that is coming parks within it, and one that is not
+/// leaves the lane idle, which is checked directly rather than waited out.
+const DRAIN_INTERVAL: Duration = Duration::from_millis(50);
+
 #[test]
 fn primary_latest_is_coalesced_independently_per_routing_key() {
     let engine = EventEngine::new(test_config()).unwrap();
@@ -786,39 +791,54 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
             }),
         )
         .unwrap();
-    // One event is published per step and the test waits for the handler to take it. `Latest`
-    // keeps one event per routing key, so a step's publish can replace an event the lane has not
-    // delivered yet: the handler then takes fewer calls than there were publishes, and that is the
-    // behaviour under test, not a failure. Each step therefore waits for the handler to be busy at
-    // all, releases exactly that call, and records what it delivered; the sequence those calls
-    // name is what the assertions below read.
-    let deliver = |key, payload: &'static [u8]| -> Option<Vec<u8>> {
+    // `Latest` keeps one event per routing key, so a publish can replace one the lane has not
+    // delivered: the handler then takes fewer calls than there were publishes, which is the
+    // behaviour under test. The test never guesses how long a delivery takes. It keeps releasing
+    // whatever parks until the lane reports nothing left to dispatch and nothing left in flight,
+    // which is a definite state rather than a timeout, and it publishes each event before waiting
+    // for it so nothing can be replaced by a later step.
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let pump_until_idle = |lane: &PrimaryAsyncLaneHandle, seen: &mut Vec<Vec<u8>>| {
+        // The bound makes a lane that never settles a failed assertion rather than a hung test:
+        // an event replaced before delivery leaves `admitted` above `committed` for good only if
+        // something is wrong, so the loop must not wait on that indefinitely.
+        let deadline = Instant::now() + HANDLER_TIMEOUT;
+        loop {
+            let before = released.load(Ordering::Acquire);
+            let parked_now =
+                wait_until_within_opt(DRAIN_INTERVAL, || parked.load(Ordering::Acquire) > before);
+            let progress = lane.progress();
+            if !parked_now {
+                // Nothing parked within the interval. The lane is idle only when everything it
+                // admitted has been dispatched and committed; otherwise an event is still on its
+                // way and the loop waits for it again.
+                if progress.committed_sequence == progress.admitted_sequence {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the lane did not settle: {progress:?}, delivered so far {seen:?}"
+                );
+                continue;
+            }
+            release_tx
+                .send(())
+                .expect("the parked call is still waiting for its release");
+            released.fetch_add(1, Ordering::AcqRel);
+            seen.push(entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap());
+        }
+    };
+    for (key, payload) in [
+        (1, b"first".as_slice()),
+        (1, b"queued".as_slice()),
+        (1, b"latest-one".as_slice()),
+        (2, b"latest-two".as_slice()),
+    ] {
         let mut request = PublishRequest::new("primary-latest", 1, payload);
         request.routing_key = key;
         handle.try_publish(request).unwrap();
-        // The handler publishes its count before it waits, so a count above the calls released so
-        // far means one is parked now. If none parks, this publish was replaced before the lane
-        // reached it: that is `Latest` working, and the step has no delivery.
-        let before = released.load(Ordering::Acquire);
-        wait_until_within_opt(HANDLER_TIMEOUT, || parked.load(Ordering::Acquire) > before).then(
-            || {
-                release_tx
-                    .send(())
-                    .expect("the parked call is still waiting for its release");
-                released.fetch_add(1, Ordering::AcqRel);
-                entered_rx.recv_timeout(HANDLER_TIMEOUT).unwrap()
-            },
-        )
-    };
-    let seen: Vec<Vec<u8>> = [
-        deliver(1, b"first"),
-        deliver(1, b"queued"),
-        deliver(1, b"latest-one"),
-        deliver(2, b"latest-two"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+        pump_until_idle(&lane, &mut seen);
+    }
 
     // `Latest` may drop an event superseded before delivery, but it never invents, reorders or
     // repeats one: every delivered event is one that was published, the sequence keeps the
