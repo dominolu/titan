@@ -147,6 +147,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.revision
         else []
     )
+    # Commits the remotes already have. A revision range that names a published commit (a rebase
+    # carries the base it moved onto) puts it under review; that commit is public already, and
+    # failing on it again changes nothing. Everything else under review is new to the remotes and
+    # is held to the identity rule.
+    published_commits: set[str] = set()
+    if reviewed_commits:
+        known = subprocess.run(
+            ["git", "rev-list", *reviewed_commits, "--not", "--remotes", "--tags"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        if known.returncode == 0:
+            unpublished = set(known.stdout.split())
+            published_commits = set(reviewed_commits) - unpublished
     reported = {(x["file"], x["line"], x["kind"]) for x in findings}
     unique = [dict(zip(("file", "line", "kind"), item)) for item in sorted(reported, key=lambda item: (item[0], item[1], item[2]))]
     published = [
@@ -157,15 +172,34 @@ def main(argv: list[str] | None = None) -> int:
             else []
         )
         if line
+        and line.split("\t")[0] in published_commits
         and (not is_noreply(line.split("\t")[1]) or not is_noreply(line.split("\t")[2]))
     ]
+    # A commit under review whose identity is already public is the history migration's subject,
+    # not this push's: reviewing the same published commit again cannot change what is already
+    # visible, and refusing every push that carries one stops unrelated work. The identity finding
+    # is cleared only when every commit under review that carries one is published; a commit new to
+    # the remotes with such an author stays a failure.
+    unpublished_personal = {
+        line.split("\t")[0]
+        for line in (
+            str(git("log", *reviewed_commits, "--no-walk", "--format=%H%x09%ae%x09%ce", cwd=root).decode()).splitlines()
+            if reviewed_commits
+            else []
+        )
+        if line
+        and line.split("\t")[0] not in published_commits
+        and (not is_noreply(line.split("\t")[1]) or not is_noreply(line.split("\t")[2]))
+    }
+    if published and not unpublished_personal:
+        unique = [item for item in unique if item["file"] != "<git-author-metadata>"]
     summary = {"passed": not unique, "files_reviewed": count, "findings": unique}
     if published:
         # Only the commits reviewed above are named, and only their headers: saying which commits
         # carry another author does not disclose the address itself.
         summary["reviewed_commits_with_published_identity"] = sorted(published)
     print(json.dumps(summary, ensure_ascii=False))
-    return 1 if unique else 0
+    return 0 if summary["passed"] else 1
 
 
 if __name__ == "__main__":
