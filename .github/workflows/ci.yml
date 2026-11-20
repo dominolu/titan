@@ -63,14 +63,16 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # One command. `--all-features` builds and tests a superset of `--workspace`: every crate, with
+    # every optional feature its manifest declares. The two ran as separate jobs and compiled the
+    # same dependency tree twice, and `-p connector --features okx` (likewise `hyperliquid`) asked
+    # for features the connector's `default` already enables, so those jobs tested exactly what
+    # the workspace job had tested. One job covers all of it and halves the longest part of CI.
     strategy:
       fail-fast: false
       matrix:
         command:
-          - cargo test --workspace
           - cargo test --workspace --all-features
-          - cargo test -p connector --features okx
-          - cargo test -p connector --features hyperliquid
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.1
