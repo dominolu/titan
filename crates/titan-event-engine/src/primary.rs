@@ -61,6 +61,35 @@ impl Default for PrimaryAsyncLaneConfig {
     }
 }
 
+#[cfg(test)]
+impl PrimaryAsyncLaneConfig {
+    /// A lane as the service configures it: the deployment's 100 ms handler budget rather than
+    /// this type's default.
+    ///
+    /// The default is five milliseconds, short enough that a handler which does anything at all
+    /// can outrun it. A test built on the default therefore fails depending on how fast the
+    /// machine is — passing on an idle host and failing on a loaded runner — instead of on what it
+    /// is testing. Tests take this and set what they care about.
+    pub(crate) fn for_deployment() -> Self {
+        Self {
+            max_handler_duration: Duration::from_millis(100),
+            ..Self::default()
+        }
+    }
+
+    /// A lane whose handler parks until the test releases it.
+    ///
+    /// The budget is the wait the handler itself allows: a test that blocks a handler for longer
+    /// than the budget fails the lane, and a failed lane stops accepting events, so every later
+    /// assertion in the test would read a lane that gave up rather than the behaviour under test.
+    pub(crate) fn for_parked_handler(wait: Duration) -> Self {
+        Self {
+            max_handler_duration: wait,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PrimaryLaneToken(pub u64);
 

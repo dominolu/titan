@@ -162,7 +162,7 @@ fn primary_async_lane_owns_handler_and_advances_three_watermarks() {
                 snapshot_staging_capacity: 4,
                 control_capacity: 4,
                 idle_sleep: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(RecordingHandler(tx)),
         )
@@ -234,7 +234,7 @@ fn primary_async_lane_fails_after_hard_handler_duration_and_releases_tail() {
                 control_capacity: 4,
                 idle_sleep: Duration::from_millis(1),
                 max_handler_duration: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             handler.clone(),
         )
@@ -287,7 +287,7 @@ fn snapshot_barrier_stages_then_replays_only_newer_tail() {
                 snapshot_staging_capacity: 8,
                 control_capacity: 4,
                 idle_sleep: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(RecordingHandler(tx)),
         )
@@ -365,7 +365,7 @@ fn overloaded_primary_lane_isolated_from_healthy_lane() {
                 snapshot_staging_capacity: 2,
                 control_capacity: 2,
                 idle_sleep: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(BlockingHandler {
                 entered: entered_tx,
@@ -384,7 +384,7 @@ fn overloaded_primary_lane_isolated_from_healthy_lane() {
                 snapshot_staging_capacity: 8,
                 control_capacity: 2,
                 idle_sleep: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(RecordingHandler(healthy_tx)),
         )
@@ -459,7 +459,7 @@ fn multiple_brokers_and_primary_lanes_drain_a_bounded_burst_without_cross_routin
                     snapshot_staging_capacity: 8,
                     control_capacity: 8,
                     idle_sleep: Duration::from_micros(50),
-                    ..PrimaryAsyncLaneConfig::default()
+                    ..PrimaryAsyncLaneConfig::for_deployment()
                 },
                 Arc::new(CountingHandler(count.clone())),
             )
@@ -545,7 +545,7 @@ fn primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu() {
             PrimaryAsyncLaneConfig {
                 runtime_mode: SubscriberRuntimeMode::Dedicated,
                 cpu_affinity: Some(available_core),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
         );
@@ -573,7 +573,7 @@ fn primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu() {
                     spin_iterations: 16,
                     idle_sleep: Duration::from_millis(10),
                     cpu_affinity,
-                    ..PrimaryAsyncLaneConfig::default()
+                    ..PrimaryAsyncLaneConfig::for_deployment()
                 },
                 Arc::new(ThreadNameHandler(tx)),
             )
@@ -593,7 +593,7 @@ fn primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu() {
             PrimaryAsyncLaneConfig {
                 runtime_mode: SubscriberRuntimeMode::Dedicated,
                 cpu_affinity: Some(available_core),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
         )
@@ -638,7 +638,7 @@ fn primary_worker_policies_run_on_isolated_workers_and_reserve_dedicated_cpu() {
                 PrimaryAsyncLaneConfig {
                     runtime_mode: SubscriberRuntimeMode::Dedicated,
                     cpu_affinity: Some(available_core),
-                    ..PrimaryAsyncLaneConfig::default()
+                    ..PrimaryAsyncLaneConfig::for_deployment()
                 },
                 Arc::new(ThreadNameHandler(tx)),
             )
@@ -678,7 +678,7 @@ fn primary_best_effort_drop_does_not_advance_admitted_watermark() {
                 snapshot_staging_capacity: 2,
                 control_capacity: 2,
                 idle_sleep: Duration::from_millis(1),
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_deployment()
             },
             Arc::new(BlockingHandler {
                 entered: entered_tx,
@@ -782,12 +782,7 @@ fn primary_latest_is_coalesced_independently_per_routing_key() {
                 snapshot_staging_capacity: 4,
                 control_capacity: 2,
                 idle_sleep: Duration::from_millis(1),
-                // The handler parks until the test releases it, and the engine fails a lane whose
-                // handler outruns this budget: the default five milliseconds is shorter than the
-                // test's own waits, and a lane failed that way stops accepting the events the
-                // test is about to publish.
-                max_handler_duration: HANDLER_TIMEOUT,
-                ..PrimaryAsyncLaneConfig::default()
+                ..PrimaryAsyncLaneConfig::for_parked_handler(HANDLER_TIMEOUT)
             },
             Arc::new(ParkedHandler {
                 entered: entered_tx,
@@ -904,7 +899,7 @@ fn aborted_snapshot_barrier_releases_staging_and_allows_retry() {
                 qos: EventQos::ReliableOrdered,
                 routing_keys: Arc::from([]),
             }],
-            PrimaryAsyncLaneConfig::default(),
+            PrimaryAsyncLaneConfig::for_deployment(),
             Arc::new(RecordingHandler(tx)),
         )
         .unwrap();
@@ -961,7 +956,7 @@ fn snapshot_barrier_registry_enforces_and_releases_global_limits() {
                 PrimaryAsyncLaneConfig {
                     snapshot_staging_capacity: 1,
                     idle_sleep: Duration::from_millis(1),
-                    ..PrimaryAsyncLaneConfig::default()
+                    ..PrimaryAsyncLaneConfig::for_deployment()
                 },
                 Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
             )
@@ -1047,7 +1042,7 @@ fn snapshot_barrier_registry_enforces_active_limit_and_deadline() {
                 PrimaryAsyncLaneConfig {
                     snapshot_staging_capacity: 4,
                     idle_sleep: Duration::from_millis(1),
-                    ..PrimaryAsyncLaneConfig::default()
+                    ..PrimaryAsyncLaneConfig::for_deployment()
                 },
                 Arc::new(CountingHandler(Arc::new(AtomicUsize::new(0)))),
             )
