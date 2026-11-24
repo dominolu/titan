@@ -196,15 +196,15 @@ impl ConnectorFeed {
             tracing::warn!(%symbol, bids = bids.len(), asks = asks.len(), "depth changes empty after scaling");
             return Vec::new();
         }
-        // The connector publishes only a delta it has checked against `pu`, so the sequence it
-        // last handed over is this delta's predecessor. The recorder refuses a delta that does
-        // not name one, and the metadata carries no `pu` of its own.
-        let previous = self.last_seq;
+        // The connector publishes only a delta it has accepted, having checked `pu` itself. The
+        // metadata carries no predecessor, and deriving one here would state a continuity this
+        // layer cannot see: it would be checked again below and could only drop messages the
+        // connector already accepted. Leaving it empty asks the recorder to apply the change.
         self.last_seq = stream.last_update_sequence;
         vec![FeedMessage::Depth(DepthMessage {
             exch_ts_ns: exchange_ts,
             local_ts_ns: receive_ts,
-            first_prev_seq: Some(previous),
+            first_prev_seq: None,
             first_seq: Some(stream.first_update_sequence),
             last_seq: stream.last_update_sequence,
             changes,
@@ -402,12 +402,6 @@ impl Feed for ConnectorFeed {
                 return Some(message);
             }
         }
-    }
-
-    fn queues_rest_snapshots(&self) -> bool {
-        // The connector aligns its own REST snapshot against the live stream before publishing,
-        // so the recorder never has to hand frames across one.
-        false
     }
 }
 

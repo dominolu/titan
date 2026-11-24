@@ -80,8 +80,6 @@
 | `idle_flush_ms` | 2000 | 500–10000 | 无消息时按本地时钟关闭空闲槽的间隔 |
 | `external_snapshot_interval_ms` | 0（关） | 0 / ≥60000 | 独立的 60 s 全量快照（对账用） |
 | `validation_interval_ms` | 60000 | 0 或 ≥1000 | 回放/录制对账周期；0 关闭 |
-| `rest_validation_log_messages` | 2048 | 0 或 256–65536 | 最近 delta 消息日志条数，用于 REST 影子盘口对账；0 关闭 |
-| `rest_validation_min_samples` | 5 | 0–1000 | 每市场每日有效 REST 影子对账样本下限；低于此值质量报告记 WARN |
 | `gap_policy` | `skip` | `error` / `skip` / `fast_forward` | 回测遇到 gap 的默认行为；`error` 仅用于严格校验 |
 | `emit_mode` | `changes` | `changes` / `grid` / `snapshot_copy` | 回测输出模式，影响吞吐与分配 |
 | `oi_poll_ms` | 60000 | 1000–3600000 | 合约 openInterest 轮询间隔；仅交易所无 OI 推送时使用 |
@@ -706,22 +704,15 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 | 序号（离线） | 跨记录 `seq_first_prev_delta[i] == seq_last_delta[i-1]`（i≥1）；同 epoch 相邻数据块 `next.seq_base == prev.seq_base + prev.seq_last_processed_delta`；严格 +1 场所再用 `n_msgs` 验证槽内条数 | 每次回放 | 报错；标记序号不连续；不能静默修复 |
 | 序号（在线） | 录制端逐消息校验原生链（Binance `pu`、OKX `prevSeqId`、Bybit `u`） | 每条消息 | 触发 gap / 重同步；写入质量标记 |
 | 外部快照（启用 `external_snapshot_interval_ms > 0` 时） | 独立全量快照与重建阶梯逐档比较 | `validation_interval_ms` | 报错；记录快照序号/时间 |
-| 交易所 REST | 影子盘口：REST 快照 + 近期 delta 日志重建到主盘口当前序号，再逐档比较 | 抽检/每 5 min | 报错；样本不可用时丢弃并计数 |
 | 精度 | tick/qty 整除、数量/价格范围 | 每条消息 | 计数；超阈值触发重同步 |
 
 对账要点：
 
-- **块间快照一致性只能验证编码/解码和窗口差分**，因为两者来自同一本地盘口；它抓不到录制端维护盘口本身的错误。**外部 REST 抽检不能省。**
-- **REST 对账不使用“序号恰好等于某条消息结束”的严格匹配**：Binance 的 `lastUpdateId` 常落在某条事件的 `[U,u]` 区间内，严格相等命中率低。改用**影子盘口**：
-  1. 录制端保留最近 `rest_validation_log_messages` 条 delta 日志（每条含原生 `prev`/`seq` 与变化）。
-  2. 收到 REST 快照（序号 S）后，用快照重建影子窗口；日志中找覆盖 S 的第一条消息（要求 `prev ≤ S < seq`），按序应用后续消息，直到主盘口当前已处理序号 L（若 S 领先于本地，等待本地处理到 S）。
-  3. 在 L 处把影子窗口与主盘口窗口逐档比较；L 是确定存在的共同序号，不需要 REST 序号恰好落在消息边界。
-  4. 日志中找不到覆盖 S 的消息、期间跨 gap/epoch、S 早于日志起点或等待超时，丢弃样本并计数。
-- 样本状态写入 `validation/`，每条的 `status` 只有以下几种：`match`、`mismatch`（完成逐档比较）、`stale`（快照本身不可用：无序号、跨 session、空档位）、`unaimed`（快照序号领先本地日志，补齐后仍未对齐）、`unaligned`（日志没有可承接该快照的消息）、`coherent`（重放覆盖到一段连续序号但未到当前序号，只证明连续、不判逐档异同）。`stale` 与 `coherent`/`unaimed`/`unaligned` 都不是“比较完成”：`stale` 计入 `rest_samples_compared` 并单独记 `rest_shadow_stale_sample` 警告（维持既有口径）；后三种不进入 `rest_samples_compared`，单独统计为 `rest_samples_unjudged` 并给出 `rest_shadow_unjudged_samples` 警告，同时因此不计入 `rest_validation_min_samples` 的有效样本数。
-- 影子盘口只保留 REST 覆盖的窗口，不需要为每条消息保存完整状态环；内存由 `rest_validation_log_messages` 与每条 delta 数决定，按市场压测后再定容量。
-- Bybit `u` 逐条递增，适用该流程；**OKX REST 是否带可对齐序号列入待确认项 6**；若无序号，OKX 只做 BBO/单边抽检或跳过，不伪装成逐档对账。
-- 对账只统计**实际完成比较的样本数、通过数、失败数**；不可比样本丢弃并计数，不设“接受率”指标。每日有效样本少于 `rest_validation_min_samples` 时，在质量报告中记为“证据不足”警告，而不是判通过。
-- 对账要求保留可复现输入（块文件、快照文件、REST 响应摘要、配置、版本号）；结果只输出类别与定位信息，不回显私有账户/地址数据。
+- **块间快照一致性只能验证编码/解码和窗口差分**，因为两者来自同一本地盘口；它抓不到录制端维护盘口本身的错误。录制端因此不再自己校验盘口内容，而是把这一层交给上游行情实现（见下条）。
+- **序号与快照由上游行情实现负责。** `book record` 通过 `connector::market_stream` 订阅行情：连接、原生序号校验（Binance `pu`）、REST 快照拉取与对齐、断流判定都在那里完成，录制端只接收已对齐的批次。两边各做一次只会得到两个可能分歧的结论，所以录制端不再重复校验，也不再为此保留 delta 日志。
+- **录制端仍然保证的事**：块内自包含、槽末净差分、块 CRC 与索引可重建、gap 显式记录并切段、精度拒绝计数。这些都不依赖行情来源。
+- **本版本移除了 REST 影子盘口对账。** 它原先要求录制端保留最近若干条 delta 并重放到主盘口当前序号，与“序号交给上游”的边界冲突：适配层既不持有原始帧，也不应重新判断连续性。`validation/` 目录继续记录 `late` 事件（迟到消息计数），但不再产生 `match`/`mismatch` 样本。
+- **因此质量报告不再有 REST 对账结论**：`FAIL` 条件中“REST 影子盘口比较失败”已移除，`PASS_WITH_WARNINGS` 中“有效 REST 样本不足”一并移除。若后续需要独立的盘口正确性证据，应在行情实现一侧提供，而不是由录制端重建。
 
 ---
 
@@ -732,7 +723,6 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 ### 15.1 产出
 
 - 每市场每天一个 `quality.json`，由汇总任务读取段头、块索引、gap 控制块和对账日志生成。
-- 生成质量报告时必须传入对应的录制配置，`rest_validation_min_samples` 按配置生效。
 - 数据集导出时把各市场状态汇总进 `dataset.json`；不回写 `.tnmd` 段文件。
 - 状态只有三档：`PASS` / `PASS_WITH_WARNINGS` / `FAIL`。
 
@@ -740,8 +730,8 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 
 | 结论 | 条件 |
 | --- | --- |
-| `FAIL` | 块间快照 diff ≠ 0；diff feed 序号连续性校验失败；REST 影子盘口比较失败；合约必需数据（trade/OI/资金费/爆仓）整日缺失且交易所明确支持该数据 |
-| `PASS_WITH_WARNINGS` | 有 gap（无论长短）；有坏块或尾部截断；`late_ratio` > 0.1%；有效 REST 样本 < `rest_validation_min_samples`；`depth_available < depth_requested`；`feed_mode=snapshot`；精度拒绝 > 0；trade/aux 部分缺失、尾部截断或过期；`unsupported` 的合约辅助数据 |
+| `FAIL` | 块间快照 diff ≠ 0；diff feed 序号连续性校验失败；合约必需数据（trade/OI/资金费/爆仓）整日缺失且交易所明确支持该数据 |
+| `PASS_WITH_WARNINGS` | 有 gap（无论长短）；有坏块或尾部截断；`late_ratio` > 0.1%；`depth_available < depth_requested`；`feed_mode=snapshot`；精度拒绝 > 0；trade/aux 部分缺失、尾部截断或过期；`unsupported` 的合约辅助数据 |
 | `PASS` | 无 FAIL、无 WARN |
 
 说明：
@@ -883,7 +873,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 
 | 类别 | 用例/标准 |
 | --- | --- |
-| 正确性 | 每块末状态 = 下一块首快照（逐档 diff = 0）；抽检 REST 影子盘口 diff = 0 |
+| 正确性 | 每块末状态 = 下一块首快照（逐档 diff = 0）；盘口内容由上游行情实现负责，本格式不重复校验 |
 | 净差分 | 构造同槽内“进入后离开”“离开后重进”“数量多次变化”序列，输出恰为槽末净差分，不出现删除不存在档位 |
 | 网格 | 23 市场同时录制，`slot_global` 对齐；重启/切段后相位不变 |
 | 参数矩阵 | `grid_ms ∈ {10, 100, 1000}` × `depth ∈ {20, 100, 200, 500}` × `feed_mode ∈ {diff, snapshot}` 的格式/回放正确 |
@@ -895,7 +885,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | 序号 | 离线跨记录连续性校验通过；`feed_mode=snapshot` 正确标记为无原生序号 |
 | 快照型 | Hyperliquid 20 档整包快照录制/回放；空槽、非法快照触发 gap |
 | 崩溃 | `kill -9`、磁盘满、断电模拟；尾部截断/索引缺失可恢复，坏块不被接受 |
-| 对账 | 连续 14 天块间 diff = 0；REST 影子盘口抽检 0 失败，且每日有效样本数 ≥ `rest_validation_min_samples` |
+| 对账 | 连续 14 天块间 diff = 0；gap、坏块、迟到事件计数逐日可见 |
 | 性能 | 单市场 ≥ 1M records/s、应用 ≥ 5M changes/s；端到端相对现有解析基线 ≥ 5×；先通过 13.4 前置验证 |
 | 体积 | 每市场待测 `c`/`B` 与预算偏差 < 30%，容量按 p95×2 余量可容纳 |
 | 数据范围 | 合约市场同时产生 book/trade/aux；现货只有 book/trade，不因缺 aux 误报 WARN |
@@ -922,7 +912,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | 净差分丢失微观顺序 | 队列位置/订单流研究不可用 | 明确非目标；另存原始逐消息归档 |
 | 槽内序号链无法离线证明 | 数据完整性证明弱于逐消息归档 | 跨记录离线校验 + `n_msgs`；在线逐消息校验；质量标记声明边界 |
 | 时钟异常/迟到 | 槽错位 | 序号顺序处理 + 交易所时间单调钳制 + 槽水位 + `late_events` |
-| REST 影子对账依赖 delta 日志与交易所序号 | OKX 等无 REST 序号的市场无法逐档对账 | 日志容量可配；OKX 若确认无序号则只做 BBO/单边抽检或跳过，并在质量报告声明 |
+| 录制端不再独立验证盘口内容 | 无法从录制侧发现静默的内容错误（序号连续但数量解析错） | 该证据由上游行情实现承担；录制端只保证编码、差分与 gap 语义 |
 | 目标回测引擎不支持增量视图 | 加速目标不成立 | 13.4 实现前置验证；不通过先改接口 |
 | OI 轮询触发交易所限频 | aux 数据缺失/延迟 | 按交易所权重设置 `oi_poll_ms`，失败退避并记 WARN；优先使用 WS OI（若有） |
 | 爆仓公开流缺失或字段不统一 | 合约爆仓明细不完整 | 按市场声明 `unsupported`/字段能力；不强造逐笔；质量报告显式列出 |
@@ -964,8 +954,6 @@ compression_level = 3
 fsync_interval_blocks = 1
 idle_flush_ms = 2000
 validation_interval_ms = 60000
-rest_validation_log_messages = 2048
-rest_validation_min_samples = 5
 external_snapshot_interval_ms = 0
 gap_policy = "skip"
 emit_mode = "changes"
@@ -1024,7 +1012,7 @@ depth_levels = 50
 | 4 | 中间坏块导致后续好块被丢弃 | **采纳**：尾部截断、中间坏块跳过并向后重同步 | 7.3 |
 | 5 | 折叠后无法离线验证序号连续性 | **部分采纳**：加 `seq_first_prev_delta` + `n_msgs` + 块尾 `seq_last_processed_delta`，跨记录/跨块可离线验证；槽内多消息链仍只能在线校验并显式标记 | 8.1、9.2、14、21 |
 | 6 | 迟到/乱序归槽规则不完整 | **采纳**：序号顺序处理 + 交易所时间单调钳制 + 槽关闭水位 + 空闲刷新 | 10.4、11.1 |
-| 7 | REST 抽检“diff=0”不可行 | **采纳（rev.3 修订）**：REST 快照 + delta 日志重建影子盘口，在共同后续序号比较，不再要求 REST 序号等于消息边界 | 14 |
+| 7 | REST 抽检“diff=0”不可行 | **撤销**：录制端不再做 REST 对账，盘口正确性由上游行情实现负责 | 14 |
 | 8 | Hyperliquid 无序号、低频率、20 档 | **采纳**：新增 `feed_mode=snapshot` | 4.3、12.4 |
 | 9 | Bybit 无 `orderbook.100` | **采纳**：改为 1/50/200/500，目标 100 档订阅 200 或 500 | 4.3 |
 | 10 | gap 说明文本存放位置未定义 | **采纳**：紧跟 128 B 块头，`control_len` 字节，计入 `block_len` 与 CRC | 8.3 |
@@ -1032,7 +1020,7 @@ depth_levels = 50
 | 12 | 体积表未覆盖主流合约高 c 与空槽 | **采纳**：增加 c=30/50 行，明确按 p95×2、空槽不写 | 16.1 |
 | 13 | 列内差分/字节平面可进一步压缩 | **后置**：v2 优化，不阻塞 v1 | 16.1 |
 | 14 | 5×/10–50× 依赖增量引擎 | **采纳**：新增实现前置验证门禁 | 13.4、20 |
-| 15 | REST 同序号严格匹配命中率低 | **采纳**：改为影子盘口（REST + delta 日志重建到当前序号） | 14 |
+| 15 | REST 同序号严格匹配命中率低 | **撤销**：同上，该对账机制已移除 | 14 |
 | 16 | 状态环内存与持续拷贝 | **采纳**：改为 delta 日志，按需重建；不保存每消息完整窗口 | 14、4.1 |
 | 17 | 体积表 B 被称为“实测” | **采纳**：改为“待测”；补 c=5 原始约 8 B/变化与 ZSTD 1.6–2.7× 说明 | 16.1、20 |
 | 18 | 槽内极端跳变无处理规则 | **采纳**：先折中 base，仍超限则丢弃该槽并写 gap | 12.2、12.5 |

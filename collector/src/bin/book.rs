@@ -346,10 +346,7 @@ struct BybitFeed {
     /// Frames from the transport, which owns the connection and its reconnection.
     frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
     _connection: tokio::task::JoinHandle<()>,
-    client: reqwest::Client,
     market: MarketConfig,
-    validation_interval_ms: u32,
-    rest_timer: tokio::time::Interval,
     pending: VecDeque<FeedMessage>,
     cancel: watch::Receiver<bool>,
     previous_seq: Option<u64>,
@@ -359,11 +356,7 @@ struct BybitFeed {
 }
 
 impl BybitFeed {
-    async fn connect(
-        market: MarketConfig,
-        validation_interval_ms: u32,
-        cancel: watch::Receiver<bool>,
-    ) -> anyhow::Result<Self> {
+    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
         let category = bybit_category(&market)?;
         let depth = match market.depth_available {
             0..=1 => 1,
@@ -392,43 +385,16 @@ impl BybitFeed {
             serde_json::json!({"op":"subscribe","args":args}).to_string(),
         ]);
         let connection = tokio::spawn(transport::keep_connection(target, tx));
-        let interval_ms = validation_interval_ms.max(1);
         Ok(Self {
             frames,
             _connection: connection,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()?,
             market,
-            validation_interval_ms,
-            rest_timer: interval_at(
-                Instant::now() + std::time::Duration::from_millis(u64::from(interval_ms)),
-                std::time::Duration::from_millis(u64::from(interval_ms)),
-            ),
             pending: VecDeque::new(),
             cancel,
             previous_seq: None,
             awaiting_snapshot: false,
             reconnected: false,
         })
-    }
-
-    async fn fetch_rest_snapshot(&self) -> anyhow::Result<SnapshotMessage> {
-        let category = bybit_category(&self.market)?;
-        let response: Value = self
-            .client
-            .get("https://api.bybit.com/v5/market/orderbook")
-            .query(&[
-                ("category", category),
-                ("symbol", self.market.symbol.as_str()),
-                ("limit", "500"),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        parse_bybit_rest_snapshot(&response, &self.market, now_ns())
     }
 
     async fn parse(&mut self, text: &str) -> Option<FeedMessage> {
@@ -621,16 +587,6 @@ impl Feed for BybitFeed {
             }
             tokio::select! {
                 changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                _ = self.rest_timer.tick(), if self.validation_interval_ms > 0 => {
-                    let snapshot = self.fetch_rest_snapshot().await.unwrap_or_else(|_| SnapshotMessage {
-                        exch_ts_ns: now_ns(),
-                        local_ts_ns: now_ns(),
-                        bids: Vec::new(),
-                        asks: Vec::new(),
-                        last_seq: None,
-                    });
-                    return Some(FeedMessage::RestSnapshot(snapshot));
-                }
                 frame = self.frames.recv() => match frame {
                     Some((_, text)) => if let Some(value) = self.parse(text.as_str()).await { return Some(value); },
                     // The transport is reconnecting; the next frame starts a fresh stream.
@@ -653,34 +609,6 @@ fn bybit_category(market: &MarketConfig) -> anyhow::Result<&'static str> {
     } else {
         anyhow::bail!("Bybit derivative venue must identify linear or inverse category")
     }
-}
-
-fn parse_bybit_rest_snapshot(
-    response: &Value,
-    market: &MarketConfig,
-    local_ts_ns: i64,
-) -> anyhow::Result<SnapshotMessage> {
-    if response.get("retCode").and_then(Value::as_i64) != Some(0) {
-        anyhow::bail!("Bybit REST orderbook request failed");
-    }
-    let result = response
-        .get("result")
-        .ok_or_else(|| anyhow::anyhow!("Bybit REST orderbook response missing result"))?;
-    let seq = result
-        .get("u")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("Bybit REST orderbook response missing update id"))?;
-    Ok(SnapshotMessage {
-        exch_ts_ns: result
-            .get("ts")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or(local_ts_ns),
-        local_ts_ns,
-        bids: parse_levels(result.get("b"), market, Side::Bid)?,
-        asks: parse_levels(result.get("a"), market, Side::Ask)?,
-        last_seq: Some(seq),
-    })
 }
 
 struct HyperliquidFeed {
@@ -920,8 +848,7 @@ fn parse_levels(
 ///
 /// The connector owns the socket, the sequence check, the REST snapshot and its alignment, so
 /// none of that is repeated here. What stays with the recorder is the two duties the connector
-/// does not perform: polling open interest over REST, and sampling a REST snapshot every
-/// `validation_interval_ms` for the shadow validator.
+/// does not perform: polling open interest over REST.
 struct BinanceConnectorFeed {
     inner: collector::feed::connector::ConnectorFeed,
     /// Kept alive so the connector stream stops when this feed does.
@@ -1038,12 +965,6 @@ impl Feed for BinanceConnectorFeed {
                 message = self.inner.next() => return message,
             }
         }
-    }
-
-    fn queues_rest_snapshots(&self) -> bool {
-        // The connector aligns its own REST snapshot against the stream before publishing, so
-        // the recorder never has to hand frames across one.
-        false
     }
 }
 
@@ -1367,19 +1288,16 @@ async fn run(args: Args) -> Result<(), (u8, String)> {
         Command::Quality { root, date, config } => {
             chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .map_err(|_| (2, "date must use YYYY-MM-DD".into()))?;
+            // The config is still validated so a bad file is reported here rather than later.
             let text = fs::read_to_string(config).map_err(io_error)?;
-            let rest_validation_min_samples = RecorderConfig::parse(&text)
-                .map_err(|error| (2, error.to_string()))?
-                .recorder
-                .rest_validation_min_samples;
+            RecorderConfig::parse(&text).map_err(|error| (2, error.to_string()))?;
             let reports = inspect(&root, Some(&date), None)?;
             let events =
                 collector::file::inspect_market_events(&root, Some(&date)).map_err(io_error)?;
             let blocks = reports.iter().map(|r| r.blocks).sum();
             let readable = reports.iter().map(|r| r.readable).sum();
             let corrupt = reports.iter().map(|r| r.corrupt).sum();
-            let markets =
-                build_quality_markets(&reports, &events, &date, rest_validation_min_samples);
+            let markets = build_quality_markets(&reports, &events, &date);
             let status = if markets.iter().any(|market| market.status == "FAIL") {
                 "FAIL"
             } else if markets
@@ -1531,7 +1449,6 @@ fn build_quality_markets(
     segments: &[SegmentSummary],
     events: &collector::file::EventIntegrityReport,
     date: &str,
-    rest_validation_min_samples: u32,
 ) -> Vec<MarketQualitySummary> {
     let mut grouped: std::collections::BTreeMap<&str, Vec<&SegmentSummary>> =
         std::collections::BTreeMap::new();
@@ -1662,27 +1579,6 @@ fn build_quality_markets(
             }
             if events.mismatched_summaries > 0 {
                 warnings.push("event_summary_mismatch".into());
-            }
-            if venue.contains("binance") || venue.contains("bybit") {
-                if event.rest_samples_compared < u64::from(rest_validation_min_samples) {
-                    warnings.push("rest_shadow_sample_count_below_minimum".into());
-                }
-            } else {
-                warnings.push("rest_shadow_unsupported_for_venue".into());
-            }
-            if event.rest_mismatches > 0 {
-                failures.push("rest_shadow_mismatch".into());
-            }
-            if event.rest_stale_samples > 0 {
-                warnings.push("rest_shadow_stale_sample".into());
-            }
-            // Samples that could not be judged (`unaimed`, `unaligned`, `coherent`) count towards
-            // the minimum above through the recorder's own records, but they are not comparisons:
-            // the quality report says how many there were, and does not treat them as bad data. A
-            // day whose samples were nearly all unjudged therefore shows up as a low compared
-            // count, which is the warning the minimum exists for.
-            if event.rest_samples_unjudged > 0 {
-                warnings.push("rest_shadow_unjudged_samples".into());
             }
             if is_contract && event.aux_oi_samples == 0 {
                 failures.push("open_interest_missing_for_day".into());
@@ -2027,13 +1923,11 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                             })?,
                     ))
                 }
-                key if key.starts_with("bybit") => MarketFeed::Bybit(
-                    BybitFeed::connect(market.clone(), settings.validation_interval_ms, cancel)
-                        .await
-                        .map_err(|error| {
-                            format!("could not initialize {venue_key} feed: {error}")
-                        })?,
-                ),
+                key if key.starts_with("bybit") => {
+                    MarketFeed::Bybit(BybitFeed::connect(market.clone(), cancel).await.map_err(
+                        |error| format!("could not initialize {venue_key} feed: {error}"),
+                    )?)
+                }
                 key if key.starts_with("okx") => {
                     MarketFeed::Okx(OkxFeed::connect(market.clone(), cancel).await.map_err(
                         |error| format!("could not initialize {venue_key} feed: {error}"),

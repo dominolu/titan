@@ -449,7 +449,7 @@ impl MarketEventWriter {
         self.write(root, "aux", (venue, instrument, symbol), ts_ns, record)
     }
 
-    pub fn write_rest_validation<T: Serialize>(
+    pub fn write_validation<T: Serialize>(
         &mut self,
         root: &Path,
         venue: &str,
@@ -846,7 +846,7 @@ mod market_event_tests {
         let root = root();
         let mut writer = MarketEventWriter::new();
         writer
-            .write_rest_validation(
+            .write_validation(
                 &root,
                 "binance",
                 "spot",
@@ -881,7 +881,7 @@ mod market_event_tests {
             .enumerate()
         {
             writer
-                .write_rest_validation(
+                .write_validation(
                     &root,
                     "binance",
                     "spot",
