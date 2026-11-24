@@ -1,11 +1,11 @@
 use chrono::Utc;
-use hftbacktest::types::{OrdType, Side, TimeInForce};
 use serde::Deserialize;
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use titan_domain_types::{OrdType, Side, TimeInForce};
 
 use super::msg::{rest, rest::PositionInformationV2};
 use crate::{
@@ -34,6 +34,10 @@ pub struct BinanceFuturesClient {
 #[allow(dead_code)]
 impl BinanceFuturesClient {
     pub fn new(url: &str, api_key: &str, secret: &str) -> Self {
+        // A client built outside `BinanceFutures::new` — a test, or the recorder's own market
+        // stream — would otherwise construct reqwest before any rustls provider is installed and
+        // panic with "No provider set".
+        crate::ensure_rustls_crypto_provider();
         Self {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(5))
@@ -397,13 +401,21 @@ impl BinanceFuturesClient {
         Ok(resp)
     }
 
-    pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, reqwest::Error> {
-        let resp: rest::Depth = self
-            .get_noauth(
-                "/fapi/v1/depth",
-                format!("symbol={symbol}&limit={}", self.depth_snapshot_limit),
-            )
+    pub async fn get_depth(&self, symbol: &str) -> Result<rest::Depth, BinanceFuturesError> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/fapi/v1/depth?symbol={symbol}&limit={}",
+                self.url, self.depth_snapshot_limit
+            ))
+            .header("Accept", "application/json")
+            .send()
             .await?;
-        Ok(resp)
+        // A refusal is the venue asking to be left alone, not a broken document. Decoding the
+        // body first would turn the ban into a parse error and lose the Retry-After it sent.
+        if let Some(ban) = crate::transport::VenueBanned::from_http_response(&response) {
+            return Err(BinanceFuturesError::Banned(ban));
+        }
+        Ok(response.error_for_status()?.json().await?)
     }
 }

@@ -18,9 +18,9 @@ use connector::connector::{
     direct_publish_sender,
 };
 use connector::hyperliquid::Hyperliquid;
-use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
+use titan_domain_types::{OrdType, Side, Status, TimeInForce};
 
 fn load_key() -> Result<String> {
     let hex = std::env::var("HL_PRIVATE_KEY").context("HL_PRIVATE_KEY is required")?;
@@ -46,7 +46,7 @@ struct TrackedOrder {
 /// Registers the order so the private stream publishes facts for it. Must run before
 /// the WS fact can arrive (facts are only published for tracked cloids).
 fn track(connector: &Hyperliquid, cloid: &str, qty: f64, price: f64, side: Side) {
-    let mut order = hftbacktest::types::Order::new(
+    let mut order = titan_domain_types::Order::new(
         0,
         (price / 0.1).round() as i64,
         0.1,

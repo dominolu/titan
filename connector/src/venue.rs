@@ -2,7 +2,6 @@
 use crate::{api::*, connector::*};
 use async_trait::async_trait;
 use chrono::Utc;
-use hftbacktest::types::{ErrorKind, Event, LiveError, OrdType, Order, Side, Status, TimeInForce};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -14,6 +13,8 @@ use std::{
     time::Duration,
 };
 use titan_domain_types::DecimalUnit;
+use titan_domain_types::{ErrorKind, LiveError};
+use titan_domain_types::{Event, OrdType, Order, Side, Status, TimeInForce};
 use titan_market_service::MarketDataKind;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -714,10 +715,10 @@ pub(crate) fn publish_depth(
             for (p, q) in levels {
                 events.push(Event {
                     ev: match (bid, stream.snapshot) {
-                        (true, true) => hftbacktest::types::LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
-                        (false, true) => hftbacktest::types::LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
-                        (true, false) => hftbacktest::types::LOCAL_BID_DEPTH_EVENT,
-                        (false, false) => hftbacktest::types::LOCAL_ASK_DEPTH_EVENT,
+                        (true, true) => titan_domain_types::LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
+                        (false, true) => titan_domain_types::LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
+                        (true, false) => titan_domain_types::LOCAL_BID_DEPTH_EVENT,
+                        (false, false) => titan_domain_types::LOCAL_ASK_DEPTH_EVENT,
                     },
                     exch_ts: ts,
                     local_ts: recv,
@@ -794,7 +795,7 @@ pub(crate) fn publish_bbo(
             symbol: symbol.into(),
             events: vec![
                 Event {
-                    ev: hftbacktest::types::LOCAL_BID_DEPTH_BBO_EVENT,
+                    ev: titan_domain_types::LOCAL_BID_DEPTH_BBO_EVENT,
                     exch_ts: ts,
                     local_ts: recv,
                     px: bid,
@@ -804,7 +805,7 @@ pub(crate) fn publish_bbo(
                     fval: 0.0,
                 },
                 Event {
-                    ev: hftbacktest::types::LOCAL_ASK_DEPTH_BBO_EVENT,
+                    ev: titan_domain_types::LOCAL_ASK_DEPTH_BBO_EVENT,
                     exch_ts: ts,
                     local_ts: recv,
                     px: ask,
@@ -843,9 +844,9 @@ pub(crate) fn publish_trade(
             symbol: symbol.into(),
             events: vec![Event {
                 ev: if sell {
-                    hftbacktest::types::LOCAL_SELL_TRADE_EVENT
+                    titan_domain_types::LOCAL_SELL_TRADE_EVENT
                 } else {
-                    hftbacktest::types::LOCAL_BUY_TRADE_EVENT
+                    titan_domain_types::LOCAL_BUY_TRADE_EVENT
                 },
                 exch_ts: ts,
                 local_ts: recv,

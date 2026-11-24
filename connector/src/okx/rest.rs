@@ -120,8 +120,12 @@ impl OkxClient {
         if let Some((name, value)) = simulated_header(self.simulated) {
             request = request.header(name, value);
         }
-        let resp = request.send().await?.json().await?;
-        Ok(resp)
+        let response = request.send().await?;
+        // A refusal is the venue asking to be left alone, not a broken document.
+        if let Some(ban) = crate::transport::VenueBanned::from_http_response(&response) {
+            return Err(OkxError::Banned(ban));
+        }
+        Ok(response.error_for_status()?.json().await?)
     }
 
     pub(crate) async fn get<T: for<'a> Deserialize<'a>>(&self, path: &str) -> Result<T, OkxError> {

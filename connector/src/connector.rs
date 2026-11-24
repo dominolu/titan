@@ -4,7 +4,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use hftbacktest::types::{Event, LiveError, Order};
+use titan_domain_types::LiveError;
+use titan_domain_types::{Event, Order};
 use titan_market_service::MarketDataKind;
 #[allow(unused_imports)]
 use tokio::sync::mpsc;

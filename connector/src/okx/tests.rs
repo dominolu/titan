@@ -9,7 +9,7 @@ use crate::okx::{
     ordermanager::OrderManager,
     rest::{OkxClient, SubmitOrderParams, build_submit_body, check_cancel_result},
 };
-use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
+use titan_domain_types::{OrdType, Order, Side, Status, TimeInForce};
 
 // ------------------------------------------------------------------
 // Helpers

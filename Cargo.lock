@@ -2417,6 +2417,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "connector",
  "crc",
  "flate2",
  "futures-util",
@@ -2427,7 +2428,9 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
+ "titan-domain-types",
  "titan-l2-book",
+ "titan-market-service",
  "tokio",
  "tokio-tungstenite 0.28.0",
  "toml",
@@ -2509,7 +2512,6 @@ dependencies = [
  "futures-util",
  "hashbrown 0.16.1",
  "hex",
- "hftbacktest",
  "hmac 0.12.1",
  "k256",
  "libloading",
@@ -6760,7 +6762,9 @@ dependencies = [
 name = "titan-domain-types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
+ "dyn-clone",
  "serde",
  "serde_json",
 ]

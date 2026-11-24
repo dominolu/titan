@@ -16,12 +16,13 @@ use collector::book::{
 use collector::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
 use serde::Serialize;
 use serde_json::Value;
+use titan_market_service::MarketDataKind;
 use tokio::{
     sync::watch,
     time::{Instant, interval_at},
 };
 
-use collector::transport::{self, Heartbeat, VenueBanned, WsTarget};
+use connector::transport::{self, Heartbeat, WsTarget};
 
 /// One decoded text frame as the transport hands it over.
 type FrameText = tokio_tungstenite::tungstenite::Utf8Bytes;
@@ -29,16 +30,9 @@ type FrameText = tokio_tungstenite::tungstenite::Utf8Bytes;
 /// Frames a connection may queue for its recorder before the transport backs the socket up.
 const CONNECTION_FRAMES: usize = 8192;
 
-/// One Binance stream as its connection delivers it: depth on one subscription, trades, mark price
-/// and liquidations on another. The tag is what the feed dispatches on, since the transport only
-/// knows text frames.
-enum BinanceStream {
-    Depth(FrameText),
-    Market(FrameText),
-}
-
+/// The market feed a recorder market reads from, dispatched by venue.
 enum MarketFeed {
-    Binance(Box<BinanceFeed>),
+    Binance(Box<BinanceConnectorFeed>),
     Bybit(BybitFeed),
     Okx(OkxFeed),
     Hyperliquid(HyperliquidFeed),
@@ -352,10 +346,7 @@ struct BybitFeed {
     /// Frames from the transport, which owns the connection and its reconnection.
     frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
     _connection: tokio::task::JoinHandle<()>,
-    client: reqwest::Client,
     market: MarketConfig,
-    validation_interval_ms: u32,
-    rest_timer: tokio::time::Interval,
     pending: VecDeque<FeedMessage>,
     cancel: watch::Receiver<bool>,
     previous_seq: Option<u64>,
@@ -365,11 +356,7 @@ struct BybitFeed {
 }
 
 impl BybitFeed {
-    async fn connect(
-        market: MarketConfig,
-        validation_interval_ms: u32,
-        cancel: watch::Receiver<bool>,
-    ) -> anyhow::Result<Self> {
+    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
         let category = bybit_category(&market)?;
         let depth = match market.depth_available {
             0..=1 => 1,
@@ -398,43 +385,16 @@ impl BybitFeed {
             serde_json::json!({"op":"subscribe","args":args}).to_string(),
         ]);
         let connection = tokio::spawn(transport::keep_connection(target, tx));
-        let interval_ms = validation_interval_ms.max(1);
         Ok(Self {
             frames,
             _connection: connection,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()?,
             market,
-            validation_interval_ms,
-            rest_timer: interval_at(
-                Instant::now() + std::time::Duration::from_millis(u64::from(interval_ms)),
-                std::time::Duration::from_millis(u64::from(interval_ms)),
-            ),
             pending: VecDeque::new(),
             cancel,
             previous_seq: None,
             awaiting_snapshot: false,
             reconnected: false,
         })
-    }
-
-    async fn fetch_rest_snapshot(&self) -> anyhow::Result<SnapshotMessage> {
-        let category = bybit_category(&self.market)?;
-        let response: Value = self
-            .client
-            .get("https://api.bybit.com/v5/market/orderbook")
-            .query(&[
-                ("category", category),
-                ("symbol", self.market.symbol.as_str()),
-                ("limit", "500"),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        parse_bybit_rest_snapshot(&response, &self.market, now_ns())
     }
 
     async fn parse(&mut self, text: &str) -> Option<FeedMessage> {
@@ -627,16 +587,6 @@ impl Feed for BybitFeed {
             }
             tokio::select! {
                 changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                _ = self.rest_timer.tick(), if self.validation_interval_ms > 0 => {
-                    let snapshot = self.fetch_rest_snapshot().await.unwrap_or_else(|_| SnapshotMessage {
-                        exch_ts_ns: now_ns(),
-                        local_ts_ns: now_ns(),
-                        bids: Vec::new(),
-                        asks: Vec::new(),
-                        last_seq: None,
-                    });
-                    return Some(FeedMessage::RestSnapshot(snapshot));
-                }
                 frame = self.frames.recv() => match frame {
                     Some((_, text)) => if let Some(value) = self.parse(text.as_str()).await { return Some(value); },
                     // The transport is reconnecting; the next frame starts a fresh stream.
@@ -659,34 +609,6 @@ fn bybit_category(market: &MarketConfig) -> anyhow::Result<&'static str> {
     } else {
         anyhow::bail!("Bybit derivative venue must identify linear or inverse category")
     }
-}
-
-fn parse_bybit_rest_snapshot(
-    response: &Value,
-    market: &MarketConfig,
-    local_ts_ns: i64,
-) -> anyhow::Result<SnapshotMessage> {
-    if response.get("retCode").and_then(Value::as_i64) != Some(0) {
-        anyhow::bail!("Bybit REST orderbook request failed");
-    }
-    let result = response
-        .get("result")
-        .ok_or_else(|| anyhow::anyhow!("Bybit REST orderbook response missing result"))?;
-    let seq = result
-        .get("u")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("Bybit REST orderbook response missing update id"))?;
-    Ok(SnapshotMessage {
-        exch_ts_ns: result
-            .get("ts")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or(local_ts_ns),
-        local_ts_ns,
-        bids: parse_levels(result.get("b"), market, Side::Bid)?,
-        asks: parse_levels(result.get("a"), market, Side::Ask)?,
-        last_seq: Some(seq),
-    })
 }
 
 struct HyperliquidFeed {
@@ -856,757 +778,12 @@ impl Feed for HyperliquidFeed {
     }
 }
 
-struct BinanceFeed {
-    /// Both subscriptions, tagged by the stream that delivered them.
-    frames: tokio::sync::mpsc::Receiver<BinanceStream>,
-    /// The two transports, kept so the feed stops them when it goes.
-    connections: Vec<tokio::task::JoinHandle<()>>,
-    client: reqwest::Client,
-    market: MarketConfig,
-    settings: RecorderSettings,
-    previous_seq: u64,
-    awaiting_snapshot_bridge: bool,
-    last_exch_ns: i64,
-    pending: VecDeque<FeedMessage>,
-    cancel: watch::Receiver<bool>,
-    oi_timer: tokio::time::Interval,
-    rest_timer: tokio::time::Interval,
-    last_funding: Option<(String, i64)>,
-    last_funding_emit_ns: i64,
-    /// Depth frames taken while a REST snapshot was in flight, handed over with it so the
-    /// recorder can align the two.
-    queued_depth: VecDeque<DepthMessage>,
-}
-
-/// The most depth frames kept while a snapshot is in flight (a minute of BTC depth at Binance's
-/// 0 ms pace is some 35,000).
-const QUEUED_DEPTH_MAX: usize = 65_536;
-
-impl BinanceFeed {
-    async fn connect(
-        market: MarketConfig,
-        settings: RecorderSettings,
-        cancel: watch::Receiver<bool>,
-    ) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
-        let validation_interval_ms = settings.validation_interval_ms.max(1);
-        let mut feed = Self {
-            frames: {
-                let (_tx, rx) = tokio::sync::mpsc::channel(1);
-                rx
-            },
-            connections: Vec::new(),
-            client,
-            market,
-            settings,
-            previous_seq: 0,
-            awaiting_snapshot_bridge: true,
-            last_exch_ns: now_ns(),
-            pending: VecDeque::new(),
-            cancel,
-            oi_timer: interval_at(
-                Instant::now() + std::time::Duration::from_millis(60_000),
-                std::time::Duration::from_millis(60_000),
-            ),
-            rest_timer: interval_at(
-                Instant::now()
-                    + std::time::Duration::from_millis(u64::from(validation_interval_ms)),
-                std::time::Duration::from_millis(u64::from(validation_interval_ms)),
-            ),
-            last_funding: None,
-            last_funding_emit_ns: 0,
-            queued_depth: VecDeque::new(),
-        };
-        // A venue that refuses the first request (its throttling ban) is waited out here: returning
-        // the error would take the process down and restart straight back into the same ban.
-        loop {
-            match feed.open_initial().await {
-                Ok(()) => break,
-                Err(error) => {
-                    if *feed.cancel.borrow() {
-                        return Err(error);
-                    }
-                    let delay =
-                        transport::ban_delay(&error).unwrap_or(std::time::Duration::from_secs(5));
-                    tracing::warn!(
-                        symbol = %feed.market.symbol,
-                        wait_ms = delay.as_millis() as u64,
-                        %error,
-                        "opening the feed failed; waiting"
-                    );
-                    // Whatever this attempt opened is closed before the next one: a retry must not
-                    // add a transport to the ones already running.
-                    feed.stop_connections();
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-        feed.oi_timer = interval_at(
-            Instant::now() + std::time::Duration::from_millis(u64::from(feed.settings.oi_poll_ms)),
-            std::time::Duration::from_millis(u64::from(feed.settings.oi_poll_ms)),
-        );
-        Ok(feed)
-    }
-
-    fn urls(&self) -> anyhow::Result<(&'static str, &'static str, bool)> {
-        match self.market.venue.to_ascii_lowercase().as_str() {
-            "binance" | "binancespot" | "binance_spot" => Ok((
-                "https://api.binance.com/api/v3/depth",
-                "wss://stream.binance.com:9443/stream",
-                false,
-            )),
-            "binancefuturesum" | "binance_futures" => Ok((
-                "https://fapi.binance.com/fapi/v1/depth",
-                "wss://fstream.binance.com/stream",
-                true,
-            )),
-            "binancefuturescm" | "binance_coinm" => Ok((
-                "https://dapi.binance.com/dapi/v1/depth",
-                "wss://dstream.binance.com/stream",
-                true,
-            )),
-            _ => anyhow::bail!("unsupported Binance venue"),
-        }
-    }
-
-    /// Opens both subscriptions on the transport, tagging each frame with the stream that
-    /// delivered it.
-    async fn open_connections(
-        &self,
-    ) -> anyhow::Result<(
-        tokio::sync::mpsc::Receiver<BinanceStream>,
-        Vec<tokio::task::JoinHandle<()>>,
-    )> {
-        let (public_url, market_url) = self.websocket_urls()?;
-        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
-        // Binance sends a ping every three minutes on its futures streams, so a timeout shorter
-        // than that keeps every quiet market reconnecting; the spot adapter already waits 30s and
-        // the futures ones 300s, which is the same margin applied here.
-        let heartbeat = Heartbeat {
-            check_interval: std::time::Duration::from_secs(10),
-            timeout: std::time::Duration::from_secs(300),
-        };
-        let mut connections = Vec::new();
-        for (url, depth) in market_url
-            .into_iter()
-            .map(|url| (url, false))
-            .chain(std::iter::once((public_url, true)))
-        {
-            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
-            connections.push(tokio::spawn(transport::keep_connection(
-                WsTarget::new(url, heartbeat),
-                stream_tx,
-            )));
-            let forward = tx.clone();
-            connections.push(tokio::spawn(async move {
-                while let Some((_, text)) = stream_rx.recv().await {
-                    let framed = if depth {
-                        BinanceStream::Depth(text)
-                    } else {
-                        BinanceStream::Market(text)
-                    };
-                    if forward.send(framed).await.is_err() {
-                        break;
-                    }
-                }
-            }));
-        }
-        Ok((frames, connections))
-    }
-
-    fn websocket_urls(&self) -> anyhow::Result<(String, Option<String>)> {
-        if !self
-            .market
-            .symbol
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric())
-        {
-            anyhow::bail!("Binance symbol must be alphanumeric");
-        }
-        let (_, endpoint, derivative) = self.urls()?;
-        let symbol = self.market.symbol.to_ascii_lowercase();
-        if derivative && self.is_usdm() {
-            let public = format!(
-                "{}{}?streams={symbol}@depth@100ms",
-                endpoint.trim_end_matches("/stream"),
-                "/public/stream"
-            );
-            let market = format!(
-                "{}{}?streams={symbol}@aggTrade/{symbol}@markPrice@1s/{symbol}@forceOrder",
-                endpoint.trim_end_matches("/stream"),
-                "/market/stream"
-            );
-            return Ok((public, Some(market)));
-        }
-        let mut streams = vec![format!("{symbol}@depth@100ms"), format!("{symbol}@trade")];
-        if derivative {
-            streams.push(format!("{symbol}@markPrice@1s"));
-            streams.push("!forceOrder@arr".to_owned());
-        }
-        Ok((format!("{endpoint}?streams={}", streams.join("/")), None))
-    }
-
-    fn is_usdm(&self) -> bool {
-        matches!(
-            self.market.venue.to_ascii_lowercase().as_str(),
-            "binancefuturesum" | "binance_futures"
-        )
-    }
-
-    /// The snapshot first, then the subscriptions: a refused request must not leave connections
-    /// behind, and the retry loop around this calls it again. Building them in the other order
-    /// leaked two transports per attempt, which is what turned a refusal into a client hammering
-    /// the venue.
-    async fn open_initial(&mut self) -> anyhow::Result<()> {
-        let (snapshot, seq) = self.fetch_snapshot().await?;
-        let (frames, connections) = self.open_connections().await?;
-        self.stop_connections();
-        self.frames = frames;
-        self.connections = connections;
-        self.previous_seq = seq;
-        self.last_exch_ns = snapshot.exch_ts_ns;
-        self.pending.push_back(FeedMessage::Snapshot(snapshot));
-        Ok(())
-    }
-
-    /// Stops every transport this feed opened, so a reconnect replaces them rather than adding to
-    /// them.
-    fn stop_connections(&mut self) {
-        for connection in self.connections.drain(..) {
-            connection.abort();
-        }
-    }
-
-    async fn fetch_snapshot(&self) -> anyhow::Result<(SnapshotMessage, u64)> {
-        let (endpoint, _, _) = self.urls()?;
-        let request = DepthRequest {
-            client: self.client.clone(),
-            endpoint,
-            market: self.market.clone(),
-        };
-        request.fetch().await
-    }
-}
-
-/// A REST depth request on its own, so the future does not borrow the feed while its socket is
-/// being read.
-struct DepthRequest {
-    client: reqwest::Client,
-    endpoint: &'static str,
-    market: MarketConfig,
-}
-
-impl DepthRequest {
-    async fn fetch(self) -> anyhow::Result<(SnapshotMessage, u64)> {
-        let DepthRequest {
-            client,
-            endpoint,
-            market,
-        } = self;
-        let limit = match market.depth_available {
-            1..=5 => 5,
-            6..=10 => 10,
-            11..=20 => 20,
-            21..=50 => 50,
-            51..=100 => 100,
-            101..=500 => 500,
-            _ => 1000,
-        };
-        let response = client
-            .get(endpoint)
-            .query(&[
-                ("symbol", market.symbol.as_str()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await?;
-        if let Some(ban) = VenueBanned::from_response(
-            response.status().as_u16(),
-            response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok()),
-        ) {
-            return Err(ban.into());
-        }
-        let response: Value = response.error_for_status()?.json().await?;
-        let seq = response
-            .get("lastUpdateId")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("invalid Binance depth snapshot"))?;
-        let bids = parse_levels(response.get("bids"), &market, Side::Bid)?;
-        let asks = parse_levels(response.get("asks"), &market, Side::Ask)?;
-        let now = now_ns();
-        Ok((
-            SnapshotMessage {
-                exch_ts_ns: response
-                    .get("E")
-                    .and_then(Value::as_i64)
-                    .and_then(ms_to_ns)
-                    .unwrap_or(now),
-                local_ts_ns: now,
-                bids,
-                asks,
-                last_seq: Some(seq),
-            },
-            seq,
-        ))
-    }
-}
-
-impl BinanceFeed {
-    async fn resynchronize(&mut self, reason: GapReason) {
-        let old_seq = self.previous_seq;
-        let old_exch = self.last_exch_ns;
-        let start_local = now_ns();
-        loop {
-            if *self.cancel.borrow() {
-                return;
-            }
-            match async {
-                let (snapshot, seq) = self.fetch_snapshot().await?;
-                let (frames, connections) = self.open_connections().await?;
-                Ok::<_, anyhow::Error>((snapshot, seq, frames, connections))
-            }
-            .await
-            {
-                Ok((snapshot, seq, frames, connections)) => {
-                    self.stop_connections();
-                    self.frames = frames;
-                    self.connections = connections;
-                    let end_local = now_ns();
-                    let end_exch = snapshot.exch_ts_ns.max(old_exch);
-                    self.previous_seq = seq;
-                    self.awaiting_snapshot_bridge = true;
-                    self.last_exch_ns = end_exch;
-                    self.pending.push_back(FeedMessage::Gap(GapMessage {
-                        start_local_ns: start_local,
-                        start_exch_ns: old_exch.min(end_exch),
-                        end_local_ns: end_local,
-                        end_exch_ns: end_exch,
-                        reason,
-                        last_seq: old_seq,
-                        next_seq: seq,
-                        detail: match reason {
-                            GapReason::SequenceBreak => "sequence discontinuity".into(),
-                            _ => "websocket reconnect".into(),
-                        },
-                    }));
-                    self.pending.push_back(FeedMessage::Snapshot(snapshot));
-                    return;
-                }
-                Err(error) => {
-                    if *self.cancel.borrow() {
-                        return;
-                    }
-                    // A ban is waited out: retrying into it extends it and keeps the market down,
-                    // which is how the recorder turned one throttled request into a restart loop.
-                    let delay =
-                        transport::ban_delay(&error).unwrap_or(std::time::Duration::from_secs(1));
-                    tracing::warn!(
-                        symbol = %self.market.symbol,
-                        wait_ms = delay.as_millis() as u64,
-                        %error,
-                        "resynchronizing; waiting"
-                    );
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-
-    async fn poll_open_interest(&self) -> Option<FeedMessage> {
-        let (_, _, derivative) = self.urls().ok()?;
-        if !derivative || self.market.instrument == InstrumentType::Spot {
-            return None;
-        }
-        let base = match self.market.venue.to_ascii_lowercase().as_str() {
-            "binancefuturescm" | "binance_coinm" => "https://dapi.binance.com/dapi/v1/openInterest",
-            _ => "https://fapi.binance.com/fapi/v1/openInterest",
-        };
-        let response: Value = match self
-            .client
-            .get(base)
-            .query(&[("symbol", self.market.symbol.as_str())])
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-        {
-            Ok(response) => match response.json().await {
-                Ok(value) => value,
-                Err(_) => return None,
-            },
-            Err(_) => return None,
-        };
-        let value = response.get("openInterest")?.as_str()?.to_owned();
-        let ts = response
-            .get("time")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or_else(now_ns);
-        Some(FeedMessage::Aux(AuxRecord::Oi {
-            exch_ts_ns: ts,
-            local_ts_ns: now_ns(),
-            value,
-            unit: OpenInterestUnit::Contracts,
-            source: AuxSource::Rest,
-        }))
-    }
-
-    async fn handle_text(&mut self, text: &str) -> Option<FeedMessage> {
-        let root: Value = serde_json::from_str(text).ok()?;
-        let data = root.get("data").unwrap_or(&root);
-        if let Some(events) = data.as_array() {
-            for event in events {
-                if let Some(message) = self.handle_event(event).await {
-                    self.pending.push_back(message);
-                }
-            }
-            return self.pending.pop_front();
-        }
-        self.handle_event(data).await
-    }
-
-    async fn handle_event(&mut self, event: &Value) -> Option<FeedMessage> {
-        let kind = event.get("e")?.as_str()?;
-        let local_ts_ns = now_ns();
-        let exch_ts_ns = event
-            .get("E")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or(local_ts_ns);
-        if kind == "depthUpdate" {
-            let first = event.get("U")?.as_u64()?;
-            let last = event.get("u")?.as_u64()?;
-            if last <= self.previous_seq {
-                return None;
-            }
-            let prev = event.get("pu").and_then(Value::as_u64);
-            let (_, _, derivative) = self.urls().ok()?;
-            if !binance_depth_update_is_valid(
-                self.previous_seq,
-                first,
-                last,
-                prev,
-                derivative,
-                self.awaiting_snapshot_bridge,
-            ) {
-                self.resynchronize(GapReason::SequenceBreak).await;
-                return self.pending.pop_front();
-            }
-            let predecessor = self.previous_seq;
-            let mut changes = Vec::new();
-            let bids = match parse_changes(event.get("b"), &self.market, Side::Bid) {
-                Ok(changes) => changes,
-                Err(_) => {
-                    self.resynchronize(GapReason::Precision).await;
-                    return self.pending.pop_front();
-                }
-            };
-            let asks = match parse_changes(event.get("a"), &self.market, Side::Ask) {
-                Ok(changes) => changes,
-                Err(_) => {
-                    self.resynchronize(GapReason::Precision).await;
-                    return self.pending.pop_front();
-                }
-            };
-            changes.extend(bids);
-            changes.extend(asks);
-            self.previous_seq = last;
-            self.awaiting_snapshot_bridge = false;
-            self.last_exch_ns = exch_ts_ns;
-            return Some(FeedMessage::Depth(DepthMessage {
-                exch_ts_ns,
-                local_ts_ns,
-                first_prev_seq: Some(predecessor),
-                first_seq: Some(first),
-                last_seq: last,
-                changes,
-            }));
-        }
-        if kind == "trade" || kind == "aggTrade" {
-            let price = event.get("p")?.as_str()?.to_owned();
-            let qty = event.get("q")?.as_str()?.to_owned();
-            let ts = event
-                .get("T")
-                .and_then(Value::as_i64)
-                .and_then(ms_to_ns)
-                .unwrap_or(exch_ts_ns);
-            let side = if event.get("m").and_then(Value::as_bool).unwrap_or(false) {
-                TradeSide::Sell
-            } else {
-                TradeSide::Buy
-            };
-            return Some(FeedMessage::Trade(TradeRecord {
-                exch_ts_ns: ts,
-                local_ts_ns,
-                side,
-                price,
-                qty,
-                trade_id: event
-                    .get("t")
-                    .and_then(Value::as_i64)
-                    .map(|id| id.to_string()),
-            }));
-        }
-        if kind == "markPriceUpdate" {
-            let ts = event
-                .get("E")
-                .and_then(Value::as_i64)
-                .and_then(ms_to_ns)
-                .unwrap_or(exch_ts_ns);
-            let rate = event.get("r")?.as_str()?.to_owned();
-            let next_funding_ts_ns = ms_to_ns(event.get("T")?.as_i64()?)?;
-            let signature = (rate.clone(), next_funding_ts_ns);
-            let poll_ns = i64::from(self.settings.oi_poll_ms) * 1_000_000;
-            if self.last_funding.as_ref() == Some(&signature)
-                && ts.saturating_sub(self.last_funding_emit_ns) < poll_ns
-            {
-                return None;
-            }
-            self.last_funding = Some(signature);
-            self.last_funding_emit_ns = ts;
-            return Some(FeedMessage::Aux(AuxRecord::Funding {
-                exch_ts_ns: ts,
-                local_ts_ns,
-                rate,
-                next_funding_ts_ns: Some(next_funding_ts_ns),
-                mark_px: event.get("p").and_then(Value::as_str).map(str::to_owned),
-                index_px: event.get("i").and_then(Value::as_str).map(str::to_owned),
-                source: AuxSource::Stream,
-            }));
-        }
-        if kind == "forceOrder" {
-            let order = event.get("o")?;
-            if order.get("s").and_then(Value::as_str)? != self.market.symbol {
-                return None;
-            }
-            let side = match order.get("S").and_then(Value::as_str)? {
-                "BUY" => Some(TradeSide::Buy),
-                "SELL" => Some(TradeSide::Sell),
-                _ => None,
-            };
-            let ts = order
-                .get("T")
-                .and_then(Value::as_i64)
-                .and_then(ms_to_ns)
-                .unwrap_or(exch_ts_ns);
-            return Some(FeedMessage::Aux(AuxRecord::Liquidation {
-                exch_ts_ns: ts,
-                local_ts_ns,
-                side,
-                price: order.get("ap").and_then(Value::as_str).map(str::to_owned),
-                qty: order.get("z").and_then(Value::as_str).map(str::to_owned),
-                notional: None,
-                order_id: order
-                    .get("i")
-                    .and_then(Value::as_i64)
-                    .map(|id| id.to_string()),
-                status: order.get("X").and_then(Value::as_str).map(str::to_owned),
-                source: AuxSource::Stream,
-            }));
-        }
-        None
-    }
-}
-
-impl BinanceFeed {
-    /// Handles one tagged frame: the depth subscription's frames first, then the market one's.
-    async fn deliver_frame(&mut self, frame: BinanceStream) -> Option<FeedMessage> {
-        match frame {
-            BinanceStream::Depth(text) | BinanceStream::Market(text) => {
-                self.handle_text(text.as_str()).await
-            }
-        }
-    }
-
-    /// One REST validation snapshot, with the socket read for as long as the request runs.
-    ///
-    /// Taken into the feed before the snapshot is handed over: the frames are queued by delivery
-    /// order between the two calls, so nothing that arrived while the request was in flight can be
-    /// taken by `next()` afterwards and dropped.
-    async fn sample_snapshot(&mut self) -> FeedMessage {
-        let request = match self.urls() {
-            Ok((endpoint, _, _)) => DepthRequest {
-                client: self.client.clone(),
-                endpoint,
-                market: self.market.clone(),
-            },
-            Err(_) => {
-                return self.snapshot_taken(Err(anyhow::anyhow!("unsupported Binance venue")));
-            }
-        };
-        let fetched = request.fetch().await;
-        self.snapshot_taken(fetched)
-    }
-
-    /// Ends a sample: takes the frames that crossed the wire while the request ran, then hands the
-    /// snapshot and the depth frames among them to the recorder.
-    fn snapshot_taken(&mut self, fetched: anyhow::Result<(SnapshotMessage, u64)>) -> FeedMessage {
-        while let Ok(frame) = self.frames.try_recv() {
-            match frame {
-                BinanceStream::Depth(text) | BinanceStream::Market(text) => {
-                    self.absorb_queued(text.as_str());
-                }
-            }
-        }
-        let queued = self.queued_depth.drain(..).collect();
-        match fetched {
-            Ok((snapshot, _)) => FeedMessage::RestSnapshotQueued(snapshot, queued),
-            // The sample is reported as `stale`: it carries no sequence.
-            Err(_) => FeedMessage::RestSnapshotQueued(empty_snapshot(), queued),
-        }
-    }
-}
-
-impl Feed for BinanceFeed {
-    fn queues_rest_snapshots(&self) -> bool {
-        true
-    }
-
-    async fn next(&mut self) -> Option<FeedMessage> {
-        if let Some(message) = self.pending.pop_front() {
-            return Some(message);
-        }
-        loop {
-            if *self.cancel.borrow() {
-                return None;
-            }
-            // Frames taken while a snapshot was in flight are already queued here, ahead of
-            // anything the socket delivers next: read them before the socket is asked again.
-            match self.frames.try_recv() {
-                Ok(frame) => {
-                    if let Some(message) = self.deliver_frame(frame).await {
-                        return Some(message);
-                    }
-                    continue;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    self.resynchronize(GapReason::Disconnect).await;
-                    return self.pending.pop_front();
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-            }
-            tokio::select! {
-                changed = self.cancel.changed() => {
-                    if changed.is_err() || *self.cancel.borrow() { return None; }
-                }
-                _ = self.oi_timer.tick(), if self.market.instrument != InstrumentType::Spot => {
-                    if let Some(message) = self.poll_open_interest().await { return Some(message); }
-                }
-                _ = self.rest_timer.tick(), if self.settings.validation_interval_ms > 0 => {
-                    let shot = self.sample_snapshot().await;
-                    return Some(shot);
-                }
-                frame = self.frames.recv() => match frame {
-                    Some(frame) => {
-                        if let Some(message) = self.deliver_frame(frame).await { return Some(message); }
-                    }
-                    // Both transports are reconnecting; the gap is reported once they are back.
-                    None => {
-                        self.resynchronize(GapReason::Disconnect).await;
-                        return self.pending.pop_front();
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A snapshot placeholder for a request that failed: it carries no sequence, so the recorder
-/// reports the sample as `stale` rather than judging it.
-fn empty_snapshot() -> SnapshotMessage {
-    SnapshotMessage {
-        exch_ts_ns: now_ns(),
-        local_ts_ns: now_ns(),
-        bids: Vec::new(),
-        asks: Vec::new(),
-        last_seq: None,
-    }
-}
-
 fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or_default()
 }
 
-impl BinanceFeed {
-    /// Queues one frame the socket delivered while a snapshot was in flight, when it is a depth
-    /// update. Trades, mark price and liquidations are handled by `next()` on its next pass: this
-    /// path only has to carry the depth changes across the snapshot.
-    fn absorb_queued(&mut self, text: &str) {
-        let Ok(root) = serde_json::from_str::<Value>(text) else {
-            return;
-        };
-        let stream = root
-            .get("stream")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !stream.ends_with("@depth@0ms") && !stream.ends_with("@depth@100ms") {
-            return;
-        }
-        let Some(event) = root.get("data") else {
-            return;
-        };
-        if event.get("e").and_then(Value::as_str) != Some("depthUpdate") {
-            return;
-        }
-        let (Some(first), Some(last)) = (
-            event.get("U").and_then(Value::as_u64),
-            event.get("u").and_then(Value::as_u64),
-        ) else {
-            return;
-        };
-        let local_ts_ns = now_ns();
-        let exch_ts_ns = event
-            .get("E")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or(local_ts_ns);
-        let Ok(mut changes) = parse_changes(event.get("b"), &self.market, Side::Bid) else {
-            return;
-        };
-        let Ok(asks) = parse_changes(event.get("a"), &self.market, Side::Ask) else {
-            return;
-        };
-        changes.extend(asks);
-        if self.queued_depth.len() >= QUEUED_DEPTH_MAX {
-            self.queued_depth.pop_front();
-        }
-        self.queued_depth.push_back(DepthMessage {
-            exch_ts_ns,
-            local_ts_ns,
-            first_prev_seq: None,
-            first_seq: Some(first),
-            last_seq: last,
-            changes,
-        });
-    }
-}
-
 fn ms_to_ns(milliseconds: i64) -> Option<i64> {
     milliseconds.checked_mul(1_000_000)
-}
-
-fn binance_depth_update_is_valid(
-    previous_seq: u64,
-    first_seq: u64,
-    last_seq: u64,
-    event_prev_seq: Option<u64>,
-    derivative: bool,
-    awaiting_snapshot_bridge: bool,
-) -> bool {
-    let bridge = previous_seq
-        .checked_add(1)
-        .is_some_and(|next| first_seq <= next && next <= last_seq);
-    if derivative && !awaiting_snapshot_bridge {
-        // For USDⓈ-M continuation, `pu` is authoritative; `U` may begin
-        // beyond `previous_seq + 1` while `pu` still links the event.
-        event_prev_seq == Some(previous_seq)
-    } else {
-        bridge
-    }
 }
 
 fn parse_changes(
@@ -1667,124 +844,171 @@ fn parse_levels(
     Ok(levels)
 }
 
-#[cfg(test)]
-mod binance_adapter_tests {
-    use super::*;
-    use collector::book::FeedMode;
+/// A Binance market feed backed by the connector's market stream.
+///
+/// The connector owns the socket, the sequence check, the REST snapshot and its alignment, so
+/// none of that is repeated here. What stays with the recorder is the two duties the connector
+/// does not perform: polling open interest over REST.
+struct BinanceConnectorFeed {
+    inner: collector::feed::connector::ConnectorFeed,
+    /// Kept alive so the connector stream stops when this feed does.
+    stream: Option<connector::market_stream::MarketStreamHandle>,
+    client: reqwest::Client,
+    market: MarketConfig,
+    cancel: watch::Receiver<bool>,
+    pending: VecDeque<FeedMessage>,
+    oi_timer: tokio::time::Interval,
+    oi_url: &'static str,
+}
 
-    fn market() -> MarketConfig {
-        MarketConfig {
-            market_id: 1,
-            venue_id: 1,
-            venue: "binance_spot".into(),
-            instrument: InstrumentType::Spot,
-            symbol: "BTCUSDT".into(),
-            feed_mode: FeedMode::Diff,
-            tick_units: 5,
-            price_decimals: 2,
-            qty_step_units: 5,
-            qty_decimals: 3,
-            depth_available: 2,
+impl BinanceConnectorFeed {
+    async fn connect(
+        market: MarketConfig,
+        settings: RecorderSettings,
+        cancel: watch::Receiver<bool>,
+    ) -> anyhow::Result<Self> {
+        let (inner, sender) = collector::feed::connector::ConnectorFeed::channel(market.clone());
+        let mut config = connector::market_stream::BinanceMarketStreamConfig::new(
+            &market.symbol,
+            stream_kinds(&market),
+        );
+        if let Some(api) = binance_api_root(&market.venue) {
+            config.api_url = api.to_owned();
+        }
+        if let Some(stream) = binance_stream_root(&market.venue) {
+            config.stream_url = stream.to_owned();
+        }
+        config.depth_snapshot_limit = depth_snapshot_limit(settings.depth_levels);
+        let stream = connector::market_stream::start_binance_market_stream(config, sender).await?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let oi_url = match market.venue.to_ascii_lowercase().as_str() {
+            "binancefuturescm" | "binance_coinm" => "https://dapi.binance.com/dapi/v1/openInterest",
+            _ => "https://fapi.binance.com/fapi/v1/openInterest",
+        };
+        let oi_timer = interval_at(
+            Instant::now() + std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
+            std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
+        );
+        Ok(Self {
+            inner,
+            stream: Some(stream),
+            client,
+            market,
+            cancel,
+            pending: VecDeque::new(),
+            oi_timer,
+            oi_url,
+        })
+    }
+
+    async fn poll_open_interest(&self) -> Option<FeedMessage> {
+        if self.market.instrument == InstrumentType::Spot {
+            return None;
+        }
+        let response: Value = self
+            .client
+            .get(self.oi_url)
+            .query(&[("symbol", self.market.symbol.as_str())])
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let value = response.get("openInterest")?.as_str()?.to_owned();
+        let ts = response
+            .get("time")
+            .and_then(Value::as_i64)
+            .and_then(ms_to_ns)
+            .unwrap_or_else(now_ns);
+        Some(FeedMessage::Aux(AuxRecord::Oi {
+            exch_ts_ns: ts,
+            local_ts_ns: now_ns(),
+            value,
+            unit: OpenInterestUnit::Contracts,
+            source: AuxSource::Rest,
+        }))
+    }
+}
+
+impl Drop for BinanceConnectorFeed {
+    fn drop(&mut self) {
+        // Dropping the handle aborts the connector tasks, so a stopped market does not leave a
+        // socket publishing into a channel nobody reads.
+        if let Some(stream) = self.stream.take() {
+            drop(stream);
         }
     }
+}
 
-    #[test]
-    fn futures_snapshot_bridge_allows_the_rest_sequence_inside_a_depth_range() {
-        assert!(binance_depth_update_is_valid(
-            105,
-            101,
-            109,
-            Some(100),
-            true,
-            true,
-        ));
-        assert!(!binance_depth_update_is_valid(
-            105,
-            107,
-            109,
-            Some(100),
-            true,
-            false,
-        ));
-        assert!(binance_depth_update_is_valid(
-            105,
-            108,
-            112,
-            Some(105),
-            true,
-            false,
-        ));
-        assert!(!binance_depth_update_is_valid(
-            105,
-            107,
-            109,
-            Some(100),
-            true,
-            true,
-        ));
-    }
-
-    #[test]
-    fn maps_exact_price_quantity_steps_and_deletes() {
-        let market = market();
-        let changes = parse_changes(
-            Some(&serde_json::json!([["123.45", "0.015"], ["123.40", "0"]])),
-            &market,
-            Side::Bid,
-        )
-        .unwrap();
-        assert_eq!(changes[0].tick, 2469);
-        assert_eq!(changes[0].qty, 3);
-        assert_eq!(changes[1].tick, 2468);
-        assert_eq!(changes[1].qty, 0);
-    }
-
-    #[test]
-    fn rejects_misaligned_price_and_caps_sorted_snapshot_depth() {
-        let market = market();
-        assert!(
-            parse_changes(
-                Some(&serde_json::json!([["123.46", "0.015"]])),
-                &market,
-                Side::Bid,
-            )
-            .is_err()
-        );
-        let levels = parse_levels(
-            Some(&serde_json::json!([
-                ["123.40", "0.015"],
-                ["123.50", "0.010"],
-                ["123.45", "0.005"]
-            ])),
-            &market,
-            Side::Bid,
-        )
-        .unwrap();
-        assert_eq!(levels.len(), 2);
-        assert_eq!(levels[0].tick, 2470);
-        assert_eq!(levels[1].tick, 2469);
-    }
-
-    #[test]
-    fn parses_bybit_rest_orderbook_sequence_and_levels() {
-        let snapshot = parse_bybit_rest_snapshot(
-            &serde_json::json!({
-                "retCode": 0,
-                "result": {
-                    "ts": 1700000000000i64,
-                    "u": 42,
-                    "b": [["123.50", "0.015"], ["123.45", "0.010"]],
-                    "a": [["123.55", "0.020"]]
+impl Feed for BinanceConnectorFeed {
+    async fn next(&mut self) -> Option<FeedMessage> {
+        if let Some(message) = self.pending.pop_front() {
+            return Some(message);
+        }
+        loop {
+            if *self.cancel.borrow() {
+                return None;
+            }
+            tokio::select! {
+                changed = self.cancel.changed() => {
+                    if changed.is_err() || *self.cancel.borrow() { return None; }
                 }
-            }),
-            &market(),
-            99,
-        )
-        .unwrap();
-        assert_eq!(snapshot.last_seq, Some(42));
-        assert_eq!(snapshot.exch_ts_ns, 1_700_000_000_000_000_000);
-        assert_eq!(snapshot.bids[0].tick, 2470);
-        assert_eq!(snapshot.asks[0].tick, 2471);
+                _ = self.oi_timer.tick(), if self.market.instrument != InstrumentType::Spot => {
+                    if let Some(message) = self.poll_open_interest().await {
+                        return Some(message);
+                    }
+                }
+                message = self.inner.next() => return message,
+            }
+        }
+    }
+}
+
+/// The market data kinds this recorder market needs from the connector.
+fn stream_kinds(market: &MarketConfig) -> Vec<MarketDataKind> {
+    let mut kinds = vec![MarketDataKind::Depth, MarketDataKind::Trades];
+    if market.instrument != InstrumentType::Spot {
+        kinds.push(MarketDataKind::FundingRate);
+    }
+    kinds
+}
+
+/// The REST base for a Binance venue, when the venue is one the connector serves.
+fn binance_api_root(venue: &str) -> Option<&'static str> {
+    match venue.to_ascii_lowercase().as_str() {
+        "binance" | "binancespot" | "binance_spot" | "binancefuturesum" | "binance_futures" => {
+            Some("https://fapi.binance.com")
+        }
+        "binancefuturescm" | "binance_coinm" => Some("https://dapi.binance.com"),
+        _ => None,
+    }
+}
+
+/// The websocket root for a Binance venue, when the venue is one the connector serves.
+fn binance_stream_root(venue: &str) -> Option<&'static str> {
+    match venue.to_ascii_lowercase().as_str() {
+        "binance" | "binancespot" | "binance_spot" | "binancefuturesum" | "binance_futures" => {
+            Some("wss://fstream.binance.com")
+        }
+        "binancefuturescm" | "binance_coinm" => Some("wss://dstream.binance.com"),
+        _ => None,
+    }
+}
+
+/// The depth snapshot limit the connector should request for a window of `depth_levels`.
+fn depth_snapshot_limit(depth_levels: u16) -> u16 {
+    match depth_levels {
+        0..=5 => 5,
+        6..=10 => 10,
+        11..=20 => 20,
+        21..=50 => 50,
+        51..=100 => 100,
+        101..=500 => 500,
+        _ => 1000,
     }
 }
 
@@ -2015,9 +1239,14 @@ struct GapSummary {
 async fn main() -> ExitCode {
     // The transport reports what a connection does through `tracing`; without a subscriber those
     // reports go nowhere, which is how a stream that kept being refused stayed invisible.
+    // `RUST_LOG` selects the level: the transport reports what a connection does through
+    // `tracing`, and a recorder troubleshooting a feed needs the debug lines it used to drop.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_target(false)
+        .with_env_filter(filter)
         .try_init();
     match run(Args::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
@@ -2059,19 +1288,16 @@ async fn run(args: Args) -> Result<(), (u8, String)> {
         Command::Quality { root, date, config } => {
             chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .map_err(|_| (2, "date must use YYYY-MM-DD".into()))?;
+            // The config is still validated so a bad file is reported here rather than later.
             let text = fs::read_to_string(config).map_err(io_error)?;
-            let rest_validation_min_samples = RecorderConfig::parse(&text)
-                .map_err(|error| (2, error.to_string()))?
-                .recorder
-                .rest_validation_min_samples;
+            RecorderConfig::parse(&text).map_err(|error| (2, error.to_string()))?;
             let reports = inspect(&root, Some(&date), None)?;
             let events =
                 collector::file::inspect_market_events(&root, Some(&date)).map_err(io_error)?;
             let blocks = reports.iter().map(|r| r.blocks).sum();
             let readable = reports.iter().map(|r| r.readable).sum();
             let corrupt = reports.iter().map(|r| r.corrupt).sum();
-            let markets =
-                build_quality_markets(&reports, &events, &date, rest_validation_min_samples);
+            let markets = build_quality_markets(&reports, &events, &date);
             let status = if markets.iter().any(|market| market.status == "FAIL") {
                 "FAIL"
             } else if markets
@@ -2223,7 +1449,6 @@ fn build_quality_markets(
     segments: &[SegmentSummary],
     events: &collector::file::EventIntegrityReport,
     date: &str,
-    rest_validation_min_samples: u32,
 ) -> Vec<MarketQualitySummary> {
     let mut grouped: std::collections::BTreeMap<&str, Vec<&SegmentSummary>> =
         std::collections::BTreeMap::new();
@@ -2354,27 +1579,6 @@ fn build_quality_markets(
             }
             if events.mismatched_summaries > 0 {
                 warnings.push("event_summary_mismatch".into());
-            }
-            if venue.contains("binance") || venue.contains("bybit") {
-                if event.rest_samples_compared < u64::from(rest_validation_min_samples) {
-                    warnings.push("rest_shadow_sample_count_below_minimum".into());
-                }
-            } else {
-                warnings.push("rest_shadow_unsupported_for_venue".into());
-            }
-            if event.rest_mismatches > 0 {
-                failures.push("rest_shadow_mismatch".into());
-            }
-            if event.rest_stale_samples > 0 {
-                warnings.push("rest_shadow_stale_sample".into());
-            }
-            // Samples that could not be judged (`unaimed`, `unaligned`, `coherent`) count towards
-            // the minimum above through the recorder's own records, but they are not comparisons:
-            // the quality report says how many there were, and does not treat them as bad data. A
-            // day whose samples were nearly all unjudged therefore shows up as a low compared
-            // count, which is the warning the minimum exists for.
-            if event.rest_samples_unjudged > 0 {
-                warnings.push("rest_shadow_unjudged_samples".into());
             }
             if is_contract && event.aux_oi_samples == 0 {
                 failures.push("open_interest_missing_for_day".into());
@@ -2712,20 +1916,18 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                 "binance" | "binancespot" | "binance_spot" | "binancefuturesum"
                 | "binance_futures" | "binancefuturescm" | "binance_coinm" => {
                     MarketFeed::Binance(Box::new(
-                        BinanceFeed::connect(market.clone(), settings.clone(), cancel)
+                        BinanceConnectorFeed::connect(market.clone(), settings.clone(), cancel)
                             .await
                             .map_err(|error| {
                                 format!("could not initialize {venue_key} feed: {error}")
                             })?,
                     ))
                 }
-                key if key.starts_with("bybit") => MarketFeed::Bybit(
-                    BybitFeed::connect(market.clone(), settings.validation_interval_ms, cancel)
-                        .await
-                        .map_err(|error| {
-                            format!("could not initialize {venue_key} feed: {error}")
-                        })?,
-                ),
+                key if key.starts_with("bybit") => {
+                    MarketFeed::Bybit(BybitFeed::connect(market.clone(), cancel).await.map_err(
+                        |error| format!("could not initialize {venue_key} feed: {error}"),
+                    )?)
+                }
                 key if key.starts_with("okx") => {
                     MarketFeed::Okx(OkxFeed::connect(market.clone(), cancel).await.map_err(
                         |error| format!("could not initialize {venue_key} feed: {error}"),
@@ -2747,7 +1949,10 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
             };
             run_market(meta, &root, &venue, &instrument, &settings, feed)
                 .await
-                .map_err(|_| "market recorder stopped after a data or I/O error".to_owned())
+                .map_err(|error| {
+                    tracing::error!(%venue, %instrument, %error, "market recorder stopped");
+                    format!("market recorder stopped after a data or I/O error: {error}")
+                })
         });
     }
     loop {

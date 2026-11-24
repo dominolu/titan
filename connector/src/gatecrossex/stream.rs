@@ -12,16 +12,17 @@ use crate::{
 };
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
-use hftbacktest::types::{
-    ErrorKind, Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
-    LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT,
-    LOCAL_SELL_TRADE_EVENT, LiveError, OrdType, Order, Side, Status, TimeInForce,
-};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
+};
+use titan_domain_types::{ErrorKind, LiveError};
+use titan_domain_types::{
+    Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
+    LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT, OrdType, Order,
+    Side, Status, TimeInForce,
 };
 use titan_market_service::MarketDataKind;
 use tokio::{net::TcpStream, sync::watch, time};

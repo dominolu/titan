@@ -19,7 +19,7 @@ use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::Log;
 use chrono::Utc;
 use futures_util::StreamExt;
-use hftbacktest::prelude::{
+use titan_domain_types::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
     LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };

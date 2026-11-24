@@ -16,8 +16,8 @@ pub use format::{
 };
 pub use recorder::{
     ClosedSlot, DepthMessage, Feed, FeedMessage, GapMessage, InstrumentType, MarketConfig,
-    MarketRecorder, RecorderConfig, RecorderSettings, RestShadowReport, RestShadowStatus,
-    RestShadowValidator, SnapshotMessage, build_data_block, decimal_steps, run_market,
+    MarketRecorder, RecorderConfig, RecorderSettings, SnapshotMessage, build_data_block,
+    decimal_steps, run_market,
 };
 pub use replay::Ladder;
 pub use segment::{BookWriter, RecoveryReport, SegmentReader, SegmentWriter, recover_segment};

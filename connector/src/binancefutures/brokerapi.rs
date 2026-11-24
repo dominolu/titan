@@ -12,7 +12,7 @@
 //!   accountConfig/symbolConfig/rateLimit/adlQuantile/symbolAdlRisk/income/apiTradingStatus
 //! - 用户数据流：listenKey POST/PUT/DELETE
 
-use hftbacktest::types::{OrdType, Side, TimeInForce};
+use titan_domain_types::{OrdType, Side, TimeInForce};
 
 use super::{BinanceFuturesError, msg::rest as m, rest::BinanceFuturesClient};
 use crate::api::{
@@ -1625,7 +1625,7 @@ pub(crate) fn build_algo_body(req: &AlgoOrderRequest) -> String {
     body
 }
 
-use hftbacktest::types::Status;
+use titan_domain_types::Status;
 
 #[cfg(test)]
 mod tests {

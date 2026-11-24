@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use ed25519_dalek::{Signer, SigningKey};
-use hftbacktest::types::{
-    ErrorKind, LiveError, OrdType, Order as HbOrder, Side, Status, TimeInForce, Value,
-};
+use titan_domain_types::Order as HbOrder;
+use titan_domain_types::{ErrorKind, LiveError, Value};
+use titan_domain_types::{OrdType, Side, Status, TimeInForce};
 
 use crate::api::{
     ApiError, ApiOrderStatus, ApiOrderType, ApiPositionSide, ApiSide, ApiTimeInForce, OrderInfo,

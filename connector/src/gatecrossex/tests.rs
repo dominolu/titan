@@ -574,7 +574,7 @@ fn late_terminal_fill_correction_is_published_without_reopening_order() {
         .unwrap()
         .unwrap();
     assert_eq!(correction.exec_qty, 0.005);
-    assert_eq!(correction.status, hftbacktest::types::Status::Filled);
+    assert_eq!(correction.status, titan_domain_types::Status::Filled);
 }
 #[test]
 fn empty_client_ids_do_not_merge_different_venue_orders() {
@@ -679,7 +679,7 @@ fn collateral_margin_valuation_is_not_used_as_wallet_balance() {
 
 #[test]
 fn review_reconciliation_reseeds_the_order_cumulative_baseline() {
-    use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
+    use titan_domain_types::{OrdType, Order, Side, Status, TimeInForce};
     let connector = GateCrossEx::build_from("").unwrap();
     let mut baseline = Order::new(
         1,
@@ -1150,7 +1150,7 @@ async fn query_ticker_uses_real_public_protocol_and_preserves_native_symbol() {
 
 #[test]
 fn reconciliation_reseeds_notional_and_never_overwrites_a_newer_stream_fact() {
-    use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
+    use titan_domain_types::{OrdType, Order, Side, Status, TimeInForce};
     let connector = GateCrossEx::build_from("").unwrap();
     let mut v = order();
     v["state"] = json!("PARTIALLY_FILLED");

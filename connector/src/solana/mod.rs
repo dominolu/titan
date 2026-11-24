@@ -25,8 +25,8 @@ pub mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use hftbacktest::types::Value;
 use thiserror::Error;
+use titan_domain_types::Value;
 use titan_market_service::MarketDataKind;
 use tokio::sync::broadcast;
 use tracing::warn;
@@ -277,7 +277,7 @@ impl Connector for Solana {
         &self,
         symbol: &str,
         client_order_id: &str,
-        order: &hftbacktest::types::Order,
+        order: &titan_domain_types::Order,
     ) {
         self.order_manager.lock().unwrap().track_managed_order(
             symbol,
@@ -317,8 +317,8 @@ impl Solana {
             engine.set_account_publisher(ev_tx.clone());
         }
         ev_tx.send_account(crate::connector::AccountPublication::Error(
-            hftbacktest::types::LiveError::with(
-                hftbacktest::types::ErrorKind::OrderError,
+            titan_domain_types::LiveError::with(
+                titan_domain_types::ErrorKind::OrderError,
                 Value::String(
                     "UNSUPPORTED: unified Solana account facts are not implemented".to_string(),
                 ),
@@ -484,10 +484,10 @@ quote_decimals = 9
 
     #[tokio::test]
     async fn shutdown_preserves_pending_orders() {
-        use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
+        use titan_domain_types::{OrdType, Side, Status, TimeInForce};
         let mut solana = Solana::build_market_from(&config_str()).unwrap();
         solana.register("TST/WSOL".to_string());
-        let mut order = hftbacktest::types::Order::new(
+        let mut order = titan_domain_types::Order::new(
             1,
             0,
             1.0,

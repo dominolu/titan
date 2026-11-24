@@ -1,7 +1,7 @@
-use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use smallvec::SmallVec;
+use titan_domain_types::{OrdType, Side, Status, TimeInForce};
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, to_lowercase};

@@ -26,8 +26,8 @@ pub mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use hftbacktest::types::Value;
 use thiserror::Error;
+use titan_domain_types::Value;
 use titan_market_service::MarketDataKind;
 use tokio::sync::broadcast;
 use tracing::warn;
@@ -285,7 +285,7 @@ impl Connector for Evm {
         &self,
         symbol: &str,
         client_order_id: &str,
-        order: &hftbacktest::types::Order,
+        order: &titan_domain_types::Order,
     ) {
         self.order_manager.lock().unwrap().track_managed_order(
             symbol,
@@ -346,8 +346,8 @@ impl Evm {
         // Native construction/receipt tools are retained, but the unified account cannot become
         // READY until exact swap executions, fees and token inventory can be projected.
         ev_tx.send_account(crate::connector::AccountPublication::Error(
-            hftbacktest::types::LiveError::with(
-                hftbacktest::types::ErrorKind::OrderError,
+            titan_domain_types::LiveError::with(
+                titan_domain_types::ErrorKind::OrderError,
                 Value::String(
                     "UNSUPPORTED: unified EVM account facts are not implemented".to_string(),
                 ),
@@ -478,10 +478,10 @@ quote_decimals = 6
 
     #[tokio::test]
     async fn shutdown_preserves_unresolved_orders() {
-        use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
+        use titan_domain_types::{OrdType, Side, Status, TimeInForce};
         let mut evm = Evm::build_from(&config_str()).unwrap();
         evm.register("WETH/USDC".to_string());
-        let mut order = hftbacktest::types::Order::new(
+        let mut order = titan_domain_types::Order::new(
             1,
             0,
             1.0,
