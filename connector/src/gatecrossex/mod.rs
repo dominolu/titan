@@ -19,13 +19,13 @@ use crate::{
     api::{ApiError, BrokerApi},
     connector::{Connector, ConnectorBuilder, GetOrders, PublishSender, ShutdownFuture},
 };
-use hftbacktest::types::Order;
 use rest::{invalid, symbol_parts};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
+use titan_domain_types::Order;
 use titan_market_service::MarketDataKind;
 use tokio::{sync::watch, task::JoinHandle};
 

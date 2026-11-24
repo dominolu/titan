@@ -7,7 +7,7 @@ use crate::{
 };
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, Status};
+use titan_domain_types::{Order, Status};
 
 #[derive(Debug)]
 struct OrderExt {
@@ -173,7 +173,7 @@ impl GetOrders for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hftbacktest::types::{OrdType, Side, TimeInForce};
+    use titan_domain_types::{OrdType, Side, TimeInForce};
 
     fn ws_update(client_order_id: &str, transaction_time: i64, status: &str) -> OrderTradeUpdate {
         ws_update_with_quantities(client_order_id, transaction_time, status, 0.5, 0.5)

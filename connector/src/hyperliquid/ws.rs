@@ -10,7 +10,7 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use hftbacktest::prelude::{
+use titan_domain_types::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT, LOCAL_BID_DEPTH_BBO_EVENT,
     LOCAL_BID_DEPTH_SNAPSHOT_EVENT, LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
 };

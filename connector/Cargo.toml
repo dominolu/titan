@@ -16,7 +16,8 @@ evm = []
 solana = []
 
 [dependencies]
-hftbacktest = { path = "../hftbacktest" }
+# hftbacktest is no longer a connector dependency: the order, side, value and error types now
+# live in titan-domain-types, and the market data path never needed the backtest engine.
 tracing = "0.1.43"
 anyhow = "1.0.100"
 thiserror = "2.0.17"

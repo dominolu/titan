@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use hftbacktest::types::Status;
+use titan_domain_types::Status;
 
 use crate::api::{
     AccountInfo, AmendOrderRequest, ApiError, ApiOrderStatus, ApiOrderType, ApiPositionSide,
@@ -74,8 +74,8 @@ impl EvmBrokerApi {
             order_id: tracked.tx_hash.clone().unwrap_or_default(),
             client_order_id: key.to_string(),
             side: match tracked.order.side {
-                hftbacktest::types::Side::Buy => ApiSide::Buy,
-                hftbacktest::types::Side::Sell => ApiSide::Sell,
+                titan_domain_types::Side::Buy => ApiSide::Buy,
+                titan_domain_types::Side::Sell => ApiSide::Sell,
                 _ => ApiSide::Unknown,
             },
             order_type: ApiOrderType::Market,

@@ -12,9 +12,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hftbacktest::types::{ErrorKind, LiveError, Order, Value};
 use serde::Deserialize;
 use thiserror::Error;
+use titan_domain_types::Order;
+use titan_domain_types::{ErrorKind, LiveError, Value};
 use titan_market_service::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::error;
@@ -42,6 +43,10 @@ pub enum OkxError {
     InvalidOrderId(#[from] ParseIntError),
     #[error("PrefixUnmatched")]
     PrefixUnmatched,
+    /// The venue refused the request (418/429/503). Carried as its own variant so the transport
+    /// can wait out the delay the venue asked for instead of retrying into the ban.
+    #[error("{0}")]
+    Banned(crate::transport::VenueBanned),
     #[error("OrderNotFound")]
     OrderNotFound,
     #[error("InvalidArg: {0}")]

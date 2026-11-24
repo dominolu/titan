@@ -14,11 +14,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use hftbacktest::types::{OrdType, Order, Side, Status, TimeInForce};
 use sha2::{Digest, Sha256};
 use titan_account_service as account;
 use titan_account_service::SecretValue;
 use titan_core_types::{ClosureResource, TraceContext};
+use titan_domain_types::{OrdType, Order, Side, Status, TimeInForce};
 use tokio::sync::{Notify, oneshot, watch};
 
 use crate::{

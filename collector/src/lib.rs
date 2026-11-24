@@ -2,5 +2,5 @@
 
 #[path = "book/mod.rs"]
 pub mod book;
+pub mod feed;
 pub mod file;
-pub mod transport;

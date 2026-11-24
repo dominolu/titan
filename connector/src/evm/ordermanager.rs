@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap as FastHashMap;
-use hftbacktest::types::{Order, Status};
+use titan_domain_types::{Order, Status};
 
 use crate::connector::GetOrders;
 use crate::evm::types::PoolConfig;
@@ -200,7 +200,7 @@ pub struct PendingSwap {
 mod tests {
     use super::*;
     use alloy_primitives::Address;
-    use hftbacktest::types::{OrdType, Side, TimeInForce};
+    use titan_domain_types::{OrdType, Side, TimeInForce};
 
     use crate::api::ApiSide;
     use crate::evm::types::PoolConfig;

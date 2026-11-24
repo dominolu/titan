@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use hftbacktest::prelude::{
+use titan_domain_types::{
     Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
     LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
     LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
@@ -11,7 +11,10 @@ use titan_market_service::MarketDataKind;
 use tokio::{
     net::TcpStream,
     select,
-    sync::broadcast::{Receiver, error::RecvError},
+    sync::{
+        broadcast::{Receiver, error::RecvError},
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    },
     time,
 };
 use tokio_tungstenite::{
@@ -36,6 +39,11 @@ pub struct PublicStream {
     command_rx: Receiver<MarketDataCommand>,
     subscriptions: SharedMarketSubscriptions,
     books: Mutex<HashMap<String, LocalBook>>,
+    /// Symbols whose book fell out of sequence. A gap is a lost message, not a broken socket:
+    /// resubscribing the one book makes OKX push a fresh snapshot over the same connection,
+    /// where dropping the connection would take every other symbol down with it.
+    resync_tx: UnboundedSender<String>,
+    resync_rx: UnboundedReceiver<String>,
 }
 
 #[derive(Default)]
@@ -95,12 +103,24 @@ impl PublicStream {
         command_rx: Receiver<MarketDataCommand>,
         subscriptions: SharedMarketSubscriptions,
     ) -> Self {
+        let (resync_tx, resync_rx) = unbounded_channel();
         Self {
             ev_tx,
             command_rx,
             subscriptions,
             books: Mutex::new(HashMap::new()),
+            resync_tx,
+            resync_rx,
         }
+    }
+
+    /// The symbol a gap has asked to resynchronize, if one is waiting.
+    ///
+    /// Exists so a test can assert that a gap asks for a snapshot instead of ending the
+    /// connection; the connect loop drains the same channel.
+    #[cfg(test)]
+    fn resync_pending(&mut self) -> Option<String> {
+        self.resync_rx.try_recv().ok()
     }
 
     async fn subscribe_symbol(
@@ -227,26 +247,38 @@ impl PublicStream {
                             ..LocalBook::default()
                         };
                     } else if state.epoch == 0 || books.prev_seq_id != state.last_sequence {
+                        // A gap, not a dead socket: drop this book's state, say so, and ask the
+                        // connection loop to resubscribe the one book. OKX answers a subscribe
+                        // with a fresh snapshot, so the connection keeps serving every other
+                        // symbol while this one recovers.
                         let epoch = state.epoch;
                         *state = LocalBook {
                             epoch,
                             ..LocalBook::default()
                         };
-                        self.ev_tx
-                            .send(PublishEvent::StreamInvalidated { symbol, epoch });
-                        return Err(OkxError::ConnectionInterrupted);
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
+                            symbol: symbol.clone(),
+                            epoch,
+                        });
+                        let _ = self.resync_tx.send(symbol);
+                        return Ok(());
                     }
                     LocalBook::apply(&mut state.bids, &books.bids);
                     LocalBook::apply(&mut state.asks, &books.asks);
                     if books.checksum != 0 && state.checksum() != books.checksum {
+                        // Same reasoning as a sequence gap: the checksum says this book disagrees
+                        // with the venue, which only a fresh snapshot fixes. The connection is fine.
                         let epoch = state.epoch;
                         *state = LocalBook {
                             epoch,
                             ..LocalBook::default()
                         };
-                        self.ev_tx
-                            .send(PublishEvent::StreamInvalidated { symbol, epoch });
-                        return Err(OkxError::ConnectionInterrupted);
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
+                            symbol: symbol.clone(),
+                            epoch,
+                        });
+                        let _ = self.resync_tx.send(symbol);
+                        return Ok(());
                     }
                     state.last_sequence = books.seq_id;
                     state.epoch
@@ -494,6 +526,12 @@ impl PublicStream {
                     // OKX uses an application-level text heartbeat, not a JSON operation.
                     write.send(Message::Text("ping".into())).await?;
                 }
+                Some(symbol) = self.resync_rx.recv() => {
+                    // A book fell out of sequence or its checksum disagreed. Resubscribing that
+                    // one book makes OKX push a fresh snapshot; the connection and every other
+                    // symbol on it keep running.
+                    self.resubscribe_book(&mut write, symbol).await?;
+                }
                 msg = self.command_rx.recv() => match msg {
                     Ok(MarketDataCommand::Subscribe { symbol, kinds }) => self.subscribe_symbol(&mut write, symbol, &kinds).await?,
                     Ok(MarketDataCommand::Unsubscribe { symbol, kinds }) => self.unsubscribe_symbol(&mut write, symbol, &kinds).await?,
@@ -593,7 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn book_gap_invalidates_and_the_recovery_snapshot_advances_epoch() {
-        let (stream, mut receiver) = stream();
+        let (mut stream, mut receiver) = stream();
         stream
             .handle_public_stream(&book("snapshot", 10, -1, 0))
             .await
@@ -614,16 +652,21 @@ mod tests {
             .unwrap();
         assert_eq!(next_stream(&mut receiver).await.epoch, 1);
 
-        assert!(
-            stream
-                .handle_public_stream(&book("update", 12, 9, 0))
-                .await
-                .is_err()
-        );
+        // A gap is a lost message, not a broken connection: the handler reports it and asks for
+        // a resync instead of tearing the socket down.
+        stream
+            .handle_public_stream(&book("update", 12, 9, 0))
+            .await
+            .expect("a sequence gap must not end the connection");
         assert!(matches!(
             receiver.recv().await,
             Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
         ));
+        assert_eq!(
+            stream.resync_pending(),
+            Some("BTC-USDT-SWAP".to_string()),
+            "the gap must ask for a fresh snapshot on this connection"
+        );
 
         stream
             .handle_public_stream(&book("snapshot", 20, -1, 0))
@@ -637,17 +680,20 @@ mod tests {
 
     #[tokio::test]
     async fn checksum_failure_invalidates_without_reusing_the_epoch() {
-        let (stream, mut receiver) = stream();
-        assert!(
-            stream
-                .handle_public_stream(&book("snapshot", 10, -1, 1))
-                .await
-                .is_err()
-        );
+        let (mut stream, mut receiver) = stream();
+        stream
+            .handle_public_stream(&book("snapshot", 10, -1, 1))
+            .await
+            .expect("a checksum mismatch must not end the connection");
         assert!(matches!(
             receiver.recv().await,
             Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
         ));
+        assert_eq!(
+            stream.resync_pending(),
+            Some("BTC-USDT-SWAP".to_string()),
+            "the mismatch must ask for a fresh snapshot on this connection"
+        );
         stream
             .handle_public_stream(&book("snapshot", 20, -1, 0))
             .await
@@ -672,8 +718,8 @@ mod tests {
             Some(PublishEvent::FeedBatch { symbol, events, .. }) => {
                 assert_eq!(symbol, "BTC-USDT-SWAP");
                 assert_eq!(events.len(), 2);
-                assert!(events[0].is(hftbacktest::types::BUY_EVENT));
-                assert!(events[1].is(hftbacktest::types::SELL_EVENT));
+                assert!(events[0].is(titan_domain_types::BUY_EVENT));
+                assert!(events[1].is(titan_domain_types::SELL_EVENT));
             }
             _ => panic!("expected one atomic BBO batch"),
         }

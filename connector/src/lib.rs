@@ -24,12 +24,15 @@ pub mod decimal;
 pub mod lighter;
 mod market_event;
 pub mod market_runtime;
+#[cfg(feature = "binancefutures")]
+pub mod market_stream;
 #[cfg(any(feature = "backpack", feature = "lighter"))]
 pub mod native_api;
 #[cfg(test)]
 mod native_api_tests;
 #[cfg(any(feature = "backpack", feature = "lighter"))]
 pub mod native_ws;
+pub mod transport;
 mod units;
 mod utils;
 #[cfg(feature = "variational")]

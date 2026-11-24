@@ -5,7 +5,7 @@ use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 use crate::binance::stream_url;
-use collector::transport::{self, Heartbeat, WsTarget};
+use connector::transport::{self, Heartbeat, WsTarget};
 
 pub async fn fetch_depth_snapshot(symbol: &str) -> Result<String, reqwest::Error> {
     reqwest::Client::new()

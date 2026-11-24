@@ -1016,7 +1016,7 @@ mod tests {
     }
     struct EmptyOrders;
     impl crate::connector::GetOrders for EmptyOrders {
-        fn orders(&self, _: Option<String>) -> Vec<hftbacktest::types::Order> {
+        fn orders(&self, _: Option<String>) -> Vec<titan_domain_types::Order> {
             Vec::new()
         }
     }

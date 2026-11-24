@@ -8,6 +8,12 @@ use std::{ffi::c_void, fmt, marker::PhantomData, str::FromStr, sync::Arc};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+mod order;
+pub use order::{AnyClone, OrdType, Order, OrderId, Side, Status, TimeInForce, get_precision};
+
+mod live_error;
+pub use live_error::{ErrorKind, LiveError, Value};
+
 pub const BAR_COMPLETE: u64 = 1 << 0;
 pub const BAR_EMPTY: u64 = 1 << 1;
 pub const BAR_SYNTHETIC: u64 = 1 << 2;
@@ -599,6 +605,64 @@ impl Event {
         }
     }
 }
+
+/// Indicates a buy, with specific meaning that can vary depending on the situation. For example,
+/// when combined with a depth event, it means a bid-side event, while when combined with a trade
+/// event, it means that the trade initiator is a buyer.
+pub const BUY_EVENT: u64 = 1 << 29;
+
+/// Indicates a sell, with specific meaning that can vary depending on the situation. For example,
+/// when combined with a depth event, it means an ask-side event, while when combined with a trade
+/// event, it means that the trade initiator is a seller.
+pub const SELL_EVENT: u64 = 1 << 28;
+
+/// Indicates that the market depth is changed.
+pub const DEPTH_EVENT: u64 = 1;
+
+/// Indicates that a trade occurs in the market.
+pub const TRADE_EVENT: u64 = 2;
+
+/// Indicates that the market depth is cleared.
+pub const DEPTH_CLEAR_EVENT: u64 = 3;
+
+/// Indicates that the market depth snapshot is received.
+pub const DEPTH_SNAPSHOT_EVENT: u64 = 4;
+
+/// Indicates that the best bid and best ask update event is received.
+pub const DEPTH_BBO_EVENT: u64 = 5;
+
+/// Timestamp flag marking an event whose time is the local (receiving) clock.
+pub const LOCAL_EVENT: u64 = 1 << 30;
+
+/// [`DEPTH_CLEAR_EVENT`] and [`LOCAL_EVENT`]: the local depth image is cleared.
+pub const LOCAL_DEPTH_CLEAR_EVENT: u64 = DEPTH_CLEAR_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_EVENT`], [`BUY_EVENT`] and [`LOCAL_EVENT`]: a bid-side depth change.
+pub const LOCAL_BID_DEPTH_EVENT: u64 = DEPTH_EVENT | BUY_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_EVENT`], [`SELL_EVENT`] and [`LOCAL_EVENT`]: an ask-side depth change.
+pub const LOCAL_ASK_DEPTH_EVENT: u64 = DEPTH_EVENT | SELL_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_SNAPSHOT_EVENT`], [`BUY_EVENT`] and [`LOCAL_EVENT`]: a bid-side snapshot level.
+pub const LOCAL_BID_DEPTH_SNAPSHOT_EVENT: u64 = DEPTH_SNAPSHOT_EVENT | BUY_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_SNAPSHOT_EVENT`], [`SELL_EVENT`] and [`LOCAL_EVENT`]: an ask-side snapshot level.
+pub const LOCAL_ASK_DEPTH_SNAPSHOT_EVENT: u64 = DEPTH_SNAPSHOT_EVENT | SELL_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_BBO_EVENT`], [`BUY_EVENT`] and [`LOCAL_EVENT`]: a bid-side best-quote update.
+pub const LOCAL_BID_DEPTH_BBO_EVENT: u64 = DEPTH_BBO_EVENT | BUY_EVENT | LOCAL_EVENT;
+
+/// [`DEPTH_BBO_EVENT`], [`SELL_EVENT`] and [`LOCAL_EVENT`]: an ask-side best-quote update.
+pub const LOCAL_ASK_DEPTH_BBO_EVENT: u64 = DEPTH_BBO_EVENT | SELL_EVENT | LOCAL_EVENT;
+
+/// [`TRADE_EVENT`] and [`LOCAL_EVENT`].
+pub const LOCAL_TRADE_EVENT: u64 = TRADE_EVENT | LOCAL_EVENT;
+
+/// [`LOCAL_TRADE_EVENT`] and [`BUY_EVENT`]: a trade whose initiator is a buyer.
+pub const LOCAL_BUY_TRADE_EVENT: u64 = LOCAL_TRADE_EVENT | BUY_EVENT;
+
+/// [`LOCAL_TRADE_EVENT`] and [`SELL_EVENT`]: a trade whose initiator is a seller.
+pub const LOCAL_SELL_TRADE_EVENT: u64 = LOCAL_TRADE_EVENT | SELL_EVENT;
 
 #[derive(Debug, Clone, PartialEq)]
 #[repr(C)]

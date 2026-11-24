@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap as FastHashMap;
-use hftbacktest::types::{Order, Status};
+use titan_domain_types::{Order, Status};
 
 use crate::connector::GetOrders;
 
@@ -171,7 +171,7 @@ impl GetOrders for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hftbacktest::types::{OrdType, Side, TimeInForce};
+    use titan_domain_types::{OrdType, Side, TimeInForce};
 
     fn order(id: u64) -> Order {
         let mut order = Order::new(

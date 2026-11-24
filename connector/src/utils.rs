@@ -10,13 +10,13 @@ use std::{
 
 use chrono::Utc;
 use hashbrown::Equivalent;
-use hftbacktest::prelude::OrderId;
 use hmac::{Hmac, Mac};
 use serde::{
     Deserialize, Deserializer, de,
     de::{Error, Visitor},
 };
 use sha2::Sha256;
+use titan_domain_types::OrderId;
 
 struct I64Visitor;
 
@@ -145,7 +145,10 @@ pub fn to_lowercase<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s: &str = Deserialize::deserialize(deserializer)?;
+    // Deserialize as an owned `String`, not a borrowed `&str`: the same helper runs over a
+    // `serde_json::Value` on the fallback path, where the text has no borrow to hand out, and
+    // asking for `&str` there fails with "expected a borrowed string".
+    let s = String::deserialize(deserializer)?;
     Ok(s.to_lowercase())
 }
 
@@ -337,9 +340,9 @@ pub(crate) fn managed_order_id(client_id: &[u8; 16]) -> u64 {
 }
 
 /// REST rejection only terminalizes a locally pending order. Canonical private facts win races.
-pub(crate) fn reject_pending_order(order: &mut hftbacktest::types::Order) {
-    if order.status == hftbacktest::types::Status::New && order.exch_timestamp == 0 {
-        order.status = hftbacktest::types::Status::Rejected;
+pub(crate) fn reject_pending_order(order: &mut titan_domain_types::Order) {
+    if order.status == titan_domain_types::Status::New && order.exch_timestamp == 0 {
+        order.status = titan_domain_types::Status::Rejected;
         order.exch_timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
     }
 }

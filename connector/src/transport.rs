@@ -60,6 +60,20 @@ impl VenueBanned {
             retry_after: retry_after.and_then(|value| value.trim().parse::<u64>().ok()),
         })
     }
+
+    /// The ban an HTTP response reports, when it is one.
+    ///
+    /// This is the whole of what a venue adapter has to do with a refusal: hand back the status
+    /// and `Retry-After` here and let the caller wait out the delay the venue asked for. Without
+    /// it every adapter has to know that 418 means a ban, that 503 is a temporary refusal, and
+    /// how long to wait, which is how the behaviour drifted per venue before.
+    pub fn from_http_response(response: &reqwest::Response) -> Option<Self> {
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok());
+        Self::from_response(response.status().as_u16(), retry_after)
+    }
 }
 
 impl std::fmt::Display for VenueBanned {

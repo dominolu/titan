@@ -13,13 +13,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[allow(unused_imports)]
-use hftbacktest::{
-    prelude::get_precision,
-    types::{ErrorKind, LiveError, OrdType, Order, Side, TimeInForce, Value},
-};
 use serde::Deserialize;
 use thiserror::Error;
+#[allow(unused_imports)]
+use titan_domain_types::{
+    ErrorKind, LiveError, OrdType, Order, Side, TimeInForce, Value, get_precision,
+};
 use titan_market_service::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tracing::{error, warn};
@@ -57,6 +56,10 @@ pub enum HyperliquidError {
     /// distinguishable so callers can apply a bounded retry instead of treating it as a parse error.
     #[error("HttpStatus: {status} {body}")]
     HttpStatus { status: u16, body: String },
+    /// The venue refused the request (418/429/503). Carried as its own variant so the transport
+    /// can wait out the delay the venue asked for instead of retrying into the ban.
+    #[error("{0}")]
+    Banned(crate::transport::VenueBanned),
     #[error("Tungstenite: {0}")]
     Tungstenite(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("K256: {0}")]
@@ -719,7 +722,7 @@ mod unit_tests {
         AssetMeta, CancelStatus, ExchangeResponse, ExchangeResponseData, Filled, Meta, OrderStatus,
         Resting,
     };
-    use hftbacktest::types::{OrdType, Side, TimeInForce};
+    use titan_domain_types::{OrdType, Side, TimeInForce};
 
     fn asset(index: u32, sz_decimals: u32) -> AssetInfo {
         AssetInfo { index, sz_decimals }
@@ -1097,8 +1100,8 @@ mod live_ws_tests {
     use crate::connector::{
         AccountPublication, DirectPublication, PublishEvent, direct_publish_sender,
     };
-    use hftbacktest::types::{DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, TRADE_EVENT};
     use std::time::Duration;
+    use titan_domain_types::{DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, TRADE_EVENT};
     use tokio::sync::mpsc::unbounded_channel;
 
     #[allow(dead_code)]
@@ -1109,7 +1112,7 @@ mod live_ws_tests {
         Order {
             client_order_id: Option<String>,
             venue_order_id: Option<String>,
-            order: hftbacktest::types::Order,
+            order: titan_domain_types::Order,
         },
         Position(String, f64),
     }
@@ -1118,8 +1121,8 @@ mod live_ws_tests {
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<PrivateFact>,
         expected_cloid: &str,
         venue_order_id: &str,
-        expected_status: hftbacktest::types::Status,
-    ) -> hftbacktest::types::Order {
+        expected_status: titan_domain_types::Status,
+    ) -> titan_domain_types::Order {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let fact = tokio::time::timeout_at(deadline, rx.recv())
@@ -1143,8 +1146,8 @@ mod live_ws_tests {
 
     fn assert_rest_ws_fields(
         rest: &crate::api::OrderInfo,
-        ws: &hftbacktest::types::Order,
-        expected_status: hftbacktest::types::Status,
+        ws: &titan_domain_types::Order,
+        expected_status: titan_domain_types::Status,
     ) {
         let ws_price = ws.price_tick as f64 * ws.tick_size;
         assert!((rest.price - ws_price).abs() <= ws.tick_size / 2.0);
@@ -1332,16 +1335,16 @@ mod live_ws_tests {
         };
         // 私有流只发布 OrderManager 已跟踪的订单：把本次下单注册进去
         // （真实路径中由 AccountService 下单命令完成同样的动作）
-        let mut tracked = hftbacktest::types::Order::new(
+        let mut tracked = titan_domain_types::Order::new(
             0,
             (deep_px / 0.1).round() as i64,
             0.1,
             0.01,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::GTC,
+            titan_domain_types::Side::Buy,
+            titan_domain_types::OrdType::Limit,
+            titan_domain_types::TimeInForce::GTC,
         );
-        tracked.status = hftbacktest::types::Status::New;
+        tracked.status = titan_domain_types::Status::New;
         connector.track_managed_order("ETH", req.client_order_id.as_deref().unwrap(), &tracked);
 
         let order = api.submit_order(&req).await.expect("submit_order");
@@ -1353,7 +1356,7 @@ mod live_ws_tests {
             &mut rx,
             req.client_order_id.as_deref().unwrap(),
             &submitted_id,
-            hftbacktest::types::Status::New,
+            titan_domain_types::Status::New,
         )
         .await;
         let rest_submit = api
@@ -1378,7 +1381,7 @@ mod live_ws_tests {
             &mut rx,
             req.client_order_id.as_deref().unwrap(),
             &amend.order_id,
-            hftbacktest::types::Status::New,
+            titan_domain_types::Status::New,
         )
         .await;
         let rest_amend = api
@@ -1399,7 +1402,7 @@ mod live_ws_tests {
             &mut rx,
             req.client_order_id.as_deref().unwrap(),
             &amend.order_id,
-            hftbacktest::types::Status::Canceled,
+            titan_domain_types::Status::Canceled,
         )
         .await;
         let rest_cancel = api
@@ -1410,12 +1413,12 @@ mod live_ws_tests {
         assert_eq!(rest_submit.client_order_id, expected_cloid);
         assert_eq!(rest_amend.client_order_id, expected_cloid);
         assert_eq!(rest_cancel.client_order_id, expected_cloid);
-        assert_rest_ws_fields(&rest_submit, &ws_submit, hftbacktest::types::Status::New);
-        assert_rest_ws_fields(&rest_amend, &ws_amend, hftbacktest::types::Status::New);
+        assert_rest_ws_fields(&rest_submit, &ws_submit, titan_domain_types::Status::New);
+        assert_rest_ws_fields(&rest_amend, &ws_amend, titan_domain_types::Status::New);
         assert_rest_ws_fields(
             &rest_cancel,
             &ws_cancel,
-            hftbacktest::types::Status::Canceled,
+            titan_domain_types::Status::Canceled,
         );
         println!("private streams OK: reconnect + submit/amend/cancel REST/WS fields match");
     }
@@ -1527,16 +1530,16 @@ mod live_ws_tests {
         let price = ask.price;
         let top_ask_notional = ask.price * ask.qty;
         let cloid = "0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00001";
-        let mut tracked = hftbacktest::types::Order::new(
+        let mut tracked = titan_domain_types::Order::new(
             0,
             (price / tick_size).round() as i64,
             tick_size,
             qty,
-            hftbacktest::types::Side::Buy,
-            hftbacktest::types::OrdType::Limit,
-            hftbacktest::types::TimeInForce::IOC,
+            titan_domain_types::Side::Buy,
+            titan_domain_types::OrdType::Limit,
+            titan_domain_types::TimeInForce::IOC,
         );
-        tracked.status = hftbacktest::types::Status::New;
+        tracked.status = titan_domain_types::Status::New;
         connector.track_managed_order(&symbol, cloid, &tracked);
         let submitted = api
             .submit_order(&UnifiedOrderRequest {
@@ -1592,16 +1595,16 @@ mod live_ws_tests {
 
         if rest_partial.executed_qty > 0.0 {
             let close_cloid = "0xf0f0f0f0f0f0f0f0f0f0f0f0f0f00002";
-            let mut close_tracked = hftbacktest::types::Order::new(
+            let mut close_tracked = titan_domain_types::Order::new(
                 0,
                 0,
                 tick_size,
                 rest_partial.executed_qty,
-                hftbacktest::types::Side::Sell,
-                hftbacktest::types::OrdType::Market,
-                hftbacktest::types::TimeInForce::IOC,
+                titan_domain_types::Side::Sell,
+                titan_domain_types::OrdType::Market,
+                titan_domain_types::TimeInForce::IOC,
             );
-            close_tracked.status = hftbacktest::types::Status::New;
+            close_tracked.status = titan_domain_types::Status::New;
             connector.track_managed_order(&symbol, close_cloid, &close_tracked);
             api.submit_order(&UnifiedOrderRequest {
                 symbol: symbol.clone(),
@@ -1627,7 +1630,7 @@ mod live_ws_tests {
         assert_rest_ws_fields(
             &rest_partial,
             &ws_partial,
-            hftbacktest::types::Status::Filled,
+            titan_domain_types::Status::Filled,
         );
         assert!(ws_partial.leaves_qty > 0.0);
         let fills = api.get_fills(&symbol, 100).await.unwrap();

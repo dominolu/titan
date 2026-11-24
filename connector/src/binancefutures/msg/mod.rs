@@ -1,8 +1,8 @@
-use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::{
     Deserialize, Deserializer,
     de::{Error, Unexpected},
 };
+use titan_domain_types::{OrdType, Side, Status, TimeInForce};
 
 #[allow(dead_code)]
 pub mod rest;

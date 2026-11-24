@@ -1,5 +1,7 @@
 mod brokerapi;
-mod market_data_stream;
+pub(crate) mod market_data_stream;
+
+pub use rest::BinanceFuturesClient;
 mod msg;
 mod ordermanager;
 mod rest;
@@ -10,19 +12,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hftbacktest::types::{ErrorKind, LiveError, Order, Value};
 use serde::Deserialize;
 use thiserror::Error;
+use titan_domain_types::Order;
+use titan_domain_types::{ErrorKind, LiveError, Value};
 use titan_market_service::MarketDataKind;
 use tokio::sync::{broadcast, broadcast::Sender};
 use tokio_tungstenite::tungstenite;
 use tracing::{debug, error};
 
 use crate::{
-    binancefutures::{
-        ordermanager::{OrderManager, SharedOrderManager},
-        rest::BinanceFuturesClient,
-    },
+    binancefutures::ordermanager::{OrderManager, SharedOrderManager},
     connector::{
         AccountPublication, Connector, ConnectorBuilder, GetOrders, MarketDataCommand, PublishEvent,
     },
@@ -43,6 +43,10 @@ pub enum BinanceFuturesError {
     ConnectionAbort(String),
     #[error("ReqError: {0:?}")]
     ReqError(#[from] reqwest::Error),
+    /// The venue refused the request (418/429/503). Carried as its own variant so the transport
+    /// can wait out the delay the venue asked for instead of retrying into the ban.
+    #[error("{0}")]
+    Banned(crate::transport::VenueBanned),
     #[error("OrderError: {code} - {msg})")]
     OrderError { code: i64, msg: String },
     #[error("PrefixUnmatched")]
@@ -68,6 +72,7 @@ impl From<BinanceFuturesError> for Value {
                 map.insert("msg".to_string(), Value::String(error.to_string()));
                 Value::Map(map)
             }
+            BinanceFuturesError::Banned(ban) => Value::String(ban.to_string()),
             BinanceFuturesError::OrderError { code, msg } => Value::Map({
                 let mut map = HashMap::new();
                 map.insert("code".to_string(), Value::Int(code));

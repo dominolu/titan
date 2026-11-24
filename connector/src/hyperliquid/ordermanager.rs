@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use hashbrown::HashMap;
-use hftbacktest::types::{Order, Status};
+use titan_domain_types::{Order, Status};
 
 use crate::{
     connector::GetOrders,
@@ -217,7 +217,7 @@ impl GetOrders for OrderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hftbacktest::types::{OrdType, Side, TimeInForce};
+    use titan_domain_types::{OrdType, Side, TimeInForce};
 
     fn test_order(order_id: u64) -> Order {
         Order::new(

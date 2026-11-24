@@ -1,5 +1,5 @@
-use hftbacktest::types::{OrdType, Side, Status, TimeInForce};
 use serde::Deserialize;
+use titan_domain_types::{OrdType, Side, Status, TimeInForce};
 
 use super::{from_str_to_side, from_str_to_status, from_str_to_tif, from_str_to_type};
 use crate::utils::{from_str_to_f64, from_str_to_f64_opt, from_str_to_i64, to_lowercase};

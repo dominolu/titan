@@ -91,7 +91,11 @@ impl HyperliquidClient {
             .send()
             .await?;
         // Check the status before decoding: a 429/5xx body is not the requested document, and
-        // decoding it first would hide the rate-limit signal behind a serde error.
+        // decoding it first would hide the rate-limit signal behind a serde error. A refusal is
+        // reported as the transport's own type so the caller waits the venue's Retry-After.
+        if let Some(ban) = crate::transport::VenueBanned::from_http_response(&response) {
+            return Err(HyperliquidError::Banned(ban));
+        }
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

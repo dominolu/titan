@@ -64,13 +64,13 @@ impl SolanaBrokerApi {
         self.engine.as_ref()
     }
 
-    fn api_status(status: hftbacktest::types::Status) -> ApiOrderStatus {
+    fn api_status(status: titan_domain_types::Status) -> ApiOrderStatus {
         match status {
-            hftbacktest::types::Status::New => ApiOrderStatus::New,
-            hftbacktest::types::Status::PartiallyFilled => ApiOrderStatus::PartiallyFilled,
-            hftbacktest::types::Status::Filled => ApiOrderStatus::Filled,
-            hftbacktest::types::Status::Canceled => ApiOrderStatus::Canceled,
-            hftbacktest::types::Status::Rejected => ApiOrderStatus::Rejected,
+            titan_domain_types::Status::New => ApiOrderStatus::New,
+            titan_domain_types::Status::PartiallyFilled => ApiOrderStatus::PartiallyFilled,
+            titan_domain_types::Status::Filled => ApiOrderStatus::Filled,
+            titan_domain_types::Status::Canceled => ApiOrderStatus::Canceled,
+            titan_domain_types::Status::Rejected => ApiOrderStatus::Rejected,
             _ => ApiOrderStatus::Unknown,
         }
     }
@@ -81,8 +81,8 @@ impl SolanaBrokerApi {
             order_id: tracked.tx_hash.clone().unwrap_or_default(),
             client_order_id: key.to_string(),
             side: match tracked.order.side {
-                hftbacktest::types::Side::Buy => ApiSide::Buy,
-                hftbacktest::types::Side::Sell => ApiSide::Sell,
+                titan_domain_types::Side::Buy => ApiSide::Buy,
+                titan_domain_types::Side::Sell => ApiSide::Sell,
                 _ => ApiSide::Unknown,
             },
             order_type: ApiOrderType::Market,

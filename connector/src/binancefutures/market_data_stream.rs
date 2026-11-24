@@ -6,8 +6,12 @@ use std::{
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use hftbacktest::prelude::*;
 use serde_json::Value;
+use titan_domain_types::{
+    Event, LOCAL_ASK_DEPTH_BBO_EVENT, LOCAL_ASK_DEPTH_EVENT, LOCAL_ASK_DEPTH_SNAPSHOT_EVENT,
+    LOCAL_BID_DEPTH_BBO_EVENT, LOCAL_BID_DEPTH_EVENT, LOCAL_BID_DEPTH_SNAPSHOT_EVENT,
+    LOCAL_BUY_TRADE_EVENT, LOCAL_SELL_TRADE_EVENT,
+};
 use titan_market_service::MarketDataKind;
 use tokio::{
     net::TcpStream,
@@ -114,8 +118,8 @@ pub struct MarketDataStream {
     pending_overflow: bool,
     stream_epochs: HashMap<String, u64>,
     canonical_symbols: HashMap<String, String>,
-    rest_tx: QueueSender<(String, Result<rest::Depth, reqwest::Error>)>,
-    rest_rx: QueueReceiver<(String, Result<rest::Depth, reqwest::Error>)>,
+    rest_tx: QueueSender<(String, Result<rest::Depth, BinanceFuturesError>)>,
+    rest_rx: QueueReceiver<(String, Result<rest::Depth, BinanceFuturesError>)>,
     route: MarketStreamRoute,
 }
 
@@ -171,7 +175,8 @@ impl MarketDataStream {
         subscriptions: SharedMarketSubscriptions,
         route: MarketStreamRoute,
     ) -> Self {
-        let (rest_tx, rest_rx) = channel::<(String, Result<rest::Depth, reqwest::Error>)>(64);
+        crate::ensure_rustls_crypto_provider();
+        let (rest_tx, rest_rx) = channel::<(String, Result<rest::Depth, BinanceFuturesError>)>(64);
         Self {
             client,
             ev_tx,
@@ -218,11 +223,19 @@ impl MarketDataStream {
         let rest_tx = self.rest_tx.clone();
         tokio::spawn(async move {
             let result = client.get_depth(&symbol).await;
+            if let Err(error) = &result {
+                tracing::warn!(%symbol, ?error, "depth snapshot request failed");
+            }
             let _ = rest_tx.send((symbol, result)).await;
         });
     }
 
     fn streams(&self, symbol: &str, kinds: &[MarketDataKind]) -> Vec<String> {
+        // Binance stream names are lower case. A mixed-case name is accepted by SUBSCRIBE and
+        // then delivers nothing, which reads as a silent feed rather than a rejected request, so
+        // the name is normalised here rather than trusting the caller's symbol.
+        let symbol = symbol.to_ascii_lowercase();
+        let symbol = symbol.as_str();
         let mut streams = Vec::new();
         let mark_price_mode = MarkPriceStreamMode::from_env();
         for kind in kinds {
@@ -434,6 +447,7 @@ impl MarketDataStream {
                 else {
                     warn!(
                         symbol = data.symbol,
+                        known = ?self.canonical_symbols.keys().collect::<Vec<_>>(),
                         "depth update received for an unknown symbol"
                     );
                     return;
@@ -462,6 +476,13 @@ impl MarketDataStream {
                     None => {
                         let symbol = symbol.to_owned();
                         let first = !self.pending_depth_messages.contains_key(&symbol);
+                        tracing::debug!(
+                            %symbol,
+                            first,
+                            buffered = self.pending_depth_messages.get(&symbol).map_or(0, |p| p.updates.len()),
+                            snapshots_waiting = self.snapshot_candidates.contains_key(&symbol),
+                            "depth waiting for a snapshot"
+                        );
                         self.buffer_depth(
                             symbol.clone(),
                             data.into_owned(symbol.clone()),
@@ -575,6 +596,12 @@ impl MarketDataStream {
 
     fn process_snapshot(&mut self, symbol: String, data: rest::Depth) {
         let snapshot_sequence = data.last_update_id;
+        tracing::debug!(
+            %symbol,
+            snapshot_sequence,
+            buffered = self.pending_depth_messages.get(&symbol).map_or(0, |p| p.updates.len()),
+            "aligning a snapshot against buffered depth"
+        );
         let mut previous = snapshot_sequence;
         let mut bridged = false;
         if let Some(pending) = self.pending_depth_messages.get(&symbol) {
@@ -601,9 +628,11 @@ impl MarketDataStream {
             }
         }
         if !bridged {
+            tracing::debug!(%symbol, snapshot_sequence, "snapshot parked: no buffered delta carries it forward");
             self.snapshot_candidates.insert(symbol, data);
             return;
         }
+        tracing::debug!(%symbol, snapshot_sequence, "snapshot bridged; publishing the book");
         let epoch = NEXT_DEPTH_EPOCH
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .expect("depth epoch exhausted");
@@ -715,9 +744,16 @@ impl MarketDataStream {
             .map(|(symbol, kinds)| (symbol.clone(), kinds.iter().copied().collect::<Vec<_>>()))
             .collect();
         for (symbol, kinds) in subscriptions {
-            let request_id = self
+            let request_id = match self
                 .send_subscription(&mut write, "SUBSCRIBE", &symbol, &kinds)
-                .await?;
+                .await
+            {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(%url, %symbol, ?error, "market stream subscription failed");
+                    return Err(error);
+                }
+            };
             if !request_id.is_empty() {
                 self.canonical_symbols
                     .insert(symbol.to_ascii_uppercase(), symbol.clone());
@@ -760,9 +796,22 @@ impl MarketDataStream {
 
         loop {
             if self.pending_overflow {
-                return Err(BinanceFuturesError::ConnectionAbort(
-                    "depth bootstrap staging capacity exceeded".into(),
-                ));
+                // The staging buffer filled because a snapshot is overdue, which is a book state
+                // problem: drop what was staged, ask for a snapshot again, keep the socket.
+                warn!(%url, "depth bootstrap staging capacity exceeded; requesting a fresh snapshot");
+                self.pending_overflow = false;
+                let symbols: Vec<String> = self.pending_depth_messages.keys().cloned().collect();
+                for symbol in symbols {
+                    self.pending_depth_messages
+                        .insert(symbol.clone(), PendingDepth::default());
+                    self.ev_tx.send(PublishEvent::StreamInvalidated {
+                        symbol: symbol.clone(),
+                        epoch: self.stream_epochs.get(&symbol).copied().unwrap_or(0),
+                    });
+                    self.prev_u.remove(&symbol);
+                    self.snapshot_candidates.remove(&symbol);
+                    self.fetch_snapshot(symbol);
+                }
             }
             select! {
                 Some((symbol, data)) = self.rest_rx.recv() => {
@@ -820,6 +869,7 @@ impl MarketDataStream {
                     }
                     Ok(MarketDataCommand::InitializeTrading { .. }) => {}
                     Err(RecvError::Closed) => {
+                        tracing::warn!("command channel closed; ending the market data stream");
                         return Ok(());
                     }
                     Err(RecvError::Lagged(num)) => {
@@ -840,7 +890,11 @@ impl MarketDataStream {
                                     ws_recv_ts,
                                 ),
                                 Err(error) => {
-                                    return Err(BinanceFuturesError::ConnectionAbort(format!("invalid depth frame: {error}")));
+                                    // One unreadable frame is one lost message. Dropping the
+                                    // connection over it would take every other symbol on this
+                                    // socket down with it; the sequence check turns the loss into
+                                    // a gap and a fresh snapshot instead.
+                                    warn!(%error, %url, "unreadable depth frame; skipping it");
                                 }
                             }
                             continue;
@@ -923,6 +977,40 @@ impl MarketDataStream {
 
 #[cfg(test)]
 mod tests {
+    /// A frame a venue sends that the adapter cannot read is one lost message. Tearing the socket
+    /// down would drop every other symbol sharing it, so the message path must not produce a
+    /// connection-level error: only a network failure or the venue closing the socket may.
+    #[test]
+    fn unreadable_frames_do_not_produce_a_connection_error() {
+        // The parse failure itself is handled by logging and skipping, so what this pins is that
+        // `connect` has no message-level `return Err` left. The remaining aborts are the ping
+        // timeout, a close frame, a transport error and an ended stream.
+        let source = include_str!("market_data_stream.rs");
+        let body = source
+            .split("pub async fn connect")
+            .nth(1)
+            .expect("connect is defined");
+        let connect_body = body.split("async fn send_request").next().unwrap_or(body);
+        let aborts: Vec<&str> = connect_body
+            .lines()
+            .filter(|line| line.contains("return Err(BinanceFuturesError::"))
+            .map(str::trim)
+            .collect();
+        // Four network-level exits, at most: ping timeout, close frame, transport error, end.
+        assert!(
+            aborts.len() <= 4,
+            "a message-level failure must not end the connection: {aborts:?}"
+        );
+        assert!(
+            !connect_body.contains("invalid depth frame"),
+            "an unreadable frame must be skipped, not abort the connection"
+        );
+        assert!(
+            !connect_body.contains("ConnectionAbort(\n                    \"depth bootstrap"),
+            "a full staging buffer must request a snapshot, not abort the connection"
+        );
+    }
+
     #[test]
     fn bootstrap_capacity_tracks_bytes_and_accepts_large_batches() {
         let mut pending = super::PendingDepth::default();
@@ -1000,6 +1088,41 @@ mod tests {
                 next_funding_time: 1_562_306_400_000_000_000,
                 exch_ts: 1_562_305_380_000_000_000,
             }) if symbol == "btcusdt" && funding_rate == -0.000381
+        ));
+    }
+
+    /// The mark price fallback parses a `serde_json::Value`, where the text is owned. A
+    /// `deserialize_with` that asks for `&str` fails there with "expected a borrowed string", and
+    /// the funding rate that frame carries is silently never recorded.
+    #[tokio::test]
+    async fn mark_price_frame_parses_from_an_owned_value() {
+        let client = BinanceFuturesClient::new("http://localhost", "", "");
+        let (events, mut receiver) = crate::connector::test_publish_channel();
+        let (_commands, command_rx) = tokio::sync::broadcast::channel(4);
+        let mut market_stream = MarketDataStream::new(
+            client,
+            events,
+            command_rx,
+            Arc::new(Mutex::new(HashMap::new())),
+            MarketStreamRoute::Market,
+        );
+        let frame: serde_json::Value = serde_json::from_str(
+            r#"{"e":"markPriceUpdate","E":1795507714685,"s":"XAUUSDT","p":"3625.83","ap":"3625.83","P":"3627.36","i":"3624.96","r":"0.00001303","T":1795521600000,"st":1}"#,
+        )
+        .unwrap();
+        let published =
+            market_stream.maybe_process_mark_price_payload(&frame.to_string(), &frame, 0);
+        assert!(
+            published,
+            "a mark price frame must parse from an owned value"
+        );
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::MarkPrice { symbol, .. }) if symbol == "xauusdt"
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::Funding { symbol, .. }) if symbol == "xauusdt"
         ));
     }
 
