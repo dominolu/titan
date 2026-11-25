@@ -425,7 +425,7 @@ fn scale_level(px: f64, qty: f64, market: &MarketConfig) -> Option<(i64, u64)> {
         return None;
     }
     let tick = tick as u64;
-    if tick % market.tick_units != 0 {
+    if !tick.is_multiple_of(market.tick_units) {
         return None;
     }
     let qty_scale = 10f64.powi(i32::from(market.qty_decimals));
@@ -434,7 +434,7 @@ fn scale_level(px: f64, qty: f64, market: &MarketConfig) -> Option<(i64, u64)> {
         return None;
     }
     let steps = steps as u64;
-    if steps % market.qty_step_units != 0 {
+    if !steps.is_multiple_of(market.qty_step_units) {
         return None;
     }
     Some((
