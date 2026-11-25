@@ -36,10 +36,33 @@ cache_root() {
     fi
 }
 
+# The rustc that will actually compile, not the version of the `cargo` shim in front of it.
+#
+# `cargo` and `rustc` on PATH are usually rustup proxies, and a proxy reports rustup's own version
+# rather than the toolchain it is about to select; `rust-toolchain.toml` only switches the
+# toolchain once cargo starts, so a key built from `rustc --version` through the proxy stays the
+# same across a toolchain bump. That is how this repository ended up with two snapshots for two
+# toolchains but a key that matches neither: every verification round found `snapshot: missing`,
+# recompiled ~1000 dependency crates against a full `target/`, and never seeded a snapshot at all.
+#
+# `rustup run <toolchain> rustc --version` asks the selected toolchain directly; the plain call is
+# the fallback for a host without rustup.
+toolchain_rustc_version() {
+    local channel toolchain
+    channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$repo_root/rust-toolchain.toml" 2>/dev/null | head -1)"
+    if [[ -n "$channel" ]] && command -v rustup >/dev/null 2>&1; then
+        if toolchain="$(rustup run "$channel" rustc --version 2>/dev/null)"; then
+            printf '%s' "$toolchain"
+            return
+        fi
+    fi
+    rustc --version 2>/dev/null || echo unknown
+}
+
 snapshot_key() {
     local profile="${TITAN_BUILD_PROFILE:-debug}"
     local rustc_version lock_hash
-    rustc_version="$(rustc --version 2>/dev/null || echo unknown)"
+    rustc_version="$(toolchain_rustc_version)"
     lock_hash="$(sha256sum "$repo_root/Cargo.lock" 2>/dev/null | cut -d' ' -f1 || echo nolock)"
     printf '%s|%s|%s' "$rustc_version" "${lock_hash:0:16}" "$profile" | sha256sum | cut -c1-16
 }
@@ -92,6 +115,7 @@ restore() {
 status() {
     local snapshot
     snapshot="$(snapshot_path)"
+    echo "rustc:    $(toolchain_rustc_version)"
     echo "key:      $(snapshot_key)"
     echo "cache:    $(cache_root)"
     if [[ -d "$snapshot" ]]; then
@@ -108,21 +132,40 @@ list_snapshots() {
     [[ -d "$(cache_root)" ]] && ls -1 "$(cache_root)" | grep -v '\.tmp\.' || true
 }
 
+# Snapshot keys are content hashes, so their order means nothing. Keeping "the last N by name" once
+# deleted the snapshot that had just been written, leaving the cache empty after a successful
+# verification: every round then paid a full dependency compile while `~/.cache/titan-deps` looked
+# populated from the outside. The current key is never pruned, and the others go oldest first.
 prune() {
     local keep="${1:-2}"
-    local -a keys
-    mapfile -t keys < <(list_snapshots | sort)
-    local total="${#keys[@]}"
-    if (( total <= keep )); then
-        echo "dep_cache: nothing to prune ($total snapshot(s), keeping $keep)"
-        return 0
-    fi
-    for key in "${keys[@]:0:$((total - keep))}"; do
+    local current entry key stamp kept=0
+    local -a entries
+    current="$(snapshot_key)"
+    mapfile -t entries < <(
+        for entry in $(list_snapshots); do
+            [[ -d "$(cache_root)/$entry" ]] || continue
+            stamp="$(stat -c %Y "$(cache_root)/$entry" 2>/dev/null || stat -f %m "$(cache_root)/$entry")"
+            printf '%s %s\n' "$stamp" "$entry"
+        done | sort -n
+    )
+    # Oldest first, so the newest `keep` survive. The current key counts as one of them.
+    local total="${#entries[@]}"
+    local index=0
+    while (( index < total )); do
+        key="${entries[$index]#* }"
+        index=$((index + 1))
+        if (( total - index + 1 <= keep )); then
+            break
+        fi
+        [[ "$key" == "$current" ]] && continue
         rm -rf "$(cache_root)/$key"
+        kept=$((kept + 1))
         echo "pruned $key"
     done
+    if (( kept == 0 )); then
+        echo "dep_cache: nothing to prune ($total snapshot(s), keeping $keep)"
+    fi
 }
-
 case "${1:-status}" in
     key) echo "$(snapshot_key)" ;;
     save) shift; save "$@" ;;

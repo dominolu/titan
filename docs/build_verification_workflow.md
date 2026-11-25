@@ -5,18 +5,39 @@
 
 ## 1. 一条命令
 
+在构建服务器上：
+
 ```bash
 scripts/verify.sh cargo test --workspace --all-targets --all-features
 ```
 
-就这一条。它做三件事，且都不需要你记参数：
+在开发机上，加上 `--sync` 让它先把当前工作树推上去：
 
-1. **把 `CARGO_TARGET_DIR` 钉到仓库 `target/`**。SDK 测试与多个 `verify_*.sh` 按
+```bash
+TITAN_BUILD_HOST=<私有配置中的 ssh 目标> scripts/verify.sh --sync cargo test --workspace --all-targets --all-features
+```
+
+就这一条。它做四件事，且都不需要你记参数：
+
+1. **把当前工作树同步到服务器上唯一的构建目录**（`TITAN_BUILD_DIR`，默认 `~/dev/titan`），
+   包含未提交的修改。同步是精确的：工作树里没有的源文件会在服务器上被删除，只有 `target/`
+   和 `.git/` 保留。**不存在“每个版本一个目录”**；版本身份记录在服务器上的 `.sync-manifest`
+   和 `git status` 里。同步失败则整轮停止，不会拿服务器上的旧副本冒充本次验证。
+2. **把 `CARGO_TARGET_DIR` 钉到仓库 `target/`**。SDK 测试与多个 `verify_*.sh` 按
    `<repo>/target/debug/titan` 找二进制；指到别的目录会**静默地再编一整套**（实测约 28 分钟、
    额外 28G 磁盘）。
-2. **恢复依赖快照**（命中时约 1 秒）。约 340 个第三方 crate 只要 `Cargo.lock`、`rustc` 版本和
-   profile 没变就一次都不重编。
-3. **跑完自动保存/刷新快照**，并只保留最近 2 份（一次工作集 + 一次回滚）。
+3. **恢复依赖快照**（命中时约 1 秒）。约 340 个第三方 crate 只要 `Cargo.lock`、工具链版本和
+   profile 没变就一次都不重编。快照键取的是 `rust-toolchain.toml` 里**实际选中的工具链**
+   （`rustup run <channel> rustc --version`），不是 rustup proxy 自身的版本号。
+4. **跑完自动保存/刷新快照**，并只保留最近 2 份（一次工作集 + 一次回滚）。
+
+### 1.1 之前的做法为什么不可靠
+
+- 每轮新建一个 `~/dev/titan-<日期>-<sha>` 目录，用完不删，累积到 42 个、约 300G。
+- 长期使用的 `~/dev/titan` 没有 `.git`，靠人工 rsync 覆盖，于是新旧文件混在一起：一个 9 月的
+  `v13.rs` 和 11 月的 `lib.rs` 并存，该目录因此永远编不过任何全工作区检查。
+- 快照键用 proxy 的 `rustc --version`（恒为 rustup 自身版本），换工具链后键不变，于是每轮都
+  `snapshot: missing`，白白重编整套依赖，也从未写入过快照。
 
 ## 2. 实测（titan-build，24 核，当时负载 10–70）
 

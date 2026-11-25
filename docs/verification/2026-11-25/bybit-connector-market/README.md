@@ -79,9 +79,31 @@ Bybit 的 OI 只能经 REST 获取，因此新增 `PublishEvent::OpenInterest { 
 | `cargo test -p connector -p collector --all-targets --all-features` | 通过：connector lib 420 passed / 14 ignored，collector 与集成测试全部通过 |
 | connector Bybit 专项 `cargo test -p connector --features bybit bybit` | 25 passed / 0 failed |
 
-### 4.1 验证限制
+### 4.1 构建服务器整改后的复测
 
-- 全工作区测试在构建服务器上**未能完整执行**：`crates/titan-strategy-runtime/examples/{v13_artifact_smoke,v13_pair_arb_smoke}.rs` 引用的 `*V13` 符号在该服务器工作树中不存在。差异来自构建服务器 `~/dev/titan` 是一份非 git、内容不一致的同步副本，而不是本轮改动；本轮验证因此在独立目录中执行，只覆盖 `connector` 与 `collector`。
+Issue #34 的首次验证受到构建服务器状态干扰：`~/dev/titan` 是无 `.git` 的混合同步副本，
+全工作区门禁因此不可用。随后按“以本地工作树为唯一真源、服务器单一目录、依赖缓存必须生效”
+整改，并在整改后复测：
+
+| 门禁 | 结果 |
+| --- | --- |
+| `scripts/sync_build_server.sh` | 通过：revision `bf8a0df9`（dirty），230 MiB，17600→18357 个 macOS 元数据成员被剔除，tracked 文件清单校验通过 |
+| `scripts/verify.sh cargo test --workspace --all-targets --all-features` | **1025 passed、0 failed**，耗时 **2 分 32 秒**，快照命中并自动更新 |
+| 快照恢复实测 | 删除 `target/debug/deps/libserde-*.rlib` 后再次 `verify.sh`，**0.16 秒**完成、无重编 |
+| `cargo fmt --all -- --check` / `clippy -D warnings`（connector、collector） | 通过 / 0 warning |
+
+整改中发现并修复的三处缺陷，都属于“验证在错误的树上进行”：
+
+1. 快照键取的是 rustup proxy 的 `rustc --version`（恒为 rustup 自身版本），工具链切换后键不变，
+   每轮都 `snapshot: missing`，从未写入过快照。
+2. `dep_cache.sh prune` 按哈希名排序“保留最新”，会删掉刚写入的快照，使缓存每次验证后归零。
+3. 同步脚本最初用 `tar --exclude=./data/` 排除根目录大输入，BSD tar 按任意深度匹配，
+   连 `hftbacktest/src/backtest/data/`（源码）一起排除，导致 `file not found for module data`；
+   改为暂存树删除根条目，并增加 tracked 文件清单校验，缺失即拒绝同步。
+
+### 4.2 验证限制
+
+- 首次验证时全工作区测试在构建服务器上未能完整执行（整改后已在 4.1 复测通过）：`crates/titan-strategy-runtime/examples/{v13_artifact_smoke,v13_pair_arb_smoke}.rs` 引用的 `*V13` 符号在该服务器工作树中不存在。差异来自构建服务器 `~/dev/titan` 是一份非 git、内容不一致的同步副本，而不是本轮改动；本轮验证因此在独立目录中执行，只覆盖 `connector` 与 `collector`。
 - 构建服务器磁盘一度耗尽（`/home` 100%，剩余 0）。释放冷测缓存后恢复；该清理与代码无关。
 - **未做真实交易所录制**。本轮没有连向 Bybit 生产端点，也没有部署到采集机；`u` 的语义按 V5 文档与注入帧验证，生产行为需在受控录制中复核后才能宣称端到端可用。
 
