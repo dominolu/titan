@@ -17,7 +17,7 @@ use crate::book::{
     Change, DepthMessage, Feed, FeedMessage, GapMessage, GapReason, Level, MarketConfig, Side,
     SnapshotMessage, decimal_steps,
 };
-use crate::file::{AuxRecord, AuxSource, TradeRecord, TradeSide};
+use crate::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
 use connector::connector::{
     DirectPublication, MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent,
     PublishSender,
@@ -278,9 +278,14 @@ impl ConnectorFeed {
             };
             if kind == DEPTH_SNAPSHOT_EVENT {
                 snapshot = true;
-                match side {
-                    Side::Bid => bids.push(Level { tick, qty }),
-                    Side::Ask => asks.push(Level { tick, qty }),
+                // A snapshot level states a quantity, never its removal: a zero-sized level is a
+                // delta's deletion, and taking it as a book level would record a level the venue
+                // does not have.
+                if qty > 0 {
+                    match side {
+                        Side::Bid => bids.push(Level { tick, qty }),
+                        Side::Ask => asks.push(Level { tick, qty }),
+                    }
                 }
                 exch_ts = event.exch_ts;
                 local_ts = event.local_ts;
@@ -393,6 +398,27 @@ impl Feed for ConnectorFeed {
                             mark_px: None,
                             index_px: None,
                             source: AuxSource::Stream,
+                        })]
+                    }
+                }
+                // Bybit publishes open interest only over REST, so the connector polls it and its
+                // sample is already the venue's own value: no conversion, and no second poll here.
+                Publication::Event(PublishEvent::OpenInterest {
+                    symbol,
+                    open_interest,
+                    exch_ts,
+                }) => {
+                    if !self.matches(&symbol) {
+                        Vec::new()
+                    } else {
+                        vec![FeedMessage::Aux(AuxRecord::Oi {
+                            exch_ts_ns: exch_ts,
+                            local_ts_ns: now_ns(),
+                            value: open_interest,
+                            // Bybit reports open interest in contracts, including for the linear
+                            // perpetuals whose contract is one unit of the base coin.
+                            unit: OpenInterestUnit::Contracts,
+                            source: AuxSource::Rest,
                         })]
                     }
                 }
@@ -718,6 +744,43 @@ mod tests {
                 assert_eq!(gap.last_seq, 42);
             }
             other => panic!("expected a gap, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zero_sized_snapshot_level_is_not_a_book_level() {
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        let zero = Event {
+            ev: DEPTH_SNAPSHOT_EVENT | LOCAL_EVENT | BUY_EVENT,
+            exch_ts: 1,
+            local_ts: 2,
+            px: 10.0,
+            qty: 0.0,
+            order_id: 0,
+            ival: 100,
+            fval: 0.0,
+        };
+        let live = Event {
+            ev: DEPTH_SNAPSHOT_EVENT | LOCAL_EVENT | SELL_EVENT,
+            exch_ts: 1,
+            local_ts: 2,
+            px: 11.0,
+            qty: 4.0,
+            order_id: 0,
+            ival: 100,
+            fval: 0.0,
+        };
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![zero, live],
+            stream: Some(metadata(1, 100, true)),
+        });
+        match feed.next().await.expect("a snapshot") {
+            FeedMessage::Snapshot(snapshot) => {
+                assert!(snapshot.bids.is_empty(), "{:?}", snapshot.bids);
+                assert_eq!(snapshot.asks.len(), 1);
+            }
+            other => panic!("expected a snapshot, got {other:?}"),
         }
     }
 

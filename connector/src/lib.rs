@@ -52,6 +52,8 @@ pub(crate) fn ensure_rustls_crypto_provider() {
 
 #[cfg(feature = "binancefutures")]
 pub mod binancefutures;
+#[cfg(feature = "bybit")]
+pub mod bybit;
 #[cfg(feature = "evm")]
 pub mod evm;
 #[cfg(feature = "gatecrossex")]

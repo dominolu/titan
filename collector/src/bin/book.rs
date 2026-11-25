@@ -8,12 +8,11 @@ use std::{
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use collector::book::{
-    BlockKind, Change, DepthMessage, Feed, FeedMessage, GapMessage, GapReason, InstrumentType,
-    Ladder, Level, MarketConfig, RecorderConfig, RecorderSettings, SegmentReader, Side,
-    SnapshotMessage, archive_daily, decimal_steps, decode_data_payload, next_daily_archive,
-    recover_segment, run_market,
+    BlockKind, Feed, FeedMessage, GapReason, InstrumentType, Ladder, Level, MarketConfig,
+    RecorderConfig, RecorderSettings, SegmentReader, Side, archive_daily, decode_data_payload,
+    next_daily_archive, recover_segment, run_market,
 };
-use collector::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
+use collector::file::{AuxRecord, AuxSource, OpenInterestUnit};
 use serde::Serialize;
 use serde_json::Value;
 use titan_market_service::MarketDataKind;
@@ -21,302 +20,6 @@ use tokio::{
     sync::watch,
     time::{Instant, interval_at},
 };
-
-use connector::transport::{self, Heartbeat, WsTarget};
-
-/// One decoded text frame as the transport hands it over.
-type FrameText = tokio_tungstenite::tungstenite::Utf8Bytes;
-
-/// Frames a connection may queue for its recorder before the transport backs the socket up.
-const CONNECTION_FRAMES: usize = 8192;
-
-/// The market feed a recorder market reads from, dispatched by venue.
-enum MarketFeed {
-    Binance(Box<BinanceConnectorFeed>),
-    Bybit(BybitFeed),
-    Okx(ConnectorVenueFeed),
-    Hyperliquid(ConnectorVenueFeed),
-}
-
-impl Feed for MarketFeed {
-    async fn next(&mut self) -> Option<FeedMessage> {
-        match self {
-            Self::Binance(feed) => feed.next().await,
-            Self::Bybit(feed) => feed.next().await,
-            Self::Okx(feed) => feed.next().await,
-            Self::Hyperliquid(feed) => feed.next().await,
-        }
-    }
-}
-
-struct BybitFeed {
-    /// Frames from the transport, which owns the connection and its reconnection.
-    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
-    _connection: tokio::task::JoinHandle<()>,
-    market: MarketConfig,
-    pending: VecDeque<FeedMessage>,
-    cancel: watch::Receiver<bool>,
-    previous_seq: Option<u64>,
-    /// Waiting for the snapshot that restarts a stream after a sequence break.
-    awaiting_snapshot: bool,
-    reconnected: bool,
-}
-
-impl BybitFeed {
-    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
-        let category = bybit_category(&market)?;
-        let depth = match market.depth_available {
-            0..=1 => 1,
-            2..=50 => 50,
-            51..=200 => 200,
-            _ => 500,
-        };
-        let endpoint = format!("wss://stream.bybit.com/v5/public/{category}");
-        let mut args = vec![
-            format!("orderbook.{depth}.{}", market.symbol),
-            format!("publicTrade.{}", market.symbol),
-        ];
-        if market.instrument != InstrumentType::Spot {
-            args.push(format!("tickers.{}", market.symbol));
-            args.push(format!("allLiquidation.{}", market.symbol));
-        }
-        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
-        let target = WsTarget::new(
-            endpoint,
-            Heartbeat {
-                check_interval: std::time::Duration::from_secs(20),
-                timeout: std::time::Duration::from_secs(60),
-            },
-        )
-        .subscribing(vec![
-            serde_json::json!({"op":"subscribe","args":args}).to_string(),
-        ]);
-        let connection = tokio::spawn(transport::keep_connection(target, tx));
-        Ok(Self {
-            frames,
-            _connection: connection,
-            market,
-            pending: VecDeque::new(),
-            cancel,
-            previous_seq: None,
-            awaiting_snapshot: false,
-            reconnected: false,
-        })
-    }
-
-    async fn parse(&mut self, text: &str) -> Option<FeedMessage> {
-        let root: Value = serde_json::from_str(text).ok()?;
-        let topic = root.get("topic")?.as_str()?;
-        let data = root.get("data")?;
-        let local_ts_ns = now_ns();
-        let exch_ts_ns = root
-            .get("ts")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or(local_ts_ns);
-        if topic.starts_with("orderbook.") {
-            let bids = parse_changes(data.get("b"), &self.market, Side::Bid).ok()?;
-            let asks = parse_changes(data.get("a"), &self.market, Side::Ask).ok()?;
-            let update = data.get("u").and_then(Value::as_u64)?;
-            if root.get("type").and_then(Value::as_str) == Some("snapshot") {
-                let snapshot = SnapshotMessage {
-                    exch_ts_ns,
-                    local_ts_ns,
-                    bids: parse_levels(data.get("b"), &self.market, Side::Bid).ok()?,
-                    asks: parse_levels(data.get("a"), &self.market, Side::Ask).ok()?,
-                    last_seq: Some(update),
-                };
-                if self.previous_seq.is_some() {
-                    self.pending.push_back(FeedMessage::Gap(GapMessage {
-                        start_local_ns: local_ts_ns,
-                        start_exch_ns: exch_ts_ns,
-                        end_local_ns: local_ts_ns,
-                        end_exch_ns: exch_ts_ns,
-                        reason: GapReason::Resync,
-                        last_seq: self.previous_seq.unwrap_or_default(),
-                        next_seq: update,
-                        detail: "exchange orderbook snapshot reset".into(),
-                    }));
-                }
-                self.previous_seq = Some(update);
-                self.pending.push_back(FeedMessage::Snapshot(snapshot));
-                return self.pending.pop_front();
-            }
-            let previous = self.previous_seq?;
-            if update <= previous {
-                return None;
-            }
-            if update != previous.saturating_add(1) || update == 1 {
-                self.pending.push_back(FeedMessage::Gap(GapMessage {
-                    start_local_ns: local_ts_ns,
-                    start_exch_ns: exch_ts_ns,
-                    end_local_ns: local_ts_ns,
-                    end_exch_ns: exch_ts_ns,
-                    reason: GapReason::SequenceBreak,
-                    last_seq: previous,
-                    next_seq: update,
-                    detail: "Bybit update id discontinuity; awaiting snapshot".into(),
-                }));
-                self.previous_seq = None;
-                self.awaiting_snapshot = true;
-                return self.pending.pop_front();
-            }
-            self.previous_seq = Some(update);
-            let mut changes = bids;
-            changes.extend(asks);
-            return Some(FeedMessage::Depth(DepthMessage {
-                exch_ts_ns,
-                local_ts_ns,
-                first_prev_seq: Some(previous),
-                first_seq: previous.checked_add(1),
-                last_seq: update,
-                changes,
-            }));
-        }
-        if topic.starts_with("publicTrade.") {
-            let trades = data.as_array()?;
-            for trade in trades {
-                self.pending.push_back(FeedMessage::Trade(TradeRecord {
-                    exch_ts_ns: trade
-                        .get("T")
-                        .and_then(Value::as_i64)
-                        .and_then(ms_to_ns)
-                        .unwrap_or(exch_ts_ns),
-                    local_ts_ns,
-                    side: match trade.get("S").and_then(Value::as_str) {
-                        Some("Buy") => TradeSide::Buy,
-                        Some("Sell") => TradeSide::Sell,
-                        _ => TradeSide::Unknown,
-                    },
-                    price: trade.get("p")?.as_str()?.to_owned(),
-                    qty: trade.get("v")?.as_str()?.to_owned(),
-                    trade_id: trade.get("i").and_then(Value::as_str).map(str::to_owned),
-                }));
-            }
-            return self.pending.pop_front();
-        }
-        if topic.starts_with("tickers.") {
-            let oi = data
-                .get("openInterest")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let funding = data
-                .get("fundingRate")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let next_funding = data
-                .get("nextFundingTime")
-                .and_then(Value::as_str)
-                .and_then(|v| v.parse::<i64>().ok())
-                .and_then(ms_to_ns);
-            if let Some(value) = oi {
-                self.pending.push_back(FeedMessage::Aux(AuxRecord::Oi {
-                    exch_ts_ns,
-                    local_ts_ns,
-                    value,
-                    unit: OpenInterestUnit::Contracts,
-                    source: AuxSource::Stream,
-                }));
-            }
-            if let (Some(rate), Some(next_funding_ts_ns)) = (funding, next_funding) {
-                self.pending.push_back(FeedMessage::Aux(AuxRecord::Funding {
-                    exch_ts_ns,
-                    local_ts_ns,
-                    rate,
-                    next_funding_ts_ns: Some(next_funding_ts_ns),
-                    mark_px: data
-                        .get("markPrice")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    index_px: data
-                        .get("indexPrice")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    source: AuxSource::Stream,
-                }));
-            }
-            return self.pending.pop_front();
-        }
-        if topic.starts_with("allLiquidation.") {
-            let entries = data.as_array()?;
-            for entry in entries {
-                self.pending
-                    .push_back(FeedMessage::Aux(AuxRecord::Liquidation {
-                        exch_ts_ns: entry
-                            .get("T")
-                            .and_then(Value::as_i64)
-                            .and_then(ms_to_ns)
-                            .unwrap_or(exch_ts_ns),
-                        local_ts_ns,
-                        side: match entry.get("S").and_then(Value::as_str) {
-                            Some("Buy") => Some(TradeSide::Buy),
-                            Some("Sell") => Some(TradeSide::Sell),
-                            _ => None,
-                        },
-                        price: entry.get("p").and_then(Value::as_str).map(str::to_owned),
-                        qty: entry.get("v").and_then(Value::as_str).map(str::to_owned),
-                        notional: None,
-                        order_id: None,
-                        status: None,
-                        source: AuxSource::Stream,
-                    }));
-            }
-            return self.pending.pop_front();
-        }
-        None
-    }
-}
-
-impl Feed for BybitFeed {
-    async fn next(&mut self) -> Option<FeedMessage> {
-        loop {
-            if let Some(message) = self.pending.pop_front() {
-                return Some(message);
-            }
-            if *self.cancel.borrow() {
-                return None;
-            }
-            if self.reconnected {
-                self.reconnected = false;
-                self.previous_seq = None;
-                let now = now_ns();
-                self.pending.push_back(FeedMessage::Gap(GapMessage {
-                    start_local_ns: now,
-                    start_exch_ns: now,
-                    end_local_ns: now,
-                    end_exch_ns: now,
-                    reason: GapReason::Disconnect,
-                    last_seq: 0,
-                    next_seq: 0,
-                    detail: "Bybit websocket reconnected".into(),
-                }));
-                continue;
-            }
-            tokio::select! {
-                changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                frame = self.frames.recv() => match frame {
-                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()).await { return Some(value); },
-                    // The transport is reconnecting; the next frame starts a fresh stream.
-                    None => self.reconnected = true,
-                }
-            }
-        }
-    }
-}
-
-fn bybit_category(market: &MarketConfig) -> anyhow::Result<&'static str> {
-    if market.instrument == InstrumentType::Spot {
-        return Ok("spot");
-    }
-    let venue = market.venue.to_ascii_lowercase();
-    if venue.contains("inverse") || venue.contains("coinm") {
-        Ok("inverse")
-    } else if venue.contains("linear") || venue.contains("perp") || venue.contains("future") {
-        Ok("linear")
-    } else {
-        anyhow::bail!("Bybit derivative venue must identify linear or inverse category")
-    }
-}
 
 fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or_default()
@@ -326,184 +29,64 @@ fn ms_to_ns(milliseconds: i64) -> Option<i64> {
     milliseconds.checked_mul(1_000_000)
 }
 
-fn parse_changes(
-    value: Option<&Value>,
-    market: &MarketConfig,
-    side: Side,
-) -> anyhow::Result<Vec<Change>> {
-    let Some(levels) = value.and_then(Value::as_array) else {
-        return Ok(Vec::new());
-    };
-    levels
-        .iter()
-        .map(|row| {
-            let row = row
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("invalid Binance depth row"))?;
-            let price = row
-                .first()
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("invalid Binance depth price"))?;
-            let qty = row
-                .get(1)
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("invalid Binance depth quantity"))?;
-            Ok(Change {
-                side,
-                tick: i64::try_from(decimal_steps(
-                    price,
-                    market.price_decimals,
-                    market.tick_units,
-                )?)
-                .map_err(|_| anyhow::anyhow!("price tick out of range"))?,
-                qty: decimal_steps(qty, market.qty_decimals, market.qty_step_units)?,
-            })
-        })
-        .collect()
-}
-
-fn parse_levels(
-    value: Option<&Value>,
-    market: &MarketConfig,
-    side: Side,
-) -> anyhow::Result<Vec<Level>> {
-    let changes = parse_changes(value, market, side)?;
-    let mut levels = changes
-        .into_iter()
-        .filter(|change| change.qty > 0)
-        .map(|change| Level {
-            tick: change.tick,
-            qty: change.qty,
-        })
-        .collect::<Vec<_>>();
-    match side {
-        Side::Bid => levels.sort_by(|a, b| b.tick.cmp(&a.tick)),
-        Side::Ask => levels.sort_by_key(|level| level.tick),
-    }
-    levels.truncate(usize::from(market.depth_available));
-    Ok(levels)
-}
-
-/// A market feed backed by a connector stream for a venue that only needs the public feed.
+/// A recorder market fed by the connector's market stream.
 ///
-/// OKX and Hyperliquid both answer with a whole book or an already-checked increment, and neither
-/// publishes open interest over the stream, so this feed is the connector stream and nothing else.
-/// Bybit still has its own implementation because connector has no Bybit market module yet.
-struct ConnectorVenueFeed {
+/// Every venue now arrives this way. The connector owns the socket, the sequence check, the depth
+/// image and its alignment, so none of that exists here; the one duty the connector does not
+/// perform per venue is the REST open interest poll Binance and Bybit both need, and it is one
+/// routine for both rather than one per venue.
+struct MarketStreamFeed {
     inner: collector::feed::connector::ConnectorFeed,
     /// Kept alive so the connector stream stops when this feed does.
     _stream: connector::market_stream::MarketStreamHandle,
-    pending: VecDeque<FeedMessage>,
-    cancel: watch::Receiver<bool>,
-}
-
-impl ConnectorVenueFeed {
-    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
-        let (inner, sender) = collector::feed::connector::ConnectorFeed::channel(market.clone());
-        let kinds = stream_kinds(&market);
-        let venue = market.venue.to_ascii_lowercase();
-        let handle = if venue.starts_with("okx") {
-            let config =
-                connector::market_stream::OkxMarketStreamConfig::new(&market.symbol, kinds);
-            connector::market_stream::start_okx_market_stream(config, sender).await?
-        } else if venue.starts_with("hyperliquid") {
-            let config =
-                connector::market_stream::HyperliquidMarketStreamConfig::new(&market.symbol, kinds);
-            connector::market_stream::start_hyperliquid_market_stream(config, sender).await?
-        } else {
-            return Err(anyhow::anyhow!("no connector market stream for {venue}"));
-        };
-        Ok(Self {
-            inner,
-            _stream: handle,
-            pending: VecDeque::new(),
-            cancel,
-        })
-    }
-}
-
-impl Feed for ConnectorVenueFeed {
-    async fn next(&mut self) -> Option<FeedMessage> {
-        if let Some(message) = self.pending.pop_front() {
-            return Some(message);
-        }
-        loop {
-            if *self.cancel.borrow() {
-                return None;
-            }
-            tokio::select! {
-                changed = self.cancel.changed() => {
-                    if changed.is_err() || *self.cancel.borrow() { return None; }
-                }
-                message = self.inner.next() => return message,
-            }
-        }
-    }
-}
-
-/// A Binance market feed backed by the connector's market stream.
-///
-/// The connector owns the socket, the sequence check, the REST snapshot and its alignment, so
-/// none of that is repeated here. What stays with the recorder is the two duties the connector
-/// does not perform: polling open interest over REST.
-struct BinanceConnectorFeed {
-    inner: collector::feed::connector::ConnectorFeed,
-    /// Kept alive so the connector stream stops when this feed does.
-    stream: Option<connector::market_stream::MarketStreamHandle>,
-    client: reqwest::Client,
     market: MarketConfig,
-    cancel: watch::Receiver<bool>,
+    client: reqwest::Client,
     pending: VecDeque<FeedMessage>,
-    oi_timer: tokio::time::Interval,
+    cancel: watch::Receiver<bool>,
+    /// Present only for a venue whose open interest this recorder polls itself; zero disables it.
+    oi_timer: Option<tokio::time::Interval>,
     oi_url: &'static str,
 }
 
-impl BinanceConnectorFeed {
+impl MarketStreamFeed {
     async fn connect(
         market: MarketConfig,
         settings: RecorderSettings,
         cancel: watch::Receiver<bool>,
     ) -> anyhow::Result<Self> {
         let (inner, sender) = collector::feed::connector::ConnectorFeed::channel(market.clone());
-        let mut config = connector::market_stream::BinanceMarketStreamConfig::new(
-            &market.symbol,
-            stream_kinds(&market),
-        );
-        if let Some(api) = binance_api_root(&market.venue) {
-            config.api_url = api.to_owned();
-        }
-        if let Some(stream) = binance_stream_root(&market.venue) {
-            config.stream_url = stream.to_owned();
-        }
-        config.depth_snapshot_limit = depth_snapshot_limit(settings.depth_levels);
-        let stream = connector::market_stream::start_binance_market_stream(config, sender).await?;
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
-        let oi_url = match market.venue.to_ascii_lowercase().as_str() {
-            "binancefuturescm" | "binance_coinm" => "https://dapi.binance.com/dapi/v1/openInterest",
-            _ => "https://fapi.binance.com/fapi/v1/openInterest",
-        };
-        let oi_timer = interval_at(
-            Instant::now() + std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
-            std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
-        );
+        let handle = start_market_stream(&market, &settings, sender).await?;
+        let oi_url = open_interest_url(&market);
+        // A venue that publishes open interest over its stream (Bybit) or does not have one (a
+        // spot market, an unsupported venue) needs no poll of ours.
+        let oi_timer = (market.instrument != InstrumentType::Spot
+            && !oi_url.is_empty()
+            && settings.oi_poll_ms > 0)
+            .then(|| {
+                let mut timer = interval_at(
+                    Instant::now()
+                        + std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
+                    std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
+                );
+                // A recorder that was busy does not owe the venue a burst of poll requests.
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                timer
+            });
         Ok(Self {
             inner,
-            stream: Some(stream),
-            client,
+            _stream: handle,
             market,
-            cancel,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()?,
             pending: VecDeque::new(),
+            cancel,
             oi_timer,
             oi_url,
         })
     }
 
     async fn poll_open_interest(&self) -> Option<FeedMessage> {
-        if self.market.instrument == InstrumentType::Spot {
-            return None;
-        }
         let response: Value = self
             .client
             .get(self.oi_url)
@@ -531,17 +114,7 @@ impl BinanceConnectorFeed {
     }
 }
 
-impl Drop for BinanceConnectorFeed {
-    fn drop(&mut self) {
-        // Dropping the handle aborts the connector tasks, so a stopped market does not leave a
-        // socket publishing into a channel nobody reads.
-        if let Some(stream) = self.stream.take() {
-            drop(stream);
-        }
-    }
-}
-
-impl Feed for BinanceConnectorFeed {
+impl Feed for MarketStreamFeed {
     async fn next(&mut self) -> Option<FeedMessage> {
         if let Some(message) = self.pending.pop_front() {
             return Some(message);
@@ -550,11 +123,18 @@ impl Feed for BinanceConnectorFeed {
             if *self.cancel.borrow() {
                 return None;
             }
+            let poll_enabled = self.oi_timer.is_some();
             tokio::select! {
                 changed = self.cancel.changed() => {
                     if changed.is_err() || *self.cancel.borrow() { return None; }
                 }
-                _ = self.oi_timer.tick(), if self.market.instrument != InstrumentType::Spot => {
+                tick = async {
+                    match self.oi_timer.as_mut() {
+                        Some(timer) => timer.tick().await,
+                        None => std::future::pending().await,
+                    }
+                }, if poll_enabled => {
+                    let _ = tick;
                     if let Some(message) = self.poll_open_interest().await {
                         return Some(message);
                     }
@@ -562,6 +142,91 @@ impl Feed for BinanceConnectorFeed {
                 message = self.inner.next() => return message,
             }
         }
+    }
+}
+
+/// The REST endpoint that reports a venue's open interest, or empty when the recorder does not
+/// poll it.
+///
+/// Only the USDⓈ-M and COIN-M Binance venues have one here: Bybit's stream polls its own, and a
+/// venue without an endpoint must not be sent Binance's. Returning Binance's URL for an unknown
+/// venue would make every such market ask Binance for a symbol it does not have.
+fn open_interest_url(market: &MarketConfig) -> &'static str {
+    if market.instrument == InstrumentType::Spot {
+        return "";
+    }
+    match market.venue.to_ascii_lowercase().as_str() {
+        "binance" | "binancefuturesum" | "binance_futures" => {
+            "https://fapi.binance.com/fapi/v1/openInterest"
+        }
+        "binancefuturescm" | "binance_coinm" => "https://dapi.binance.com/dapi/v1/openInterest",
+        _ => "",
+    }
+}
+
+/// Starts the connector stream for a market's venue and returns its handle.
+///
+/// Each venue's only recorder-specific choice is its configuration: the websocket and REST roots
+/// for a test or alternative deployment, and Bybit's published depth and open interest poll. The
+/// stream itself is the connector's, so a venue that gains or changes a rule gains it here too.
+async fn start_market_stream(
+    market: &MarketConfig,
+    settings: &RecorderSettings,
+    sender: connector::connector::PublishSender,
+) -> anyhow::Result<connector::market_stream::MarketStreamHandle> {
+    use connector::market_stream as stream;
+    let kinds = stream_kinds(market);
+    let venue = market.venue.to_ascii_lowercase();
+    let handle = if venue.starts_with("binance") {
+        let mut config = stream::BinanceMarketStreamConfig::new(&market.symbol, kinds);
+        if let Some(api) = binance_api_root(&market.venue) {
+            config.api_url = api.to_owned();
+        }
+        if let Some(root) = binance_stream_root(&market.venue) {
+            config.stream_url = root.to_owned();
+        }
+        config.depth_snapshot_limit = depth_snapshot_limit(settings.depth_levels);
+        stream::start_binance_market_stream(config, sender).await?
+    } else if venue.starts_with("okx") {
+        let config = stream::OkxMarketStreamConfig::new(&market.symbol, kinds);
+        stream::start_okx_market_stream(config, sender).await?
+    } else if venue.starts_with("hyperliquid") {
+        let config = stream::HyperliquidMarketStreamConfig::new(&market.symbol, kinds);
+        stream::start_hyperliquid_market_stream(config, sender).await?
+    } else if venue.starts_with("bybit") {
+        let category = bybit_category(market)?;
+        let mut config =
+            stream::BybitMarketStreamConfig::new(category, &market.symbol, market.depth_available);
+        if market.instrument != InstrumentType::Spot {
+            // Bybit publishes open interest only over REST, so the poll that produces the recorded
+            // `aux/kind=oi` rows is the connector's; one cadence, from the recorder's own setting.
+            config = config.with_open_interest_interval(std::time::Duration::from_millis(
+                u64::from(settings.oi_poll_ms),
+            ));
+        }
+        stream::start_bybit_market_stream(config, sender).await?
+    } else {
+        return Err(anyhow::anyhow!("no connector market stream for {venue}"));
+    };
+    Ok(handle)
+}
+
+/// Which Bybit V5 product a recorder market belongs to.
+///
+/// Bybit names one protocol by category, and the venue string a recording uses already says which:
+/// `bybit_spot`, `bybit_linear`, `bybit_inverse`, or a bare `bybit` for the linear perpetuals.
+fn bybit_category(market: &MarketConfig) -> anyhow::Result<connector::bybit::BybitCategory> {
+    use connector::bybit::BybitCategory;
+    if market.instrument == InstrumentType::Spot {
+        return Ok(BybitCategory::Spot);
+    }
+    let venue = market.venue.to_ascii_lowercase();
+    if venue.contains("inverse") || venue.contains("coinm") {
+        Ok(BybitCategory::Inverse)
+    } else if venue.contains("linear") || venue.contains("perp") || venue.contains("future") {
+        Ok(BybitCategory::Linear)
+    } else {
+        anyhow::bail!("Bybit derivative venue must identify linear or inverse category")
     }
 }
 
@@ -1491,43 +1156,23 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
         let cancel = shutdown_rx.clone();
         tasks.spawn(async move {
             let venue_key = market.venue.to_ascii_lowercase();
-            let feed = match venue_key.as_str() {
-                "binance" | "binancespot" | "binance_spot" | "binancefuturesum"
-                | "binance_futures" | "binancefuturescm" | "binance_coinm" => {
-                    MarketFeed::Binance(Box::new(
-                        BinanceConnectorFeed::connect(market.clone(), settings.clone(), cancel)
-                            .await
-                            .map_err(|error| {
-                                format!("could not initialize {venue_key} feed: {error}")
-                            })?,
-                    ))
-                }
-                key if key.starts_with("bybit") => {
-                    MarketFeed::Bybit(BybitFeed::connect(market.clone(), cancel).await.map_err(
-                        |error| format!("could not initialize {venue_key} feed: {error}"),
-                    )?)
-                }
-                key if key.starts_with("okx") => MarketFeed::Okx(
-                    ConnectorVenueFeed::connect(market.clone(), cancel)
-                        .await
-                        .map_err(|error| {
-                            format!("could not initialize {venue_key} feed: {error}")
-                        })?,
-                ),
-                key if key.starts_with("hyperliquid") => {
-                    if market.feed_mode != collector::book::FeedMode::Snapshot {
-                        return Err("Hyperliquid l2Book requires snapshot feed mode".to_owned());
-                    }
-                    MarketFeed::Hyperliquid(
-                        ConnectorVenueFeed::connect(market, cancel)
-                            .await
-                            .map_err(|error| {
-                                format!("could not initialize {venue_key} feed: {error}")
-                            })?,
-                    )
-                }
-                _ => return Err("unsupported market venue".to_owned()),
-            };
+            let supported = venue_key.starts_with("binance")
+                || venue_key.starts_with("okx")
+                || venue_key.starts_with("bybit")
+                || venue_key.starts_with("hyperliquid");
+            if !supported {
+                return Err("unsupported market venue".to_owned());
+            }
+            if venue_key.starts_with("hyperliquid")
+                && market.feed_mode != collector::book::FeedMode::Snapshot
+            {
+                return Err("Hyperliquid l2Book requires snapshot feed mode".to_owned());
+            }
+            // One feed for every venue: the connector's stream, plus the REST open interest poll
+            // the connector does not own for a venue that needs it.
+            let feed = MarketStreamFeed::connect(market.clone(), settings.clone(), cancel)
+                .await
+                .map_err(|error| format!("could not initialize {venue_key} feed: {error}"))?;
             run_market(meta, &root, &venue, &instrument, &settings, feed)
                 .await
                 .map_err(|error| {

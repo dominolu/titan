@@ -247,6 +247,14 @@ pub enum PublishEvent {
     },
     /// The concrete connector detected that consumers must discard their current stream image.
     StreamInvalidated { symbol: String, epoch: u64 },
+    /// A venue that publishes open interest only over REST has polled it. The value is the venue's
+    /// own text and its unit is the venue's, so it is passed through rather than converted: a
+    /// recorder stores it as written, and contract-versus-coin units are the venue's convention.
+    OpenInterest {
+        symbol: String,
+        open_interest: String,
+        exch_ts: i64,
+    },
 }
 
 impl PublishEvent {

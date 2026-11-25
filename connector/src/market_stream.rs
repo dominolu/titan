@@ -362,6 +362,94 @@ pub async fn start_hyperliquid_market_stream(
     .await
 }
 
+/// Where a Bybit V5 public market stream connects, and what to subscribe to.
+#[cfg(feature = "bybit")]
+#[derive(Clone, Debug)]
+pub struct BybitMarketStreamConfig {
+    /// The websocket endpoint. Built from the category by [`Self::new`].
+    pub stream_url: String,
+    /// The REST base the orderbook image and open interest are read from.
+    pub api_url: String,
+    /// Which Bybit product the symbol belongs to.
+    pub category: crate::bybit::BybitCategory,
+    /// The venue's symbol, e.g. `BTCUSDT`.
+    pub symbol: String,
+    /// The depth subscription: Bybit publishes 1, 50, 200 and 500 levels and nothing else.
+    pub depth: u16,
+    /// How often open interest is polled, for a derivative market that records it.
+    pub open_interest_interval: Duration,
+}
+
+#[cfg(feature = "bybit")]
+impl BybitMarketStreamConfig {
+    /// Production Bybit public data for `symbol` in `category`, recording `depth_levels` levels.
+    ///
+    /// The subscription depth is the smallest published depth that covers `depth_levels`, which is
+    /// also what the recorder reports as `depth_available`.
+    pub fn new(
+        category: crate::bybit::BybitCategory,
+        symbol: impl Into<String>,
+        depth_levels: u16,
+    ) -> Self {
+        let config = crate::bybit::BybitMarketStreamConfig::new(category, symbol, depth_levels);
+        Self {
+            stream_url: config.stream_url,
+            api_url: config.api_url,
+            category,
+            symbol: config.symbol,
+            depth: config.depth,
+            open_interest_interval: Duration::from_secs(0),
+        }
+    }
+
+    /// Sets how often open interest is polled; zero disables the poll.
+    pub fn with_open_interest_interval(mut self, interval: Duration) -> Self {
+        self.open_interest_interval = interval;
+        self
+    }
+}
+
+/// Starts a Bybit public market stream, publishing into `ev_tx`, and returns its handle.
+///
+/// The stream checks the orderbook's update id itself. A lost increment publishes a
+/// `StreamInvalidated` and requests the book again over the same connection, so a break costs the
+/// trade stream nothing; only a connection that actually ends is retried by [`run_stream_loop`].
+#[cfg(feature = "bybit")]
+pub async fn start_bybit_market_stream(
+    config: BybitMarketStreamConfig,
+    ev_tx: PublishSender,
+) -> Result<MarketStreamHandle, MarketStreamError> {
+    if config.symbol.is_empty() {
+        return Err(MarketStreamError::Config("empty symbol"));
+    }
+    if config.depth == 0 {
+        return Err(MarketStreamError::Config("no depth levels requested"));
+    }
+    let (command_tx, _command_rx) = broadcast::channel(64);
+    run_stream_loop(ev_tx, command_tx, move |_command_rx, ev_tx| {
+        let config = config.clone();
+        async move {
+            let inner = crate::bybit::BybitMarketStreamConfig {
+                stream_url: config.stream_url,
+                api_url: config.api_url,
+                category: config.category,
+                symbol: config.symbol,
+                depth: config.depth,
+                open_interest_interval: config.open_interest_interval,
+                heartbeat: crate::transport::Heartbeat {
+                    check_interval: Duration::from_secs(15),
+                    timeout: Duration::from_secs(60),
+                },
+            };
+            // One connection attempt: `run_stream_loop` owns the retry policy that every venue
+            // shares, so this stream must not run a second retry loop of its own inside it.
+            let mut stream = crate::bybit::run::MarketStream::new(inner, ev_tx);
+            stream.connect().await.map_err(|error| error.to_string())
+        }
+    })
+    .await
+}
+
 /// The websocket endpoints and route for a stream root.
 ///
 /// Binance serves high-frequency depth and trade frames on `/public/ws` and mark price, funding
