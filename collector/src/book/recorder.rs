@@ -320,7 +320,6 @@ pub struct ClosedSlot {
     pub seq_last: u64,
     pub n_msgs: u16,
     pub n_msgs_saturated: bool,
-    pub late_events: u32,
     pub changes: Vec<Change>,
     pub snapshot_bids: Vec<Level>,
     pub snapshot_asks: Vec<Level>,
@@ -431,9 +430,6 @@ pub fn build_data_block(
     if closed_slots.iter().any(|slot| slot.n_msgs_saturated) {
         header.block_flags |= 1 << 4;
     }
-    if closed_slots.iter().any(|slot| slot.late_events > 0) {
-        header.block_flags |= 1 << 3;
-    }
     header.seq_base = if meta.feed_mode == FeedMode::Snapshot {
         0
     } else {
@@ -509,17 +505,7 @@ pub async fn run_market<F: Feed>(
             }
             None => {
                 if let Some(slot) = recorder.flush_open_slot()? {
-                    write_closed_slot(
-                        &meta,
-                        &mut writer,
-                        &mut event_writer,
-                        root,
-                        venue,
-                        instrument,
-                        slot,
-                        &mut aggregator,
-                        &mut last_times,
-                    )?;
+                    write_closed_slot(&meta, &mut writer, slot, &mut aggregator, &mut last_times)?;
                 }
                 continue;
             }
@@ -577,31 +563,11 @@ pub async fn run_market<F: Feed>(
             }
         };
         for slot in closed {
-            write_closed_slot(
-                &meta,
-                &mut writer,
-                &mut event_writer,
-                root,
-                venue,
-                instrument,
-                slot,
-                &mut aggregator,
-                &mut last_times,
-            )?;
+            write_closed_slot(&meta, &mut writer, slot, &mut aggregator, &mut last_times)?;
         }
     }
     if let Some(slot) = recorder.flush_open_slot()? {
-        write_closed_slot(
-            &meta,
-            &mut writer,
-            &mut event_writer,
-            root,
-            venue,
-            instrument,
-            slot,
-            &mut aggregator,
-            &mut last_times,
-        )?;
+        write_closed_slot(&meta, &mut writer, slot, &mut aggregator, &mut last_times)?;
     }
     if let Some(block) = aggregator.flush(&meta)? {
         append_block(&mut writer, block, &mut last_times)?;
@@ -840,29 +806,13 @@ impl SlotAggregator {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_closed_slot(
     meta: &MarketMeta,
     writer: &mut BookWriter,
-    event_writer: &mut MarketEventWriter,
-    root: &std::path::Path,
-    venue: &str,
-    instrument: &str,
     slot: ClosedSlot,
     aggregator: &mut SlotAggregator,
     last_times: &mut (i64, i64),
 ) -> Result<(), BookError> {
-    if slot.late_events > 0 {
-        let event = serde_json::json!({"exch_ts_ns": slot.exch_ts_ns, "local_ts_ns": slot.local_ts_ns, "status": "late", "late_events": slot.late_events});
-        event_writer.write_validation(
-            root,
-            venue,
-            instrument,
-            &meta.symbol,
-            slot.exch_ts_ns,
-            &event,
-        )?;
-    }
     if let Some(block) = aggregator.push(meta, slot)? {
         append_block(writer, block, last_times)?;
     }
@@ -898,7 +848,6 @@ pub struct MarketRecorder {
     slot_first_prev: Option<u64>,
     slot_last_seq: u64,
     slot_n_msgs: u64,
-    slot_late_events: u32,
     last_clamped_exch_ts: Option<i64>,
     last_seq: Option<u64>,
     /// The stream epoch the shared book is applying: a snapshot starts a new one.
@@ -931,7 +880,6 @@ impl MarketRecorder {
             slot_first_prev: None,
             slot_last_seq: 0,
             slot_n_msgs: 0,
-            slot_late_events: 0,
             last_clamped_exch_ts: None,
             last_seq: None,
             book_epoch: 0,
@@ -975,7 +923,6 @@ impl MarketRecorder {
             // of a state the book has moved past. Applying it would put an outdated change on top
             // of newer ones, so it is counted and dropped.
             if message.last_seq <= previous {
-                self.slot_late_events = self.slot_late_events.saturating_add(1);
                 return Ok(Vec::new());
             }
             if message.first_prev_seq != Some(previous) {
@@ -999,12 +946,9 @@ impl MarketRecorder {
             .current_slot
             .or_else(|| self.last_closed_slot.map(|last| last.saturating_add(1)));
         let slot = minimum_slot.map_or(raw_slot, |minimum| raw_slot.max(minimum));
-        // A message stamped behind the slot the book is in (one the venue delivered late) still
-        // carries a change the book has yet to apply, and the sequence check above has already
-        // shown the message follows the last one applied. It goes into the open slot, and the slot
-        // records that it holds a late message. Dropping it would leave the book behind every
-        // message after it, which is a disagreement with the venue rather than a timestamp.
-        let late = slot != raw_slot || clamped != message.exch_ts_ns;
+        // A message stamped behind the slot the book is in still carries a change the book has yet
+        // to apply. Dropping it would leave the book behind every message after it, which is a
+        // disagreement with the venue rather than a timestamp, so it goes into the open slot.
         let mut closed = Vec::new();
         if let Some(current) = self.current_slot
             && slot > current
@@ -1019,10 +963,6 @@ impl MarketRecorder {
             self.current_slot = Some(slot);
             self.slot_n_msgs = 0;
             self.slot_first_prev = None;
-            self.slot_late_events = 0;
-        }
-        if late {
-            self.slot_late_events = self.slot_late_events.saturating_add(1);
         }
         let prev_seq = message.first_prev_seq.or(self.last_seq);
         if self.slot_first_prev.is_none() {
@@ -1056,7 +996,6 @@ impl MarketRecorder {
             .current_slot
             .or_else(|| self.last_closed_slot.map(|last| last.saturating_add(1)));
         let slot = minimum_slot.map_or(raw_slot, |minimum| raw_slot.max(minimum));
-        let late = slot != raw_slot || clamped != message.exch_ts_ns;
         let mut closed = Vec::new();
         if let Some(current) = self.current_slot
             && slot > current
@@ -1070,10 +1009,6 @@ impl MarketRecorder {
         if self.current_slot != Some(slot) {
             self.current_slot = Some(slot);
             self.slot_n_msgs = 0;
-            self.slot_late_events = 0;
-        }
-        if late {
-            self.slot_late_events = self.slot_late_events.saturating_add(1);
         }
         // A snapshot feed replaces the book outright, as its own stream epoch.
         self.book_epoch = self.book_epoch.saturating_add(1);
@@ -1113,7 +1048,6 @@ impl MarketRecorder {
         self.last_closed_slot = Some(slot);
         self.current_slot = None;
         self.slot_n_msgs = 0;
-        self.slot_late_events = 0;
         self.slot_first_prev = None;
         Ok(closed)
     }
@@ -1156,7 +1090,7 @@ impl MarketRecorder {
         let snapshot_bids = previous.0.clone();
         let snapshot_asks = previous.1.clone();
         self.previous_window = Some(current);
-        if changes.is_empty() && self.slot_late_events == 0 {
+        if changes.is_empty() {
             return Ok(None);
         }
         Ok(Some(ClosedSlot {
@@ -1167,7 +1101,6 @@ impl MarketRecorder {
             seq_last: self.slot_last_seq,
             n_msgs: self.slot_n_msgs.min(u16::MAX as u64) as u16,
             n_msgs_saturated: self.slot_n_msgs > u64::from(u16::MAX),
-            late_events: self.slot_late_events,
             changes,
             snapshot_bids,
             snapshot_asks,
@@ -1366,13 +1299,6 @@ mod tests {
         // after the one stamped ahead of it, which is the only order that keeps the book and the
         // venue's last update in step.
         assert_eq!(quantities, vec![2, 3], "each message is written once");
-        // The block header marks that a slot held a late message (bit 3).
-        assert!(
-            records
-                .iter()
-                .any(|(_, header)| header.block_flags & (1 << 3) != 0),
-            "the block holding the late message is flagged as such"
-        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1419,8 +1345,7 @@ mod tests {
             .unwrap();
         assert!(nothing.is_empty());
         assert_eq!(recorder.window().0, vec![Level { tick: 100, qty: 2 }]);
-        let slot = recorder.flush_open_slot().unwrap().unwrap();
-        assert_eq!(slot.late_events, 1);
+        recorder.flush_open_slot().unwrap();
     }
 
     fn meta() -> MarketMeta {
@@ -1762,41 +1687,6 @@ mod tests {
     }
 
     #[test]
-    fn late_messages_are_counted_even_when_the_slot_has_no_book_changes() {
-        let mut recorder = MarketRecorder::new(meta()).unwrap();
-        recorder
-            .install_snapshot(
-                &[Level { tick: 100, qty: 1 }],
-                &[Level { tick: 101, qty: 1 }],
-                Some(10),
-            )
-            .unwrap();
-        recorder
-            .apply(DepthMessage {
-                exch_ts_ns: 210_000_000,
-                local_ts_ns: 210_001_000,
-                first_prev_seq: Some(10),
-                first_seq: Some(11),
-                last_seq: 11,
-                changes: vec![],
-            })
-            .unwrap();
-        recorder
-            .apply(DepthMessage {
-                exch_ts_ns: 150_000_000,
-                local_ts_ns: 211_001_000,
-                first_prev_seq: Some(11),
-                first_seq: Some(12),
-                last_seq: 12,
-                changes: vec![],
-            })
-            .unwrap();
-        let slot = recorder.flush_open_slot().unwrap().unwrap();
-        assert!(slot.changes.is_empty());
-        assert_eq!(slot.late_events, 1);
-    }
-
-    #[test]
     fn sequence_gap_does_not_partially_mutate_the_book() {
         let mut r = MarketRecorder::new(meta()).unwrap();
         r.install_snapshot(
@@ -1887,7 +1777,6 @@ depth_available = 1000
             seq_last: 101,
             n_msgs: 3,
             n_msgs_saturated: false,
-            late_events: 0,
             changes: vec![Change {
                 side: Side::Bid,
                 tick: 99,
@@ -1930,7 +1819,6 @@ depth_available = 1000
             seq_last: 101,
             n_msgs: u16::MAX,
             n_msgs_saturated: true,
-            late_events: 0,
             changes: vec![Change {
                 side: Side::Bid,
                 tick: 99,
@@ -1971,7 +1859,6 @@ depth_available = 1000
             seq_last: seq + 1,
             n_msgs: 1,
             n_msgs_saturated: false,
-            late_events: 0,
             changes,
             snapshot_bids: bids,
             snapshot_asks: asks,
@@ -2199,17 +2086,16 @@ depth_available = 1000
     }
 
     #[test]
-    fn aggregator_keeps_late_only_slots_in_the_block() {
+    fn aggregator_keeps_an_empty_slot_in_the_block() {
         let market = meta();
         let mut aggregator = SlotAggregator::new(&market).unwrap();
-        let mut slot = slot_window(
+        let slot = slot_window(
             1000,
             10,
             vec![],
             vec![Level { tick: 100, qty: 1 }],
             vec![Level { tick: 101, qty: 1 }],
         );
-        slot.late_events = 1;
         assert!(aggregator.push(&market, slot).unwrap().is_none());
         let block = aggregator.flush(&market).unwrap().unwrap();
         let payload = decode(&block);

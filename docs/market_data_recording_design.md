@@ -348,7 +348,7 @@ size_decimal = qty_steps × qty_step_units / 10^qty_decimals
 | --- | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `[u8;4]` | `"TMB1"` |
 | 4 | 1 | `kind` | `u8` | 0 数据块，1 gap 控制块 |
-| 5 | 1 | `block_flags` | `u8` | bit0 块首快照，bit1 发生 rebase，bit2 gap 边界，bit3 迟到事件被钳制，bit4 存在饱和的 `n_msgs`，bit5 payload 是 ZSTD 帧；其余保留 |
+| 5 | 1 | `block_flags` | `u8` | bit0 块首快照，bit1 发生 rebase，bit2 gap 边界，bit4 存在饱和的 `n_msgs`，bit5 payload 是 ZSTD 帧；bit3 已退役（恒为 0，旧文件仍可读）；其余保留 |
 | 6 | 2 | `reserved0` | `u16` | 0 |
 | 8 | 4 | `block_len` | `u32` | 含块头、控制说明与尾部填充，8 字节对齐 |
 | 12 | 4 | `market_id` | `u32` | 与段头一致 |
@@ -444,7 +444,7 @@ padding              到 block_len
 - 若某条记录的 `seq_last_delta`/`seq_first_prev_delta` 或块尾 `seq_last_processed_delta` 将超过 `u32` 或等于哨兵 `0xFFFFFFFF`，录制端必须结束当前块；下一块重新取 `seq_base`，不得截断或回绕。
 - 无显式前驱字段的场所（例如 Bybit 的 `u`）用上一已处理消息的结束序号作为 `seq_first_prev`，此时录制端在线连续性检查也退化为单调性检查，不等同于原生链证明。由于落盘格式省略无变化槽，质量报告的稀疏记录序号检查标记为 `monotonic_only`；原生链检查结果由段头 `flags.bit2` 表示。
 - 槽内无净变化则不写记录；回放按网格推进时状态自动延续。
-- 迟到事件的归槽规则见 10.4，不再使用“早于块起点钳制到槽 0”的旧规则。迟到事件的 `local_lag_us` 基于钳制时间，原始时间差只计入 `late_events` 指标，不进入回放时钟。
+- 迟到事件的归槽规则见 10.4，不再使用“早于块起点钳制到槽 0”的旧规则。`local_lag_us` 基于钳制时间，原始时间差既不进位也不单独统计：本格式不表达到达延迟。
 
 ### 9.3 变化列（CSR 的 col/val）
 
@@ -503,12 +503,12 @@ padding              到 block_len
 
 1. 对每条消息计算 `clamped_exch_ts = max(prev_clamped_exch_ts, raw_exch_ts)`，保证槽序号非递减。
 2. `raw_slot = floor(raw_exch_ts / grid)`；`slot = floor(clamped_exch_ts / grid)`。
-3. 若 `slot` 小于 `current_open_slot`，钳制到 `current_open_slot`，并置 `block_flags.bit3`、累加 `late_events`。
+3. 若 `slot` 小于 `current_open_slot`，钳制到 `current_open_slot`。钳制是归槽规则，不产生标记：录制端不判断一条消息是否“迟到”，到达延迟也不在格式的验证范围内。
 4. 若 `slot` 大于 `current_open_slot`：在应用该消息前，按顺序关闭 `[current_open_slot, slot)` 的槽（关闭过程见 10.2），每个槽使用当时已处理消息的窗口状态；然后打开 `slot` 并应用消息。
 5. 空闲刷新：若 `idle_flush_ms` 内无消息，按本地时钟关闭已过期的开放槽（截止 `floor((local_now - idle_flush_ms) / grid)`）；此后到达的迟到消息钳制到新的开放槽。
 6. 块关闭时先关闭其覆盖的所有槽，再写记录；块首快照在开块时已确定，不随后续消息改写。已关闭槽不会被迟到消息改写。
 
-**槽关闭水位**：`current_open_slot` 之前的槽视为已关闭（本设计不使用 grace，水位即当前开放槽）。消息 `raw_slot < current_open_slot` 即为迟到，只能进入 `current_open_slot` 及之后；其交易所时间取钳制值，避免回退。
+**槽关闭水位**：`current_open_slot` 之前的槽视为已关闭（本设计不使用 grace，水位即当前开放槽）。`raw_slot < current_open_slot` 的消息只能进入 `current_open_slot` 及之后；其交易所时间取钳制值，避免回退。
 
 ### 10.5 不可恢复信息
 
@@ -731,7 +731,7 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 | 结论 | 条件 |
 | --- | --- |
 | `FAIL` | 块间快照 diff ≠ 0；diff feed 序号连续性校验失败；合约必需数据（trade/OI/资金费/爆仓）整日缺失且交易所明确支持该数据 |
-| `PASS_WITH_WARNINGS` | 有 gap（无论长短）；有坏块或尾部截断；`late_ratio` > 0.1%；`depth_available < depth_requested`；`feed_mode=snapshot`；精度拒绝 > 0；trade/aux 部分缺失、尾部截断或过期；`unsupported` 的合约辅助数据 |
+| `PASS_WITH_WARNINGS` | 有 gap（无论长短）；有坏块或尾部截断；`depth_available < depth_requested`；`feed_mode=snapshot`；精度拒绝 > 0；trade/aux 部分缺失、尾部截断或过期；`unsupported` 的合约辅助数据 |
 | `PASS` | 无 FAIL、无 WARN |
 
 说明：
@@ -750,7 +750,7 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 | --- | --- |
 | 完整性 | `segment_count`、`gap_count`、`gap_ms`、`gap_ms_ratio`、`top_gaps[]`、`bad_blocks`、`truncated_segments`、`seq_check(native_chain/monotonic_only/none)`；`trade_count`、`trade_truncated_tail`、`aux_oi_samples`、`aux_funding_samples`、`aux_liquidation_count`、`aux_unsupported[]`、`oi_max_age_ms`、`funding_last_age_ms` |
 | 准确性 | `block_diff_mismatches`、`rest_samples_compared`、`rest_mismatches`、`precision_rejects`、`precision_reject_ratio` |
-| 时效 | `late_events`、`late_ratio`、`lag_p50_us`、`lag_p95_us`、`lag_p99_us` |
+| 时效 | `lag_p50_us`、`lag_p95_us`、`lag_p99_us` |
 | 覆盖 | `instrument_type`、`feed_mode`、`depth_requested/available/recorded`、`changes_per_slot_p50/p95`；`aux_sources`（stream/rest） |
 | 结果 | `status`、`warnings[]`、`failures[]` |
 
@@ -855,7 +855,6 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | `qty_escape_ratio` | 是否需要改 `u32` 编码 |
 | `precision_rejects` | meta 与交易所不一致 |
 | `seq_gaps`, `resyncs`, `gap_duration_ms`, `gap_ms_ratio` | 数据质量 |
-| `late_events`, `late_ratio` | 槽水位/时钟质量 |
 | `rebase_count`, `window_span_overflow` | 窗口质量 |
 | `snapshot_diff_count`, `rest_stale_samples`, `rest_samples_compared` | 对账健康与有效样本数 |
 | `bad_blocks`, `crc_failures`, `truncated_segments` | 存储健康 |
@@ -863,7 +862,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | `aux_oi_samples`, `aux_funding_samples`, `aux_liquidation_count`, `oi_max_age_ms`, `aux_unsupported` | 合约辅助数据覆盖与过期 |
 | `n_msgs_saturated`, `fsync_latency_p99`, `writer_queue_depth` | 写入压力/计数饱和 |
 
-告警：CRC 失败、坏块、对账不一致、gap 超阈值、`late_ratio` 异常、磁盘余量低于最低值、持续精度拒绝。日志不回显凭据、真实地址或账户标识。
+告警：CRC 失败、坏块、gap 超阈值、磁盘余量低于最低值、持续精度拒绝。日志不回显凭据、真实地址或账户标识。
 
 ---
 
@@ -879,7 +878,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | 参数矩阵 | `grid_ms ∈ {10, 100, 1000}` × `depth ∈ {20, 100, 200, 500}` × `feed_mode ∈ {diff, snapshot}` 的格式/回放正确 |
 | 精度 | tick/qty 边界、`u16` 转义（65534/65535）、`u32` 数量上限；不整除必须拒绝 |
 | 漂移 | 合成极端价格移动，验证 rebase 切块与偏移范围；窗口跨度 > 65535 tick 触发 gap |
-| 迟到/乱序 | 构造交易所时间回退、乱序到达、空闲刷新，验证钳制/水位/`late_events`，不回头改写已关闭槽 |
+| 迟到/乱序 | 构造交易所时间回退、乱序到达、空闲刷新，验证钳制/水位，不回头改写已关闭槽 |
 | 断档 | 断连、序号跳变、重同步、writer 重启；gap 块是新段首块，epoch 递增，默认 `skip` 不中止且结果有标注 |
 | 坏块 | 人工破坏中间块（CRC/块头），验证跳到后续好块、只丢坏块区间；尾部部分块只截断尾部 |
 | 序号 | 离线跨记录连续性校验通过；`feed_mode=snapshot` 正确标记为无原生序号 |
@@ -911,7 +910,7 @@ snapshot_bytes_day   ≈ blocks_per_day × 12 × depth_recorded      // off u16 
 | `u16` 数量溢出 | 数据失真 | 转义 + 待测溢出率；必要时切换 `u32` 编码 |
 | 净差分丢失微观顺序 | 队列位置/订单流研究不可用 | 明确非目标；另存原始逐消息归档 |
 | 槽内序号链无法离线证明 | 数据完整性证明弱于逐消息归档 | 跨记录离线校验 + `n_msgs`；在线逐消息校验；质量标记声明边界 |
-| 时钟异常/迟到 | 槽错位 | 序号顺序处理 + 交易所时间单调钳制 + 槽水位 + `late_events` |
+| 时钟异常/迟到 | 槽错位 | 序号顺序处理 + 交易所时间单调钳制 + 槽水位 |
 | 录制端不再独立验证盘口内容 | 无法从录制侧发现静默的内容错误（序号连续但数量解析错） | 该证据由上游行情实现承担；录制端只保证编码、差分与 gap 语义 |
 | 目标回测引擎不支持增量视图 | 加速目标不成立 | 13.4 实现前置验证；不通过先改接口 |
 | OI 轮询触发交易所限频 | aux 数据缺失/延迟 | 按交易所权重设置 `oi_poll_ms`，失败退避并记 WARN；优先使用 WS OI（若有） |

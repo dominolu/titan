@@ -15,16 +15,22 @@ use std::{
     time::Duration,
 };
 
-use crate::connector::MarketDataCommand;
 use titan_market_service::MarketDataKind;
 use tokio::sync::broadcast;
-use tracing::error;
 
 use crate::binancefutures::{
     BinanceFuturesClient, BinanceFuturesError,
     market_data_stream::{MarketDataStream, MarketStreamRoute},
 };
-use crate::connector::{PublishEvent, PublishSender};
+use crate::connector::{MarketDataCommand, PublishEvent, PublishSender};
+#[cfg(feature = "hyperliquid")]
+use crate::hyperliquid::client::HyperliquidClient;
+#[cfg(feature = "hyperliquid")]
+use crate::hyperliquid::ordermanager::OrderManager as HyperliquidOrderManager;
+#[cfg(feature = "hyperliquid")]
+use crate::hyperliquid::ws::{HyperliquidWs, HyperliquidWsConfig};
+#[cfg(feature = "okx")]
+use crate::okx::public_stream::PublicStream as OkxPublicStream;
 use titan_domain_types::{ErrorKind, LiveError};
 
 /// Where a Binance USDⓈ-M market stream connects, and what to subscribe to.
@@ -113,23 +119,13 @@ pub async fn start_binance_market_stream(
     }
     // The receiver itself is never read: the handle owns the sender so the channel stays open.
     let (command_tx, _command_rx) = broadcast::channel(64);
-    let (shutdown, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    // A fresh receiver reports its first `changed()` immediately; acknowledge it once here so the
-    // per-stream loops only ever wake on a real shutdown signal.
-    let _ = shutdown_rx.borrow_and_update();
-    let mut tasks = Vec::new();
-    for (base_url, route) in market_stream_endpoints(&config.stream_url) {
+    run_stream_loop(ev_tx, command_tx, move |command_rx, ev_tx| {
         let client = client.clone();
-        let ev_tx = ev_tx.clone();
         let subscriptions = subscriptions.clone();
-        let command_rx = command_tx.subscribe();
-        let mut task_shutdown = shutdown_rx.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut backoff = Duration::from_secs(1);
-            loop {
-                if *task_shutdown.borrow() {
-                    return;
-                }
+        let endpoints = market_stream_endpoints(&config.stream_url);
+        async move {
+            let mut last_error = None;
+            for (base_url, route) in endpoints {
                 let mut stream = MarketDataStream::new(
                     client.clone(),
                     ev_tx.clone(),
@@ -138,53 +134,232 @@ pub async fn start_binance_market_stream(
                     route,
                 );
                 tracing::info!(?route, %base_url, "connecting the market data stream");
-                // `changed()` resolves immediately once for a receiver that has not yet seen the
-                // current value, so the shutdown arm is biased below: a stale wake-up must not
-                // pre-empt the connection it was meant to interrupt.
-                let result: Result<(), BinanceFuturesError> = tokio::select! {
-                    biased;
-                    result = stream.connect(&base_url) => result,
-                    changed = task_shutdown.changed() => {
-                        if changed.is_err() || *task_shutdown.borrow() {
-                            return;
-                        }
-                        Ok(())
-                    }
-                };
-                if let Err(error) = &result {
-                    error!(?error, %base_url, "the market data stream ended");
+                if let Err(error) = stream.connect(&base_url).await {
                     stream.invalidate_depth();
-                    ev_tx.send(PublishEvent::ConnectorError(LiveError::with(
-                        ErrorKind::ConnectionInterrupted,
-                        connector_io_value(error),
-                    )));
+                    last_error = Some(error.to_string());
+                } else {
+                    return Ok(());
                 }
-                // A stream that was refused waits the delay the venue asked for; anything else
-                // backs off from a second up to a minute so a flapping connection stays cheap.
-                tokio::select! {
-                    changed = task_shutdown.changed() => {
-                        if changed.is_err() || *task_shutdown.borrow() {
-                            return;
-                        }
-                    }
-                    _ = tokio::time::sleep(backoff) => {}
-                }
-                backoff = (backoff * 2).min(Duration::from_secs(60));
             }
-        }));
-    }
+            Err(last_error.unwrap_or_else(|| "no market stream endpoint".to_owned()))
+        }
+    })
+    .await
+}
+
+/// Runs one venue stream until it returns or the handle is dropped.
+///
+/// Every venue answers the same questions the same way: reconnect when the connection ends, back
+/// off from a second up to a minute so a flapping socket stays cheap, report the failure as a
+/// `ConnectorError`, and stop only when the handle says so. Only *how* a venue connects differs,
+/// which is the `connect` closure's whole job.
+async fn run_stream_loop<C, F>(
+    ev_tx: PublishSender,
+    command_tx: broadcast::Sender<MarketDataCommand>,
+    mut connect: C,
+) -> Result<MarketStreamHandle, MarketStreamError>
+where
+    C: FnMut(broadcast::Receiver<MarketDataCommand>, PublishSender) -> F + Send + 'static,
+    F: std::future::Future<Output = Result<(), String>> + Send,
+{
+    let (shutdown, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    // A fresh receiver reports its first `changed()` immediately; acknowledge it once here so the
+    // per-stream loops only ever wake on a real shutdown signal.
+    let _ = shutdown_rx.borrow_and_update();
+    let command_rx = command_tx.subscribe();
+    let mut task_shutdown = shutdown_rx.clone();
+    let task = tokio::spawn(async move {
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            if *task_shutdown.borrow() {
+                return;
+            }
+            // `changed()` resolves immediately once for a receiver that has not yet seen the
+            // current value, so the shutdown arm is biased: a stale wake-up must not pre-empt the
+            // connection it was meant to interrupt.
+            let result: Result<(), String> = tokio::select! {
+                biased;
+                result = connect(command_rx.resubscribe(), ev_tx.clone()) => result,
+                changed = task_shutdown.changed() => {
+                    if changed.is_err() || *task_shutdown.borrow() {
+                        return;
+                    }
+                    Ok(())
+                }
+            };
+            if let Err(error) = &result {
+                tracing::error!(%error, "the market data stream ended");
+                ev_tx.send(PublishEvent::ConnectorError(LiveError::with(
+                    ErrorKind::ConnectionInterrupted,
+                    titan_domain_types::Value::String(error.clone()),
+                )));
+            }
+            // A stream that was refused waits the delay the venue asked for; anything else backs
+            // off from a second up to a minute so a flapping connection stays cheap.
+            tokio::select! {
+                changed = task_shutdown.changed() => {
+                    if changed.is_err() || *task_shutdown.borrow() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = (backoff * 2).min(Duration::from_secs(60));
+        }
+    });
     Ok(MarketStreamHandle {
         shutdown,
         _commands: command_tx,
-        tasks,
+        tasks: vec![task],
     })
 }
 
-/// The value a `LiveError` carries for a stream failure.
+/// Where an OKX public market stream connects, and what to subscribe to.
+#[cfg(feature = "okx")]
+#[derive(Clone, Debug)]
+pub struct OkxMarketStreamConfig {
+    /// OKX's public websocket endpoint.
+    pub stream_url: String,
+    /// The instrument id, e.g. `BTC-USDT-SWAP`.
+    pub symbol: String,
+    /// Which market data kinds to subscribe to.
+    pub kinds: Vec<MarketDataKind>,
+}
+
+#[cfg(feature = "okx")]
+impl OkxMarketStreamConfig {
+    /// Production OKX public websocket, subscribing to depth and trades for `symbol`.
+    pub fn new(symbol: impl Into<String>, kinds: Vec<MarketDataKind>) -> Self {
+        Self {
+            stream_url: "wss://ws.okx.com:8443/ws/v5/public".to_owned(),
+            symbol: symbol.into(),
+            kinds,
+        }
+    }
+}
+
+/// Starts an OKX public market stream, publishing into `ev_tx`, and returns its handle.
 ///
-/// `Value` has no `From<String>`, so the text is wrapped in its string variant explicitly.
-fn connector_io_value(error: &BinanceFuturesError) -> titan_domain_types::Value {
-    titan_domain_types::Value::String(error.to_string())
+/// OKX answers a resubscribe with a fresh snapshot, so a book that falls out of sequence recovers
+/// on the same connection; the stream only reconnects when the socket itself ends.
+#[cfg(feature = "okx")]
+pub async fn start_okx_market_stream(
+    config: OkxMarketStreamConfig,
+    ev_tx: PublishSender,
+) -> Result<MarketStreamHandle, MarketStreamError> {
+    if config.symbol.is_empty() {
+        return Err(MarketStreamError::Config("empty symbol"));
+    }
+    if config.kinds.is_empty() {
+        return Err(MarketStreamError::Config("no market data kinds requested"));
+    }
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let mut guard = subscriptions.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(
+            config.symbol.clone(),
+            config.kinds.iter().copied().collect::<HashSet<_>>(),
+        );
+    }
+    let (command_tx, _command_rx) = broadcast::channel(64);
+    run_stream_loop(ev_tx, command_tx, move |command_rx, ev_tx| {
+        let subscriptions = subscriptions.clone();
+        let stream_url = config.stream_url.clone();
+        async move {
+            let mut stream = OkxPublicStream::new(ev_tx, command_rx, subscriptions);
+            stream
+                .connect(&stream_url)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    })
+    .await
+}
+
+/// Where a Hyperliquid market stream connects, and what to subscribe to.
+#[cfg(feature = "hyperliquid")]
+#[derive(Clone, Debug)]
+pub struct HyperliquidMarketStreamConfig {
+    /// The websocket endpoint.
+    pub stream_url: String,
+    /// The coin name, e.g. `BTC`.
+    pub symbol: String,
+    /// Which market data kinds to subscribe to.
+    pub kinds: Vec<MarketDataKind>,
+    /// Whether to use the fast `l2Book` subscription.
+    pub l2_fast: bool,
+}
+
+#[cfg(feature = "hyperliquid")]
+impl HyperliquidMarketStreamConfig {
+    /// Production Hyperliquid websocket, subscribing to `l2Book` and trades for `symbol`.
+    pub fn new(symbol: impl Into<String>, kinds: Vec<MarketDataKind>) -> Self {
+        Self {
+            stream_url: "wss://api.hyperliquid.xyz/ws".to_owned(),
+            symbol: symbol.into(),
+            kinds,
+            l2_fast: true,
+        }
+    }
+}
+
+/// Starts a Hyperliquid market stream, publishing into `ev_tx`, and returns its handle.
+///
+/// Only public channels are subscribed: `l2Book` carries a whole book per message, so there is no
+/// increment to lose, and no account channel is opened. The order manager and asset table the
+/// websocket type carries are for the trading path and stay empty here.
+#[cfg(feature = "hyperliquid")]
+pub async fn start_hyperliquid_market_stream(
+    config: HyperliquidMarketStreamConfig,
+    ev_tx: PublishSender,
+) -> Result<MarketStreamHandle, MarketStreamError> {
+    if config.symbol.is_empty() {
+        return Err(MarketStreamError::Config("empty symbol"));
+    }
+    if config.kinds.is_empty() {
+        return Err(MarketStreamError::Config("no market data kinds requested"));
+    }
+    let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let mut guard = subscriptions.lock().unwrap_or_else(|p| p.into_inner());
+        guard.insert(
+            config.symbol.clone(),
+            config.kinds.iter().copied().collect::<HashSet<_>>(),
+        );
+    }
+    let (command_tx, _command_rx) = broadcast::channel(64);
+    run_stream_loop(ev_tx, command_tx, move |command_rx, ev_tx| {
+        let subscriptions = subscriptions.clone();
+        let stream_url = config.stream_url.clone();
+        let l2_fast = config.l2_fast;
+        async move {
+            let ws_config = HyperliquidWsConfig {
+                ev_tx,
+                order_manager: Arc::new(Mutex::new(HyperliquidOrderManager::new())),
+                assets: Arc::new(Mutex::new(HashMap::new())),
+                symbols: Arc::new(Mutex::new(HashSet::new())),
+                // No account is subscribed on this path.
+                account_address: String::new(),
+                client: HyperliquidClient::new(
+                    "https://api.hyperliquid.xyz",
+                    "https://api.hyperliquid.xyz",
+                ),
+                command_rx,
+                market_subscriptions: subscriptions,
+                l2_fast,
+                private_channels: false,
+                // Only the reconnect tests drive this handle; a real stream never sets it.
+                #[cfg(test)]
+                reconnect_fault: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            };
+            let mut stream = HyperliquidWs::new(ws_config);
+            stream
+                .connect(&stream_url)
+                .await
+                .map_err(|error| error.to_string())
+        }
+    })
+    .await
 }
 
 /// The websocket endpoints and route for a stream root.
