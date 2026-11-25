@@ -437,7 +437,10 @@ fn scale_level(px: f64, qty: f64, market: &MarketConfig) -> Option<(i64, u64)> {
     if steps % market.qty_step_units != 0 {
         return None;
     }
-    Some(((tick / market.tick_units) as i64, steps / market.qty_step_units))
+    Some((
+        (tick / market.tick_units) as i64,
+        steps / market.qty_step_units,
+    ))
 }
 
 fn parse_levels(levels: &[(String, String)], market: &MarketConfig) -> Vec<Level> {
