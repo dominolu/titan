@@ -2,9 +2,9 @@ mod brokerapi;
 pub mod client;
 #[allow(dead_code)]
 mod msg;
-mod ordermanager;
+pub(crate) mod ordermanager;
 mod signing;
-mod ws;
+pub(crate) mod ws;
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicU8, Ordering};

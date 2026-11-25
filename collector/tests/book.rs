@@ -193,7 +193,6 @@ fn benchmark_segment_compression_and_sequential_read() {
                     seq_last: seq_base + slot as u64 + 1,
                     n_msgs: 1,
                     n_msgs_saturated: false,
-                    late_events: 0,
                     changes: (96..=100)
                         .map(|tick| Change {
                             side: Side::Bid,

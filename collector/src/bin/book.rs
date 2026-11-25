@@ -34,8 +34,8 @@ const CONNECTION_FRAMES: usize = 8192;
 enum MarketFeed {
     Binance(Box<BinanceConnectorFeed>),
     Bybit(BybitFeed),
-    Okx(OkxFeed),
-    Hyperliquid(HyperliquidFeed),
+    Okx(ConnectorVenueFeed),
+    Hyperliquid(ConnectorVenueFeed),
 }
 
 impl Feed for MarketFeed {
@@ -45,299 +45,6 @@ impl Feed for MarketFeed {
             Self::Bybit(feed) => feed.next().await,
             Self::Okx(feed) => feed.next().await,
             Self::Hyperliquid(feed) => feed.next().await,
-        }
-    }
-}
-
-struct OkxFeed {
-    /// Frames from the transport, which owns the connection and its reconnection.
-    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
-    /// Kept alive so the transport stops when this feed does.
-    _connection: tokio::task::JoinHandle<()>,
-    market: MarketConfig,
-    cancel: watch::Receiver<bool>,
-    pending: VecDeque<FeedMessage>,
-    previous_seq: Option<u64>,
-    /// The transport reconnected: the next frame starts a fresh stream.
-    reconnected: bool,
-    /// Waiting for the snapshot that restarts a stream after a sequence break.
-    awaiting_snapshot: bool,
-}
-
-impl OkxFeed {
-    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
-        if !market.symbol.contains('-')
-            || !market
-                .symbol
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
-            anyhow::bail!("OKX symbol must be an instrument id");
-        }
-        let mut args = vec![
-            serde_json::json!({"channel":"books","instId":market.symbol}),
-            serde_json::json!({"channel":"trades","instId":market.symbol}),
-        ];
-        if market.instrument != InstrumentType::Spot {
-            let inst_type = if market.instrument == InstrumentType::Future {
-                "FUTURES"
-            } else {
-                "SWAP"
-            };
-            args.extend([
-                serde_json::json!({"channel":"open-interest","instId":market.symbol}),
-                serde_json::json!({"channel":"funding-rate","instId":market.symbol}),
-                serde_json::json!({"channel":"liquidation-orders","instType":inst_type}),
-            ]);
-        }
-        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
-        let target = WsTarget::new(
-            "wss://ws.okx.com:8443/ws/v5/public".to_owned(),
-            Heartbeat {
-                check_interval: std::time::Duration::from_secs(5),
-                timeout: std::time::Duration::from_secs(30),
-            },
-        )
-        .subscribing(vec![
-            serde_json::json!({"op":"subscribe","args":args}).to_string(),
-        ]);
-        let connection = tokio::spawn(transport::keep_connection(target, tx));
-        Ok(Self {
-            frames,
-            _connection: connection,
-            market,
-            cancel,
-            pending: VecDeque::new(),
-            previous_seq: None,
-            reconnected: false,
-            awaiting_snapshot: false,
-        })
-    }
-
-    fn parse(&mut self, text: &str) -> Option<FeedMessage> {
-        let root: Value = serde_json::from_str(text).ok()?;
-        let channel = root.get("arg")?.get("channel")?.as_str()?;
-        let data = root.get("data")?.as_array()?;
-        let local_ts_ns = now_ns();
-        if channel == "books" {
-            let action = root.get("action").and_then(Value::as_str)?;
-            for update in data {
-                let ts = update
-                    .get("ts")
-                    .and_then(Value::as_str)
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .and_then(ms_to_ns)
-                    .unwrap_or(local_ts_ns);
-                let seq = update
-                    .get("seqId")
-                    .and_then(Value::as_i64)
-                    .and_then(|v| u64::try_from(v).ok())?;
-                if action == "snapshot" {
-                    let snapshot = SnapshotMessage {
-                        exch_ts_ns: ts,
-                        local_ts_ns,
-                        bids: parse_levels(update.get("bids"), &self.market, Side::Bid).ok()?,
-                        asks: parse_levels(update.get("asks"), &self.market, Side::Ask).ok()?,
-                        last_seq: Some(seq),
-                    };
-                    if let Some(previous) = self.previous_seq {
-                        self.pending.push_back(FeedMessage::Gap(GapMessage {
-                            start_local_ns: local_ts_ns,
-                            start_exch_ns: ts,
-                            end_local_ns: local_ts_ns,
-                            end_exch_ns: ts,
-                            reason: GapReason::Resync,
-                            last_seq: previous,
-                            next_seq: seq,
-                            detail: "OKX orderbook snapshot reset".into(),
-                        }));
-                    }
-                    self.previous_seq = Some(seq);
-                    self.pending.push_back(FeedMessage::Snapshot(snapshot));
-                    continue;
-                }
-                let previous = self.previous_seq?;
-                let previous_in_message = update
-                    .get("prevSeqId")
-                    .and_then(Value::as_i64)
-                    .and_then(|v| u64::try_from(v).ok())?;
-                if seq == previous && previous_in_message == previous {
-                    continue;
-                }
-                if previous_in_message != previous || seq < previous {
-                    self.pending.push_back(FeedMessage::Gap(GapMessage {
-                        start_local_ns: local_ts_ns,
-                        start_exch_ns: ts,
-                        end_local_ns: local_ts_ns,
-                        end_exch_ns: ts,
-                        reason: GapReason::SequenceBreak,
-                        last_seq: previous,
-                        next_seq: seq,
-                        detail: "OKX sequence discontinuity".into(),
-                    }));
-                    // The stream restarts from the next snapshot the venue sends; reconnection is
-                    // the transport's business, not a reason to drop this connection here.
-                    self.previous_seq = None;
-                    self.awaiting_snapshot = true;
-                    return self.pending.pop_front();
-                }
-                let mut changes =
-                    parse_changes(update.get("bids"), &self.market, Side::Bid).ok()?;
-                changes.extend(parse_changes(update.get("asks"), &self.market, Side::Ask).ok()?);
-                self.previous_seq = Some(seq);
-                self.pending.push_back(FeedMessage::Depth(DepthMessage {
-                    exch_ts_ns: ts,
-                    local_ts_ns,
-                    first_prev_seq: Some(previous),
-                    first_seq: previous.checked_add(1),
-                    last_seq: seq,
-                    changes,
-                }));
-            }
-            return self.pending.pop_front();
-        }
-        for event in data {
-            match channel {
-                "trades" => self.pending.push_back(FeedMessage::Trade(TradeRecord {
-                    exch_ts_ns: event
-                        .get("ts")
-                        .and_then(Value::as_str)
-                        .and_then(|v| v.parse::<i64>().ok())
-                        .and_then(ms_to_ns)
-                        .unwrap_or(local_ts_ns),
-                    local_ts_ns,
-                    side: match event.get("side").and_then(Value::as_str) {
-                        Some("buy") => TradeSide::Buy,
-                        Some("sell") => TradeSide::Sell,
-                        _ => TradeSide::Unknown,
-                    },
-                    price: event.get("px")?.as_str()?.to_owned(),
-                    qty: event.get("sz")?.as_str()?.to_owned(),
-                    trade_id: event
-                        .get("tradeId")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                })),
-                "open-interest" => {
-                    let value = event
-                        .get("oiCcy")
-                        .and_then(Value::as_str)
-                        .or_else(|| event.get("oi").and_then(Value::as_str))?;
-                    let unit = if event.get("oiCcy").and_then(Value::as_str).is_some() {
-                        OpenInterestUnit::Base
-                    } else {
-                        OpenInterestUnit::Contracts
-                    };
-                    self.pending.push_back(FeedMessage::Aux(AuxRecord::Oi {
-                        exch_ts_ns: event
-                            .get("ts")
-                            .and_then(Value::as_str)
-                            .and_then(|v| v.parse::<i64>().ok())
-                            .and_then(ms_to_ns)
-                            .unwrap_or(local_ts_ns),
-                        local_ts_ns,
-                        value: value.to_owned(),
-                        unit,
-                        source: AuxSource::Stream,
-                    }));
-                }
-                "funding-rate" => {
-                    let next = event
-                        .get("nextFundingTime")
-                        .and_then(Value::as_str)
-                        .and_then(|v| v.parse::<i64>().ok())
-                        .and_then(ms_to_ns);
-                    self.pending.push_back(FeedMessage::Aux(AuxRecord::Funding {
-                        exch_ts_ns: event
-                            .get("ts")
-                            .and_then(Value::as_str)
-                            .and_then(|v| v.parse::<i64>().ok())
-                            .and_then(ms_to_ns)
-                            .unwrap_or(local_ts_ns),
-                        local_ts_ns,
-                        rate: event.get("fundingRate")?.as_str()?.to_owned(),
-                        next_funding_ts_ns: next,
-                        mark_px: None,
-                        index_px: None,
-                        source: AuxSource::Stream,
-                    }));
-                }
-                "liquidation-orders" => {
-                    if event.get("instId").and_then(Value::as_str)
-                        != Some(self.market.symbol.as_str())
-                    {
-                        continue;
-                    }
-                    for detail in event.get("details").and_then(Value::as_array)? {
-                        self.pending
-                            .push_back(FeedMessage::Aux(AuxRecord::Liquidation {
-                                exch_ts_ns: detail
-                                    .get("ts")
-                                    .and_then(Value::as_str)
-                                    .and_then(|v| v.parse::<i64>().ok())
-                                    .and_then(ms_to_ns)
-                                    .unwrap_or(local_ts_ns),
-                                local_ts_ns,
-                                side: match detail.get("side").and_then(Value::as_str) {
-                                    Some("buy") => Some(TradeSide::Buy),
-                                    Some("sell") => Some(TradeSide::Sell),
-                                    _ => None,
-                                },
-                                price: detail
-                                    .get("bkPx")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned),
-                                qty: detail.get("sz").and_then(Value::as_str).map(str::to_owned),
-                                notional: None,
-                                order_id: None,
-                                status: Some("liquidated".into()),
-                                source: AuxSource::Stream,
-                            }));
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.pending.pop_front()
-    }
-}
-
-impl Feed for OkxFeed {
-    async fn next(&mut self) -> Option<FeedMessage> {
-        loop {
-            if let Some(message) = self.pending.pop_front() {
-                return Some(message);
-            }
-            if *self.cancel.borrow() {
-                return None;
-            }
-            if self.reconnected {
-                self.reconnected = false;
-                self.previous_seq = None;
-                let now = now_ns();
-                self.pending.push_back(FeedMessage::Gap(GapMessage {
-                    start_local_ns: now,
-                    start_exch_ns: now,
-                    end_local_ns: now,
-                    end_exch_ns: now,
-                    reason: GapReason::Disconnect,
-                    last_seq: 0,
-                    next_seq: 0,
-                    detail: "OKX websocket reconnected".into(),
-                }));
-                continue;
-            }
-            tokio::select! {
-                changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                frame = self.frames.recv() => match frame {
-                    // OKX answers the application-level "ping" frame itself.
-                    Some((_, text)) if text.as_str() == "ping" => {}
-                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
-                    None => {
-                        self.reconnected = true;
-                    }
-                }
-            }
         }
     }
 }
@@ -611,173 +318,6 @@ fn bybit_category(market: &MarketConfig) -> anyhow::Result<&'static str> {
     }
 }
 
-struct HyperliquidFeed {
-    /// Frames from the transport, which owns the connection and its reconnection.
-    frames: tokio::sync::mpsc::Receiver<(chrono::DateTime<chrono::Utc>, FrameText)>,
-    _connection: tokio::task::JoinHandle<()>,
-    market: MarketConfig,
-    cancel: watch::Receiver<bool>,
-    pending: VecDeque<FeedMessage>,
-    last_funding: Option<String>,
-    reconnected: bool,
-}
-
-impl HyperliquidFeed {
-    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
-        // Hyperliquid takes one subscription message per channel; the transport sends them all
-        // once the connection is open, and again after a reconnect.
-        let mut messages = Vec::new();
-        for subscription in [
-            serde_json::json!({"type":"l2Book","coin":market.symbol}),
-            serde_json::json!({"type":"trades","coin":market.symbol}),
-            serde_json::json!({"type":"activeAssetCtx","coin":market.symbol}),
-        ] {
-            messages.push(
-                serde_json::json!({"method":"subscribe","subscription":subscription}).to_string(),
-            );
-        }
-        let (tx, frames) = tokio::sync::mpsc::channel(CONNECTION_FRAMES);
-        let target = WsTarget::new(
-            "wss://api.hyperliquid.xyz/ws".to_owned(),
-            Heartbeat {
-                check_interval: std::time::Duration::from_secs(10),
-                timeout: std::time::Duration::from_secs(60),
-            },
-        )
-        .subscribing(messages);
-        let connection = tokio::spawn(transport::keep_connection(target, tx));
-        Ok(Self {
-            frames,
-            _connection: connection,
-            market,
-            cancel,
-            pending: VecDeque::new(),
-            last_funding: None,
-            reconnected: false,
-        })
-    }
-
-    fn parse(&mut self, text: &str) -> Option<FeedMessage> {
-        let root: Value = serde_json::from_str(text).ok()?;
-        let channel = root.get("channel")?.as_str()?;
-        let data = root.get("data")?;
-        let local_ts_ns = now_ns();
-        if channel == "l2Book" {
-            if data.get("coin").and_then(Value::as_str)? != self.market.symbol {
-                return None;
-            }
-            let levels = data.get("levels")?.as_array()?;
-            let bids = parse_levels(levels.first(), &self.market, Side::Bid).ok()?;
-            let asks = parse_levels(levels.get(1), &self.market, Side::Ask).ok()?;
-            return Some(FeedMessage::Snapshot(SnapshotMessage {
-                exch_ts_ns: data
-                    .get("time")
-                    .and_then(Value::as_i64)
-                    .and_then(ms_to_ns)
-                    .unwrap_or(local_ts_ns),
-                local_ts_ns,
-                bids,
-                asks,
-                last_seq: None,
-            }));
-        }
-        if channel == "trades" {
-            let rows = data.as_array()?;
-            for row in rows {
-                if row.get("coin").and_then(Value::as_str)? != self.market.symbol {
-                    continue;
-                }
-                self.pending.push_back(FeedMessage::Trade(TradeRecord {
-                    exch_ts_ns: row
-                        .get("time")
-                        .and_then(Value::as_i64)
-                        .and_then(ms_to_ns)
-                        .unwrap_or(local_ts_ns),
-                    local_ts_ns,
-                    side: match row.get("side").and_then(Value::as_str) {
-                        Some("B") => TradeSide::Buy,
-                        Some("A") => TradeSide::Sell,
-                        _ => TradeSide::Unknown,
-                    },
-                    price: row.get("px")?.as_str()?.to_owned(),
-                    qty: row.get("sz")?.as_str()?.to_owned(),
-                    trade_id: row.get("tid").map(|v| v.to_string()),
-                }));
-            }
-            return self.pending.pop_front();
-        }
-        if channel == "activeAssetCtx" {
-            if data.get("coin").and_then(Value::as_str)? != self.market.symbol {
-                return None;
-            }
-            let ctx = data.get("ctx")?;
-            if let Some(oi) = ctx.get("openInterest").and_then(Value::as_str) {
-                self.pending.push_back(FeedMessage::Aux(AuxRecord::Oi {
-                    exch_ts_ns: local_ts_ns,
-                    local_ts_ns,
-                    value: oi.to_owned(),
-                    unit: OpenInterestUnit::Base,
-                    source: AuxSource::Stream,
-                }));
-            }
-            if let Some(rate) = ctx.get("funding").and_then(Value::as_str)
-                && self.last_funding.as_deref() != Some(rate)
-            {
-                self.last_funding = Some(rate.to_owned());
-                self.pending.push_back(FeedMessage::Aux(AuxRecord::Funding {
-                    exch_ts_ns: local_ts_ns,
-                    local_ts_ns,
-                    rate: rate.to_owned(),
-                    next_funding_ts_ns: None,
-                    mark_px: ctx.get("markPx").and_then(Value::as_str).map(str::to_owned),
-                    index_px: ctx
-                        .get("oraclePx")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    source: AuxSource::Stream,
-                }));
-            }
-            return self.pending.pop_front();
-        }
-        None
-    }
-}
-
-impl Feed for HyperliquidFeed {
-    async fn next(&mut self) -> Option<FeedMessage> {
-        loop {
-            if let Some(message) = self.pending.pop_front() {
-                return Some(message);
-            }
-            if *self.cancel.borrow() {
-                return None;
-            }
-            if self.reconnected {
-                self.reconnected = false;
-                let now = now_ns();
-                self.pending.push_back(FeedMessage::Gap(GapMessage {
-                    start_local_ns: now,
-                    start_exch_ns: now,
-                    end_local_ns: now,
-                    end_exch_ns: now,
-                    reason: GapReason::Disconnect,
-                    last_seq: 0,
-                    next_seq: 0,
-                    detail: "Hyperliquid websocket reconnected".into(),
-                }));
-                continue;
-            }
-            tokio::select! {
-                changed = self.cancel.changed() => if changed.is_err() || *self.cancel.borrow() { return None; },
-                frame = self.frames.recv() => match frame {
-                    Some((_, text)) => if let Some(value) = self.parse(text.as_str()) { return Some(value); },
-                    None => self.reconnected = true,
-                }
-            }
-        }
-    }
-}
-
 fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or_default()
 }
@@ -842,6 +382,63 @@ fn parse_levels(
     }
     levels.truncate(usize::from(market.depth_available));
     Ok(levels)
+}
+
+/// A market feed backed by a connector stream for a venue that only needs the public feed.
+///
+/// OKX and Hyperliquid both answer with a whole book or an already-checked increment, and neither
+/// publishes open interest over the stream, so this feed is the connector stream and nothing else.
+/// Bybit still has its own implementation because connector has no Bybit market module yet.
+struct ConnectorVenueFeed {
+    inner: collector::feed::connector::ConnectorFeed,
+    /// Kept alive so the connector stream stops when this feed does.
+    _stream: connector::market_stream::MarketStreamHandle,
+    pending: VecDeque<FeedMessage>,
+    cancel: watch::Receiver<bool>,
+}
+
+impl ConnectorVenueFeed {
+    async fn connect(market: MarketConfig, cancel: watch::Receiver<bool>) -> anyhow::Result<Self> {
+        let (inner, sender) = collector::feed::connector::ConnectorFeed::channel(market.clone());
+        let kinds = stream_kinds(&market);
+        let venue = market.venue.to_ascii_lowercase();
+        let handle = if venue.starts_with("okx") {
+            let config =
+                connector::market_stream::OkxMarketStreamConfig::new(&market.symbol, kinds);
+            connector::market_stream::start_okx_market_stream(config, sender).await?
+        } else if venue.starts_with("hyperliquid") {
+            let config =
+                connector::market_stream::HyperliquidMarketStreamConfig::new(&market.symbol, kinds);
+            connector::market_stream::start_hyperliquid_market_stream(config, sender).await?
+        } else {
+            return Err(anyhow::anyhow!("no connector market stream for {venue}"));
+        };
+        Ok(Self {
+            inner,
+            _stream: handle,
+            pending: VecDeque::new(),
+            cancel,
+        })
+    }
+}
+
+impl Feed for ConnectorVenueFeed {
+    async fn next(&mut self) -> Option<FeedMessage> {
+        if let Some(message) = self.pending.pop_front() {
+            return Some(message);
+        }
+        loop {
+            if *self.cancel.borrow() {
+                return None;
+            }
+            tokio::select! {
+                changed = self.cancel.changed() => {
+                    if changed.is_err() || *self.cancel.borrow() { return None; }
+                }
+                message = self.inner.next() => return message,
+            }
+        }
+    }
 }
 
 /// A Binance market feed backed by the connector's market stream.
@@ -1186,13 +783,8 @@ struct MarketQualitySummary {
     depth_available: u16,
     depth_recorded: u16,
     block_diff_mismatches: usize,
-    rest_samples_compared: Option<u64>,
-    rest_samples_unjudged: Option<u64>,
-    rest_mismatches: Option<u64>,
     precision_rejects: Option<u64>,
     precision_reject_ratio: Option<f64>,
-    late_events: Option<u64>,
-    late_ratio: Option<f64>,
     lag_p50_us: Option<i64>,
     lag_p95_us: Option<i64>,
     lag_p99_us: Option<i64>,
@@ -1534,7 +1126,6 @@ fn build_quality_markets(
             }
 
             let event = events.markets.get(key).cloned().unwrap_or_default();
-            let late_events = event.late_events;
             let mut oi_timestamps = event.oi_timestamps_ns.clone();
             oi_timestamps.sort_unstable();
             let oi_max_interval_ms = oi_timestamps
@@ -1588,9 +1179,6 @@ fn build_quality_markets(
             }
             if lags_us.is_empty() {
                 warnings.push("latency_metrics_unavailable".into());
-            }
-            if late_events > 0 && late_events.saturating_mul(1_000) > total_slots.max(1) {
-                warnings.push("late_ratio_above_0_1_percent".into());
             }
 
             let instrument_path = key.split('/').nth(1).unwrap_or_default();
@@ -1647,20 +1235,11 @@ fn build_quality_markets(
                 depth_available: first.depth_available,
                 depth_recorded: first.depth_requested.min(first.depth_available),
                 block_diff_mismatches,
-                rest_samples_compared: Some(event.rest_samples_compared),
-                rest_samples_unjudged: Some(event.rest_samples_unjudged),
-                rest_mismatches: Some(event.rest_mismatches),
                 precision_rejects: Some(precision_rejects),
                 precision_reject_ratio: Some(if slot_count == 0 {
                     0.0
                 } else {
                     precision_rejects as f64 / slot_count as f64
-                }),
-                late_events: Some(late_events),
-                late_ratio: Some(if slot_count == 0 {
-                    0.0
-                } else {
-                    late_events as f64 / slot_count as f64
                 }),
                 lag_p50_us: percentile(&mut lags_us.clone(), 50),
                 lag_p95_us: percentile(&mut lags_us.clone(), 95),
@@ -1928,17 +1507,19 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                         |error| format!("could not initialize {venue_key} feed: {error}"),
                     )?)
                 }
-                key if key.starts_with("okx") => {
-                    MarketFeed::Okx(OkxFeed::connect(market.clone(), cancel).await.map_err(
-                        |error| format!("could not initialize {venue_key} feed: {error}"),
-                    )?)
-                }
+                key if key.starts_with("okx") => MarketFeed::Okx(
+                    ConnectorVenueFeed::connect(market.clone(), cancel)
+                        .await
+                        .map_err(|error| {
+                            format!("could not initialize {venue_key} feed: {error}")
+                        })?,
+                ),
                 key if key.starts_with("hyperliquid") => {
                     if market.feed_mode != collector::book::FeedMode::Snapshot {
                         return Err("Hyperliquid l2Book requires snapshot feed mode".to_owned());
                     }
                     MarketFeed::Hyperliquid(
-                        HyperliquidFeed::connect(market, cancel)
+                        ConnectorVenueFeed::connect(market, cancel)
                             .await
                             .map_err(|error| {
                                 format!("could not initialize {venue_key} feed: {error}")

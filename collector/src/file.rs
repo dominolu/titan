@@ -113,18 +113,12 @@ pub struct MarketEventIntegrity {
     pub funding_timestamps_ns: Vec<i64>,
     pub funding_latest_ts_ns: Option<i64>,
     pub last_funding_exch_ts_ns: Option<i64>,
-    pub rest_samples_compared: u64,
-    pub rest_mismatches: u64,
-    pub rest_stale_samples: u64,
-    /// Samples the recorder wrote but could not judge (`unaimed`, `unaligned`, `coherent`).
-    pub rest_samples_unjudged: u64,
-    pub late_events: u64,
 }
 
 /// Scans trade and auxiliary gzip JSONL files without modifying them.
 pub fn inspect_market_events(root: &Path, date: Option<&str>) -> io::Result<EventIntegrityReport> {
     let mut report = EventIntegrityReport::default();
-    for kind in ["trade", "aux", "validation"] {
+    for kind in ["trade", "aux"] {
         let mut pending = vec![root.join(kind)];
         while let Some(directory) = pending.pop() {
             let entries = match std::fs::read_dir(&directory) {
@@ -226,36 +220,6 @@ fn inspect_event_file(
                                     );
                                 }
                                 Some("liquidation") => market.aux_liquidation_count += 1,
-                                _ => invalid_records += 1,
-                            }
-                        } else {
-                            match value.get("status").and_then(serde_json::Value::as_str) {
-                                Some("match") => market.rest_samples_compared += 1,
-                                Some("mismatch") => {
-                                    market.rest_samples_compared += 1;
-                                    market.rest_mismatches += 1;
-                                }
-                                Some("stale") => {
-                                    market.rest_samples_compared += 1;
-                                    market.rest_stale_samples += 1;
-                                }
-                                // A sample that was not judged: the snapshot's messages were still
-                                // in flight (`unaimed`), no logged delta carries it (`unaligned`),
-                                // or the replay covered only part of the log (`coherent`). The
-                                // recorder counts each one and the design counts unjudgeable
-                                // samples apart from compared ones, so none of them is a
-                                // comparison and none of them is a malformed line.
-                                Some("unaimed" | "unaligned" | "coherent") => {
-                                    market.rest_samples_unjudged += 1;
-                                }
-                                Some("late") => {
-                                    market.late_events = market.late_events.saturating_add(
-                                        value
-                                            .get("late_events")
-                                            .and_then(serde_json::Value::as_u64)
-                                            .unwrap_or(1),
-                                    );
-                                }
                                 _ => invalid_records += 1,
                             }
                         }
@@ -838,76 +802,6 @@ mod market_event_tests {
         std::fs::remove_file(dir.join("trades-19700101T00.summary.json")).unwrap();
         let report = inspect_market_events(&root, None).unwrap();
         assert_eq!(report.missing_summaries, 1);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn quality_scan_counts_late_records_without_calling_them_rest_samples() {
-        let root = root();
-        let mut writer = MarketEventWriter::new();
-        writer
-            .write_validation(
-                &root,
-                "binance",
-                "spot",
-                "BTCUSDT",
-                0,
-                &serde_json::json!({
-                    "exch_ts_ns": 0,
-                    "local_ts_ns": 0,
-                    "status": "late",
-                    "late_events": 2
-                }),
-            )
-            .unwrap();
-        writer.finish().unwrap();
-        let report = inspect_market_events(&root, Some("1970-01-01")).unwrap();
-        let market = report
-            .markets
-            .get("venue=binance/instrument=spot/symbol=BTCUSDT")
-            .unwrap();
-        assert_eq!(market.late_events, 2);
-        assert_eq!(market.rest_samples_compared, 0);
-        assert_eq!(report.invalid_records, 0);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn quality_scan_counts_unjudged_samples_apart_from_compared_ones() {
-        let root = root();
-        let mut writer = MarketEventWriter::new();
-        for (index, status) in ["match", "mismatch", "unaimed", "unaligned", "coherent"]
-            .into_iter()
-            .enumerate()
-        {
-            writer
-                .write_validation(
-                    &root,
-                    "binance",
-                    "spot",
-                    "BTCUSDT",
-                    index as i64,
-                    &serde_json::json!({
-                        "exch_ts_ns": index as i64,
-                        "local_ts_ns": index as i64,
-                        "status": status,
-                        "differing_levels": 0
-                    }),
-                )
-                .unwrap();
-        }
-        writer.finish().unwrap();
-        let report = inspect_market_events(&root, Some("1970-01-01")).unwrap();
-        let market = report
-            .markets
-            .get("venue=binance/instrument=spot/symbol=BTCUSDT")
-            .unwrap();
-        // A comparison is a sample the recorder judged; the three states that are not
-        // judgements are counted where they are, and the line is still a valid record.
-        assert_eq!(market.rest_samples_compared, 2);
-        assert_eq!(market.rest_mismatches, 1);
-        assert_eq!(market.rest_samples_unjudged, 3);
-        assert_eq!(report.invalid_records, 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

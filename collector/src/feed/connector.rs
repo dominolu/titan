@@ -269,8 +269,13 @@ impl ConnectorFeed {
             // The kind lives in the low byte: `BUY_EVENT`, `SELL_EVENT` and `LOCAL_EVENT` are
             // flags beside it, so only those bits may be compared against a kind constant.
             let kind = event.ev & 0xff;
-            let tick = event.px as i64;
-            let qty = event.qty as u64;
+            // A `FeedBatch` carries prices and quantities already parsed to `f64`, in the venue's
+            // own units. The recorder stores ticks and quantity steps, so the same scaling the
+            // native path does has to happen here; truncating the float would put a BTC price in
+            // the low thousands and a quantity at zero.
+            let Some((tick, qty)) = scale_level(event.px, event.qty, &self.market) else {
+                continue;
+            };
             if kind == DEPTH_SNAPSHOT_EVENT {
                 snapshot = true;
                 match side {
@@ -406,6 +411,35 @@ impl Feed for ConnectorFeed {
 }
 
 /// The levels of a native batch as recorder levels, in ticks and quantity steps.
+/// Scales one parsed price and quantity into the recorder's tick and quantity step.
+///
+/// Returns `None` when the value is not a finite positive number or does not land on the market's
+/// grid; the connector has already checked the book, so the level is skipped rather than guessed.
+fn scale_level(px: f64, qty: f64, market: &MarketConfig) -> Option<(i64, u64)> {
+    if !px.is_finite() || !qty.is_finite() || px <= 0.0 || qty <= 0.0 {
+        return None;
+    }
+    let scale = 10f64.powi(i32::from(market.price_decimals));
+    let tick = (px * scale).round();
+    if !tick.is_finite() || tick <= 0.0 {
+        return None;
+    }
+    let tick = tick as u64;
+    if tick % market.tick_units != 0 {
+        return None;
+    }
+    let qty_scale = 10f64.powi(i32::from(market.qty_decimals));
+    let steps = (qty * qty_scale).round();
+    if !steps.is_finite() || steps < 0.0 {
+        return None;
+    }
+    let steps = steps as u64;
+    if steps % market.qty_step_units != 0 {
+        return None;
+    }
+    Some(((tick / market.tick_units) as i64, steps / market.qty_step_units))
+}
+
 fn parse_levels(levels: &[(String, String)], market: &MarketConfig) -> Vec<Level> {
     parse_changes(levels, Side::Bid, market)
         .into_iter()

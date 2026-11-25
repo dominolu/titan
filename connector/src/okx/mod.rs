@@ -3,7 +3,7 @@ mod brokerapi;
 pub mod msg;
 mod ordermanager;
 mod private_stream;
-mod public_stream;
+pub(crate) mod public_stream;
 pub mod rest;
 
 use std::{
