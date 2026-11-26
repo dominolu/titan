@@ -375,8 +375,9 @@ pub async fn start_okx_market_stream(
 pub struct HyperliquidMarketStreamConfig {
     /// The websocket endpoint.
     pub stream_url: String,
-    /// The REST base funding rate and open interest are read from.
-    pub api_url: String,
+    /// The `info` endpoint funding rate and open interest are read from — the full path, as
+    /// `HyperliquidClient` posts to it directly. The bare host answers 404.
+    pub info_url: String,
     /// The coin name, e.g. `BTC`.
     pub symbol: String,
     /// Which market data kinds to subscribe to.
@@ -396,7 +397,7 @@ impl HyperliquidMarketStreamConfig {
     pub fn new(symbol: impl Into<String>, kinds: Vec<MarketDataKind>) -> Self {
         Self {
             stream_url: "wss://api.hyperliquid.xyz/ws".to_owned(),
-            api_url: "https://api.hyperliquid.xyz".to_owned(),
+            info_url: "https://api.hyperliquid.xyz/info".to_owned(),
             symbol: symbol.into(),
             kinds,
             l2_fast: true,
@@ -436,11 +437,11 @@ pub async fn start_hyperliquid_market_stream(
         );
     }
     let (command_tx, _command_rx) = broadcast::channel(64);
-    let rest_url = config.api_url.clone();
+    let info_url = config.info_url.clone();
     let mut handle = run_stream_loop(ev_tx.clone(), command_tx, move |command_rx, ev_tx| {
         let subscriptions = subscriptions.clone();
         let stream_url = config.stream_url.clone();
-        let api_url = config.api_url.clone();
+        let client_info_url = config.info_url.clone();
         let l2_fast = config.l2_fast;
         async move {
             let ws_config = HyperliquidWsConfig {
@@ -450,7 +451,11 @@ pub async fn start_hyperliquid_market_stream(
                 symbols: Arc::new(Mutex::new(HashSet::new())),
                 // No account is subscribed on this path.
                 account_address: String::new(),
-                client: HyperliquidClient::new(&api_url, &api_url),
+                // The websocket path never posts to the exchange, but its type requires both URLs.
+                client: HyperliquidClient::new(
+                    &client_info_url,
+                    "https://api.hyperliquid.xyz/exchange",
+                ),
                 command_rx,
                 market_subscriptions: subscriptions,
                 l2_fast,
@@ -470,7 +475,7 @@ pub async fn start_hyperliquid_market_stream(
     if !config.derivative_poll_interval.is_zero() {
         // Hyperliquid publishes no funding or open interest channel on the market stream; both
         // come from `metaAndAssetCtxs`, so one poll feeds both records.
-        let client = HyperliquidClient::new(&rest_url, &rest_url);
+        let client = HyperliquidClient::new(&info_url, "https://api.hyperliquid.xyz/exchange");
         let symbol = config.symbol.clone();
         let mut shutdown = handle.shutdown.subscribe();
         let interval = config.derivative_poll_interval;
@@ -793,7 +798,9 @@ mod derivative_poll_tests {
             crate::venue::test_support::http(vec![(200, json!({}))]).await;
         let (sender, _count, mut events) = counting_sender();
         let config = HyperliquidMarketStreamConfig {
-            api_url: api,
+            // The client posts to this URL as given, so the stub's root is what a real deployment
+            // must spell out: production is `https://api.hyperliquid.xyz/info`, not the host.
+            info_url: format!("{api}/info"),
             stream_url,
             ..HyperliquidMarketStreamConfig::new("BTC", vec![MarketDataKind::Depth])
         }
@@ -840,6 +847,16 @@ mod derivative_poll_tests {
         }
     }
 
+    #[test]
+    fn the_hyperliquid_poll_posts_to_the_info_path() {
+        // `HyperliquidClient` posts to `info_url` verbatim, and the bare host answers 404: the
+        // first live deployment of this poll did exactly that and recorded no sample. The default
+        // must therefore be the full path, and it must match the one the trading path uses.
+        let config = HyperliquidMarketStreamConfig::new("BTC", vec![MarketDataKind::Depth]);
+        assert_eq!(config.info_url, "https://api.hyperliquid.xyz/info");
+        assert!(config.info_url.ends_with("/info"));
+    }
+
     #[tokio::test]
     async fn hyperliquid_publishes_nothing_for_a_coin_the_universe_does_not_have() {
         // A misspelt or delisted coin must not produce a zero record that the quality report would
@@ -859,7 +876,7 @@ mod derivative_poll_tests {
         .await;
         let (sender, _count, mut events) = counting_sender();
         let config = HyperliquidMarketStreamConfig {
-            api_url: api,
+            info_url: format!("{api}/info"),
             stream_url: "ws://127.0.0.1:1".to_owned(),
             ..HyperliquidMarketStreamConfig::new("BTC", vec![MarketDataKind::Depth])
         }
