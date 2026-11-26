@@ -559,6 +559,8 @@ impl MarketStream {
                 self.ev_tx.send(PublishEvent::OpenInterest {
                     symbol: self.config.symbol.clone(),
                     open_interest: row.open_interest,
+                    // Bybit reports open interest in contract counts.
+                    unit: crate::connector::OpenInterestUnit::Contracts,
                     exch_ts: exch_ts.saturating_mul(1_000_000),
                 });
             }

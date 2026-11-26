@@ -12,40 +12,28 @@ use collector::book::{
     RecorderConfig, RecorderSettings, SegmentReader, Side, archive_daily, decode_data_payload,
     next_daily_archive, recover_segment, run_market,
 };
-use collector::file::{AuxRecord, AuxSource, OpenInterestUnit};
 use serde::Serialize;
 use serde_json::Value;
 use titan_market_service::MarketDataKind;
-use tokio::{
-    sync::watch,
-    time::{Instant, interval_at},
-};
+use tokio::sync::watch;
 
+#[cfg(test)]
 fn now_ns() -> i64 {
     Utc::now().timestamp_nanos_opt().unwrap_or_default()
-}
-
-fn ms_to_ns(milliseconds: i64) -> Option<i64> {
-    milliseconds.checked_mul(1_000_000)
 }
 
 /// A recorder market fed by the connector's market stream.
 ///
 /// Every venue now arrives this way. The connector owns the socket, the sequence check, the depth
-/// image and its alignment, so none of that exists here; the one duty the connector does not
-/// perform per venue is the REST open interest poll Binance and Bybit both need, and it is one
-/// routine for both rather than one per venue.
+/// image and its alignment, so none of that exists here. The open interest poll is not a recorder
+/// duty either: a venue that publishes it only over REST (Bybit, OKX, Hyperliquid) polls it inside
+/// its connector stream, and one that publishes it on the socket needs no poll at all.
 struct MarketStreamFeed {
     inner: collector::feed::connector::ConnectorFeed,
     /// Kept alive so the connector stream stops when this feed does.
     _stream: connector::market_stream::MarketStreamHandle,
-    market: MarketConfig,
-    client: reqwest::Client,
     pending: VecDeque<FeedMessage>,
     cancel: watch::Receiver<bool>,
-    /// Present only for a venue whose open interest this recorder polls itself; zero disables it.
-    oi_timer: Option<tokio::time::Interval>,
-    oi_url: &'static str,
 }
 
 impl MarketStreamFeed {
@@ -56,61 +44,12 @@ impl MarketStreamFeed {
     ) -> anyhow::Result<Self> {
         let (inner, sender) = collector::feed::connector::ConnectorFeed::channel(market.clone());
         let handle = start_market_stream(&market, &settings, sender).await?;
-        let oi_url = open_interest_url(&market);
-        // A venue that publishes open interest over its stream (Bybit) or does not have one (a
-        // spot market, an unsupported venue) needs no poll of ours.
-        let oi_timer = (market.instrument != InstrumentType::Spot
-            && !oi_url.is_empty()
-            && settings.oi_poll_ms > 0)
-            .then(|| {
-                let mut timer = interval_at(
-                    Instant::now()
-                        + std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
-                    std::time::Duration::from_millis(u64::from(settings.oi_poll_ms)),
-                );
-                // A recorder that was busy does not owe the venue a burst of poll requests.
-                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                timer
-            });
         Ok(Self {
             inner,
             _stream: handle,
-            market,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()?,
             pending: VecDeque::new(),
             cancel,
-            oi_timer,
-            oi_url,
         })
-    }
-
-    async fn poll_open_interest(&self) -> Option<FeedMessage> {
-        let response: Value = self
-            .client
-            .get(self.oi_url)
-            .query(&[("symbol", self.market.symbol.as_str())])
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .ok()?
-            .json()
-            .await
-            .ok()?;
-        let value = response.get("openInterest")?.as_str()?.to_owned();
-        let ts = response
-            .get("time")
-            .and_then(Value::as_i64)
-            .and_then(ms_to_ns)
-            .unwrap_or_else(now_ns);
-        Some(FeedMessage::Aux(AuxRecord::Oi {
-            exch_ts_ns: ts,
-            local_ts_ns: now_ns(),
-            value,
-            unit: OpenInterestUnit::Contracts,
-            source: AuxSource::Rest,
-        }))
     }
 }
 
@@ -123,21 +62,9 @@ impl Feed for MarketStreamFeed {
             if *self.cancel.borrow() {
                 return None;
             }
-            let poll_enabled = self.oi_timer.is_some();
             tokio::select! {
                 changed = self.cancel.changed() => {
                     if changed.is_err() || *self.cancel.borrow() { return None; }
-                }
-                tick = async {
-                    match self.oi_timer.as_mut() {
-                        Some(timer) => timer.tick().await,
-                        None => std::future::pending().await,
-                    }
-                }, if poll_enabled => {
-                    let _ = tick;
-                    if let Some(message) = self.poll_open_interest().await {
-                        return Some(message);
-                    }
                 }
                 message = self.inner.next() => return message,
             }
@@ -145,30 +72,12 @@ impl Feed for MarketStreamFeed {
     }
 }
 
-/// The REST endpoint that reports a venue's open interest, or empty when the recorder does not
-/// poll it.
-///
-/// Only the USDⓈ-M and COIN-M Binance venues have one here: Bybit's stream polls its own, and a
-/// venue without an endpoint must not be sent Binance's. Returning Binance's URL for an unknown
-/// venue would make every such market ask Binance for a symbol it does not have.
-fn open_interest_url(market: &MarketConfig) -> &'static str {
-    if market.instrument == InstrumentType::Spot {
-        return "";
-    }
-    match market.venue.to_ascii_lowercase().as_str() {
-        "binance" | "binancefuturesum" | "binance_futures" => {
-            "https://fapi.binance.com/fapi/v1/openInterest"
-        }
-        "binancefuturescm" | "binance_coinm" => "https://dapi.binance.com/dapi/v1/openInterest",
-        _ => "",
-    }
-}
-
 /// Starts the connector stream for a market's venue and returns its handle.
 ///
 /// Each venue's only recorder-specific choice is its configuration: the websocket and REST roots
-/// for a test or alternative deployment, and Bybit's published depth and open interest poll. The
-/// stream itself is the connector's, so a venue that gains or changes a rule gains it here too.
+/// for a test or alternative deployment, and the open interest poll a venue answers only over REST
+/// (Bybit, OKX, Hyperliquid) — one cadence, from the recorder's own setting. The stream itself is
+/// the connector's, so a venue that gains or changes a rule gains it here too.
 async fn start_market_stream(
     market: &MarketConfig,
     settings: &RecorderSettings,
@@ -188,10 +97,24 @@ async fn start_market_stream(
         config.depth_snapshot_limit = depth_snapshot_limit(settings.depth_levels);
         stream::start_binance_market_stream(config, sender).await?
     } else if venue.starts_with("okx") {
-        let config = stream::OkxMarketStreamConfig::new(&market.symbol, kinds);
+        let mut config = stream::OkxMarketStreamConfig::new(&market.symbol, kinds);
+        if market.instrument != InstrumentType::Spot && settings.oi_poll_ms > 0 {
+            // OKX's open interest is a REST query; the connector owns the poll and publishes the
+            // sample as `PublishEvent::OpenInterest`, the same record Bybit's poll produces.
+            config = config.with_open_interest_interval(std::time::Duration::from_millis(
+                u64::from(settings.oi_poll_ms),
+            ));
+        }
         stream::start_okx_market_stream(config, sender).await?
     } else if venue.starts_with("hyperliquid") {
-        let config = stream::HyperliquidMarketStreamConfig::new(&market.symbol, kinds);
+        let mut config = stream::HyperliquidMarketStreamConfig::new(&market.symbol, kinds);
+        if market.instrument != InstrumentType::Spot && settings.oi_poll_ms > 0 {
+            // Hyperliquid's market stream has neither a funding nor an open interest channel:
+            // one REST poll reads both from `metaAndAssetCtxs`.
+            config = config.with_derivative_poll_interval(std::time::Duration::from_millis(
+                u64::from(settings.oi_poll_ms),
+            ));
+        }
         stream::start_hyperliquid_market_stream(config, sender).await?
     } else if venue.starts_with("bybit") {
         let category = bybit_category(market)?;

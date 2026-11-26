@@ -249,10 +249,13 @@ pub enum PublishEvent {
     StreamInvalidated { symbol: String, epoch: u64 },
     /// A venue that publishes open interest only over REST has polled it. The value is the venue's
     /// own text and its unit is the venue's, so it is passed through rather than converted: a
-    /// recorder stores it as written, and contract-versus-coin units are the venue's convention.
+    /// recorder stores it as written. The unit must still be published beside it, because it is
+    /// the venue's convention and a consumer cannot recover it from the number.
     OpenInterest {
         symbol: String,
         open_interest: String,
+        /// What the number counts.
+        unit: OpenInterestUnit,
         exch_ts: i64,
     },
 }
@@ -266,6 +269,16 @@ impl PublishEvent {
             _ => None,
         }
     }
+}
+
+/// What a venue's open interest number counts.
+///
+/// OKX and Bybit quote contracts (`oi`/`openInterest` in contract counts); Hyperliquid quotes coin
+/// quantity, and a consumer that mixed the two would have no way to tell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenInterestUnit {
+    Contracts,
+    Base,
 }
 
 #[cfg(test)]
@@ -285,18 +298,27 @@ impl TestPublishReceiver {
 pub(crate) fn test_publish_channel() -> (PublishSender, TestPublishReceiver) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (
-        PublishSender {
-            publish: Arc::new(move |publication| {
-                if let DirectPublication::Event(event) = publication {
-                    let _ = sender.send(event.clone());
-                }
-            }),
-            // Keep the historical test behavior: native batches are declined so venue code
-            // falls back to the normalized FeedBatch path that the test receiver can inspect.
-            native_supported: false,
-        },
+        test_publish_sender(Arc::new(move |event| {
+            let _ = sender.send(event);
+        })),
         TestPublishReceiver { receiver },
     )
+}
+
+/// A `PublishSender` that hands every `PublishEvent` to `sink`, for tests that need to observe
+/// publications (count them, filter them) rather than just receive them in order.
+#[cfg(test)]
+pub(crate) fn test_publish_sender(sink: Arc<dyn Fn(PublishEvent) + Send + Sync>) -> PublishSender {
+    PublishSender {
+        publish: Arc::new(move |publication| {
+            if let DirectPublication::Event(event) = publication {
+                sink(event.clone());
+            }
+        }),
+        // Keep the historical test behavior: native batches are declined so venue code
+        // falls back to the normalized FeedBatch path that the test receiver can inspect.
+        native_supported: false,
+    }
 }
 
 /// Provides a build function for the Connector.

@@ -293,17 +293,22 @@ fn decimals(step: f64) -> u32 {
 // 原始端点（对照官方文档全量）
 // ------------------------------------------------------------------
 
+/// OKX 业务错误：顶层 `code` 非 "0" 时转换。其他模块（例如公共行情）也用它校验同一字段。
+pub(crate) fn check_okx_code(code: &str, msg: &str) -> Result<(), OkxError> {
+    if code == "0" {
+        Ok(())
+    } else {
+        Err(OkxError::OrderError {
+            code: code.to_string(),
+            msg: msg.to_string(),
+        })
+    }
+}
+
 impl OkxClient {
     /// 通用 POST 业务响应检查：顶层 code == "0"。
     fn check_code(code: &str, msg: &str) -> Result<(), OkxError> {
-        if code == "0" {
-            Ok(())
-        } else {
-            Err(OkxError::OrderError {
-                code: code.to_string(),
-                msg: msg.to_string(),
-            })
-        }
+        check_okx_code(code, msg)
     }
 
     // ---------------- 基础 ----------------

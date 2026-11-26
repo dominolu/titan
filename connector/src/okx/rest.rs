@@ -87,6 +87,37 @@ impl OkxClient {
         }
     }
 
+    /// 当前 open interest，未认证的公共接口 `GET /api/v5/public/open-interest`。
+    ///
+    /// `inst_type` 为 OKX 的品种类别（`SWAP`、`FUTURES` 等）：OKX 的 `instId` 形如
+    /// `BTC-USDT-SWAP`，只按 `instId` 查询时仍要求提供 `instType`，因此由调用方给出而不是这里猜。
+    ///
+    /// 与 `brokerapi::get_open_interest`（只查 SWAP、转成 f64）是两条不同用途的入口：本方法保留
+    /// 交易所原文与毫秒时间戳，供需要原精度和观测时间的行情采集使用。
+    pub async fn get_open_interest_raw(
+        &self,
+        inst_type: &str,
+        inst_id: &str,
+    ) -> Result<(String, i64), OkxError> {
+        if inst_type.is_empty() || inst_id.is_empty() {
+            return Err(OkxError::InvalidArg("empty open-interest request"));
+        }
+        let path = format!("/api/v5/public/open-interest?instType={inst_type}&instId={inst_id}");
+        let resp: crate::okx::msg::rest::OkxResponse<crate::okx::msg::rest::OpenInterest> =
+            self.get_noauth(&path).await?;
+        crate::okx::brokerapi::check_okx_code(&resp.code, &resp.msg)?;
+        let row = resp
+            .data
+            .into_iter()
+            .next()
+            .ok_or(OkxError::InvalidArg("empty open-interest response"))?;
+        let ts = row
+            .ts
+            .parse::<i64>()
+            .map_err(|_| OkxError::InvalidArg("open-interest time"))?;
+        Ok((row.oi, ts))
+    }
+
     /// 设置默认交易模式（cross / isolated），统一下单接口使用。
     pub fn set_td_mode(&mut self, td_mode: &str) {
         self.td_mode = td_mode.to_string();
