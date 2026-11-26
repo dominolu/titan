@@ -303,6 +303,26 @@ impl EventSegment {
         } else {
             (0, ts_ns, ts_ns, false)
         };
+        // A file this process did not close cleanly must not be appended to. Its last gzip member
+        // has no end-of-stream marker, and appending a new member after one leaves a stream that no
+        // reader can decode — `MultiGzDecoder` fails on the truncated member and never reaches the
+        // new one, which is how one restart turned a whole hour of trades unreadable for every
+        // venue. The interrupted file keeps its own summary (`truncated_tail` records the cut), and
+        // the rest of the hour continues in a new file beside it.
+        let resume = path.exists() && !truncated_tail;
+        let (path, summary_path) = if resume {
+            (path, summary_path)
+        } else if path.exists() {
+            let (path, summary) = next_free_segment_path(&directory, stem, &hour);
+            (path, summary)
+        } else {
+            (path, summary_path)
+        };
+        let (records, first_ts, last_ts, truncated_tail) = if resume {
+            (records, first_ts, last_ts, truncated_tail)
+        } else {
+            (0, ts_ns, ts_ns, false)
+        };
         let file = File::options().create(true).append(true).open(&path)?;
         Ok(Self {
             hour,
@@ -509,6 +529,21 @@ fn valid_component(value: &str) -> bool {
         && value != ".."
 }
 
+/// The first free `<stem>-<hour>-r<n>` file in `directory`, with its summary path.
+///
+/// Used when the hour's file cannot be continued: a restarted writer starts a new file rather than
+/// appending to a gzip member that was cut short.
+fn next_free_segment_path(directory: &Path, stem: &str, hour: &str) -> (PathBuf, PathBuf) {
+    for serial in 1u32.. {
+        let path = directory.join(format!("{stem}-{hour}-r{serial}.ndjson.gz"));
+        if !path.exists() {
+            let summary = directory.join(format!("{stem}-{hour}-r{serial}.summary.json"));
+            return (path, summary);
+        }
+    }
+    unreachable!("the serial space is larger than the files an hour can hold")
+}
+
 fn scan_existing(path: &Path) -> io::Result<(u64, i64, i64, bool)> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(MultiGzDecoder::new(file));
@@ -657,17 +692,24 @@ impl Writer {
 mod market_event_tests {
     use super::*;
     use std::{
-        io::Read,
+        io::{Read, Write},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     fn root() -> PathBuf {
+        // A per-call counter as well as the clock: tests run in parallel threads, and two starting
+        // in the same nanosecond would otherwise share one directory and overwrite each other's
+        // files — which is exactly how "passes alone, fails in the suite" looks.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("titan-events-{}-{nonce}", std::process::id()));
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "titan-events-{}-{nonce}-{serial}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         root
     }
@@ -681,6 +723,75 @@ mod market_event_tests {
             qty: "0.5".into(),
             trade_id: None,
         }
+    }
+
+    #[test]
+    fn a_restart_after_an_interrupted_hour_does_not_poison_the_file() {
+        // The recorder was killed while a trade file was open. Its last gzip member has no
+        // end-of-stream marker, and appending a new member after it leaves a stream no reader can
+        // decode: `MultiGzDecoder` fails on the truncated member and never reaches the new one.
+        // On the live node one restart made a whole hour of trades unreadable for every venue, so
+        // the restarted writer must start a new file instead of appending.
+        let root = root();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        // An interrupted file: one record, then a member cut off mid-stream. This is what the
+        // operating system leaves behind when the process is killed between the record it had
+        // written and the trailer that would close the gzip member.
+        let interrupted = dir.join("trades-19700101T00.ndjson.gz");
+        let mut encoder =
+            GzEncoder::new(File::create(&interrupted).unwrap(), Compression::default());
+        serde_json::to_writer(&mut encoder, &trade(0)).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        encoder.finish().unwrap();
+        let bytes = std::fs::read(&interrupted).unwrap();
+        std::fs::write(&interrupted, &bytes[..bytes.len() - 8]).unwrap(); // drop CRC and size
+
+        let mut writer = MarketEventWriter::new();
+        writer
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        writer.finish().unwrap();
+
+        // The new record is readable from a new file, and the interrupted file is left as it was.
+        let continuation = dir.join("trades-19700101T00-r1.ndjson.gz");
+        let mut decoded = String::new();
+        MultiGzDecoder::new(File::open(&continuation).unwrap())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(decoded.trim()).unwrap();
+        assert_eq!(value["exch_ts_ns"], 1_000);
+        let intact: Vec<u8> = std::fs::read(&interrupted).unwrap();
+        assert!(
+            MultiGzDecoder::new(intact.as_slice())
+                .read_to_string(&mut String::new())
+                .is_err(),
+            "the interrupted prefix must not be reported as readable"
+        );
+    }
+
+    #[test]
+    fn a_cleanly_closed_hour_continues_in_the_same_file() {
+        // The opposite case: nothing was cut, so the hour keeps one file rather than sprouting a
+        // `-r1` beside it on every ordinary restart.
+        let root = root();
+        let mut first = MarketEventWriter::new();
+        first
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(0))
+            .unwrap();
+        first.finish().unwrap();
+        let mut second = MarketEventWriter::new();
+        second
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        second.finish().unwrap();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        let mut decoded = String::new();
+        MultiGzDecoder::new(File::open(dir.join("trades-19700101T00.ndjson.gz")).unwrap())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded.lines().count(), 2);
+        assert!(!dir.join("trades-19700101T00-r1.ndjson.gz").exists());
     }
 
     #[test]
