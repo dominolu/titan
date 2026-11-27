@@ -747,7 +747,60 @@ fn market_stream_endpoints(stream_url: &str) -> Vec<(String, MarketStreamRoute)>
 
 #[cfg(test)]
 mod binance_open_interest_tests {
-    use super::binance_open_interest_endpoint;
+    use super::*;
+
+    #[tokio::test]
+    async fn the_poll_publishes_the_open_interest_sample() {
+        // The recorder lost a whole day of Binance open interest when the poll moved here, so the
+        // poll's own publishing is asserted against a stub rather than assumed from the endpoint.
+        let (api, _requests, _server) = crate::venue::test_support::http(vec![(
+            200,
+            serde_json::json!({"symbol": "BTCUSDT", "openInterest": "98056.804", "time": 1795773742065u64}),
+        )])
+        .await;
+        let (stream_url, _ws_requests, _ws_server) =
+            crate::venue::test_support::http(vec![(200, serde_json::json!({}))]).await;
+        let publications = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = publications.clone();
+        let sender = crate::connector::test_publish_sender(std::sync::Arc::new(move |event| {
+            if let crate::connector::PublishEvent::OpenInterest { .. } = &event {
+                sink.lock().unwrap().push(event);
+            }
+        }));
+        let config = BinanceMarketStreamConfig {
+            api_url: api,
+            stream_url,
+            ..BinanceMarketStreamConfig::new("BTCUSDT", vec![MarketDataKind::Depth])
+        }
+        .with_open_interest_interval(std::time::Duration::from_millis(50));
+        let handle = start_binance_market_stream(config, sender)
+            .await
+            .expect("the REST poll starts even when the socket cannot connect");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while publications.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        handle.shutdown().await;
+        let published = publications.lock().unwrap();
+        assert_eq!(published.len(), 1, "one sample");
+        match &published[0] {
+            crate::connector::PublishEvent::OpenInterest {
+                symbol,
+                open_interest,
+                unit,
+                exch_ts,
+            } => {
+                assert_eq!(symbol, "BTCUSDT");
+                assert_eq!(open_interest, "98056.804");
+                assert_eq!(*unit, crate::connector::OpenInterestUnit::Contracts);
+                assert_eq!(*exch_ts, 1_795_773_742_065_000_000);
+            }
+            other => panic!(
+                "expected open interest, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
 
     #[test]
     fn the_coin_margined_base_keeps_its_own_endpoint() {
