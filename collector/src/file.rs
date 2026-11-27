@@ -240,7 +240,21 @@ fn inspect_event_file(
     }
     report.records += valid_records;
     report.invalid_records += invalid_records;
-    if truncated {
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let summary_name = filename.strip_suffix(".ndjson.gz").unwrap_or(&filename);
+    // A file without a summary is one the writer has not closed yet, and an open file's last
+    // member is incomplete by construction: it is still being filled. Counting that as a
+    // truncation reported every hour in progress as damaged (ten of twenty files at one point on
+    // the live node, none of them actually short of records). Only a file whose writer finished —
+    // it wrote a summary — and which still ends mid-member has lost something.
+    let summary_path = path.with_file_name(format!("{summary_name}.summary.json"));
+    let summary_bytes = match std::fs::read(&summary_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let in_progress = summary_bytes.is_none();
+    if truncated && !in_progress {
         report.truncated_files += 1;
         if kind == "trade" {
             report
@@ -250,13 +264,9 @@ fn inspect_event_file(
                 .trade_truncated_tail = true;
         }
     }
-    let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let summary_name = filename.strip_suffix(".ndjson.gz").unwrap_or(&filename);
-    let summary_path = path.with_file_name(format!("{summary_name}.summary.json"));
-    match std::fs::read(summary_path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => report.missing_summaries += 1,
-        Err(error) => return Err(error),
-        Ok(bytes) => {
+    match summary_bytes {
+        None => report.missing_summaries += 1,
+        Some(bytes) => {
             let summary: EventSummary = match serde_json::from_slice(&bytes) {
                 Ok(summary) => summary,
                 Err(_) => {
@@ -954,6 +964,40 @@ mod market_event_tests {
     }
 
     #[test]
+    fn a_file_still_being_written_is_not_counted_as_truncated() {
+        // An open file has an incomplete last member because it is still being filled; it has no
+        // summary either, since its writer has not closed it. Counting that as truncation reported
+        // every hour in progress as damaged.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let record = AuxRecord::Oi {
+            exch_ts_ns: 0,
+            local_ts_ns: 0,
+            value: "1".to_owned(),
+            unit: OpenInterestUnit::Contracts,
+            source: AuxSource::Rest,
+        };
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        serde_json::to_writer(&mut encoder, &record).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        // A member in progress: header and partial payload, no trailer, no summary beside it.
+        bytes.extend_from_slice(&[
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01,
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "the writer has not finished");
+        assert_eq!(report.missing_summaries, 1);
+        assert_eq!(report.records, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_tail_that_is_not_only_a_header_is_still_a_truncation() {
         // The counterpart: a member whose header has data behind it lost records, and saying so
         // is what keeps a real cut visible.
@@ -975,6 +1019,12 @@ mod market_event_tests {
         let mut bytes = encoder.finish().unwrap();
         bytes.push(0x1f); // a torn write: header started, cut off
         std::fs::write(&path, &bytes).unwrap();
+        // A summary means the writer closed this file; only then is an unfinished tail a loss.
+        std::fs::write(
+            dir.join("aux-19700101T00.summary.json"),
+            br#"{"records":1,"first_exch_ts_ns":0,"last_exch_ts_ns":0,"truncated_tail":false,"sha256":"x"}"#,
+        )
+        .unwrap();
 
         assert!(!ends_with_a_bare_gzip_header(&path).unwrap());
         let report = inspect_market_events(&root, None).unwrap();
