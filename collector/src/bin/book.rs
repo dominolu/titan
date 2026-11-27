@@ -1104,10 +1104,25 @@ async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
                 })
         });
     }
+    // A service stop is a SIGTERM, not a Ctrl-C. Handling only `ctrl_c()` meant `systemctl
+    // stop`/`restart` killed the recorder outright: every market's hour file was left with its
+    // last gzip member open (a bare header, no end-of-stream marker), no summary was written, and
+    // the rest of the hour could never be appended to. `restart` is how this recorder is
+    // redeployed, so that path has to be a clean shutdown.
+    let mut terminate = termination_signal().map_err(io_error)?;
     loop {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal.map_err(io_error)?;
+                let _ = shutdown_tx.send(true);
+                while let Some(result) = tasks.join_next().await {
+                    result.map_err(|_| (4, "market recorder task failed".into()))?
+                        .map_err(|message| (4, message))?;
+                }
+                return Ok(());
+            }
+            // `recv` yields `None` only when the signal stream ends, which is also a stop.
+            _ = terminate.recv() => {
                 let _ = shutdown_tx.send(true);
                 while let Some(result) = tasks.join_next().await {
                     result.map_err(|_| (4, "market recorder task failed".into()))?
@@ -1318,6 +1333,31 @@ fn matching_paths(
 fn io_error(error: impl std::fmt::Display) -> (u8, String) {
     (4, error.to_string())
 }
+
+/// The signal a service manager uses to stop this process.
+///
+/// `systemctl stop`/`restart` send SIGTERM; without an arm waiting for it the process is killed
+/// where the kernel catches it, so nothing is flushed and the hour's files are left unreadable.
+#[cfg(unix)]
+fn termination_signal() -> anyhow::Result<tokio::signal::unix::Signal> {
+    use tokio::signal::unix::{SignalKind, signal};
+    signal(SignalKind::terminate()).map_err(anyhow::Error::from)
+}
+
+/// Termination outside Unix has no SIGTERM; a service manager there has no stop to honour.
+#[cfg(not(unix))]
+fn termination_signal() -> anyhow::Result<TerminationSignal> {
+    Ok(TerminationSignal(std::future::pending::<()>()))
+}
+
+#[cfg(not(unix))]
+struct TerminationSignal(std::future::pending<()>);
+
+#[cfg(not(unix))]
+impl TerminationSignal {
+    async fn recv(&mut self) {}
+}
+
 fn json_error(error: impl std::fmt::Display) -> (u8, String) {
     (4, error.to_string())
 }

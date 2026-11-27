@@ -408,14 +408,30 @@ impl PublicStream {
                 }
             }
             "funding-rate" => {
+                let pushed_at = data
+                    .data
+                    .iter()
+                    .find_map(|value| value.get("ts").and_then(|ts| ts.as_str()))
+                    .and_then(|ts| ts.parse::<i64>().ok())
+                    .map(|ms| ms.saturating_mul(1_000_000));
                 for value in &data.data {
                     let funding: FundingRate = serde_json::from_value(value.clone())?;
+                    // `funding_time` is when this period settles and stays put for the whole
+                    // period, so it cannot date the sample: every push within one period would
+                    // carry the same time. The frame's own `ts` is when OKX observed the rate.
+                    let observed = funding
+                        .ts
+                        .parse::<i64>()
+                        .ok()
+                        .map(|ms| ms.saturating_mul(1_000_000))
+                        .or(pushed_at)
+                        .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0));
                     self.ev_tx.send(PublishEvent::Funding {
                         symbol: funding.inst_id,
                         funding_rate: funding.funding_rate.parse().unwrap_or(0.0),
                         next_funding_time: funding.next_funding_time.parse().unwrap_or(0)
                             * 1_000_000,
-                        exch_ts: funding.funding_time.parse().unwrap_or(0) * 1_000_000,
+                        exch_ts: observed,
                     });
                 }
             }
@@ -873,6 +889,48 @@ mod tests {
             }
             _ => panic!("expected one trade batch"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_funding_push_is_dated_by_its_push_time_not_its_settlement_time() {
+        // OKX repeats the same `fundingTime` for every push within a settlement period. Using it
+        // as the observation time put a whole period's samples in one time bucket: the recorder
+        // rewrote the same hour's file on every sample (394 continuation files in one hour on the
+        // live node). The frame's `ts` advances with each push and is the time to record.
+        let (stream, mut receiver) = stream();
+        let frame = |ts: &str| {
+            serde_json::json!({
+                "arg": {"channel": "funding-rate", "instId": "BTC-USDT-SWAP"},
+                "data": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "fundingRate": "0.0000815",
+                    "fundingTime": "1795766400000",
+                    "nextFundingTime": "1795795200000",
+                    "ts": ts
+                }]
+            })
+            .to_string()
+        };
+        stream
+            .handle_public_stream(&frame("1795748727513"))
+            .await
+            .unwrap();
+        let first = match receiver.recv().await.unwrap() {
+            PublishEvent::Funding { exch_ts, .. } => exch_ts,
+            other => panic!("expected funding, got {:?}", std::mem::discriminant(&other)),
+        };
+        stream
+            .handle_public_stream(&frame("1795748787513"))
+            .await
+            .unwrap();
+        let second = match receiver.recv().await.unwrap() {
+            PublishEvent::Funding { exch_ts, .. } => exch_ts,
+            other => panic!("expected funding, got {:?}", std::mem::discriminant(&other)),
+        };
+        // Both pushes name the same settlement time, but they must not share one observation time.
+        assert_eq!(first, 1_795_748_727_513_000_000);
+        assert_eq!(second, 1_795_748_787_513_000_000);
+        assert!(second > first, "each push advances the recorded time");
     }
 
     #[tokio::test]

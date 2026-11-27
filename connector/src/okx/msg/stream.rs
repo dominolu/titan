@@ -116,18 +116,28 @@ pub struct Trade {
     pub ts: String,
 }
 
+/// `funding-rate` 频道的一帧。
+///
+/// `funding_time` 是本次资金费周期的**结算**时间，不是这一帧到达的时间：OKX 在一个周期内反复
+/// 推送时，`funding_time` 保持不变，只有 `ts` 随之推进。用 `funding_time` 当观测时间会让同周期
+/// 的所有样本挤进同一个时间桶（并因此反复切换写入文件），所以两者必须分开保留。
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FundingRate {
     pub inst_id: String,
     #[serde(default)]
     pub funding_rate: String,
+    /// 本周期结算时间（毫秒）。
     #[serde(default)]
     pub funding_time: String,
     #[serde(default)]
     pub next_funding_rate: String,
+    /// 下一周期结算时间（毫秒）。
     #[serde(default)]
     pub next_funding_time: String,
+    /// 这一帧的推送时间（毫秒），OKX 观察该费率的时刻。
+    #[serde(default)]
+    pub ts: String,
 }
 
 // ------------------------------------------------------------------
