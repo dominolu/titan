@@ -1245,6 +1245,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trades_the_adapter_produces_reach_the_trade_directory() {
+        // A venue that publishes through `FeedBatch` (OKX, Hyperliquid) has its trades converted by
+        // the adapter into `FeedMessage::Trade`. The recorder is what decides whether that record
+        // is stored at all: `data/trade/` is the only place the quality report counts trades from,
+        // so a trade that does not land there is a day reported as having no trades.
+        let root = std::env::temp_dir().join(format!("titan-trades-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let trade = |exch_ts_ns: i64, side, price: &str, qty: &str| {
+            FeedMessage::Trade(crate::file::TradeRecord {
+                exch_ts_ns,
+                local_ts_ns: exch_ts_ns,
+                side,
+                price: price.to_owned(),
+                qty: qty.to_owned(),
+                trade_id: None,
+            })
+        };
+        let feed = Scripted {
+            messages: std::collections::VecDeque::from(vec![
+                FeedMessage::Snapshot(SnapshotMessage {
+                    exch_ts_ns: 1_000_000_000,
+                    local_ts_ns: 1_000_000_000,
+                    bids: vec![Level { tick: 100, qty: 1 }],
+                    asks: vec![Level { tick: 101, qty: 1 }],
+                    last_seq: Some(10),
+                }),
+                trade(
+                    1_000_000_000,
+                    crate::file::TradeSide::Buy,
+                    "64757.6",
+                    "213.28",
+                ),
+                trade(1_000_100_000, crate::file::TradeSide::Sell, "64758", "0.5"),
+            ]),
+        };
+        run_market(meta(), &root, "okx", "perpetual", &settings(&root), feed)
+            .await
+            .unwrap();
+        let directory = root
+            .join("trade/venue=okx/instrument=perpetual/symbol=BTCUSDT")
+            .join("date=1970-01-01");
+        let mut files: Vec<_> = std::fs::read_dir(&directory)
+            .expect("the trade directory")
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_string_lossy().ends_with(".ndjson.gz"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 1, "{files:?}");
+        let mut text = String::new();
+        std::io::Read::read_to_string(
+            &mut flate2::read::MultiGzDecoder::new(std::fs::File::open(&files[0]).unwrap()),
+            &mut text,
+        )
+        .unwrap();
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["side"], "buy");
+        assert_eq!(records[0]["price"], "64757.6");
+        assert_eq!(records[0]["qty"], "213.28");
+        assert_eq!(records[1]["side"], "sell");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_late_frame_is_written_and_the_recorded_book_stays_with_the_stream() {
         // The transport hands frames over as they arrive, so a frame the venue stamped for an
         // earlier slot can follow one stamped later while the sequence chain still follows. Here

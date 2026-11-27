@@ -55,17 +55,32 @@ struct LocalBook {
 }
 
 impl LocalBook {
-    fn apply(side: &mut HashMap<String, String>, levels: &[Vec<String>]) {
+    /// Applies one side of a push to the local book.
+    ///
+    /// The string forms are kept exactly as the venue wrote them, because the checksum is computed
+    /// over them: a level stored as `"100.0"` when OKX sent `"100"` makes every later checksum
+    /// disagree and drives a resynchronization the book did not need.
+    ///
+    /// A level whose quantity is not a number is skipped and reported. Reading it as zero used to
+    /// delete the level instead, which silently changed the book.
+    fn apply(side: &mut HashMap<String, String>, levels: &[Vec<String>]) -> bool {
+        let mut clean = true;
         for level in levels {
             if level.len() < 2 {
+                clean = false;
                 continue;
             }
-            if level[1].parse::<f64>().unwrap_or(0.0) == 0.0 {
-                side.remove(&level[0]);
-            } else {
-                side.insert(level[0].clone(), level[1].clone());
+            match level[1].parse::<f64>() {
+                Ok(0.0) => {
+                    side.remove(&level[0]);
+                }
+                Ok(qty) if qty.is_finite() && qty > 0.0 => {
+                    side.insert(level[0].clone(), level[1].clone());
+                }
+                _ => clean = false,
             }
         }
+        clean
     }
 
     fn checksum(&self) -> i64 {
@@ -263,8 +278,24 @@ impl PublicStream {
                         let _ = self.resync_tx.send(symbol);
                         return Ok(());
                     }
-                    LocalBook::apply(&mut state.bids, &books.bids);
-                    LocalBook::apply(&mut state.asks, &books.asks);
+                    let clean = LocalBook::apply(&mut state.bids, &books.bids)
+                        & LocalBook::apply(&mut state.asks, &books.asks);
+                    if !clean {
+                        // A level the venue sent unreadable leaves the local book short of a
+                        // change the venue has already made; the checksum cannot be trusted after
+                        // it, so the book is resynchronized rather than carried forward.
+                        let epoch = state.epoch;
+                        *state = LocalBook {
+                            epoch,
+                            ..LocalBook::default()
+                        };
+                        self.ev_tx.send(PublishEvent::StreamInvalidated {
+                            symbol: symbol.clone(),
+                            epoch,
+                        });
+                        let _ = self.resync_tx.send(symbol);
+                        return Ok(());
+                    }
                     if books.checksum != 0 && state.checksum() != books.checksum {
                         // Same reasoning as a sequence gap: the checksum says this book disagrees
                         // with the venue, which only a fresh snapshot fixes. The connection is fine.
@@ -283,11 +314,20 @@ impl PublicStream {
                     state.last_sequence = books.seq_id;
                     state.epoch
                 };
+                // The state was advanced above and the frame is a duplicate or an empty push with
+                // nothing the consumer can record; the first one is still published, because its
+                // sequence and time are real and its emptiness is part of what the venue said.
                 let mut events = Vec::with_capacity(books.bids.len() + books.asks.len());
                 for level in &books.bids {
                     if level.len() < 2 {
                         continue;
                     }
+                    let Ok(px) = level[0].parse::<f64>() else {
+                        continue;
+                    };
+                    let Ok(qty) = level[1].parse::<f64>() else {
+                        continue;
+                    };
                     events.push(Event {
                         ev: if snapshot {
                             LOCAL_BID_DEPTH_SNAPSHOT_EVENT
@@ -297,8 +337,8 @@ impl PublicStream {
                         exch_ts,
                         local_ts,
                         order_id: books.prev_seq_id as u64,
-                        px: level[0].parse().unwrap_or(0.0),
-                        qty: level[1].parse().unwrap_or(0.0),
+                        px,
+                        qty,
                         ival: books.seq_id,
                         fval: 0.0,
                     });
@@ -307,6 +347,12 @@ impl PublicStream {
                     if level.len() < 2 {
                         continue;
                     }
+                    let Ok(px) = level[0].parse::<f64>() else {
+                        continue;
+                    };
+                    let Ok(qty) = level[1].parse::<f64>() else {
+                        continue;
+                    };
                     events.push(Event {
                         ev: if snapshot {
                             LOCAL_ASK_DEPTH_SNAPSHOT_EVENT
@@ -316,8 +362,8 @@ impl PublicStream {
                         exch_ts,
                         local_ts,
                         order_id: books.prev_seq_id as u64,
-                        px: level[0].parse().unwrap_or(0.0),
-                        qty: level[1].parse().unwrap_or(0.0),
+                        px,
+                        qty,
                         ival: books.seq_id,
                         fval: 0.0,
                     });
@@ -362,14 +408,30 @@ impl PublicStream {
                 }
             }
             "funding-rate" => {
+                let pushed_at = data
+                    .data
+                    .iter()
+                    .find_map(|value| value.get("ts").and_then(|ts| ts.as_str()))
+                    .and_then(|ts| ts.parse::<i64>().ok())
+                    .map(|ms| ms.saturating_mul(1_000_000));
                 for value in &data.data {
                     let funding: FundingRate = serde_json::from_value(value.clone())?;
+                    // `funding_time` is when this period settles and stays put for the whole
+                    // period, so it cannot date the sample: every push within one period would
+                    // carry the same time. The frame's own `ts` is when OKX observed the rate.
+                    let observed = funding
+                        .ts
+                        .parse::<i64>()
+                        .ok()
+                        .map(|ms| ms.saturating_mul(1_000_000))
+                        .or(pushed_at)
+                        .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0));
                     self.ev_tx.send(PublishEvent::Funding {
                         symbol: funding.inst_id,
                         funding_rate: funding.funding_rate.parse().unwrap_or(0.0),
                         next_funding_time: funding.next_funding_time.parse().unwrap_or(0)
                             * 1_000_000,
-                        exch_ts: funding.funding_time.parse().unwrap_or(0) * 1_000_000,
+                        exch_ts: observed,
                     });
                 }
             }
@@ -699,6 +761,176 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_stream(&mut receiver).await.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn a_book_update_is_published_unchanged_and_keeps_the_epoch() {
+        // The segment a recording writes rotates on an epoch change, so a healthy book that is
+        // published frame after frame must never advance the epoch: every frame below is a
+        // well-formed update whose predecessor is what the local book holds.
+        let (stream, mut receiver) = stream();
+        stream
+            .handle_public_stream(&book("snapshot", 10, -1, 0))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 1);
+        for sequence in 11..16 {
+            stream
+                .handle_public_stream(&book("update", sequence, sequence - 1, 0))
+                .await
+                .unwrap();
+            let published = next_stream(&mut receiver).await;
+            assert_eq!(published.epoch, 1);
+            assert!(!published.snapshot);
+            assert_eq!(published.last_update_sequence, sequence as u64);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_level_resynchronizes_instead_of_shifting_the_book() {
+        // A quantity that is not a number used to be read as zero, which *removed* the level: the
+        // local book then disagreed with the venue without saying so, and the next checksum
+        // invalidated the stream with a cause nobody could see.
+        let (mut stream, mut receiver) = stream();
+        stream
+            .handle_public_stream(&book("snapshot", 10, -1, 0))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 1);
+        let broken = serde_json::json!({
+            "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"},
+            "action": "update",
+            "data": [{
+                "asks": [["101", "n/a"]],
+                "bids": [["100", "1"]],
+                "ts": "1",
+                "seqId": 11,
+                "prevSeqId": 10,
+                "checksum": 0
+            }]
+        })
+        .to_string();
+        stream.handle_public_stream(&broken).await.unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PublishEvent::StreamInvalidated { epoch: 1, .. })
+        ));
+        assert_eq!(stream.resync_pending(), Some("BTC-USDT-SWAP".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_level_stored_in_the_venues_own_text_keeps_the_checksum_valid() {
+        // The checksum is computed over the strings OKX sent. Storing a level in any other form
+        // (a parsed and re-rendered float, say) makes the next comparison fail on a book that is
+        // actually in step.
+        let (stream, mut receiver) = stream();
+        stream
+            .handle_public_stream(&book("snapshot", 10, -1, 0))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 1);
+        let state = stream
+            .books
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("BTC-USDT-SWAP")
+            .map(|book| (book.bids.clone(), book.asks.clone()))
+            .expect("the snapshot's book");
+        assert_eq!(state.0.get("100"), Some(&"1".to_string()));
+        assert_eq!(state.1.get("101"), Some(&"2".to_string()));
+        let checksum = stream
+            .books
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("BTC-USDT-SWAP")
+            .map(LocalBook::checksum)
+            .unwrap();
+        // The venue now sends the checksum the local book computes, so nothing is invalidated.
+        stream
+            .handle_public_stream(&book("update", 11, 10, checksum))
+            .await
+            .unwrap();
+        assert_eq!(next_stream(&mut receiver).await.epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn a_trade_push_publishes_a_trade_event_with_its_own_side() {
+        // The recorder only records trades the adapter recognizes; that starts here, where OKX's
+        // `trades` frame becomes an event with the aggressor's side and the venue's time.
+        let (stream, mut receiver) = stream();
+        // The push names its channel in `arg`; OKX's trade rows carry the instrument id, not the
+        // channel name, so a payload without `arg` is not what the handler receives.
+        let message = serde_json::json!({
+            "arg": {"channel": "trades", "instId": "BTC-USDT-SWAP"},
+            "data": [{
+                "instId": "BTC-USDT-SWAP",
+                "tradeId": "1",
+                "px": "64757.6",
+                "sz": "213.28",
+                "side": "sell",
+                "ts": "1700000000000"
+            }]
+        })
+        .to_string();
+        stream.handle_public_stream(&message).await.unwrap();
+        match receiver.recv().await {
+            Some(PublishEvent::FeedBatch {
+                symbol,
+                events,
+                stream,
+            }) => {
+                assert_eq!(symbol, "BTC-USDT-SWAP");
+                assert_eq!(events.len(), 1);
+                assert!(events[0].is(LOCAL_SELL_TRADE_EVENT));
+                assert_eq!(events[0].px, 64_757.6);
+                assert_eq!(events[0].qty, 213.28);
+                assert_eq!(events[0].exch_ts, 1_700_000_000_000_000_000);
+                assert!(stream.is_none(), "a trade advances no book sequence");
+            }
+            _ => panic!("expected one trade batch"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_funding_push_is_dated_by_its_push_time_not_its_settlement_time() {
+        // OKX repeats the same `fundingTime` for every push within a settlement period. Using it
+        // as the observation time put a whole period's samples in one time bucket: the recorder
+        // rewrote the same hour's file on every sample (394 continuation files in one hour on the
+        // live node). The frame's `ts` advances with each push and is the time to record.
+        let (stream, mut receiver) = stream();
+        let frame = |ts: &str| {
+            serde_json::json!({
+                "arg": {"channel": "funding-rate", "instId": "BTC-USDT-SWAP"},
+                "data": [{
+                    "instId": "BTC-USDT-SWAP",
+                    "fundingRate": "0.0000815",
+                    "fundingTime": "1795766400000",
+                    "nextFundingTime": "1795795200000",
+                    "ts": ts
+                }]
+            })
+            .to_string()
+        };
+        stream
+            .handle_public_stream(&frame("1795748727513"))
+            .await
+            .unwrap();
+        let first = match receiver.recv().await.unwrap() {
+            PublishEvent::Funding { exch_ts, .. } => exch_ts,
+            other => panic!("expected funding, got {:?}", std::mem::discriminant(&other)),
+        };
+        stream
+            .handle_public_stream(&frame("1795748787513"))
+            .await
+            .unwrap();
+        let second = match receiver.recv().await.unwrap() {
+            PublishEvent::Funding { exch_ts, .. } => exch_ts,
+            other => panic!("expected funding, got {:?}", std::mem::discriminant(&other)),
+        };
+        // Both pushes name the same settlement time, but they must not share one observation time.
+        assert_eq!(first, 1_795_748_727_513_000_000);
+        assert_eq!(second, 1_795_748_787_513_000_000);
+        assert!(second > first, "each push advances the recorded time");
     }
 
     #[tokio::test]

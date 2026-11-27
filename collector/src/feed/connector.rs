@@ -17,12 +17,12 @@ use crate::book::{
     Change, DepthMessage, Feed, FeedMessage, GapMessage, GapReason, Level, MarketConfig, Side,
     SnapshotMessage, decimal_steps,
 };
-use crate::file::{AuxRecord, AuxSource, TradeRecord, TradeSide};
+use crate::file::{AuxRecord, AuxSource, OpenInterestUnit, TradeRecord, TradeSide};
 use connector::connector::{
     DirectPublication, MarketStreamMetadata, NativeDepthLevels, NativeMarketBatch, PublishEvent,
     PublishSender,
 };
-use titan_domain_types::{BUY_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event};
+use titan_domain_types::{BUY_EVENT, DEPTH_EVENT, DEPTH_SNAPSHOT_EVENT, Event, TRADE_EVENT};
 
 /// One thing the connector published, captured so it outlives the callback.
 ///
@@ -224,25 +224,25 @@ impl ConnectorFeed {
         if !self.matches(symbol) {
             return Vec::new();
         }
-        vec![FeedMessage::Trade(TradeRecord {
-            exch_ts_ns: exchange_ts,
-            local_ts_ns: receive_ts,
-            // `sell` describes the aggressor: a buyer moving the market is a buy.
-            side: if sell {
-                TradeSide::Sell
-            } else {
-                TradeSide::Buy
-            },
-            price: format_quantity(price),
-            qty: format_quantity(quantity),
-            trade_id: None,
-        })]
+        vec![FeedMessage::Trade(trade_record(
+            price,
+            quantity,
+            sell,
+            exchange_ts,
+            receive_ts,
+        ))]
     }
 
     /// Turns one normalized event batch into recorder messages.
     ///
     /// A batch marked `snapshot` carries the whole book as snapshot levels and replaces whatever
     /// the recorder held; anything else is a net change against the previous state.
+    ///
+    /// Trades share the batch with depth: a venue that publishes through `FeedBatch` (OKX,
+    /// Hyperliquid) sends each trade as its own batch of one trade event, and a batch may also
+    /// carry both kinds at once. Every kind the recorder stores is therefore collected here and
+    /// returned together, depth first so a trade that arrived in the same frame is recorded after
+    /// the book state it belongs to.
     fn event_batch(
         &mut self,
         symbol: &str,
@@ -255,6 +255,7 @@ impl ConnectorFeed {
         let mut bids = Vec::new();
         let mut asks = Vec::new();
         let mut changes = Vec::new();
+        let mut trades = Vec::new();
         let mut first_seq = None;
         let mut last_seq = 0;
         let mut exch_ts = 0;
@@ -269,6 +270,32 @@ impl ConnectorFeed {
             // The kind lives in the low byte: `BUY_EVENT`, `SELL_EVENT` and `LOCAL_EVENT` are
             // flags beside it, so only those bits may be compared against a kind constant.
             let kind = event.ev & 0xff;
+            if kind == TRADE_EVENT {
+                // A trade is the venue's own price and quantity, not a book level: it keeps its
+                // decimals rather than being scaled to the market's tick and step, and an event
+                // the venue did not state has neither. `BUY_EVENT` names the aggressor.
+                if event.px.is_finite()
+                    && event.px > 0.0
+                    && event.qty.is_finite()
+                    && event.qty > 0.0
+                {
+                    trades.push(trade_record(
+                        event.px,
+                        event.qty,
+                        !event.is(BUY_EVENT),
+                        event.exch_ts,
+                        event.local_ts,
+                    ));
+                } else {
+                    tracing::debug!(
+                        %symbol,
+                        px = event.px,
+                        qty = event.qty,
+                        "trade without a usable price or quantity, dropped"
+                    );
+                }
+                continue;
+            }
             // A `FeedBatch` carries prices and quantities already parsed to `f64`, in the venue's
             // own units. The recorder stores ticks and quantity steps, so the same scaling the
             // native path does has to happen here; truncating the float would put a BTC price in
@@ -278,9 +305,14 @@ impl ConnectorFeed {
             };
             if kind == DEPTH_SNAPSHOT_EVENT {
                 snapshot = true;
-                match side {
-                    Side::Bid => bids.push(Level { tick, qty }),
-                    Side::Ask => asks.push(Level { tick, qty }),
+                // A snapshot level states a quantity, never its removal: a zero-sized level is a
+                // delta's deletion, and taking it as a book level would record a level the venue
+                // does not have.
+                if qty > 0 {
+                    match side {
+                        Side::Bid => bids.push(Level { tick, qty }),
+                        Side::Ask => asks.push(Level { tick, qty }),
+                    }
                 }
                 exch_ts = event.exch_ts;
                 local_ts = event.local_ts;
@@ -313,7 +345,32 @@ impl ConnectorFeed {
                 changes,
             }));
         }
+        out.extend(trades.into_iter().map(FeedMessage::Trade));
         out
+    }
+}
+
+/// A recorded trade, from whichever path published it.
+///
+/// `sell` describes the aggressor: a buyer moving the market is a buy.
+fn trade_record(
+    price: f64,
+    quantity: f64,
+    sell: bool,
+    exchange_ts: i64,
+    receive_ts: i64,
+) -> TradeRecord {
+    TradeRecord {
+        exch_ts_ns: exchange_ts,
+        local_ts_ns: receive_ts,
+        side: if sell {
+            TradeSide::Sell
+        } else {
+            TradeSide::Buy
+        },
+        price: format_quantity(price),
+        qty: format_quantity(quantity),
+        trade_id: None,
     }
 }
 
@@ -393,6 +450,36 @@ impl Feed for ConnectorFeed {
                             mark_px: None,
                             index_px: None,
                             source: AuxSource::Stream,
+                        })]
+                    }
+                }
+                // A venue that publishes open interest only over REST (Bybit, OKX, Hyperliquid)
+                // has it polled by the connector, so the sample is the venue's own value: no
+                // conversion, and no second poll here.
+                Publication::Event(PublishEvent::OpenInterest {
+                    symbol,
+                    open_interest,
+                    unit,
+                    exch_ts,
+                }) => {
+                    if !self.matches(&symbol) {
+                        Vec::new()
+                    } else {
+                        vec![FeedMessage::Aux(AuxRecord::Oi {
+                            exch_ts_ns: exch_ts,
+                            local_ts_ns: now_ns(),
+                            value: open_interest,
+                            // The venue states the unit; the connector passes it through rather
+                            // than assuming every venue counts contracts.
+                            unit: match unit {
+                                connector::connector::OpenInterestUnit::Contracts => {
+                                    OpenInterestUnit::Contracts
+                                }
+                                connector::connector::OpenInterestUnit::Base => {
+                                    OpenInterestUnit::Base
+                                }
+                            },
+                            source: AuxSource::Rest,
                         })]
                     }
                 }
@@ -498,7 +585,9 @@ fn now_ns() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use titan_domain_types::{LOCAL_EVENT, SELL_EVENT};
+    use titan_domain_types::{
+        LOCAL_BUY_TRADE_EVENT, LOCAL_EVENT, LOCAL_SELL_TRADE_EVENT, SELL_EVENT,
+    };
 
     /// A market whose tick is 0.01 and quantity step is 0.001, so venue text keeps its decimals.
     fn market() -> MarketConfig {
@@ -558,6 +647,231 @@ mod tests {
                 assert!(rate.starts_with("0.0001"), "rate was {rate}");
             }
             other => panic!("expected a funding record, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trade_event_batch_is_recorded() {
+        // OKX and Hyperliquid publish trades through `FeedBatch`, not through a native batch: a
+        // batch of one trade event is their whole trade path. Dropping it left both venues with no
+        // `data/trade/` output at all while the book recording looked complete.
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![Event {
+                ev: LOCAL_BUY_TRADE_EVENT,
+                exch_ts: 1_700_000_000_000_000_000,
+                local_ts: 1_700_000_000_000_000_500,
+                order_id: 0,
+                px: 75_000.5,
+                qty: 0.15,
+                ival: 0,
+                fval: 0.0,
+            }],
+            stream: None,
+        });
+        match feed.next().await.expect("a trade") {
+            FeedMessage::Trade(trade) => {
+                assert_eq!(trade.side, TradeSide::Buy);
+                assert_eq!(trade.price, "75000.5");
+                assert_eq!(trade.qty, "0.15");
+                assert_eq!(trade.exch_ts_ns, 1_700_000_000_000_000_000);
+                assert_eq!(trade.local_ts_ns, 1_700_000_000_000_000_500);
+                assert_eq!(trade.trade_id, None);
+            }
+            other => panic!("expected a trade, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sell_trade_event_names_the_seller() {
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![Event {
+                ev: LOCAL_SELL_TRADE_EVENT,
+                exch_ts: 1,
+                local_ts: 2,
+                order_id: 0,
+                px: 75_000.5,
+                qty: 0.25,
+                ival: 0,
+                fval: 0.0,
+            }],
+            stream: None,
+        });
+        match feed.next().await.expect("a trade") {
+            FeedMessage::Trade(trade) => assert_eq!(trade.side, TradeSide::Sell),
+            other => panic!("expected a trade, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trade_keeps_the_venues_precision_instead_of_the_markets_grid() {
+        // A trade is the venue's own print, not a book level. The market's grid here is a tick of
+        // 1e-8 and a quantity step of 1e-8, so the values below survive either way; the assertion
+        // is that they arrive unrounded, because the recorder stores trades as written.
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![Event {
+                ev: LOCAL_BUY_TRADE_EVENT,
+                exch_ts: 1,
+                local_ts: 2,
+                order_id: 0,
+                px: 64_757.6,
+                qty: 213.28,
+                ival: 0,
+                fval: 0.0,
+            }],
+            stream: None,
+        });
+        match feed.next().await.expect("a trade") {
+            FeedMessage::Trade(trade) => {
+                assert_eq!(trade.price, "64757.6");
+                assert_eq!(trade.qty, "213.28");
+            }
+            other => panic!("expected a trade, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_batch_with_depth_and_a_trade_yields_both() {
+        // One batch may carry both kinds. A `Vec<FeedMessage>` that forgot the second one would
+        // lose the trade even after the trade path existed.
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![
+                depth_event(10.0, 1.0, 7, true),
+                Event {
+                    ev: LOCAL_SELL_TRADE_EVENT,
+                    exch_ts: 3,
+                    local_ts: 4,
+                    order_id: 0,
+                    px: 10.5,
+                    qty: 0.5,
+                    ival: 0,
+                    fval: 0.0,
+                },
+            ],
+            stream: Some(metadata(1, 7, false)),
+        });
+        match feed.next().await.expect("the depth message") {
+            FeedMessage::Depth(depth) => {
+                assert_eq!(depth.changes.len(), 1);
+                assert_eq!(depth.last_seq, 7);
+            }
+            other => panic!("expected a depth message first, got {other:?}"),
+        }
+        match feed.next().await.expect("the trade") {
+            FeedMessage::Trade(trade) => {
+                assert_eq!(trade.side, TradeSide::Sell);
+                assert_eq!(trade.price, "10.5");
+                assert_eq!(trade.qty, "0.5");
+            }
+            other => panic!("expected a trade second, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trade_without_a_price_is_dropped_not_recorded_as_zero() {
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![
+                Event {
+                    ev: LOCAL_BUY_TRADE_EVENT,
+                    exch_ts: 1,
+                    local_ts: 2,
+                    order_id: 0,
+                    px: 0.0,
+                    qty: 1.0,
+                    ival: 0,
+                    fval: 0.0,
+                },
+                depth_event(10.0, 1.0, 9, true),
+            ],
+            stream: Some(metadata(1, 9, false)),
+        });
+        // The unusable trade must not surface; the depth in the same batch still does.
+        match feed.next().await.expect("the depth message") {
+            FeedMessage::Depth(depth) => assert_eq!(depth.last_seq, 9),
+            other => panic!("expected only the depth message, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_polled_open_interest_keeps_the_venues_unit() {
+        // OKX and Bybit count contracts, Hyperliquid quotes coin quantity. Recording the second as
+        // the first would store a different number under the same label.
+        for (unit, expected) in [
+            (
+                connector::connector::OpenInterestUnit::Contracts,
+                OpenInterestUnit::Contracts,
+            ),
+            (
+                connector::connector::OpenInterestUnit::Base,
+                OpenInterestUnit::Base,
+            ),
+        ] {
+            let (mut feed, sender) = ConnectorFeed::channel(market());
+            sender.send(PublishEvent::OpenInterest {
+                symbol: "BTCUSDT".into(),
+                open_interest: "1234.56".into(),
+                unit,
+                exch_ts: 5_000,
+            });
+            match feed.next().await.expect("an open interest record") {
+                FeedMessage::Aux(AuxRecord::Oi {
+                    value,
+                    unit: recorded,
+                    source,
+                    ..
+                }) => {
+                    assert_eq!(value, "1234.56");
+                    assert_eq!(recorded, expected);
+                    assert_eq!(source, AuxSource::Rest);
+                }
+                other => panic!("expected an open interest record, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn another_symbols_trades_are_ignored() {
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "ETHUSDT".into(),
+            events: vec![Event {
+                ev: LOCAL_BUY_TRADE_EVENT,
+                exch_ts: 1,
+                local_ts: 2,
+                order_id: 0,
+                px: 3_000.0,
+                qty: 1.0,
+                ival: 0,
+                fval: 0.0,
+            }],
+            stream: None,
+        });
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![Event {
+                ev: LOCAL_BUY_TRADE_EVENT,
+                exch_ts: 1,
+                local_ts: 2,
+                order_id: 0,
+                px: 75_000.0,
+                qty: 1.0,
+                ival: 0,
+                fval: 0.0,
+            }],
+            stream: None,
+        });
+        match feed.next().await.expect("the BTC trade") {
+            FeedMessage::Trade(trade) => assert_eq!(trade.price, "75000"),
+            other => panic!("expected the BTC trade, got {other:?}"),
         }
     }
 
@@ -718,6 +1032,43 @@ mod tests {
                 assert_eq!(gap.last_seq, 42);
             }
             other => panic!("expected a gap, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zero_sized_snapshot_level_is_not_a_book_level() {
+        let (mut feed, sender) = ConnectorFeed::channel(market());
+        let zero = Event {
+            ev: DEPTH_SNAPSHOT_EVENT | LOCAL_EVENT | BUY_EVENT,
+            exch_ts: 1,
+            local_ts: 2,
+            px: 10.0,
+            qty: 0.0,
+            order_id: 0,
+            ival: 100,
+            fval: 0.0,
+        };
+        let live = Event {
+            ev: DEPTH_SNAPSHOT_EVENT | LOCAL_EVENT | SELL_EVENT,
+            exch_ts: 1,
+            local_ts: 2,
+            px: 11.0,
+            qty: 4.0,
+            order_id: 0,
+            ival: 100,
+            fval: 0.0,
+        };
+        sender.send(PublishEvent::FeedBatch {
+            symbol: "BTCUSDT".into(),
+            events: vec![zero, live],
+            stream: Some(metadata(1, 100, true)),
+        });
+        match feed.next().await.expect("a snapshot") {
+            FeedMessage::Snapshot(snapshot) => {
+                assert!(snapshot.bids.is_empty(), "{:?}", snapshot.bids);
+                assert_eq!(snapshot.asks.len(), 1);
+            }
+            other => panic!("expected a snapshot, got {other:?}"),
         }
     }
 

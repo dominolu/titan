@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
     fs::File,
     io,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read as _, Seek as _, Write},
     path::{Path, PathBuf},
 };
 
@@ -229,14 +229,32 @@ fn inspect_event_file(
                 Err(_) => invalid_records += 1,
             },
             Err(_) => {
-                truncated = true;
+                // A gzip member that is only a header carries no data. A writer that closes its
+                // previous member and then opens the next one leaves exactly that on disk until
+                // the next record arrives, so a file read at that instant ends with a bare header
+                // and nothing was lost. Only a tail with data behind it is a truncation.
+                truncated = !ends_with_a_bare_gzip_header(path)?;
                 break;
             }
         }
     }
     report.records += valid_records;
     report.invalid_records += invalid_records;
-    if truncated {
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let summary_name = filename.strip_suffix(".ndjson.gz").unwrap_or(&filename);
+    // A file without a summary is one the writer has not closed yet, and an open file's last
+    // member is incomplete by construction: it is still being filled. Counting that as a
+    // truncation reported every hour in progress as damaged (ten of twenty files at one point on
+    // the live node, none of them actually short of records). Only a file whose writer finished —
+    // it wrote a summary — and which still ends mid-member has lost something.
+    let summary_path = path.with_file_name(format!("{summary_name}.summary.json"));
+    let summary_bytes = match std::fs::read(&summary_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let in_progress = summary_bytes.is_none();
+    if truncated && !in_progress {
         report.truncated_files += 1;
         if kind == "trade" {
             report
@@ -246,13 +264,9 @@ fn inspect_event_file(
                 .trade_truncated_tail = true;
         }
     }
-    let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let summary_name = filename.strip_suffix(".ndjson.gz").unwrap_or(&filename);
-    let summary_path = path.with_file_name(format!("{summary_name}.summary.json"));
-    match std::fs::read(summary_path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => report.missing_summaries += 1,
-        Err(error) => return Err(error),
-        Ok(bytes) => {
+    match summary_bytes {
+        None => report.missing_summaries += 1,
+        Some(bytes) => {
             let summary: EventSummary = match serde_json::from_slice(&bytes) {
                 Ok(summary) => summary,
                 Err(_) => {
@@ -300,6 +314,35 @@ impl EventSegment {
         let summary_path = directory.join(format!("{stem}-{hour}.summary.json"));
         let (records, first_ts, last_ts, truncated_tail) = if path.exists() {
             scan_existing(&path)?
+        } else {
+            (0, ts_ns, ts_ns, false)
+        };
+        // A file this process did not close cleanly must not be appended to. Its last gzip member
+        // has no end-of-stream marker, and appending a new member after one leaves a stream that no
+        // reader can decode — `MultiGzDecoder` fails on the truncated member and never reaches the
+        // new one, which is how one restart turned a whole hour of trades unreadable for every
+        // venue. The interrupted file keeps its own summary (`truncated_tail` records the cut), and
+        // the rest of the hour continues in a new file beside it.
+        let resume = path.exists() && !truncated_tail;
+        let (path, summary_path) = if resume {
+            // A resumed file is no longer closed: its summary describes the moment its previous
+            // writer stopped, and more records are about to follow. Keeping it would leave every
+            // reader comparing a growing file against a stale record count and an old digest. It
+            // is removed now and written again when this writer closes the file.
+            match std::fs::remove_file(&summary_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            (path, summary_path)
+        } else if path.exists() {
+            let (path, summary) = next_free_segment_path(&directory, stem, &hour);
+            (path, summary)
+        } else {
+            (path, summary_path)
+        };
+        let (records, first_ts, last_ts, truncated_tail) = if resume {
+            (records, first_ts, last_ts, truncated_tail)
         } else {
             (0, ts_ns, ts_ns, false)
         };
@@ -509,6 +552,45 @@ fn valid_component(value: &str) -> bool {
         && value != ".."
 }
 
+/// The first free `<stem>-<hour>-r<n>` file in `directory`, with its summary path.
+///
+/// Used when the hour's file cannot be continued: a restarted writer starts a new file rather than
+/// appending to a gzip member that was cut short.
+fn next_free_segment_path(directory: &Path, stem: &str, hour: &str) -> (PathBuf, PathBuf) {
+    for serial in 1u32.. {
+        let path = directory.join(format!("{stem}-{hour}-r{serial}.ndjson.gz"));
+        if !path.exists() {
+            let summary = directory.join(format!("{stem}-{hour}-r{serial}.summary.json"));
+            return (path, summary);
+        }
+    }
+    unreachable!("the serial space is larger than the files an hour can hold")
+}
+
+/// Whether a file ends with a gzip header and nothing after it.
+///
+/// A header with no member behind it holds no records, so a file that ends this way is complete
+/// as far as its readers are concerned: the writer simply had not written the member's first byte
+/// yet. A tail that is anything else — a partial deflate block, a header with data — is a real
+/// truncation and is reported as one.
+fn ends_with_a_bare_gzip_header(path: &Path) -> io::Result<bool> {
+    const HEADER_LEN: u64 = 10;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len < HEADER_LEN {
+        return Ok(false);
+    }
+    let mut header = [0u8; HEADER_LEN as usize];
+    file.seek(io::SeekFrom::Start(len - HEADER_LEN))?;
+    file.read_exact(&mut header)?;
+    // The fixed part of a gzip header: magic, deflate, no flags, no mtime, no extra.
+    Ok(header[..3] == [0x1f, 0x8b, 0x08]
+        && header[3] == 0
+        && header[4..8] == [0, 0, 0, 0]
+        && header[8] == 0
+        && header[9] == 0xff)
+}
+
 fn scan_existing(path: &Path) -> io::Result<(u64, i64, i64, bool)> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(MultiGzDecoder::new(file));
@@ -657,17 +739,24 @@ impl Writer {
 mod market_event_tests {
     use super::*;
     use std::{
-        io::Read,
+        io::{Read, Write},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     fn root() -> PathBuf {
+        // A per-call counter as well as the clock: tests run in parallel threads, and two starting
+        // in the same nanosecond would otherwise share one directory and overwrite each other's
+        // files — which is exactly how "passes alone, fails in the suite" looks.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("titan-events-{}-{nonce}", std::process::id()));
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "titan-events-{}-{nonce}-{serial}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         root
     }
@@ -681,6 +770,75 @@ mod market_event_tests {
             qty: "0.5".into(),
             trade_id: None,
         }
+    }
+
+    #[test]
+    fn a_restart_after_an_interrupted_hour_does_not_poison_the_file() {
+        // The recorder was killed while a trade file was open. Its last gzip member has no
+        // end-of-stream marker, and appending a new member after it leaves a stream no reader can
+        // decode: `MultiGzDecoder` fails on the truncated member and never reaches the new one.
+        // On the live node one restart made a whole hour of trades unreadable for every venue, so
+        // the restarted writer must start a new file instead of appending.
+        let root = root();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        // An interrupted file: one record, then a member cut off mid-stream. This is what the
+        // operating system leaves behind when the process is killed between the record it had
+        // written and the trailer that would close the gzip member.
+        let interrupted = dir.join("trades-19700101T00.ndjson.gz");
+        let mut encoder =
+            GzEncoder::new(File::create(&interrupted).unwrap(), Compression::default());
+        serde_json::to_writer(&mut encoder, &trade(0)).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        encoder.finish().unwrap();
+        let bytes = std::fs::read(&interrupted).unwrap();
+        std::fs::write(&interrupted, &bytes[..bytes.len() - 8]).unwrap(); // drop CRC and size
+
+        let mut writer = MarketEventWriter::new();
+        writer
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        writer.finish().unwrap();
+
+        // The new record is readable from a new file, and the interrupted file is left as it was.
+        let continuation = dir.join("trades-19700101T00-r1.ndjson.gz");
+        let mut decoded = String::new();
+        MultiGzDecoder::new(File::open(&continuation).unwrap())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(decoded.trim()).unwrap();
+        assert_eq!(value["exch_ts_ns"], 1_000);
+        let intact: Vec<u8> = std::fs::read(&interrupted).unwrap();
+        assert!(
+            MultiGzDecoder::new(intact.as_slice())
+                .read_to_string(&mut String::new())
+                .is_err(),
+            "the interrupted prefix must not be reported as readable"
+        );
+    }
+
+    #[test]
+    fn a_cleanly_closed_hour_continues_in_the_same_file() {
+        // The opposite case: nothing was cut, so the hour keeps one file rather than sprouting a
+        // `-r1` beside it on every ordinary restart.
+        let root = root();
+        let mut first = MarketEventWriter::new();
+        first
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(0))
+            .unwrap();
+        first.finish().unwrap();
+        let mut second = MarketEventWriter::new();
+        second
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        second.finish().unwrap();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        let mut decoded = String::new();
+        MultiGzDecoder::new(File::open(dir.join("trades-19700101T00.ndjson.gz")).unwrap())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded.lines().count(), 2);
+        assert!(!dir.join("trades-19700101T00-r1.ndjson.gz").exists());
     }
 
     #[test]
@@ -777,6 +935,142 @@ mod market_event_tests {
         let value: serde_json::Value = serde_json::from_str(decoded.trim()).unwrap();
         assert_eq!(value["kind"], "liquidation");
         assert!(value["order_id"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_ending_in_a_bare_gzip_header_is_complete_not_truncated() {
+        // What the live recorder leaves when it closes one member and opens the next: every
+        // record present, followed by the header of a member with no body yet. It must read as
+        // complete; reporting it as truncated marked good hours as damaged.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let mut bytes = Vec::new();
+        for n in 0..2i64 {
+            let record = AuxRecord::Oi {
+                exch_ts_ns: n,
+                local_ts_ns: n,
+                value: "1".to_owned(),
+                unit: OpenInterestUnit::Contracts,
+                source: AuxSource::Rest,
+            };
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            serde_json::to_writer(&mut encoder, &record).unwrap();
+            encoder.write_all(b"\n").unwrap();
+            bytes.extend_from_slice(&encoder.finish().unwrap());
+        }
+        bytes.extend_from_slice(&[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(ends_with_a_bare_gzip_header(&path).unwrap());
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "no record was lost");
+        assert_eq!(report.records, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resuming_a_file_removes_the_stale_summary() {
+        // A resumed file keeps growing after its previous writer's summary was written, so that
+        // summary describes a shorter file. Readers compare against it and see a mismatch; it is
+        // removed on resume and written again when this writer closes the file.
+        let root = root();
+        let mut first = MarketEventWriter::new();
+        first
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(0))
+            .unwrap();
+        first.finish().unwrap();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        let summary = dir.join("trades-19700101T00.summary.json");
+        assert!(summary.exists(), "the first writer closed the file");
+
+        let mut second = MarketEventWriter::new();
+        second
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        assert!(
+            !summary.exists(),
+            "a resumed file must not keep the previous writer's summary"
+        );
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "it is still being written");
+
+        second.finish().unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&summary).unwrap()).unwrap();
+        assert_eq!(summary["records"], 2, "both records are described");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_still_being_written_is_not_counted_as_truncated() {
+        // An open file has an incomplete last member because it is still being filled; it has no
+        // summary either, since its writer has not closed it. Counting that as truncation reported
+        // every hour in progress as damaged.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let record = AuxRecord::Oi {
+            exch_ts_ns: 0,
+            local_ts_ns: 0,
+            value: "1".to_owned(),
+            unit: OpenInterestUnit::Contracts,
+            source: AuxSource::Rest,
+        };
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        serde_json::to_writer(&mut encoder, &record).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        // A member in progress: header and partial payload, no trailer, no summary beside it.
+        bytes.extend_from_slice(&[
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01,
+        ]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "the writer has not finished");
+        assert_eq!(report.missing_summaries, 1);
+        assert_eq!(report.records, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_tail_that_is_not_only_a_header_is_still_a_truncation() {
+        // The counterpart: a member whose header has data behind it lost records, and saying so
+        // is what keeps a real cut visible.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let record = AuxRecord::Oi {
+            exch_ts_ns: 0,
+            local_ts_ns: 0,
+            value: "1".to_owned(),
+            unit: OpenInterestUnit::Contracts,
+            source: AuxSource::Rest,
+        };
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        serde_json::to_writer(&mut encoder, &record).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        bytes.push(0x1f); // a torn write: header started, cut off
+        std::fs::write(&path, &bytes).unwrap();
+        // A summary means the writer closed this file; only then is an unfinished tail a loss.
+        std::fs::write(
+            dir.join("aux-19700101T00.summary.json"),
+            br#"{"records":1,"first_exch_ts_ns":0,"last_exch_ts_ns":0,"truncated_tail":false,"sha256":"x"}"#,
+        )
+        .unwrap();
+
+        assert!(!ends_with_a_bare_gzip_header(&path).unwrap());
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

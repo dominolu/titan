@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["binancefutures", "okx", "hyperliquid", "gatecrossex", "backpack", "lighter", "variational", "evm", "solana"]
+default = ["binancefutures", "okx", "hyperliquid", "bybit", "gatecrossex", "backpack", "lighter", "variational", "evm", "solana"]
 binancefutures = []
 okx = []
+bybit = []
 hyperliquid = []
 gatecrossex = []
 backpack = []

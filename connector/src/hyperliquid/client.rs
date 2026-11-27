@@ -129,6 +129,58 @@ impl HyperliquidClient {
         Ok(serde_json::from_value(resp)?)
     }
 
+    /// The funding rate and open interest of one coin, from `metaAndAssetCtxs`.
+    ///
+    /// The two are separate fields of the same context and the recorder needs both at the same
+    /// cadence, so they are read in one request rather than two. Open interest is the venue's own
+    /// `openInterest` string (base units); the funding rate is a fraction to be mirrored back into
+    /// decimal text by the caller. `None` means the coin is not in the universe — an asset that
+    /// does not exist has no sample, and that is not an error to retry.
+    pub async fn get_funding_and_open_interest(
+        &self,
+        coin: &str,
+    ) -> Result<Option<(f64, String)>, HyperliquidError> {
+        let resp = self
+            .post_info(serde_json::json!({"type": "metaAndAssetCtxs"}))
+            .await?;
+        let arr = resp.as_array().ok_or(HyperliquidError::InvalidArg(
+            "metaAndAssetCtxs response is not an array",
+        ))?;
+        let universe = arr
+            .first()
+            .and_then(|meta| meta.get("universe").and_then(|u| u.as_array()))
+            .ok_or(HyperliquidError::InvalidArg(
+                "missing universe in metaAndAssetCtxs",
+            ))?;
+        let ctxs =
+            arr.get(1)
+                .and_then(|ctxs| ctxs.as_array())
+                .ok_or(HyperliquidError::InvalidArg(
+                    "missing asset contexts in metaAndAssetCtxs",
+                ))?;
+        let Some((_, ctx)) = universe
+            .iter()
+            .zip(ctxs.iter())
+            .find(|(asset, _)| asset.get("name").and_then(|n| n.as_str()) == Some(coin))
+        else {
+            return Ok(None);
+        };
+        // A market that stopped trading may omit either field; an absent value is a missing
+        // sample, never a zero the recorder would average into the day.
+        let funding = ctx
+            .get("funding")
+            .and_then(|f| f.as_str())
+            .and_then(|f| f.parse::<f64>().ok());
+        let open_interest = ctx
+            .get("openInterest")
+            .and_then(|v| v.as_str())
+            .filter(|v| v.parse::<f64>().is_ok_and(|v| v > 0.0));
+        match (funding, open_interest) {
+            (Some(funding), Some(open_interest)) => Ok(Some((funding, open_interest.to_owned()))),
+            _ => Ok(None),
+        }
+    }
+
     /// Returns the current funding rate per asset from `metaAndAssetCtxs`.
     pub async fn get_funding_rates(&self) -> Result<HashMap<String, f64>, HyperliquidError> {
         let resp = self

@@ -107,7 +107,7 @@
 
 | 市场类型 | `feed_mode` | `depth_cap` / 订阅 | 说明 |
 | --- | --- | --- | --- |
-| Bybit V5 线性/反向永续 | `diff` | 1 / 50 / 200 / 500（无 100） | 按 [Bybit V5 Orderbook](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)，目标 100 档应订阅 200 或 500，记录前 100；`depth_available` 记 200/500 |
+| Bybit V5 线性/反向永续 | `diff` | 1 / 50 / 200 / 500（无 100） | 按 [Bybit V5 Orderbook](https://bybit-exchange.github.io/docs/v5/websocket/public/orderbook)，目标 100 档应订阅 200 或 500，记录前 100；`depth_available` 记 200/500。行情由 `connector` 的 Bybit 模块提供：`u` 连续性、REST 镜像对齐与重同步都在该模块内完成，录制端不解析原始帧 |
 | Binance USD-M / COIN-M | `diff` | 1000（REST 快照上限） | WS 为 diff，需本地重建 + REST 快照；100 ms 批量推送 |
 | Binance 现货 | `diff` | 1000 | `@depth@100ms`，同上 |
 | OKX 永续/现货 | `diff` | 400 | 按订阅 books 档数；100 ms 批量推送 |
@@ -442,7 +442,7 @@ padding              到 block_len
 - **离线连续性**：净差分会省略无变化槽，因此相邻落盘记录的 `seq_first_prev_delta` 可以大于上一条记录的 `seq_last_delta`；回放按单调性校验记录序号，并验证块尾 `seq_last_processed_delta` 不早于块内最后记录。每条原生更新之间的连续性由录制端在线校验，断链时写入 gap 并重新取快照。对严格“每条消息序号 +1”的交易所，可用 `n_msgs` 辅助验证槽内消息数（`n_msgs=0xFFFF` 的饱和记录跳过该验证）。段头 `flags.bit2` 表示在线校验是否通过，质量标记说明离线可证边界，不宣称完全离线可证。
 - snapshot feed 无原生序号：`seq_last_delta = 0`、`seq_first_prev_delta = 0xFFFFFFFF`；回放跳过序号校验。
 - 若某条记录的 `seq_last_delta`/`seq_first_prev_delta` 或块尾 `seq_last_processed_delta` 将超过 `u32` 或等于哨兵 `0xFFFFFFFF`，录制端必须结束当前块；下一块重新取 `seq_base`，不得截断或回绕。
-- 无显式前驱字段的场所（例如 Bybit 的 `u`）用上一已处理消息的结束序号作为 `seq_first_prev`，此时录制端在线连续性检查也退化为单调性检查，不等同于原生链证明。由于落盘格式省略无变化槽，质量报告的稀疏记录序号检查标记为 `monotonic_only`；原生链检查结果由段头 `flags.bit2` 表示。
+- 无显式前驱字段的场所（例如 Bybit 的 `u`）用上一已处理消息的结束序号作为 `seq_first_prev`。该连续性由 `connector` 的 Bybit 模块在线校验：增量 `u` 必须等于上一条已发布 `u` + 1，否则发布 `StreamInvalidated` 并重新对齐镜像，录制端只接收已通过校验的帧。由于落盘格式省略无变化槽，质量报告的稀疏记录序号检查标记为 `monotonic_only`；原生链检查结果由段头 `flags.bit2` 表示。
 - 槽内无净变化则不写记录；回放按网格推进时状态自动延续。
 - 迟到事件的归槽规则见 10.4，不再使用“早于块起点钳制到槽 0”的旧规则。`local_lag_us` 基于钳制时间，原始时间差既不进位也不单独统计：本格式不表达到达延迟。
 
@@ -702,7 +702,7 @@ struct BookView { best_bid(), best_ask(), size_at(side, off), top_n(side, n, out
 | 块间 | 块 i 末状态 vs 块 i+1 首快照逐档比较（跨 gap/坏块跳过） | 每块 | 报错；定位块/档位；默认中止回测 |
 | 段间 | 段边界状态与外部快照/下一段首快照比较 | 每段 | 报错；标记 gap |
 | 序号（离线） | 跨记录 `seq_first_prev_delta[i] == seq_last_delta[i-1]`（i≥1）；同 epoch 相邻数据块 `next.seq_base == prev.seq_base + prev.seq_last_processed_delta`；严格 +1 场所再用 `n_msgs` 验证槽内条数 | 每次回放 | 报错；标记序号不连续；不能静默修复 |
-| 序号（在线） | 录制端逐消息校验原生链（Binance `pu`、OKX `prevSeqId`、Bybit `u`） | 每条消息 | 触发 gap / 重同步；写入质量标记 |
+| 序号（在线） | `connector` 逐消息校验原生链（Binance `pu`、OKX `prevSeqId`、Bybit `u`），录制端只接收已校验批次 | 每条消息 | 触发 gap / 重同步；写入质量标记 |
 | 外部快照（启用 `external_snapshot_interval_ms > 0` 时） | 独立全量快照与重建阶梯逐档比较 | `validation_interval_ms` | 报错；记录快照序号/时间 |
 | 精度 | tick/qty 整除、数量/价格范围 | 每条消息 | 计数；超阈值触发重同步 |
 

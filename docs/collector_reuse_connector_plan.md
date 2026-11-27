@@ -1,6 +1,7 @@
 # 采集复用统一 broker 实现：优化方案
 
-状态：**方案待批准，未实施**。本文只描述设计，不含代码改动。
+状态：**已实施（2026-11-25）**。历史设计保留在下方；当前取舍与验证见
+[2026-11-25 验证记录](verification/2026-11-25/bybit-connector-market/README.md)。
 
 ## 1. 问题
 
@@ -115,6 +116,12 @@ Binance WS ──→ connector::MarketDataStream
 `collector::transport` 与 `connector` 内部的连接处理存在重复。**本轮不合并**（`titan-record` 已在使用 collector transport，改动面过大）；在文档中标注为后续项，避免同一条规则维护两份。
 
 ### 其他 broker 的同类收敛
+
+> **2026-11-25 状态（Issue #34）**：本节要求的收敛已完成。四个交易所的 `book record` 都通过
+> `connector::market_stream` 取行情，采集侧不再保留任何交易所专有解析；connector 新增 Bybit
+> 公开行情模块（`connector/src/bybit/`），其 `u` 连续性、镜像对齐与"断裂只重取镜像、不断连接"
+> 与 Binance/OKX 同语义。验证见
+> [2026-11-25 验证记录](verification/2026-11-25/bybit-connector-market/README.md)。
 
 采集端本轮只接 Binance，但 `collector/src/{bybit,okx,hyperliquid,binance}/` 下同样存在与
 `binancefuturesum` 同源的旧逻辑（各自维护序列、各自拉快照）。这些必须在同一轮内处理掉，

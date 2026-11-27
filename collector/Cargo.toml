@@ -28,10 +28,13 @@ hftbacktest = { path = "../hftbacktest", default-features = false, features = ["
 titan-l2-book = { path = "../crates/titan-l2-book" }
 # The websocket transport, venue refusals and their backoff are shared with the live
 # connector, so the behaviour of a refused request is defined once.
-connector = { path = "../connector", default-features = false, features = ["binancefutures", "okx", "hyperliquid"] }
+connector = { path = "../connector", default-features = false, features = ["binancefutures", "okx", "hyperliquid", "bybit"] }
 titan-domain-types = { path = "../crates/titan-domain-types" }
 titan-market-service = { path = "../crates/titan-market-service" }
 zip = "6.0.0"
+# The recorder holds an exclusive lock on its data directory; two writers on one directory
+# interleave members and leave files no reader can decode.
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["test-util"] }
