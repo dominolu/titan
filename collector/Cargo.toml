@@ -32,6 +32,9 @@ connector = { path = "../connector", default-features = false, features = ["bina
 titan-domain-types = { path = "../crates/titan-domain-types" }
 titan-market-service = { path = "../crates/titan-market-service" }
 zip = "6.0.0"
+# The recorder holds an exclusive lock on its data directory; two writers on one directory
+# interleave members and leave files no reader can decode.
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1.48.0", features = ["test-util"] }

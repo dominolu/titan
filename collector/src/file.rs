@@ -325,6 +325,15 @@ impl EventSegment {
         // the rest of the hour continues in a new file beside it.
         let resume = path.exists() && !truncated_tail;
         let (path, summary_path) = if resume {
+            // A resumed file is no longer closed: its summary describes the moment its previous
+            // writer stopped, and more records are about to follow. Keeping it would leave every
+            // reader comparing a growing file against a stale record count and an old digest. It
+            // is removed now and written again when this writer closes the file.
+            match std::fs::remove_file(&summary_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
             (path, summary_path)
         } else if path.exists() {
             let (path, summary) = next_free_segment_path(&directory, stem, &hour);
@@ -960,6 +969,39 @@ mod market_event_tests {
         let report = inspect_market_events(&root, None).unwrap();
         assert_eq!(report.truncated_files, 0, "no record was lost");
         assert_eq!(report.records, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resuming_a_file_removes_the_stale_summary() {
+        // A resumed file keeps growing after its previous writer's summary was written, so that
+        // summary describes a shorter file. Readers compare against it and see a mismatch; it is
+        // removed on resume and written again when this writer closes the file.
+        let root = root();
+        let mut first = MarketEventWriter::new();
+        first
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(0))
+            .unwrap();
+        first.finish().unwrap();
+        let dir = root.join("trade/venue=binance/instrument=spot/symbol=BTCUSDT/date=1970-01-01");
+        let summary = dir.join("trades-19700101T00.summary.json");
+        assert!(summary.exists(), "the first writer closed the file");
+
+        let mut second = MarketEventWriter::new();
+        second
+            .write_trade(&root, "binance", "spot", "BTCUSDT", &trade(1_000))
+            .unwrap();
+        assert!(
+            !summary.exists(),
+            "a resumed file must not keep the previous writer's summary"
+        );
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "it is still being written");
+
+        second.finish().unwrap();
+        let summary: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&summary).unwrap()).unwrap();
+        assert_eq!(summary["records"], 2, "both records are described");
         std::fs::remove_dir_all(root).unwrap();
     }
 

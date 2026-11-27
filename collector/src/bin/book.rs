@@ -1059,6 +1059,12 @@ fn sequence_failures_in_segment(segment: &SegmentSummary) -> usize {
 }
 
 async fn run_record(config: RecorderConfig) -> Result<(), (u8, String)> {
+    // One writer per data directory. Two recorders on the same root interleave gzip members in the
+    // same hour files: on the live node an orphaned instance and the service-managed one both wrote
+    // the same files, and the result decodes only up to the first interleaving. The lock is held
+    // for the life of the process and released by the kernel if it dies.
+    let _writer_lock = DataDirectoryLock::acquire(&config.recorder.root)
+        .map_err(|error| (2, format!("refusing to record: {error}")))?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut tasks = tokio::task::JoinSet::new();
     let mut markets_remaining = config.markets.len();
@@ -1335,6 +1341,40 @@ fn matching_paths(
     }
     found.sort();
     Ok(found)
+}
+
+/// An exclusive lock on a recorder's data directory, held for the life of the process.
+///
+/// `.recorder.lock` lives beside the data, not in it, so the archive and quality tools never see
+/// it as an input. `flock` releases the lock when the process exits for any reason, including a
+/// crash, so a killed recorder never leaves the directory unusable.
+struct DataDirectoryLock {
+    _file: fs::File,
+}
+
+impl DataDirectoryLock {
+    fn acquire(root: &Path) -> anyhow::Result<Self> {
+        fs::create_dir_all(root)?;
+        let path = root.join(".recorder.lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+        // SAFETY: `fd` is owned by `file` and stays open for as long as the lock is held.
+        let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0;
+        if !locked {
+            let error = std::io::Error::last_os_error();
+            anyhow::bail!(
+                "another recorder holds {}. If no recorder is running, the lock is stale and \
+                 clearing it is unnecessary: it is released automatically when the holder exits \
+                 ({error})",
+                path.display()
+            );
+        }
+        Ok(Self { _file: file })
+    }
 }
 
 fn io_error(error: impl std::fmt::Display) -> (u8, String) {
