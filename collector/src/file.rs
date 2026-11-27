@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, hash_map::Entry},
     fs::File,
     io,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read as _, Seek as _, Write},
     path::{Path, PathBuf},
 };
 
@@ -229,7 +229,11 @@ fn inspect_event_file(
                 Err(_) => invalid_records += 1,
             },
             Err(_) => {
-                truncated = true;
+                // A gzip member that is only a header carries no data. A writer that closes its
+                // previous member and then opens the next one leaves exactly that on disk until
+                // the next record arrives, so a file read at that instant ends with a bare header
+                // and nothing was lost. Only a tail with data behind it is a truncation.
+                truncated = !ends_with_a_bare_gzip_header(path)?;
                 break;
             }
         }
@@ -542,6 +546,30 @@ fn next_free_segment_path(directory: &Path, stem: &str, hour: &str) -> (PathBuf,
         }
     }
     unreachable!("the serial space is larger than the files an hour can hold")
+}
+
+/// Whether a file ends with a gzip header and nothing after it.
+///
+/// A header with no member behind it holds no records, so a file that ends this way is complete
+/// as far as its readers are concerned: the writer simply had not written the member's first byte
+/// yet. A tail that is anything else — a partial deflate block, a header with data — is a real
+/// truncation and is reported as one.
+fn ends_with_a_bare_gzip_header(path: &Path) -> io::Result<bool> {
+    const HEADER_LEN: u64 = 10;
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len < HEADER_LEN {
+        return Ok(false);
+    }
+    let mut header = [0u8; HEADER_LEN as usize];
+    file.seek(io::SeekFrom::Start(len - HEADER_LEN))?;
+    file.read_exact(&mut header)?;
+    // The fixed part of a gzip header: magic, deflate, no flags, no mtime, no extra.
+    Ok(header[..3] == [0x1f, 0x8b, 0x08]
+        && header[3] == 0
+        && header[4..8] == [0, 0, 0, 0]
+        && header[8] == 0
+        && header[9] == 0xff)
 }
 
 fn scan_existing(path: &Path) -> io::Result<(u64, i64, i64, bool)> {
@@ -888,6 +916,69 @@ mod market_event_tests {
         let value: serde_json::Value = serde_json::from_str(decoded.trim()).unwrap();
         assert_eq!(value["kind"], "liquidation");
         assert!(value["order_id"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_ending_in_a_bare_gzip_header_is_complete_not_truncated() {
+        // What the live recorder leaves when it closes one member and opens the next: every
+        // record present, followed by the header of a member with no body yet. It must read as
+        // complete; reporting it as truncated marked good hours as damaged.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let mut bytes = Vec::new();
+        for n in 0..2i64 {
+            let record = AuxRecord::Oi {
+                exch_ts_ns: n,
+                local_ts_ns: n,
+                value: "1".to_owned(),
+                unit: OpenInterestUnit::Contracts,
+                source: AuxSource::Rest,
+            };
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            serde_json::to_writer(&mut encoder, &record).unwrap();
+            encoder.write_all(b"\n").unwrap();
+            bytes.extend_from_slice(&encoder.finish().unwrap());
+        }
+        bytes.extend_from_slice(&[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(ends_with_a_bare_gzip_header(&path).unwrap());
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 0, "no record was lost");
+        assert_eq!(report.records, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_tail_that_is_not_only_a_header_is_still_a_truncation() {
+        // The counterpart: a member whose header has data behind it lost records, and saying so
+        // is what keeps a real cut visible.
+        let root = root();
+        let dir =
+            root.join("aux/venue=okx/instrument=perpetual/symbol=BTC-USDT-SWAP/date=1970-01-01");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("aux-19700101T00.ndjson.gz");
+        let record = AuxRecord::Oi {
+            exch_ts_ns: 0,
+            local_ts_ns: 0,
+            value: "1".to_owned(),
+            unit: OpenInterestUnit::Contracts,
+            source: AuxSource::Rest,
+        };
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        serde_json::to_writer(&mut encoder, &record).unwrap();
+        encoder.write_all(b"\n").unwrap();
+        let mut bytes = encoder.finish().unwrap();
+        bytes.push(0x1f); // a torn write: header started, cut off
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(!ends_with_a_bare_gzip_header(&path).unwrap());
+        let report = inspect_market_events(&root, None).unwrap();
+        assert_eq!(report.truncated_files, 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 
