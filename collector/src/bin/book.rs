@@ -95,6 +95,13 @@ async fn start_market_stream(
             config.stream_url = root.to_owned();
         }
         config.depth_snapshot_limit = depth_snapshot_limit(settings.depth_levels);
+        if market.instrument != InstrumentType::Spot && settings.oi_poll_ms > 0 {
+            // Binance publishes open interest only over REST, so the connector polls it and
+            // publishes the sample the recorder stores — as it does for the other venues.
+            config = config.with_open_interest_interval(std::time::Duration::from_millis(
+                u64::from(settings.oi_poll_ms),
+            ));
+        }
         stream::start_binance_market_stream(config, sender).await?
     } else if venue.starts_with("okx") {
         let mut config = stream::OkxMarketStreamConfig::new(&market.symbol, kinds);

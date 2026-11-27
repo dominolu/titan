@@ -47,6 +47,12 @@ pub struct BinanceMarketStreamConfig {
     pub kinds: Vec<MarketDataKind>,
     /// How many levels a depth snapshot requests.
     pub depth_snapshot_limit: u16,
+    /// How often open interest is polled; zero disables the poll.
+    ///
+    /// Binance publishes open interest only over REST. The recorder used to poll it itself, with
+    /// an endpoint table that knew Binance's two hosts and nothing else; the poll lives beside the
+    /// stream it belongs to now, as it already does for the other venues.
+    pub open_interest_interval: Duration,
 }
 
 impl BinanceMarketStreamConfig {
@@ -58,7 +64,14 @@ impl BinanceMarketStreamConfig {
             symbol: symbol.into(),
             kinds,
             depth_snapshot_limit: 1000,
+            open_interest_interval: Duration::from_secs(0),
         }
+    }
+
+    /// Sets how often open interest is polled; zero disables the poll.
+    pub fn with_open_interest_interval(mut self, interval: Duration) -> Self {
+        self.open_interest_interval = interval;
+        self
     }
 }
 
@@ -128,7 +141,7 @@ pub async fn start_binance_market_stream(
     }
     // The receiver itself is never read: the handle owns the sender so the channel stays open.
     let (command_tx, _command_rx) = broadcast::channel(64);
-    run_stream_loop(ev_tx, command_tx, move |command_rx, ev_tx| {
+    let mut handle = run_stream_loop(ev_tx.clone(), command_tx, move |command_rx, ev_tx| {
         let client = client.clone();
         let subscriptions = subscriptions.clone();
         let endpoints = market_stream_endpoints(&config.stream_url);
@@ -153,7 +166,83 @@ pub async fn start_binance_market_stream(
             Err(last_error.unwrap_or_else(|| "no market stream endpoint".to_owned()))
         }
     })
-    .await
+    .await?;
+    if !config.open_interest_interval.is_zero() {
+        // Binance answers open interest only over REST. USDⓈ-M serves it from `fapi`, COIN-M from
+        // `dapi`, which is exactly the base the depth snapshot already uses for each of them.
+        let endpoint = binance_open_interest_endpoint(&config.api_url);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|_| MarketStreamError::Config("open interest HTTP client"))?;
+        let symbol = config.symbol.clone();
+        let mut shutdown = handle.shutdown.subscribe();
+        let interval = config.open_interest_interval;
+        let task = tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let row: serde_json::Value = match client
+                            .get(&endpoint)
+                            .query(&[("symbol", symbol.as_str())])
+                            .send()
+                            .await
+                        {
+                            // A missing sample, not a broken book: the next tick asks again.
+                            Err(error) => {
+                                tracing::debug!(%symbol, %error, "open interest poll failed");
+                                continue;
+                            }
+                            Ok(response) => match response.error_for_status() {
+                                Err(error) => {
+                                    tracing::debug!(%symbol, %error, "open interest poll refused");
+                                    continue;
+                                }
+                                Ok(response) => match response.json().await {
+                                    Ok(row) => row,
+                                    Err(error) => {
+                                        tracing::debug!(
+                                            %symbol,
+                                            %error,
+                                            "open interest response unreadable"
+                                        );
+                                        continue;
+                                    }
+                                },
+                            },
+                        };
+                        let Some(open_interest) = row.get("openInterest").and_then(|v| v.as_str())
+                        else {
+                            tracing::debug!(%symbol, "open interest sample without a value");
+                            continue;
+                        };
+                        let exch_ts = row
+                            .get("time")
+                            .and_then(serde_json::Value::as_i64)
+                            .and_then(|ms| ms.checked_mul(1_000_000))
+                            .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or(0));
+                        ev_tx.send(PublishEvent::OpenInterest {
+                            symbol: symbol.clone(),
+                            open_interest: open_interest.to_owned(),
+                            // Binance reports open interest in contracts.
+                            unit: crate::connector::OpenInterestUnit::Contracts,
+                            exch_ts,
+                        });
+                    }
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        handle.add_task(task);
+    }
+    Ok(handle)
 }
 
 /// Runs one venue stream until it returns or the handle is dropped.
@@ -367,6 +456,20 @@ pub async fn start_okx_market_stream(
         handle.add_task(task);
     }
     Ok(handle)
+}
+
+/// The open interest endpoint for a Binance REST base.
+///
+/// USDⓈ-M answers on `fapi` and COIN-M on `dapi`; the base already carries that choice, so the
+/// endpoint follows it rather than a second table that could disagree with it.
+fn binance_open_interest_endpoint(api_url: &str) -> String {
+    let base = api_url.trim_end_matches('/');
+    let family = if base.contains("dapi") {
+        "dapi"
+    } else {
+        "fapi"
+    };
+    format!("{base}/{family}/v1/openInterest")
 }
 
 /// Where a Hyperliquid market stream connects, and what to subscribe to.
@@ -640,6 +743,26 @@ fn market_stream_endpoints(stream_url: &str) -> Vec<(String, MarketStreamRoute)>
         ];
     }
     vec![(stream_url.to_owned(), MarketStreamRoute::All)]
+}
+
+#[cfg(test)]
+mod binance_open_interest_tests {
+    use super::binance_open_interest_endpoint;
+
+    #[test]
+    fn the_coin_margined_base_keeps_its_own_endpoint() {
+        // COIN-M answers on `dapi`; sending it a `fapi` path would ask USDⓈ-M for a symbol it does
+        // not have, which is the mistake the recorder's old endpoint table had to be written to
+        // avoid.
+        assert_eq!(
+            binance_open_interest_endpoint("https://fapi.binance.com"),
+            "https://fapi.binance.com/fapi/v1/openInterest"
+        );
+        assert_eq!(
+            binance_open_interest_endpoint("https://dapi.binance.com/"),
+            "https://dapi.binance.com/dapi/v1/openInterest"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "okx"))]
